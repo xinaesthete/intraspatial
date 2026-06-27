@@ -10,6 +10,7 @@
   "scripts": {
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:rust": "cargo test --manifest-path rust/htj2k-core/Cargo.toml",
     "typecheck": "tsc --noEmit",
     "build:wasm": "wasm-pack build rust/htj2k-core --target web --out-dir pkg --out-name htj2k_core",
     "build:wasm:dev": "wasm-pack build rust/htj2k-core --dev --target web --out-dir pkg --out-name htj2k_core"
