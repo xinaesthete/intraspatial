@@ -213,6 +213,51 @@ Two honest qualifications:
   (e.g. a Getis-Ord hotspot surface); **PCF/K when you want a function of distance**;
   hard quadrats only when a downstream step genuinely needs disjoint regions.
 
+### Render vs compute: splat by blending, not atomics
+
+The constraint note below says core WGSL has **no f32 atomics**, so the obvious
+"scatter each point's weight into a density buffer" looks awkward. But splatting is
+a problem the GPU already solved in *fixed-function hardware*: draw each point as a
+small kernel-textured sprite into a **float render target** (`rgba16float` /
+`r32float`) with **additive blending** (`src=ONE, dst=ONE, op=ADD`). The blend unit
+accumulates for us — no atomics, no contention, and it is what GPUs are fastest at.
+So **density fields, KDE, quadrat/hex counts, and label-count maps are naturally a
+*render* job, not a compute job.** The toolbox gains a second kernel modality: a
+tiny **splat/blend pipeline** alongside the compute line-kernel.
+
+That reframes the whole point→grid bridge as a **layer/FBO compositing** pipeline,
+which is exactly how viewer stacks (deck.gl-style, and the SpatialData.js / MDV
+contexts we want to feed) already think:
+
+- render each label's density into its own float texture **layer**;
+- combine layers with **blend ops or a short pointwise compute pass** — e.g. the
+  **topographical correlation map (TCM)** is a windowed (productOfMeans-minus-…)
+  combination of two density layers, i.e. a few texture reads per texel;
+- the output **is a renderable layer**, so analysis and visualisation are the same
+  artefact — no readback round-trip (which also sidesteps the Dawn-on-Node readback
+  ceiling, since for viz the texture stays on the GPU and is simply displayed).
+
+Decision axis to lock in: **compute** for irregular gather / scan / sort / reduce
+and exact integer counts (the index, PCF histograms, reductions, Monte-Carlo
+nulls); **render** for additive splat, resampling, and anything whose natural
+output is a screen-space field (KDE, density, TCM, hotspot surfaces). A few methods
+(TCM, Getis-Ord) are **render-then-compute**. WebGPU caveat: float render targets
+need `rgba16float` (blendable by default) or the `float32-blendable` feature —
+a capability to check at device init, alongside the existing Dawn notes.
+
+### Distance decay = principled truncation (free performance)
+
+Influence that falls off with distance means distant cells contribute negligibly,
+so **truncating the window at a few σ is a principled approximation, not a corner
+cut**. For a 2D Gaussian the mass within radius R is `1 − exp(−R²/2σ²)`: a 2σ window
+keeps **86.5%**, 3σ keeps **98.9%**, and the spatial index makes "only look within
+R" the natural access pattern — dropping all-pairs O(N²) to **O(N·k)** with bounded,
+quantifiable error. This is also why **compact-support kernels** (Epanechnikov,
+tricube) are often the better default here than a Gaussian: same smoothing, support
+is *exactly* finite (zero error from truncation), and the hard cutoff is index-
+friendly. The knob — window radius vs σ — is a tunable rigour/cost dial with a
+closed-form error bound, not a guess.
+
 ### Point-native primitives (the new GPU wins)
 
 These run directly on `GpuPoints` + `GpuGridIndex`, no grid:
@@ -253,6 +298,33 @@ Determinism comes from a **counter-based RNG** (PCG / Philox) seeded per replica
 from the CPU — reproducible label shuffles without `Math.random` (unavailable in
 WGSL anyway).
 
+### Beyond pairs: higher-order co-occurrence (small N)
+
+The paper flags this as a frontier — extensions that quantify colocalisation of
+**three or more** cell types within a distance of one another (neighbourhood
+characterisation, ref [53]). It matters because pairwise statistics are blind to
+genuinely multi-way structure: A–B and B–C can each look unremarkable while
+{A,B,C} *junctions* are strongly enriched. Pairwise can be flat where the triple
+lights up.
+
+This generalises cleanly on the GPU as long as the number of types **N** (and the
+order **k**) stay small:
+
+- A pairwise PCF is a histogram over `(labelA, labelB, radius-bin)`. Higher order is
+  a joint **co-occurrence tensor** over `(labelA, …, labelK, radius)` — fine while
+  `Nᵏ × radii` stays modest (e.g. N ≤ ~20, k = 3 → ~8k bins per radius).
+- The **per-cell neighbourhood vector** already in the plan (k-hop / windowed
+  label-count per cell) is the natural substrate: higher-order colocalisation is a
+  statistic over *products* of those soft counts (joint frequency of {A,B,C} in a
+  neighbourhood vs the product-of-marginals null) — all GPU reductions.
+- The **windowed** form drops out for free: weight neighbours by the smooth kernel
+  to get soft composition vectors, then take expectations of their products. And the
+  **Monte-Carlo null extends unchanged** — shuffle labels, recompute the tensor.
+
+Keep `k` and `N` small (combinatorial blow-up otherwise); when types are many,
+cluster them first (the neighbourhood-clustering primitive) and work over the
+coarser label set.
+
 ### What stays on the CPU (for now)
 
 - **Persistent homology / Vietoris-Rips** (Fig 4E–F) — the GPU can build the
@@ -272,15 +344,23 @@ The paper ships a synthetic fixture — `Synthetic-Points-Architecture` (a ring 
 two cell types with random background) — with a *known* answer (clustering at the
 ring/crypt scale, short-range exclusion). That makes it an ideal golden.
 
-1. **GPU cross-PCF with a Monte-Carlo envelope** on the synthetic ring: build index
+1. **Windowed vs quadrat colocalisation** (the headline compromise made runnable):
+   render-splat the labels to density layers, compute a windowed colocalisation
+   field, and show it reproducing a QCM-style co-occurrence map **without** the
+   grid-phase sensitivity — side-by-side against hard quadrats swept over grid
+   origin, on the synthetic ring. Validates the windowing claim *and* the
+   render/splat path in one go. (The interactive sketch of this compromise lives in
+   the chat thread that motivated this section; graduate it into the `viz/` harness.)
+2. **GPU cross-PCF with a Monte-Carlo envelope** on the synthetic ring: build index
    → radius histogram for a label pair → N permutation nulls in parallel →
-   z-score / envelope. One exercise that lights up index + histogram + RNG +
-   reduction, validated against a CPU/MuSpAn reference.
-2. **GPU KDE → Getis-Ord hotspots**: splat → density `GpuField` → local z-score
-   (reusing the convolution + pointwise primitives). Proves the point→grid bridge
-   end-to-end and lands a result the image front can keep processing (e.g.
-   wavelet-denoise the density map — a composition across *both* fronts).
-3. **Batch cell morphology**: shoelace area/perimeter, centroid, second-moment
+   z-score / envelope. Lights up index + histogram + RNG + reduction, validated
+   against a CPU/MuSpAn reference.
+3. **GPU KDE → Getis-Ord hotspots** (render-then-compute): splat → density layer →
+   local z-score (reusing the convolution + pointwise primitives). Proves the
+   point→grid bridge end-to-end and lands a result the image front can keep
+   processing (e.g. wavelet-denoise the density map — a composition across *both*
+   fronts).
+4. **Batch cell morphology**: shoelace area/perimeter, centroid, second-moment
    **principal angle** (closed-form 2×2 eigenvector) and circularity over thousands
    of `GpuShapes` polygons in one dispatch — one workgroup per polygon, reduce over
    vertices (the line-kernel pattern again). Validate vs shapely/CPU.
@@ -295,9 +375,10 @@ ring/crypt scale, short-range exclusion). That makes it an ideal golden.
 | spatial statistics | cross-PCF, Ripley's cross-K | radius histogram over neighbour pairs | → |
 | spatial statistics | ANNI, nearest-neighbour distribution | NN search + MC null | → |
 | spatial statistics | empty-space function | NN search from random samples | → |
-| spatial statistics | QCM, Local Getis-Ord\*, TCM (LISA) | bin/splat → grid windowed stats | → |
+| spatial statistics | QCM, Local Getis-Ord\*, TCM (LISA) | splat layers → blend/window (render-then-compute) | → |
+| spatial statistics | higher-order co-occurrence (k≥3, small N) | joint co-occurrence tensor + MC null | → |
 | spatial statistics | adjacency permutation test | proximity network + MC null | → |
-| distribution | kernel density estimation | scatter splat (+ separable blur) | → |
+| distribution | kernel density estimation | additive splat to float layer (render) | → |
 | distribution | KL-divergence | pointwise + reduction on grids | → |
 | distribution | Wasserstein distance | Sinkhorn OT (approx) / exact CPU | ~ |
 | networks | proximity / contact network, degree | uniform-grid index + edge reduction | → |
@@ -339,7 +420,12 @@ Additional constraints for the discrete-cell front:
   counting-sort** — a second core kernel beyond the line kernel. Build it once.
 - **No f32 atomics in core WGSL**: scatter/splat/histogram accumulation can only use
   `atomic<i32>`/`atomic<u32>`. Use **fixed-point** accumulation (scale to integer,
-  atomicAdd, rescale) or per-bin reduction instead of f32 `atomicAdd`.
+  atomicAdd, rescale), per-bin reduction, **or — preferred for density — a render
+  pass with additive blending into a float target** (see *Render vs compute*); the
+  fixed-function blend unit accumulates without atomics.
+- **Float render targets**: additive-blend splat needs `rgba16float` (blendable by
+  default) or the `float32-blendable` feature — check at device init. This adds a
+  **render-pipeline modality** to a toolbox that is otherwise compute-only.
 - **RNG**: no `Math.random` in WGSL. Monte-Carlo nulls use a **counter-based RNG**
   (PCG/Philox) seeded per replicate from the CPU — also what makes them reproducible.
 - **Cell-index range**: bin indices for ≤2048² lattices fit in i32, so the index
@@ -366,15 +452,21 @@ A. **Spatial index** (`GpuPoints` + uniform-grid index = scan + counting-sort).
    This is the unlock for the whole point front, the way `GpuField` + runner is the
    unlock for the image front — and it drops scan/sort into the reductions toolbox
    for free.
-B. **Cross-PCF + Monte-Carlo envelope** (exercise 1) — the highest-signal first
-   result; proves index + histogram + RNG nulls together on the paper's synthetic
-   fixture.
-C. **KDE → Getis-Ord** (exercise 2) — proves the point→grid bridge and reuses the
-   image primitives; merges the two tracks.
-D. **Batch morphology** over `GpuShapes` (exercise 3) — reuses the line-kernel
+B. **Splat/blend render primitive** (`GpuPoints` → float layer via additive
+   blending). The second kernel modality; powers KDE, density, quadrat/hex counts,
+   and the layer→FBO→blend compositing that TCM and viewer integration need.
+C. **Windowed vs quadrat colocalisation** (exercise 1) — uses A+B to make the
+   headline compromise runnable and validate the render path against hard quadrats
+   on the synthetic fixture.
+D. **Cross-PCF + Monte-Carlo envelope** (exercise 2) — proves index + histogram +
+   RNG nulls together; the statistical-rigour flagship.
+E. **KDE → Getis-Ord** (exercise 3, render-then-compute) — merges the two tracks
+   and feeds a renderable hotspot layer straight to a viewer.
+F. **Batch morphology** over `GpuShapes` (exercise 4) — reuses the line-kernel
    pattern, no new infrastructure.
-E. **Proximity network + neighbourhood clustering**, then a CPU-assisted **VR
-   filtration** feed (GPU builds the graph, CPU reduces) if topology is wanted.
+G. **Proximity network + neighbourhood clustering** + **higher-order co-occurrence**
+   tensor; then a CPU-assisted **VR filtration** feed (GPU builds the graph, CPU
+   reduces) if topology is wanted.
 
 See also [`performance-report.md`](performance-report.md),
 [`dwt-gpu-and-high-bit-depth.md`](dwt-gpu-and-high-bit-depth.md), and the
