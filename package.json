@@ -1,0 +1,31 @@
+{
+  "name": "tgpu-htj2k",
+  "version": "0.0.0",
+  "type": "module",
+  "description": "WebGPU HTJ2K (JPEG 2000 Part 15) codec — Rust/wasm CPU core + TypeScript/TypeGPU GPU layer.",
+  "packageManager": "pnpm@9.0.0",
+  "engines": {
+    "node": ">=18.18"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit",
+    "build:wasm": "wasm-pack build rust/htj2k-core --target web --out-dir pkg --out-name htj2k_core",
+    "build:wasm:dev": "wasm-pack build rust/htj2k-core --dev --target web --out-dir pkg --out-name htj2k_core"
+  },
+  "dependencies": {
+    "openjph-wasm": "file:../openjph-wasm",
+    "typegpu": "^0.11.9",
+    "webgpu": "^0.4.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "@webgpu/types": "^0.1.40",
+    "typescript": "^5.6.0",
+    "vitest": "^2.0.0"
+  },
+  "volta": {
+    "node": "22.23.1"
+  }
+}
