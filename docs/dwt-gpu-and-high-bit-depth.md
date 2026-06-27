@@ -1,0 +1,171 @@
+# Evaluation — GPU DWT payoff & high-bit-depth (uint32) support
+
+Status: **findings** (2026-06-27)
+
+Captures the inverse-DWT benchmark results and two forward-looking questions the
+numbers raise: (a) is moving the DWT to the GPU worth it — here, or inside
+OpenJPH; (b) is this codec useful for SpatialData **label** volumes, which want
+`uint32`, and how hard is that to support.
+
+All measurements are from `test/bench_idwt.test.ts` (CPU) and
+`test/bench_idwt.gpu.test.ts` (GPU), single component, reversible 5/3, 5 levels,
+high-detail pseudo-random content, on the dev machine (Node + Dawn). Numbers are
+medians in ms; treat them as ratios, not absolutes.
+
+## 1. Benchmark findings
+
+CPU decode breakdown vs OpenJPH (its fully optimised C/SIMD decoder):
+
+| size  | OpenJPH full | our entropy¹ | our CPU DWT |
+|-------|-------------:|-------------:|------------:|
+| 64²   |        0.17  |        0.51  |       0.72  |
+| 128²  |        0.71  |        1.43  |       2.55  |
+| 256²  |        0.72  |        5.20  |       9.21  |
+| 512²  |        2.89  |       20.90  |      36.32  |
+
+¹ "entropy" = HT block decode + reassembly (`decode_dwt_input_53`).
+
+CPU vs GPU, inverse DWT only (GPU incl. upload + dispatch + readback):
+
+| size | CPU DWT | GPU DWT(+io) | ratio |
+|------|--------:|-------------:|------:|
+| 64²  |   ~0.8  |        ~1.5  | 0.5×  |
+
+Reading the numbers:
+
+- **The DWT is the larger half of *our* pipeline** (entropy/DWT ≈ 0.6×), so it is
+  the right thing to offload — but only relative to our own code.
+- **Our DWT is unoptimised.** Our whole CPU pipeline (~57 ms at 512²) is ~20×
+  slower than OpenJPH's *entire* optimised decode (2.9 ms). The CPU `idwt_level`
+  copies `Band`s and gathers columns; OpenJPH streams lines with SIMD lifting.
+- **The GPU loses at these sizes.** Upload + dispatch + full readback dominate;
+  our thread-per-line kernel uses global-memory scratch and does a long
+  sequential lift per thread. At 64² it is ~2× slower than the (already slow)
+  CPU DWT.
+- **Larger sizes are blocked here, not impossible.** The Dawn `webgpu` addon
+  under Node destabilises after ~8 cumulative `idwt53Gpu` calls or a single 512²
+  (worker crash at process teardown, though each call is *correct*). That caps
+  rigorous GPU timing; a browser run or buffer-reuse would lift it.
+
+**Conclusion for our layer:** the GPU DWT is correct and a good architectural
+fit, but is not yet a *win*. A win needs (1) larger images, (2) an optimised
+kernel — workgroup tiling, shared memory instead of global scratch, fewer
+passes — and (3) keeping the result on-GPU for display so the readback (a large
+fraction of the GPU time) disappears. That last point is the whole premise:
+the GPU path pays off in a **GPU-resident viz pipeline** (zarr → decode →
+render), not in decode-to-CPU.
+
+## 2. Would a GPU DWT help OpenJPH?
+
+Short answer: **not as a general decode speed-up, yes only for a GPU-display
+pipeline** — which is exactly the niche our separate TS/TypeGPU layer fills.
+
+- OpenJPH's DWT is already SIMD-vectorised (SSE/AVX2/AVX512/NEON/WASM-SIMD) and
+  streams line-by-line, fused with the rest of decode. The benchmark shows it is
+  *fast* — faster than our DWT by more than an order of magnitude.
+- A C library that decodes **to CPU memory** would have to add CPU→GPU→CPU
+  round-trips to use a GPU DWT; our own numbers show that overhead erases the
+  gain except at large sizes, and even then SIMD is a high bar.
+- The bit-serial **HT entropy decode stays on the CPU** regardless (it is
+  inherently sequential), so the GPU could only ever offload the back half.
+- The real opportunity is a pipeline that **renders on the GPU**: decode HT on
+  CPU, upload coefficients once, run DWT + dequant + level-shift on the GPU, and
+  keep the image in a GPU texture for display — no readback. That is our layer,
+  not OpenJPH's job. So "integrate GPU DWT into OpenJPH" is the wrong framing;
+  "pair OpenJPH-style HT decode with a GPU DWT for viz" is what we are building.
+
+## 3. High bit-depth and `uint32`
+
+### What the formats allow
+- **JPEG 2000 / HTJ2K**: a component's `Ssiz` encodes sign + (depth − 1), so the
+  codestream can declare well beyond 16-bit; up-to-32-bit integer is the
+  commonly-supported range, and the HT block coder is bit-plane based so it is
+  not intrinsically limited to 32.
+- **OpenJPH core**: supports `precision > 32` via 64-bit code-block buffers —
+  `ojph_codeblock.cpp` picks `BUF32` (`precision <= 32`) vs `BUF64`, and the
+  transform has `si64` reversible lifting (`gen_rev_vert_step64`,
+  `gen_rev_horz_syn64`). The 64-bit path is **reversible-only** (irreversible
+  uses 32-bit float). So lossless >32-bit is supported in principle.
+- **openjph-wasm (our reference wrapper)**: its `Dtype` is
+  `uint8 | int8 | uint16 | int16 | int32` — **no `uint32`**. Full `uint32`
+  labels (IDs ≥ 2³¹) overflow `int32`. This is the concrete limitation the user
+  hit; it is a *wrapper* gap (OpenJPH core has the 64-bit path), fixable by
+  exposing it.
+
+### Where *our* codec stands
+- **Parser** reads `bit_depth = (Ssiz & 0x7F) + 1` with no ceiling — it accepts
+  a high-bit-depth declaration.
+- **HT block decoder** is **BUF32-only**: `p = 30 − missing_msbs`, magnitudes
+  packed as `(v + 2) << (p − 1)` with the sign in bit 31 (`block_decoder.rs`).
+  Effective ceiling ≈ 30-bit precision. `uint16` (our test path) is comfortable;
+  `int32`/`uint32` would need a ported 64-bit HT path (mirror OpenJPH `BUF64`).
+- **Inverse DWT** is `i32` (CPU `idwt_1d_53`, WGSL `idwt53`). Reversible 5/3 on
+  32-bit input grows the coefficient range by a few bits per level (to ~37-bit),
+  so the DWT needs **64-bit integers** end-to-end.
+
+### The GPU wall: WebGPU has no 64-bit integers
+Core WGSL has `i32/u32/f32` (and `f16` via extension) — **no native `i64`/`u64`,
+and no ratified 64-bit-integer extension**. A lossless `uint32` GPU DWT would
+need 2×`u32` emulated 64-bit arithmetic in the shader (carry handling on every
+add/shift in the lifting) — a meaningful rewrite and slower. So:
+
+- CPU lossless `uint32` is a well-scoped port (64-bit HT + `i64` DWT).
+- **GPU lossless `uint32` is the hard part** — emulated 64-bit, or give up the
+  GPU DWT for that path and do it on CPU.
+- High-dynamic-range **intensity as float** sidesteps this: the irreversible
+  9/7 path is `f32`, which WGSL has natively (already working on GPU).
+
+## 4. Is this codec useful for SpatialData *labels*?
+
+Tentative answer: **probably not the right tool for label volumes**, for reasons
+deeper than bit-depth.
+
+- **Labels are categorical, not numeric.** A wavelet transform assumes the
+  sample value is a magnitude on a continuum; label IDs are names (label 3 is not
+  "between" 2 and 4). The 5/3 transform produces large high-frequency
+  coefficients at *every* segment boundary and cannot exploit the run/region
+  structure that label data actually has. It stays lossless, but typically
+  compresses labels **worse** than purpose-built schemes (RLE,
+  Neuroglancer `compressed_segmentation`, or generic `zstd`/`blosc`).
+- **Multiresolution is meaningless for labels.** The headline differentiators of
+  a wavelet codec — progressive / lower-resolution decode for overviews, and
+  lossy rate control — both require *averaging* samples, which is nonsensical for
+  label IDs (you cannot down-sample a segmentation by averaging). Lossy is out
+  entirely. So the main reasons to pick a wavelet codec evaporate for labels.
+- **Only the reversible path is usable, and only at the cost above**, plus the
+  `uint32`/64-bit work in §3.
+
+Where this codec *does* fit SpatialData is **intensity** data — microscopy and
+volumetric continuous-tone images — where multiresolution overviews, GPU decode
+for interactive viz, and a lossy↔lossless choice are all genuinely valuable.
+That is the sweet spot to optimise for; labels are better served by a
+categorical/RLE codec (which could live alongside this one).
+
+## 5. Difficulty summary & recommendation
+
+| Capability | Needs | Difficulty |
+|---|---|---|
+| `uint16` lossless/lossy (current) | — | done |
+| `int32` lossless, CPU | 64-bit HT decode + `i64` CPU DWT | moderate, well-scoped (port OpenJPH `BUF64`) |
+| `uint32` lossless, CPU | as above + 33-bit-range handling | moderate |
+| `uint32` lossless, **GPU DWT** | emulated 64-bit in WGSL | hard / low payoff |
+| HDR intensity lossy, GPU | none (9/7 is f32) | already works |
+
+**Recommendations**
+
+1. **Optimise the GPU 5/3/9/7 kernel before chasing bit-depth** — tiling +
+   shared memory, and a keep-on-GPU output path (skip readback) — then
+   re-benchmark at large sizes (in a browser, or after buffer-reuse lifts the
+   Dawn-on-Node ceiling). This is where the GPU thesis is proven or disproven.
+2. **Treat labels as a separate problem.** If SpatialData needs compressed
+   `uint32` labels, evaluate a categorical/RLE codec rather than forcing them
+   through a wavelet pipeline; reserve this codec for intensity data.
+3. If `int32`/`uint32` *intensity* is needed, port OpenJPH's 64-bit reversible HT
+   path on the **CPU** and keep the GPU DWT for the ≤32-bit and float paths.
+4. The "GPU DWT in OpenJPH" idea is better realised as our existing split:
+   OpenJPH-style HT decode on CPU + a GPU DWT/dequant/level-shift stage for
+   GPU-resident visualisation.
+
+Source: benchmarks in `test/bench_idwt*.ts`; bit-depth ceilings in
+`rust/htj2k-core/src/block_decoder.rs` and OpenJPH `ojph_codeblock.cpp` /
+`ojph_transform.cpp`; wrapper `Dtype` in `openjph-wasm`.
