@@ -1,4 +1,4 @@
-# Plan — a GPU primitives toolbox (wavelet & image analysis on TypeGPU)
+# Plan — a GPU primitives toolbox (image signals + discrete-cell spatial analysis on TypeGPU)
 
 Status: **plan** (2026-06-27)
 
@@ -7,6 +7,16 @@ we have a real wavelet *transform pair*, not just a decode step. This doc plans
 turning that into a small, composable **GPU primitives toolbox** — reusable for
 analysis beyond the codec (denoising, multiresolution, feature work, fusion) and
 for a future GPU encode path — and how to exercise it.
+
+A second front opened on 2026-06-27: the [MuSpAn paper](2024.12.06.627195v1.full.pdf)
+(Bull et al., *MuSpAn: A Toolbox for Multiscale Spatial Analysis*, bioRxiv
+2024.12.06.627195) describes spatial analysis at the level of **discrete cells**
+(points and shapes — cell centroids, transcript locations, segmented boundaries)
+rather than image signals. Many of its methods are exceptionally GPU-friendly
+(pairwise neighbour search, Monte-Carlo null models, density estimation), and a
+clean bridge — rasterise points into a grid — lets the existing image primitives
+serve point data too. The discrete-cell extension is planned in
+[its own section below](#extension-discrete-cell-spatial-analysis-muspan).
 
 ## Where we are (the foundation)
 
@@ -90,6 +100,161 @@ CPU-golden-validated.
 
 Each doubles as a composition test of the `GpuField` chaining model.
 
+## Extension: discrete-cell spatial analysis (MuSpAn)
+
+Everything above treats data as a **regular grid of signal samples** — pixels,
+DWT coefficients, density fields. The [MuSpAn paper](2024.12.06.627195v1.full.pdf)
+points at a complementary world: **irregular sets of discrete objects** — cell
+centroids, transcript points, segmented cell boundaries — analysed for how they
+sit relative to one another (contact, clustering, exclusion, neighbourhood
+composition, tissue architecture). Spatial biology is the motivating domain, but
+the math is generic: *points and shapes with labels, in continuous 2D*.
+
+This matters for the toolbox because MuSpAn's workhorse computations are some of
+the most GPU-friendly workloads there are — all-pairs distances, neighbour
+searches, and especially **Monte-Carlo null models** (the statistically
+expensive, embarrassingly-parallel core of spatial statistics). And there is a
+clean seam back to the existing image primitives: **rasterise points into a grid**
+(density splat, quadrat/hex binning) and the convolution / reduction / pointwise
+primitives already planned above apply unchanged.
+
+### The data-model shift (two new handles + an index)
+
+`GpuField` (grid) is not enough; point/shape data needs companions:
+
+- **`GpuPoints`** — N points: parallel `x`, `y` (f32) buffers + optional per-point
+  `label` (i32) and scalar attributes. The unit of cell-centroid / transcript work.
+- **`GpuShapes`** — polygons as a flat vertex buffer (`x`, `y`) + per-shape
+  `(offset, count)` ranges (the same "descriptor + packed data" shape we already
+  use for multi-level DWT coeffs). The unit of cell-boundary / morphology work.
+- **`GpuGridIndex`** — a **uniform-grid spatial index** over `GpuPoints`: assign
+  each point a bin from `(x, y)` at cell size ≈ query radius, counting-sort points
+  into bins, prefix-sum to per-bin offsets. Neighbour queries then scan the 3×3
+  bin block instead of all N points. This is the foundational new kernel, and it
+  is the analogue of the line kernel for this front.
+
+Building the index hands us two classic GPU building blocks the reductions
+section already wanted — **prefix sum (scan)** and **counting sort / scatter** —
+so the index is high-leverage beyond neighbour search (histograms, compaction,
+stream partition all fall out).
+
+### The bridge: points → grid → existing primitives
+
+The cheapest way to make a point method GPU-fast is often to **stop treating it as
+a point method**. Splat points onto a grid and the image toolbox takes over:
+
+```
+GpuPoints → splat(kernel) → GpuField(density) → blur/getis-ord/threshold → download
+            (scatter)                            (existing convolution + pointwise)
+```
+
+- **KDE** = scatter a Gaussian per point (or splat deltas then separable Gaussian
+  blur — i.e. the planned convolution primitive). Output is an ordinary `GpuField`.
+- **Local Getis-Ord\* / LISA / topographical correlation map** = a local
+  windowed z-score over that density field → convolution + pointwise, done.
+- **KL-divergence / histogram comparison** between two density grids = pointwise +
+  reduction.
+- **Quadrat / hexgrid binning** = scatter point labels into lattice cells; the
+  **quadrat correlation matrix (QCM)** is then a small per-cell count-vector
+  correlation (reduction / tiny matmul). Hexgrid is just a different bin transform.
+
+So a large slice of MuSpAn's *region-based* and *distribution* modules costs us
+almost nothing once splat + the planned grid primitives exist.
+
+### Point-native primitives (the new GPU wins)
+
+These run directly on `GpuPoints` + `GpuGridIndex`, no grid:
+
+- → **Pairwise / nearest-neighbour distances** — per point, scan neighbour bins for
+  the min distance (NN) or accumulate radius-binned counts. Brute-force O(N²) tiled
+  kernel (matmul-like) for small N; index-accelerated O(N·k) otherwise. Foundation
+  for the next three.
+- → **Cross-PCF (cross-pair correlation) & Ripley's cross-K** — for a label pair
+  (A,B) and radius bins, count B within r of each A, normalise by density/area,
+  edge-correct. A radius **histogram** over neighbour pairs — pure GPU reduction.
+- → **Average Nearest Neighbour Index (ANNI)** — mean NN distance vs the random
+  expectation → z-score. The observed part is the NN kernel; the null is below.
+- → **Empty-space (spherical contact) function** — sample random locations, measure
+  distance to nearest point. Same NN kernel, different query set.
+- → **Proximity / contact network** — connect points within distance d (or whose
+  boundaries are within d). The index gives this directly and covers the paper's
+  cell-cell interaction network (Fig 3F) and adjacency analyses **without** needing
+  Delaunay. Degree distribution and per-type contact frequencies are then reductions
+  over the edge list.
+- → **k-hop neighbourhood composition + k-means** — gather per-point neighbour
+  label-count vectors (the "cellular neighbourhood" descriptor), then GPU k-means to
+  assign microenvironments. Both gather and Lloyd iteration are GPU-standard.
+
+### The flagship: Monte-Carlo null models in one sweep
+
+Most MuSpAn statistics are only meaningful against a **random-label null** — ANNI
+z-scores, QCM standardised effect sizes, the adjacency permutation test, PCF
+confidence envelopes. On CPU this bootstrap (100s–1000s of relabellings, each
+recomputing the whole statistic) dominates the runtime. On GPU it is close to
+free: keep the points resident, and recompute the already-GPU statistic across
+all permutation replicates **in parallel** — one extra dispatch dimension. This is
+the single strongest reason to bring this front onto the GPU, and it makes the
+*statistical rigour* (proper nulls, tight envelopes) the cheap part rather than
+the expensive part.
+
+Determinism comes from a **counter-based RNG** (PCG / Philox) seeded per replicate
+from the CPU — reproducible label shuffles without `Math.random` (unavailable in
+WGSL anyway).
+
+### What stays on the CPU (for now)
+
+- **Persistent homology / Vietoris-Rips** (Fig 4E–F) — the GPU can build the
+  filtration (it is just thresholded pairwise distances / the neighbour graph from
+  the index), but the **boundary-matrix reduction is inherently sequential**; leave
+  it to a CPU library (Ripser/GUDHI) and feed it a GPU-built distance graph.
+- **Exact Delaunay / Voronoi / α-shape** — irregular and hard to parallelise well.
+  Substitute the uniform-grid **proximity network** above, which covers the
+  contact/adjacency use-cases; revisit GPU Delaunay only if a method truly needs it.
+- **Wasserstein distance** — exact optimal transport is CPU; the **entropic
+  (Sinkhorn)** approximation *is* GPU-friendly (iterated matrix–vector) if an
+  approximate metric is acceptable.
+
+### First exercises (prove the discrete-cell front)
+
+The paper ships a synthetic fixture — `Synthetic-Points-Architecture` (a ring of
+two cell types with random background) — with a *known* answer (clustering at the
+ring/crypt scale, short-range exclusion). That makes it an ideal golden.
+
+1. **GPU cross-PCF with a Monte-Carlo envelope** on the synthetic ring: build index
+   → radius histogram for a label pair → N permutation nulls in parallel →
+   z-score / envelope. One exercise that lights up index + histogram + RNG +
+   reduction, validated against a CPU/MuSpAn reference.
+2. **GPU KDE → Getis-Ord hotspots**: splat → density `GpuField` → local z-score
+   (reusing the convolution + pointwise primitives). Proves the point→grid bridge
+   end-to-end and lands a result the image front can keep processing (e.g.
+   wavelet-denoise the density map — a composition across *both* fronts).
+3. **Batch cell morphology**: shoelace area/perimeter, centroid, second-moment
+   **principal angle** (closed-form 2×2 eigenvector) and circularity over thousands
+   of `GpuShapes` polygons in one dispatch — one workgroup per polygon, reduce over
+   vertices (the line-kernel pattern again). Validate vs shapely/CPU.
+
+### Method → primitive map (MuSpAn modules)
+
+`✓` foundation exists · `→` planned here · `~` partial/CPU-assisted · `cpu` stays CPU.
+
+| MuSpAn module | Method (paper) | GPU primitive | Status |
+| --- | --- | --- | --- |
+| geometry | area, perimeter, circularity, principal angle | per-polygon reduction (one wg/shape) | → |
+| spatial statistics | cross-PCF, Ripley's cross-K | radius histogram over neighbour pairs | → |
+| spatial statistics | ANNI, nearest-neighbour distribution | NN search + MC null | → |
+| spatial statistics | empty-space function | NN search from random samples | → |
+| spatial statistics | QCM, Local Getis-Ord\*, TCM (LISA) | bin/splat → grid windowed stats | → |
+| spatial statistics | adjacency permutation test | proximity network + MC null | → |
+| distribution | kernel density estimation | scatter splat (+ separable blur) | → |
+| distribution | KL-divergence | pointwise + reduction on grids | → |
+| distribution | Wasserstein distance | Sinkhorn OT (approx) / exact CPU | ~ |
+| networks | proximity / contact network, degree | uniform-grid index + edge reduction | → |
+| networks | k-hop neighbourhood + clustering | neighbour gather + GPU k-means | → |
+| networks | Delaunay / Voronoi | (use proximity network instead) | cpu |
+| region based | hexgrid / quadrat lattice | bin transform + scatter | → |
+| topology | Vietoris-Rips, persistent homology | GPU builds filtration; reduction | cpu |
+| helpers | α-shape | depends on Delaunay | cpu |
+
 ## Conventions to lock in
 
 - **Validation**: every primitive gets a CPU golden (Rust or JS) + a GPU test
@@ -115,6 +280,18 @@ Each doubles as a composition test of the `GpuField` chaining model.
 - **Shared-memory line cap** (`MAXLINE = 2048`): tile longer lines for very large
   images.
 
+Additional constraints for the discrete-cell front:
+
+- **Irregular ≠ grid**: point methods need a spatial index, and that needs **scan +
+  counting-sort** — a second core kernel beyond the line kernel. Build it once.
+- **No f32 atomics in core WGSL**: scatter/splat/histogram accumulation can only use
+  `atomic<i32>`/`atomic<u32>`. Use **fixed-point** accumulation (scale to integer,
+  atomicAdd, rescale) or per-bin reduction instead of f32 `atomicAdd`.
+- **RNG**: no `Math.random` in WGSL. Monte-Carlo nulls use a **counter-based RNG**
+  (PCG/Philox) seeded per replicate from the CPU — also what makes them reproducible.
+- **Cell-index range**: bin indices for ≤2048² lattices fit in i32, so the index
+  sidesteps the no-64-bit-int limit; very large domains tile or coarsen the lattice.
+
 ## Roadmap
 
 1. **Extract the shared kernel runner + `GpuField`** from the 4 DWT modules
@@ -129,5 +306,23 @@ Each doubles as a composition test of the `GpuField` chaining model.
 6. Revisit large-size GPU validation in a **browser** harness once the toolbox is
    chaining on-GPU (where the readback ceiling stops mattering).
 
-See also [`performance-report.md`](performance-report.md) and
-[`dwt-gpu-and-high-bit-depth.md`](dwt-gpu-and-high-bit-depth.md).
+The discrete-cell front runs as a **parallel track** (it shares the kernel runner
+but adds its own handles and index kernel):
+
+A. **Spatial index** (`GpuPoints` + uniform-grid index = scan + counting-sort).
+   This is the unlock for the whole point front, the way `GpuField` + runner is the
+   unlock for the image front — and it drops scan/sort into the reductions toolbox
+   for free.
+B. **Cross-PCF + Monte-Carlo envelope** (exercise 1) — the highest-signal first
+   result; proves index + histogram + RNG nulls together on the paper's synthetic
+   fixture.
+C. **KDE → Getis-Ord** (exercise 2) — proves the point→grid bridge and reuses the
+   image primitives; merges the two tracks.
+D. **Batch morphology** over `GpuShapes` (exercise 3) — reuses the line-kernel
+   pattern, no new infrastructure.
+E. **Proximity network + neighbourhood clustering**, then a CPU-assisted **VR
+   filtration** feed (GPU builds the graph, CPU reduces) if topology is wanted.
+
+See also [`performance-report.md`](performance-report.md),
+[`dwt-gpu-and-high-bit-depth.md`](dwt-gpu-and-high-bit-depth.md), and the
+[MuSpAn paper](2024.12.06.627195v1.full.pdf) that motivates the discrete-cell front.
