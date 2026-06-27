@@ -31,13 +31,16 @@ build (`test/bench_idwt.test.ts`):
 ¹ "entropy" = HT block decode + reassembly (`decode_dwt_input_53`).
 
 CPU DWT vs GPU DWT **compute** (no readback, buffers pooled — the keep-on-GPU
-case; `pnpm bench:gpu`):
+case; `pnpm bench:gpu`). Two kernels: the original *naive* one-thread-per-line
+with global scratch, and the *optimised* one-workgroup-per-line with workgroup
+shared memory and intra-line parallelism (current):
 
-| size | CPU DWT | GPU compute | ratio |
-|------|--------:|------------:|------:|
-| 128² |   ~0.2  |       ~0.8  | 0.25× |
-| 256² |   ~0.8  |       ~1.5  | 0.5×  |
-| 512² |   ~3.3  |       ~3.0  | 1.1×  |
+| size  | CPU DWT | GPU naive | naive ratio | GPU **optimised** | **opt ratio** |
+|-------|--------:|----------:|------------:|------------------:|--------------:|
+| 128²  |    ~0.2 |      ~0.8 |       0.25× |              ~0.4 |         0.4×  |
+| 256²  |    ~0.8 |      ~1.5 |        0.5× |              ~0.5 |         1.4×  |
+| 512²  |    ~3.3 |      ~3.0 |        1.1× |              ~1.0 |         3.0×  |
+| 1024² |   ~13.5 |   (crash) |           — |              ~1.2 |        11.7×  |
 
 Reading the numbers:
 
@@ -47,19 +50,23 @@ Reading the numbers:
   (entropy 2.85 + DWT 3.23) vs OpenJPH's *entire* decode 2.80 ms — about **2×**,
   good for a from-scratch implementation (OpenJPH streams lines with SIMD; ours
   copies `Band`s and gathers columns, so there is headroom).
-- **The GPU crosses over at ~512².** Below that, upload + dispatch overhead and a
-  naive thread-per-line kernel (global-memory scratch, long sequential lift per
-  thread) lose to the CPU; at 512² the GPU compute already edges ahead (~1.1×),
-  with the result left on-GPU.
+- **The optimised kernel proves the GPU thesis.** Shared-memory lifting +
+  intra-line parallelism dropped the crossover to **~256²** and gives **~3×** at
+  512² and **~12×** at 1024². GPU compute barely scales with size (0.4 → 1.2 ms
+  for 128² → 1024²) — it has become overhead/dispatch-bound, i.e. the actual DWT
+  is nearly free; at 1024² it is ~1.2 ms vs ~13.5 ms on the CPU.
 - **Readback, not compute, is the Dawn-on-Node ceiling.** 1024²/2048² *compute*
   runs fine; the `mapAsync` full readback crashes the worker beyond ~512². Since
   the viz pipeline keeps the result on-GPU, this is not a real-use blocker — but
-  it caps how large we can rigorously benchmark here (a browser run lifts it).
+  it caps how large we can rigorously benchmark *with readback* here (a browser
+  run lifts it). Dropping the global scratch buffer (shared-memory kernel) also
+  lowered GPU memory enough to run the no-readback path to 1024² in this harness.
 
-**Conclusion for our layer:** the GPU DWT is correct, an architectural fit, and
-already at the crossover with a *naive* kernel. The win grows with (1) larger
-images, (2) an optimised kernel — workgroup shared memory instead of global
-scratch, intra-line parallelism, fewer passes — and (3) keeping the result
+**Conclusion for our layer:** the GPU DWT is correct, an architectural fit, and —
+with the shared-memory kernel — a clear win from ~256² up (≈12× at 1024²),
+result kept on-GPU. Remaining headroom: (1) coalesce the vertical pass (it reads
+columns strided; a transposed or tiled pass would help), (2) tile lines longer
+than the shared-memory cap (currently 2048 samples/line), and (3) keep the result
 on-GPU for display (no readback). That last point is the whole premise: the GPU
 path pays off in a **GPU-resident viz pipeline** (zarr → decode → render), not in
 decode-to-CPU.
@@ -70,11 +77,12 @@ Short answer: **not as a general decode speed-up, yes only for a GPU-display
 pipeline** — which is exactly the niche our separate TS/TypeGPU layer fills.
 
 - OpenJPH's DWT is already SIMD-vectorised (SSE/AVX2/AVX512/NEON/WASM-SIMD) and
-  streams line-by-line, fused with the rest of decode. The benchmark shows it is
-  *fast* — faster than our DWT by more than an order of magnitude.
+  streams line-by-line, fused with the rest of decode — its whole decode is on
+  par with our DWT stage alone, so its DWT is a fast bar to clear on CPU.
 - A C library that decodes **to CPU memory** would have to add CPU→GPU→CPU
-  round-trips to use a GPU DWT; our own numbers show that overhead erases the
-  gain except at large sizes, and even then SIMD is a high bar.
+  round-trips to use a GPU DWT; the readback alone (our Dawn-on-Node ceiling)
+  often costs more than the compute saved, so a decode-to-CPU library gains
+  little. The GPU win we measured is specifically the *keep-on-GPU* case.
 - The bit-serial **HT entropy decode stays on the CPU** regardless (it is
   inherently sequential), so the GPU could only ever offload the back half.
 - The real opportunity is a pipeline that **renders on the GPU**: decode HT on
@@ -162,10 +170,11 @@ categorical/RLE codec (which could live alongside this one).
 
 **Recommendations**
 
-1. **Optimise the GPU 5/3/9/7 kernel before chasing bit-depth** — tiling +
-   shared memory, and a keep-on-GPU output path (skip readback) — then
-   re-benchmark at large sizes (in a browser, or after buffer-reuse lifts the
-   Dawn-on-Node ceiling). This is where the GPU thesis is proven or disproven.
+1. **GPU 5/3 kernel optimised — thesis proven.** The shared-memory kernel wins
+   from ~256² (≈3× at 512², ≈12× at 1024²), result kept on-GPU. Next: apply the
+   same shared-memory rewrite to the 9/7 kernel; coalesce the vertical pass; tile
+   lines beyond the 2048-sample shared-memory cap; and validate at >1024² in a
+   browser (where the readback ceiling does not apply).
 2. **Treat labels as a separate problem.** If SpatialData needs compressed
    `uint32` labels, evaluate a categorical/RLE codec rather than forcing them
    through a wavelet pipeline; reserve this codec for intensity data.
