@@ -156,7 +156,42 @@ Where this codec *does* fit SpatialData is **intensity** data — microscopy and
 volumetric continuous-tone images — where multiresolution overviews, GPU decode
 for interactive viz, and a lossy↔lossless choice are all genuinely valuable.
 That is the sweet spot to optimise for; labels are better served by a
-categorical/RLE codec (which could live alongside this one).
+categorical/RLE codec (which could live alongside this one) — see next.
+
+### What to use for labels instead
+
+Labels are categorical and must be **lossless**; the values are usually
+**sparse** (a few thousand IDs in a uint16/uint32 container). Options, by effort:
+
+- **First, relabel to a dense palette.** Remap distinct IDs to `0..N-1`, store the
+  palette separately (paletted-image style). This collapses the effective
+  bit-depth and makes *every* downstream compressor far better. Do it first.
+- **Tier 1 — zarr-native baseline (low effort):** blosc + **zstd** (high level) +
+  **bitshuffle** via `numcodecs`. Piecewise-constant regions compress well under
+  zstd; bitshuffle zeros the high bytes of small IDs. With the palette remap this
+  is often close to purpose-built codecs. *Avoid* delta filters (meaningless for
+  categorical IDs) and any wavelet/DCT codec (this one).
+- **Tier 2 — purpose-built, random-access, GPU-friendly (recommended):**
+  Neuroglancer **`compressed_segmentation`** (PyPI `compressed-segmentation`;
+  TensorStore supports it). Splits the volume into blocks, each storing a LUT of
+  the block's distinct labels + bit-packed per-voxel indices. uint32/uint64,
+  block-level random access, multiscale-friendly, and **designed to be decoded on
+  the GPU** (Neuroglancer renders it in shaders).
+- **Tier 3 — maximum ratio (3D connectomics-tuned):** **Crackle** (`crackle-codec`)
+  and **Compresso** separate per-segment boundary structure from labels (crack
+  codes / windowed features), reaching very high ratios on dense 3D segmentation.
+  Best when the data is segmentation-like and large; overkill for 2D masks.
+
+**Multiscale caveat:** downsample labels with **nearest / mode (majority)**, never
+averaging — averaging label IDs is meaningless. OME-Zarr label pyramids do this.
+
+**Synthesis for this project:** `compressed_segmentation` is the *label analog* of
+our intensity path — block-structured, random-access, GPU-decodable. If the value
+is GPU-resident decode for zarr/SpatialData viz, the natural split is **intensity →
+HTJ2K + GPU inverse-DWT** (this work) and **labels → a TypeGPU
+`compressed_segmentation` decoder** (LUT + bit-unpack in a shader; no wavelet, no
+64-bit-integer problem). That is a much simpler, on-theme extension than forcing
+labels through the wavelet pipeline.
 
 ## 5. Difficulty summary & recommendation
 
