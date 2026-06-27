@@ -8,7 +8,9 @@
     "node": ">=18.18"
   },
   "scripts": {
-    "test": "vitest run",
+    "test": "vitest run && vitest run -c vitest.gpu.config.ts",
+    "test:cpu": "vitest run",
+    "test:gpu": "vitest run -c vitest.gpu.config.ts",
     "test:watch": "vitest",
     "test:rust": "cargo test --manifest-path rust/htj2k-core/Cargo.toml",
     "typecheck": "tsc --noEmit",
