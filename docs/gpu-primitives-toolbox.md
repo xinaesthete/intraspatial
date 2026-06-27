@@ -157,9 +157,61 @@ GpuPoints → splat(kernel) → GpuField(density) → blur/getis-ord/threshold �
 - **Quadrat / hexgrid binning** = scatter point labels into lattice cells; the
   **quadrat correlation matrix (QCM)** is then a small per-cell count-vector
   correlation (reduction / tiny matmul). Hexgrid is just a different bin transform.
+  But hard binning is the artefact-prone special case — see
+  [Windowing, not quadrats](#windowing-not-quadrats-kill-the-binning-artefacts).
 
 So a large slice of MuSpAn's *region-based* and *distribution* modules costs us
 almost nothing once splat + the planned grid primitives exist.
+
+### Windowing, not quadrats (kill the binning artefacts)
+
+Hard quadrat assignment — each point contributes to exactly one lattice cell, no
+overlap — is a **boxcar (rectangular) window**. In spatial statistics its failure
+mode is the **Modifiable Areal Unit Problem**: results swing with the arbitrary
+*size*, *origin*, and *phase* of the grid. Two cells 1 µm apart but straddling a
+quadrat edge are scored as unrelated; two cells at opposite corners of one quadrat
+(up to √2·edge apart) are scored as co-located. The very signal we want — *who is
+near whom* — is what the hard grid throws away. In signal terms the boxcar also
+has the worst sidelobes of any window (sinc, ≈−13 dB) → maximal leakage and edge
+artefacts.
+
+The fix is the **Welch / STFT move**: replace the boxcar with a smooth, *overlapping*
+window (Gaussian / Hann / Epanechnikov). Overlap recovers the cross-boundary pairs;
+the taper removes the discontinuity; averaging over overlapping windows makes the
+result nearly insensitive to grid phase.
+
+The payoff for *this* toolbox: **the window is the primitive both fronts already
+share.** On the image front a window *is* a convolution kernel; on the cell front
+it is the KDE / local-stat kernel; a quadrat is just `window(shape=box, overlap=0)`.
+So make the window a **parameter**, not a separate region-based family, and the
+GPU-natural path is already the windowed one:
+
+```
+GpuPoints → splat onto a FINE grid → separable smooth window → [resample coarse]
+            (weighted scatter)        (the planned convolution)   (optional)
+```
+
+This is the same KDE→grid bridge above — the point is that the *artefact-reducing*
+method is also the *cheaper, more GPU-natural* one: hard coarse quadrats mean
+atomic-contended scatter into few bins, whereas splat-fine-then-separable-blur is
+the convolution primitive we already want. The artefact and the inefficiency go
+away together. It also reuses infrastructure we already need: a window centred near
+a tile edge must see points across the tile boundary — a **halo/apron**, the same
+problem as DWT line-kernel tiling (`MAXLINE`) and large-image convolution.
+Overlap-add windowed processing of a long signal *is* tiling-with-halo.
+
+Two honest qualifications:
+
+- **The null must follow the window.** QCM's significance and the permutation tests
+  are defined on discrete quadrat counts; once counts become smooth weighted sums,
+  the null has to be re-derived as a **weighted permutation null** (shuffle labels,
+  recompute the windowed field). Cheap on GPU — it is the Monte-Carlo-in-one-sweep
+  flagship — but it is not inherited for free.
+- **For pure pairwise co-occurrence, skip the grid.** The cross-PCF and Ripley's K
+  are *already* windowed — in the radial/distance domain, edge-corrected — and are
+  point-native. Rule of thumb: **windowed grid when you want a spatial field/map**
+  (e.g. a Getis-Ord hotspot surface); **PCF/K when you want a function of distance**;
+  hard quadrats only when a downstream step genuinely needs disjoint regions.
 
 ### Point-native primitives (the new GPU wins)
 
@@ -251,7 +303,8 @@ ring/crypt scale, short-range exclusion). That makes it an ideal golden.
 | networks | proximity / contact network, degree | uniform-grid index + edge reduction | → |
 | networks | k-hop neighbourhood + clustering | neighbour gather + GPU k-means | → |
 | networks | Delaunay / Voronoi | (use proximity network instead) | cpu |
-| region based | hexgrid / quadrat lattice | bin transform + scatter | → |
+| region based | hexgrid / quadrat lattice | bin transform + scatter (prefer windowed) | → |
+| region based | windowed local stats (overlapping taper) | splat → separable window → resample | → |
 | topology | Vietoris-Rips, persistent homology | GPU builds filtration; reduction | cpu |
 | helpers | α-shape | depends on Delaunay | cpu |
 
