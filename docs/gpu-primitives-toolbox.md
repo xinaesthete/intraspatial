@@ -8,7 +8,7 @@ turning that into a small, composable **GPU primitives toolbox** — reusable fo
 analysis beyond the codec (denoising, multiresolution, feature work, fusion) and
 for a future GPU encode path — and how to exercise it.
 
-A second front opened on 2026-06-27: the [MuSpAn paper](2024.12.06.627195v1.full.pdf)
+A second front opened on 2026-06-27: the [MuSpAn paper](https://www.biorxiv.org/content/10.1101/2024.12.06.627195v1.full.pdf)
 (Bull et al., *MuSpAn: A Toolbox for Multiscale Spatial Analysis*, bioRxiv
 2024.12.06.627195) describes spatial analysis at the level of **discrete cells**
 (points and shapes — cell centroids, transcript locations, segmented boundaries)
@@ -103,7 +103,7 @@ Each doubles as a composition test of the `GpuField` chaining model.
 ## Extension: discrete-cell spatial analysis (MuSpAn)
 
 Everything above treats data as a **regular grid of signal samples** — pixels,
-DWT coefficients, density fields. The [MuSpAn paper](2024.12.06.627195v1.full.pdf)
+DWT coefficients, density fields. The [MuSpAn paper](https://www.biorxiv.org/content/10.1101/2024.12.06.627195v1.full.pdf)
 points at a complementary world: **irregular sets of discrete objects** — cell
 centroids, transcript points, segmented cell boundaries — analysed for how they
 sit relative to one another (contact, clustering, exclusion, neighbourhood
@@ -325,4 +325,4 @@ E. **Proximity network + neighbourhood clustering**, then a CPU-assisted **VR
 
 See also [`performance-report.md`](performance-report.md),
 [`dwt-gpu-and-high-bit-depth.md`](dwt-gpu-and-high-bit-depth.md), and the
-[MuSpAn paper](2024.12.06.627195v1.full.pdf) that motivates the discrete-cell front.
+[MuSpAn paper](https://www.biorxiv.org/content/10.1101/2024.12.06.627195v1.full.pdf) that motivates the discrete-cell front.
