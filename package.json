@@ -12,6 +12,7 @@
     "test:cpu": "vitest run",
     "test:gpu": "vitest run -c vitest.gpu.config.ts",
     "test:watch": "vitest",
+    "bench:gpu": "BENCH=1 vitest run -c vitest.gpu.config.ts test/bench_idwt.gpu.test.ts",
     "test:rust": "cargo test --manifest-path rust/htj2k-core/Cargo.toml",
     "typecheck": "tsc --noEmit",
     "build:wasm": "wasm-pack build rust/htj2k-core --target web --out-dir pkg --out-name htj2k_core",

@@ -12,48 +12,57 @@ All measurements are from `test/bench_idwt.test.ts` (CPU) and
 high-detail pseudo-random content, on the dev machine (Node + Dawn). Numbers are
 medians in ms; treat them as ratios, not absolutes.
 
+> ⚠️ Build matters: measure against a **release** wasm build (`pnpm build:wasm`).
+> An earlier draft of this doc quoted dev-build numbers (≈10× slower) and wrongly
+> concluded our DWT was ~20× off OpenJPH. The release numbers below correct that.
+
 ## 1. Benchmark findings
 
-CPU decode breakdown vs OpenJPH (its fully optimised C/SIMD decoder):
+CPU decode breakdown vs OpenJPH (its fully optimised C/SIMD decoder), release
+build (`test/bench_idwt.test.ts`):
 
 | size  | OpenJPH full | our entropy¹ | our CPU DWT |
 |-------|-------------:|-------------:|------------:|
-| 64²   |        0.17  |        0.51  |       0.72  |
-| 128²  |        0.71  |        1.43  |       2.55  |
-| 256²  |        0.72  |        5.20  |       9.21  |
-| 512²  |        2.89  |       20.90  |      36.32  |
+| 64²   |        0.22  |        0.10  |       0.09  |
+| 128²  |        0.63  |        0.26  |       0.20  |
+| 256²  |        0.71  |        0.73  |       0.77  |
+| 512²  |        2.80  |        2.85  |       3.23  |
 
 ¹ "entropy" = HT block decode + reassembly (`decode_dwt_input_53`).
 
-CPU vs GPU, inverse DWT only (GPU incl. upload + dispatch + readback):
+CPU DWT vs GPU DWT **compute** (no readback, buffers pooled — the keep-on-GPU
+case; `pnpm bench:gpu`):
 
-| size | CPU DWT | GPU DWT(+io) | ratio |
-|------|--------:|-------------:|------:|
-| 64²  |   ~0.8  |        ~1.5  | 0.5×  |
+| size | CPU DWT | GPU compute | ratio |
+|------|--------:|------------:|------:|
+| 128² |   ~0.2  |       ~0.8  | 0.25× |
+| 256² |   ~0.8  |       ~1.5  | 0.5×  |
+| 512² |   ~3.3  |       ~3.0  | 1.1×  |
 
 Reading the numbers:
 
-- **The DWT is the larger half of *our* pipeline** (entropy/DWT ≈ 0.6×), so it is
-  the right thing to offload — but only relative to our own code.
-- **Our DWT is unoptimised.** Our whole CPU pipeline (~57 ms at 512²) is ~20×
-  slower than OpenJPH's *entire* optimised decode (2.9 ms). The CPU `idwt_level`
-  copies `Band`s and gathers columns; OpenJPH streams lines with SIMD lifting.
-- **The GPU loses at these sizes.** Upload + dispatch + full readback dominate;
-  our thread-per-line kernel uses global-memory scratch and does a long
-  sequential lift per thread. At 64² it is ~2× slower than the (already slow)
-  CPU DWT.
-- **Larger sizes are blocked here, not impossible.** The Dawn `webgpu` addon
-  under Node destabilises after ~8 cumulative `idwt53Gpu` calls or a single 512²
-  (worker crash at process teardown, though each call is *correct*). That caps
-  rigorous GPU timing; a browser run or buffer-reuse would lift it.
+- **DWT ≈ entropy in our pipeline** (entropy/DWT ≈ 0.9–1.3×), so the DWT is
+  roughly half the work and a reasonable offload target.
+- **Our CPU code is competitive, not terrible.** Whole pipeline ≈ 6 ms at 512²
+  (entropy 2.85 + DWT 3.23) vs OpenJPH's *entire* decode 2.80 ms — about **2×**,
+  good for a from-scratch implementation (OpenJPH streams lines with SIMD; ours
+  copies `Band`s and gathers columns, so there is headroom).
+- **The GPU crosses over at ~512².** Below that, upload + dispatch overhead and a
+  naive thread-per-line kernel (global-memory scratch, long sequential lift per
+  thread) lose to the CPU; at 512² the GPU compute already edges ahead (~1.1×),
+  with the result left on-GPU.
+- **Readback, not compute, is the Dawn-on-Node ceiling.** 1024²/2048² *compute*
+  runs fine; the `mapAsync` full readback crashes the worker beyond ~512². Since
+  the viz pipeline keeps the result on-GPU, this is not a real-use blocker — but
+  it caps how large we can rigorously benchmark here (a browser run lifts it).
 
-**Conclusion for our layer:** the GPU DWT is correct and a good architectural
-fit, but is not yet a *win*. A win needs (1) larger images, (2) an optimised
-kernel — workgroup tiling, shared memory instead of global scratch, fewer
-passes — and (3) keeping the result on-GPU for display so the readback (a large
-fraction of the GPU time) disappears. That last point is the whole premise:
-the GPU path pays off in a **GPU-resident viz pipeline** (zarr → decode →
-render), not in decode-to-CPU.
+**Conclusion for our layer:** the GPU DWT is correct, an architectural fit, and
+already at the crossover with a *naive* kernel. The win grows with (1) larger
+images, (2) an optimised kernel — workgroup shared memory instead of global
+scratch, intra-line parallelism, fewer passes — and (3) keeping the result
+on-GPU for display (no readback). That last point is the whole premise: the GPU
+path pays off in a **GPU-resident viz pipeline** (zarr → decode → render), not in
+decode-to-CPU.
 
 ## 2. Would a GPU DWT help OpenJPH?
 
