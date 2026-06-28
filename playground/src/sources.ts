@@ -16,23 +16,26 @@ export interface SourceSpec {
   make(g: Graph, params: Params): Record<string, GpuField>;
 }
 
-// A well-mixed integer hash (lowbias32 avalanche) → uniform [0,1). The previous
-// `(i*k)>>>0 / 2^32` is a *weak* multiplicative hash: for consecutive seeds the
-// outputs differ by a constant, so using i and i+1 for a point's x/y made every
-// point land on a diagonal. Avalanching decorrelates successive seeds.
-function u01(i: number): number {
-  let x = i >>> 0;
-  x = Math.imul(x ^ (x >>> 16), 0x7feb352d) >>> 0;
-  x = Math.imul(x ^ (x >>> 15), 0x846ca68b) >>> 0;
-  x = (x ^ (x >>> 16)) >>> 0;
-  return x / 4294967296;
+// A real PRNG (mulberry32): a deterministic stream of good uniforms in [0,1) drawn
+// sequentially. Hashing structured per-point seeds (the previous approach) gave
+// biased angles and an occasional blow-up — points didn't spread radially around the
+// cluster centre. A sequential stream avoids that. Seeded constant so a given set of
+// params always yields the same cloud (keeps the source memoisable).
+function mulberry32(seed: number): () => number {
+  let a = seed >>> 0;
+  return () => {
+    a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
 }
 
-// A pair of independent standard normals (Box–Muller) for one integer seed — so a
-// "Gaussian cluster" really is Gaussian, not a uniform square.
-function gauss2(seed: number): [number, number] {
-  const u1 = Math.max(1e-9, u01(seed));
-  const u2 = u01(seed ^ 0x9e3779b9);
+// One pair of independent standard normals (Box–Muller) from a uniform stream, so a
+// "Gaussian cluster" really is a round Gaussian, centred on the cluster.
+function gauss2(rng: () => number): [number, number] {
+  const u1 = 1 - rng(); // in (0,1], avoids log(0)
+  const u2 = rng();
   const r = Math.sqrt(-2 * Math.log(u1));
   return [r * Math.cos(2 * Math.PI * u2), r * Math.sin(2 * Math.PI * u2)];
 }
@@ -49,11 +52,12 @@ const ringPoints: SourceSpec = {
   ],
   make(g, params) {
     const n = params.n as number, r = params.radius as number, j = params.jitter as number;
+    const rng = mulberry32(0x9e3779b9);
     const xs: number[] = [], ys: number[] = [];
     for (let i = 0; i < n; i++) {
       const a = (i / n) * Math.PI * 2;
-      xs.push(Math.cos(a) * r + (u01(2 * i) - 0.5) * 2 * j);
-      ys.push(Math.sin(a) * r + (u01(2 * i + 1) - 0.5) * 2 * j);
+      xs.push(Math.cos(a) * r + (rng() - 0.5) * 2 * j);
+      ys.push(Math.sin(a) * r + (rng() - 0.5) * 2 * j);
     }
     return { points: g.points(xs, ys) };
   },
@@ -71,16 +75,15 @@ const blobPoints: SourceSpec = {
   ],
   make(g, params) {
     const per = params.perCluster as number, k = params.clusters as number, s = params.spread as number;
+    const rng = mulberry32(0x9e3779b9);
     const xs: number[] = [], ys: number[] = [];
-    let idx = 0;
     for (let c = 0; c < k; c++) {
       const cx = Math.cos((c / k) * Math.PI * 2) * 6 + 8;
       const cy = Math.sin((c / k) * Math.PI * 2) * 6 + 8;
       for (let i = 0; i < per; i++) {
-        const [gx, gy] = gauss2(idx * 2654435761 + c * 0x85ebca6b);
+        const [gx, gy] = gauss2(rng);
         xs.push(cx + gx * s); // s is the cluster's std dev in world units
         ys.push(cy + gy * s);
-        idx++;
       }
     }
     return { points: g.points(xs, ys) };
