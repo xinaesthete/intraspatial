@@ -55,7 +55,7 @@ function drawPersistence(canvas: HTMLCanvasElement, pairs: PersistencePair[]) {
   ctx.save(); ctx.translate(10, 60); ctx.rotate(-Math.PI / 2); ctx.fillText("death →", 0, 0); ctx.restore();
 }
 
-export function Preview({ value, error }: { value: FieldValue | null; error?: string | null }) {
+export function Preview({ value, error, stale }: { value: FieldValue | null; error?: string | null; stale?: boolean }) {
   const ref = useRef<HTMLCanvasElement>(null);
 
   useEffect(() => {
@@ -70,29 +70,41 @@ export function Preview({ value, error }: { value: FieldValue | null; error?: st
     }
   }, [value]);
 
-  if (error) return <div className="preview-error">⚠ {error}</div>;
-  if (!value) return <div className="preview-empty">Select a node and press <b>Run</b> to preview its output.</div>;
+  // The container always reserves its height so empty/error/filled states don't shift
+  // the panel; a param tweak keeps the last preview visible, marked stale.
+  const s = value?.shape;
+  const summary = value && s ? describe(value, s) : "";
+  const showCanvas = s ? s.kind === "grid" || s.kind === "matrix" || s.kind === "opaque" : false;
 
-  const s = value.shape;
-  const summary = (() => {
-    if (s.kind === "grid") return `grid ${s.width}×${s.height}`;
-    if (s.kind === "matrix") return `matrix ${s.rows}×${s.cols}`;
-    if (s.kind === "points") return `points ×${s.n}`;
-    if (s.kind === "scalar") return `scalar ${value.data?.[0]?.toFixed(4) ?? "?"}`;
-    if (s.kind === "opaque") {
-      const pairs = (value.payload as { pairs?: PersistencePair[] })?.pairs ?? [];
-      const h1 = pairs.filter((p) => p.dim === 1 && Number.isFinite(p.death)).length;
-      return `${s.name} — ${pairs.length} features, ${h1} loops (H₁)`;
-    }
-    return "value";
-  })();
-
-  const showCanvas = s.kind === "grid" || s.kind === "matrix" || s.kind === "opaque";
   return (
     <div className="preview">
-      <div className="preview-summary">{summary}</div>
-      {showCanvas && <canvas ref={ref} className="preview-canvas" />}
-      {s.kind === "points" && value.data && <PointsScatter data={value.data} />}
+      {error ? (
+        <div className="preview-error">⚠ {error}</div>
+      ) : !value || !s ? (
+        <div className="preview-empty">Select a node and press <b>Run</b> to preview its output.</div>
+      ) : (
+        <>
+          <div className="preview-summary">
+            {summary}
+            {stale && <span className="stale"> · stale — re-run</span>}
+          </div>
+          {showCanvas && <canvas ref={ref} className={`preview-canvas${stale ? " is-stale" : ""}`} />}
+          {s.kind === "points" && value.data && <PointsScatter data={value.data} />}
+        </>
+      )}
     </div>
   );
+}
+
+function describe(value: FieldValue, s: NonNullable<FieldValue["shape"]>): string {
+  if (s.kind === "grid") return `grid ${s.width}×${s.height}`;
+  if (s.kind === "matrix") return `matrix ${s.rows}×${s.cols}`;
+  if (s.kind === "points") return `points ×${s.n}`;
+  if (s.kind === "scalar") return `scalar ${value.data?.[0]?.toFixed(4) ?? "?"}`;
+  if (s.kind === "opaque") {
+    const pairs = (value.payload as { pairs?: PersistencePair[] })?.pairs ?? [];
+    const h1 = pairs.filter((p) => p.dim === 1 && Number.isFinite(p.death)).length;
+    return `${s.name} — ${pairs.length} features, ${h1} loops (H₁)`;
+  }
+  return "value";
 }

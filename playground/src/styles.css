@@ -69,9 +69,11 @@ body { background: var(--bg); color: var(--text); font: 13px/1.4 ui-sans-serif, 
 .live-row { margin-top: 10px; }
 .live-row span { color: var(--text); }
 
-.preview { margin-top: 8px; }
+.preview { margin-top: 8px; min-height: 332px; } /* reserve height so empty↔filled doesn't shift the panel */
 .preview-summary { color: var(--muted); font-size: 11px; margin-bottom: 6px; font-family: ui-monospace, monospace; }
+.preview-summary .stale { color: #d8a657; }
 .preview-canvas { max-width: 100%; border: 1px solid var(--line); border-radius: 6px; image-rendering: pixelated; }
 .preview-svg { max-width: 100%; border: 1px solid var(--line); border-radius: 6px; background: #11131a; display: block; }
-.preview-empty { color: var(--muted); font-size: 12px; margin-top: 10px; }
+.preview-canvas.is-stale, .preview-svg.is-stale { opacity: 0.55; }
+.preview-empty { color: var(--muted); font-size: 12px; min-height: 300px; display: flex; align-items: center; justify-content: center; text-align: center; border: 1px dashed var(--line); border-radius: 6px; padding: 0 16px; }
 .preview-error { color: #ff8a9a; font-size: 12px; margin-top: 10px; white-space: pre-wrap; }

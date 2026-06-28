@@ -45,6 +45,7 @@ export default function App() {
   const [selectedId, setSelectedId] = useState<string | null>("n2");
   const [selectedPort, setSelectedPort] = useState<string | null>(null);
   const [value, setValue] = useState<FieldValue | null>(null);
+  const [stale, setStale] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
   const [live, setLive] = useState(false);
@@ -88,7 +89,7 @@ export default function App() {
           return { ...n, data: { ...d, params: { ...d.params, [key]: v } } as unknown as Record<string, unknown> };
         }),
       );
-      if (!liveRef.current) setValue(null); // stale unless live mode is about to re-run
+      if (!liveRef.current) setStale(true); // keep the last preview visible, mark it stale
     },
     [selectedId, setNodes],
   );
@@ -103,6 +104,7 @@ export default function App() {
     try {
       const out = await runNode(nodes, edges, selectedId, selectedPort ?? undefined, memo.current);
       setValue(out);
+      setStale(false);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
       setValue(null);
@@ -148,6 +150,7 @@ export default function App() {
         reset,
       });
       setValue(out);
+      setStale(false);
       setError(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -189,6 +192,7 @@ export default function App() {
         const out = await advanceNode(nodes, edges, selectedId, selectedPort ?? undefined, { steps: 1, state: sim.current });
         if (cancelled) return;
         setValue(out);
+        setStale(false); // each animated frame is freshly computed, never stale
         rafRef.current = requestAnimationFrame(tick);
       } catch (e) {
         setError(e instanceof Error ? e.message : String(e));
@@ -235,7 +239,7 @@ export default function App() {
           onNodesChange={onNodesChange}
           onEdgesChange={onEdgesChange}
           onConnect={onConnect}
-          onNodeClick={(_, n) => { setSelectedId(n.id); setSelectedPort(null); setValue(null); setError(null); }}
+          onNodeClick={(_, n) => { setSelectedId(n.id); setSelectedPort(null); setValue(null); setStale(false); setError(null); }}
           fitView
         >
           <Background />
@@ -291,7 +295,7 @@ export default function App() {
                 </button>
               </>
             )}
-            <Preview value={value} error={error} />
+            <Preview value={value} error={error} stale={stale} />
           </>
         ) : (
           <p className="muted">Click a node to edit its parameters and pull its output.</p>
