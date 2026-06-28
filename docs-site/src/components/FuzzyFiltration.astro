@@ -61,10 +61,12 @@
     <div class="cell">
       <div class="celltitle">hard — union of balls <span class="tag">distance, sublevel</span></div>
       <canvas id="ff-fh" class="field"></canvas>
+      <div class="fldcap" id="ff-fhcap">hover a region to inspect its feature</div>
     </div>
     <div class="cell">
       <div class="celltitle">fuzzy — <span id="ff-fztitle">KDE superlevel set</span> <span class="tag" id="ff-fztag">density, superlevel</span></div>
       <canvas id="ff-fz" class="field"></canvas>
+      <div class="fldcap" id="ff-fzcap">hover a region to inspect its feature</div>
     </div>
     <div class="cell">
       <canvas id="ff-ph" class="pd"></canvas>
@@ -109,6 +111,9 @@
   .ff-demo .tag { font-weight:400; color:var(--sl-color-gray-3); font-size:11px; }
   .ff-demo .field, .ff-demo .pd { width:100%; aspect-ratio:1/1; border-radius:8px; background:var(--sl-color-gray-6); display:block; }
   .ff-demo .pdcap { font-size:11px; color:var(--sl-color-gray-3); margin-top:5px; min-height:15px; line-height:15px; }
+  .ff-demo .fldcap { font-size:11px; color:var(--sl-color-gray-3); margin-top:5px; min-height:15px; line-height:15px; }
+  .ff-demo .fldcap.active { color:var(--sl-color-text); }
+  .ff-demo .field { cursor:crosshair; }
   .ff-demo .ctrl { display:flex; gap:12px; align-items:center; margin-top:0.9rem; }
   .ff-demo .ctrl input[type=range] { flex:1; }
   .ff-demo .btn { font-size:14px; width:32px; height:30px; display:flex; align-items:center; justify-content:center; border:1px solid var(--sl-color-gray-5); border-radius:6px; background:transparent; color:var(--sl-color-text); cursor:pointer; flex:0 0 auto; }
@@ -209,6 +214,7 @@
   const fzTitle = byId<HTMLSpanElement>('ff-fztitle');
   const fzTag = byId<HTMLSpanElement>('ff-fztag');
   const h0hOut = byId('ff-h0h'), h1hOut = byId('ff-h1h'), h0zOut = byId('ff-h0z'), h1zOut = byId('ff-h1z');
+  const fhCap = byId<HTMLDivElement>('ff-fhcap'), fzCap = byId<HTMLDivElement>('ff-fzcap');
   const resSel = byId<HTMLSelectElement>('ff-res');
   const falloffInput = byId<HTMLInputElement>('ff-falloff');
   const falloffLabel = byId<HTMLSpanElement>('ff-falloff-label');
@@ -359,7 +365,11 @@
     return root;
   }
 
-  function drawField(canvas: HTMLCanvasElement, panel: Panel, threshold: number): void {
+  interface HoverInfo { root: number; birth: number; count: number; }
+
+  function drawField(
+    canvas: HTMLCanvasElement, panel: Panel, threshold: number, hoverCell = -1,
+  ): HoverInfo | null {
     const { field, superlevel, pointCell } = panel;
     const W = field.width, H = field.height, fd = field.data;
     const rect = canvas.getBoundingClientRect();
@@ -383,6 +393,20 @@
       if (root >= 0) compPoint.set(root, Math.min(compPoint.get(root) ?? Infinity, i));
     }
 
+    // Hovered component (the connected region under the cursor), if any. Its "birth"
+    // is the extreme field value within it (the peak for a superlevel set, the valley
+    // for a sublevel set) — what links it to a point in the persistence diagram.
+    const hoverRoot = hoverCell >= 0 ? roots[hoverCell]! : -1;
+    let hover: HoverInfo | null = null;
+    if (hoverRoot >= 0) {
+      let birth = superlevel ? -Infinity : Infinity;
+      for (let i = 0; i < W * H; i++)
+        if (roots[i] === hoverRoot) birth = superlevel ? Math.max(birth, fd[i]!) : Math.min(birth, fd[i]!);
+      let count = 0;
+      for (let i = 0; i < pointCell.length; i++) if (roots[pointCell[i]!] === hoverRoot) count++;
+      hover = { root: hoverRoot, birth, count };
+    }
+
     // Field range for the faint background shading.
     let lo = Infinity, hi = -Infinity;
     for (let i = 0; i < W * H; i++) { if (fd[i]! < lo) lo = fd[i]!; if (fd[i]! > hi) hi = fd[i]!; }
@@ -400,7 +424,10 @@
         const root = roots[i]!;
         const pid = compPoint.get(root);
         const rgb = pid === undefined ? [120, 120, 130] : PAL_RGB[pid % PAL_RGB.length]!;
-        px[o] = rgb[0]; px[o + 1] = rgb[1]; px[o + 2] = rgb[2]; px[o + 3] = pid === undefined ? 150 : 205;
+        // When hovering, lift the hovered component and fade the rest.
+        const aBase = pid === undefined ? 150 : 205;
+        const a = hoverRoot < 0 ? aBase : (root === hoverRoot ? 245 : aBase * 0.3);
+        px[o] = rgb[0]; px[o + 1] = rgb[1]; px[o + 2] = rgb[2]; px[o + 3] = a;
       } else {
         // Faint topographic wash of the field (so the landscape is visible).
         const t = (fd[i]! - lo) / span;            // 0..1
@@ -423,17 +450,26 @@
     ctx.stroke();
     ctx.globalAlpha = 1;
 
-    // Points.
+    // Points — the ones inside the hovered feature are ringed (a preview of the
+    // "query the points in this feature" capability); the rest fade.
     const [bx0, by0, bx1, by1] = field.bbox;
     const sx = pw / ((bx1 - bx0) || 1), sy = ph / ((by1 - by0) || 1);
     for (let i = 0; i < data.xs.length; i++) {
       const X = (data.xs[i]! - bx0) * sx;
       const Y = (by1 - data.ys[i]!) * sy;
+      const inHover = hoverRoot >= 0 && roots[pointCell[i]!] === hoverRoot;
+      ctx.globalAlpha = hoverRoot < 0 || inHover ? 1 : 0.35;
       ctx.beginPath();
-      ctx.arc(X, Y, 2.4, 0, 6.2832);
+      ctx.arc(X, Y, inHover ? 3.3 : 2.4, 0, 6.2832);
       ctx.fillStyle = INK;
       ctx.fill();
+      if (inHover) {
+        ctx.lineWidth = 1.4; ctx.strokeStyle = '#fbbf24';
+        ctx.beginPath(); ctx.arc(X, Y, 5.2, 0, 6.2832); ctx.stroke();
+      }
     }
+    ctx.globalAlpha = 1;
+    return hover;
   }
 
   function lumOf(c: string): number {
@@ -514,7 +550,9 @@
     return out;
   }
 
-  function drawDiagram(canvas: HTMLCanvasElement, panel: Panel, u: number): [number, number] {
+  function drawDiagram(
+    canvas: HTMLCanvasElement, panel: Panel, u: number, hoverBirth: number | null = null,
+  ): [number, number] {
     const pts = normalize(panel);
     const rect = canvas.getBoundingClientRect();
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
@@ -570,6 +608,27 @@
     }
     ctx.globalAlpha = 1;
 
+    // Hover link: ring the H0 dot whose birth matches the hovered component (its
+    // peak/valley field value). x encodes birth: superlevel x = 1 - birth/sMax,
+    // sublevel x = birth/sMax.
+    if (hoverBirth !== null) {
+      const target = panel.superlevel ? 1 - Math.min(1, hoverBirth / panel.sMax) : Math.min(1, hoverBirth / panel.sMax);
+      let best: Pt | null = null, bestD = Infinity, secondD = Infinity;
+      for (const p of pts) {
+        if (p.dim !== 0) continue;
+        const d = Math.abs(p.x - target);
+        if (d < bestD) { secondD = bestD; bestD = d; best = p; }
+        else if (d < secondD) { secondD = d; }
+      }
+      // Ring the match only when it is unambiguous. On the hard (distance) panel
+      // every component is born at radius ~0, so births don't discriminate and the
+      // ring is (correctly) suppressed; on density panels the peaks differ and it links.
+      if (best && bestD < 0.025 && secondD - bestD > 0.04) {
+        ctx.strokeStyle = '#fbbf24'; ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.arc(X(best.x), Y(best.y), 8, 0, 6.2832); ctx.stroke();
+      }
+    }
+
     // Sweep crosshair at (u,u).
     ctx.strokeStyle = 'rgba(128,128,128,0.55)'; ctx.setLineDash([2, 3]);
     ctx.beginPath();
@@ -584,17 +643,30 @@
   // ---------------------------------------------------------------------------
   // Per-frame update
   // ---------------------------------------------------------------------------
+  // Which grid cell of `canvas` the cursor is over (-1 if not hovering it).
+  function hoveredCell(canvas: HTMLCanvasElement): number {
+    return hoverCanvas === canvas && hoverCol >= 0 && hoverRow >= 0 ? hoverRow * gridN + hoverCol : -1;
+  }
+  function setHoverCap(cap: HTMLDivElement, panel: Panel, hover: HoverInfo | null): void {
+    if (!hover) { cap.textContent = 'hover a region to inspect its feature'; cap.classList.remove('active'); return; }
+    const scale = panel.superlevel ? `density ${hover.birth.toFixed(2)}` : `scale ${hover.birth.toFixed(2)}`;
+    cap.textContent = `${hover.count} point${hover.count === 1 ? '' : 's'} in this feature · born at ${scale}`;
+    cap.classList.add('active');
+  }
+
   function update(u: number): void {
     if (!hard || !fuzzy) return; // a rebuild is still in flight
     // Hard: r = u * sMax. Fuzzy KDE: t = (1-u) * peak (descending). Fuzzy DTM: r = u * sMax.
     const hardThr = u * hard.sMax;
     const fuzzyThr = fuzzy.superlevel ? (1 - u) * fuzzy.sMax : u * fuzzy.sMax;
-    drawField(fhCanvas, hard, hardThr);
-    drawField(fzCanvas, fuzzy, fuzzyThr);
-    const [h0h, h1h] = drawDiagram(phCanvas, hard, u);
-    const [h0z, h1z] = drawDiagram(pzCanvas, fuzzy, u);
+    const hHover = drawField(fhCanvas, hard, hardThr, hoveredCell(fhCanvas));
+    const zHover = drawField(fzCanvas, fuzzy, fuzzyThr, hoveredCell(fzCanvas));
+    const [h0h, h1h] = drawDiagram(phCanvas, hard, u, hHover ? hHover.birth : null);
+    const [h0z, h1z] = drawDiagram(pzCanvas, fuzzy, u, zHover ? zHover.birth : null);
     h0hOut.textContent = String(h0h); h1hOut.textContent = String(h1h);
     h0zOut.textContent = String(h0z); h1zOut.textContent = String(h1z);
+    setHoverCap(fhCap, hard, hHover);
+    setHoverCap(fzCap, fuzzy, zHover);
     uVal.textContent = Math.round(u * 100) + '%';
     if (document.activeElement !== uInput) uInput.value = String(Math.round(u * 1000));
   }
@@ -604,6 +676,24 @@
   // ---------------------------------------------------------------------------
   let playing = true, u = 0, startTime: number | null = null;
   const SWEEP_MS = 9000, HOLD_MS = 1200;
+
+  // Hover-to-inspect: which field canvas + grid cell the cursor is over. Hovering a
+  // region highlights its connected component (the "rest of the shape"), rings the
+  // points inside it, and links to the matching dot in that panel's diagram.
+  let hoverCanvas: HTMLCanvasElement | null = null;
+  let hoverCol = -1, hoverRow = -1;
+  for (const c of [fhCanvas, fzCanvas]) {
+    c.addEventListener('pointermove', (e: PointerEvent) => {
+      const rect = c.getBoundingClientRect();
+      hoverCanvas = c;
+      hoverCol = Math.max(0, Math.min(gridN - 1, Math.floor(((e.clientX - rect.left) / rect.width) * gridN)));
+      hoverRow = Math.max(0, Math.min(gridN - 1, Math.floor(((e.clientY - rect.top) / rect.height) * gridN)));
+      if (!playing) update(u); // when playing, the frame loop already redraws
+    });
+    c.addEventListener('pointerleave', () => {
+      if (hoverCanvas === c) { hoverCanvas = null; if (!playing) update(u); }
+    });
+  }
 
   function setPlaying(on: boolean): void {
     playing = on;
