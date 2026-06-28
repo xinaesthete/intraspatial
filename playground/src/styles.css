@@ -41,6 +41,16 @@ body { background: var(--bg); color: var(--text); font: 13px/1.4 ui-sans-serif, 
 .bc-seg:disabled { color: var(--text); cursor: default; font-weight: 600; }
 .bc-sep { color: var(--muted); }
 
+/* `input`, `output`, `group` are RESERVED React Flow node types with default
+   white-box styling (.react-flow__node-input etc.). We use them for custom
+   components, so strip the default wrapper and let our own styling show. */
+.react-flow__node-input,
+.react-flow__node-output,
+.react-flow__node-group {
+  padding: 0; border: none; background: transparent; border-radius: 0;
+  width: auto; box-shadow: none; color: inherit; text-align: left; font-size: inherit;
+}
+
 /* explicit input/output interface nodes inside a group */
 .io-node {
   display: inline-flex; align-items: center; gap: 6px;
