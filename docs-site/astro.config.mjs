@@ -36,6 +36,7 @@ export default defineConfig({
           items: [
             { label: 'Nearest-neighbour distance', slug: 'primitives/nearest-neighbour-distance' },
             { label: 'Average Nearest Neighbour Index', slug: 'primitives/anni' },
+            { label: 'Empty-space function', slug: 'primitives/empty-space' },
             { label: 'KDE density splat', slug: 'primitives/kde-splat' },
             { label: 'Separable convolution', slug: 'primitives/separable-convolution' },
             { label: 'Getis-Ord hotspots', slug: 'primitives/getis-ord-hotspots' },

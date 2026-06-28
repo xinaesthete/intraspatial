@@ -282,7 +282,7 @@ ring/crypt scale, short-range exclusion). That makes it an ideal golden.
 | spatial statistics | nearest-neighbour distance (per point) | brute-force `"use gpu"` kernel | ✓ |
 | spatial statistics | ANNI (clustered/random/dispersed) | NN distance + Clark-Evans z | ✓ |
 | spatial statistics | nearest-neighbour distribution | NN distance + MC null | → |
-| spatial statistics | empty-space function | NN distance from random samples | → |
+| spatial statistics | empty-space (F) function | min-distance from random samples | ✓ |
 | spatial statistics | Local Getis-Ord\* (LISA hotspots) | splat → box window → standardise | ✓ |
 | spatial statistics | QCM, TCM (LISA) | splat layers → blend/window (render-then-compute) | → |
 | (enabling) | separable convolution (box / Gaussian window) | `"use gpu"` two-pass gather | ✓ |
@@ -393,6 +393,9 @@ Division of labour:
 - ✓ **ANNI** (`src/gpu/spatial/anni.ts`) — Average Nearest Neighbour Index. A pure
   *composition* of `nnDistance` + the Clark-Evans CSR test → an interpretable
   clustered / random / dispersed verdict with a z-score.
+- ✓ **Empty-space (F) function** (`src/gpu/spatial/emptySpace.ts`) — distance from
+  random sample locations to the nearest point; characterises void size. Same
+  min-distance kernel as `nnDistance` over a separate (seeded) query set.
 - ✓ **Separable convolution** (`src/gpu/spatial/convolveSeparable.ts`) — the grid
   windowing primitive (`"use gpu"`, two passes). Box window = local sum/mean,
   Gaussian = smoothing. Matches CPU; normalised Gaussian conserves mass.
