@@ -1,0 +1,122 @@
+---
+// Interactive: persistence diagrams of the raw distance vs the CkNN-rescaled
+// distance d̃, on datasets with varying sampling density. Ports the repo's
+// Vietoris-Rips reducer to the client. Self-contained; no imports.
+---
+
+<div class="pers-demo">
+  <div class="row">
+    <label class="sel">data
+      <select id="pd-data">
+        <option value="uneven">uneven ring (dense + sparse arcs)</option>
+        <option value="corering">dense core + sparse ring</option>
+        <option value="eight">figure-eight</option>
+      </select>
+    </label>
+    <label class="sel">k <input type="range" id="pd-k" min="1" max="6" step="1" value="3" /><span id="pd-kv" class="val">3</span></label>
+    <span class="legend"><i class="dot h0"></i> H₀ components&nbsp;&nbsp;<i class="dot h1"></i> H₁ loops</span>
+  </div>
+
+  <div class="grid">
+    <div class="panel"><div class="ptitle">Raw distance</div><canvas id="pd-raw"></canvas><div id="pd-raw-b" class="betti">–</div></div>
+    <div class="panel"><div class="ptitle">CkNN d̃ = d / √(ρᵢρⱼ)</div><canvas id="pd-cknn"></canvas><div id="pd-cknn-b" class="betti">–</div></div>
+  </div>
+  <p class="hint">Points far above the diagonal are persistent features (real topology); points hugging the diagonal are noise. Axes are each normalised to their own scale.</p>
+</div>
+
+<style>
+  .pers-demo { margin: 1rem 0 1.5rem; }
+  .pers-demo .row { display:flex; gap:16px; align-items:center; flex-wrap:wrap; margin-bottom:10px; }
+  .pers-demo .sel { font-size:13px; color:var(--sl-color-gray-2); display:flex; gap:6px; align-items:center; }
+  .pers-demo select { font-size:13px; padding:3px 6px; background:var(--sl-color-bg); color:var(--sl-color-text); border:1px solid var(--sl-color-gray-5); border-radius:6px; }
+  .pers-demo .val { font-weight:600; }
+  .pers-demo .legend { font-size:13px; color:var(--sl-color-gray-2); margin-left:auto; }
+  .pers-demo .dot { display:inline-block; width:10px; height:10px; border-radius:50%; vertical-align:middle; }
+  .pers-demo .dot.h0 { background:#3b82f6; } .pers-demo .dot.h1 { background:#ef4444; }
+  .pers-demo .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(240px,1fr)); gap:14px; }
+  .pers-demo .panel { background:var(--sl-color-gray-6); border-radius:8px; padding:0.6rem 0.7rem; }
+  .pers-demo .ptitle { font-size:13px; font-weight:600; color:var(--sl-color-text); margin-bottom:4px; }
+  .pers-demo canvas { width:100%; height:220px; display:block; }
+  .pers-demo .betti { font-size:13px; color:var(--sl-color-gray-2); margin-top:4px; }
+  .pers-demo .hint { font-size:13px; color:var(--sl-color-gray-3); margin-top:8px; }
+</style>
+
+<script>
+  function probe(name, fb){ const p=document.createElement('span'); p.style.cssText='position:absolute;visibility:hidden;'; p.style.color='var('+name+')'; document.body.appendChild(p); const c=getComputedStyle(p).color; p.remove(); return c||fb; }
+  const ink = probe('--sl-color-text','#cbd5e1'), dim = probe('--sl-color-gray-3','#94a3b8');
+  const H0='#3b82f6', H1='#ef4444', DIAG='rgba(128,128,128,0.5)', PANEL='rgba(128,128,128,0.10)';
+
+  // ---- Vietoris-Rips persistence (port of src/spatial/persistence.ts) ----
+  function cmp(a,b){ for(let i=0;i<Math.min(a.length,b.length);i++)if(a[i]!==b[i])return a[i]-b[i]; return a.length-b.length; }
+  function symd(a,b){ const o=[]; let i=0,j=0; while(i<a.length&&j<b.length){ if(a[i]===b[j]){i++;j++;} else if(a[i]<b[j])o.push(a[i++]); else o.push(b[j++]); } while(i<a.length)o.push(a[i++]); while(j<b.length)o.push(b[j++]); return o; }
+  function vrPersistence(dist,n,maxScale){
+    const at=(i,j)=>dist[i*n+j], simp=[];
+    for(let i=0;i<n;i++)simp.push({v:[i],filt:0,dim:0});
+    for(let i=0;i<n;i++)for(let j=i+1;j<n;j++){ const d=at(i,j); if(d<=maxScale)simp.push({v:[i,j],filt:d,dim:1}); }
+    for(let i=0;i<n;i++)for(let j=i+1;j<n;j++){ const d=at(i,j); if(d>maxScale)continue; for(let k=j+1;k<n;k++){ const f=Math.max(d,at(i,k),at(j,k)); if(f<=maxScale)simp.push({v:[i,j,k],filt:f,dim:2}); } }
+    simp.sort((a,b)=>a.filt-b.filt||a.dim-b.dim||cmp(a.v,b.v));
+    const idx=new Map(); for(let i=0;i<simp.length;i++)idx.set(simp[i].v.join(','),i);
+    const cols=simp.map(s=>{ if(s.dim===0)return []; const f=[]; for(let o=0;o<s.v.length;o++){ const face=[]; for(let t=0;t<s.v.length;t++)if(t!==o)face.push(s.v[t]); f.push(idx.get(face.join(','))); } f.sort((a,b)=>a-b); return f; });
+    const lowMap=new Map(), pairedC=new Set(), pairs=[], low=c=>c.length?c[c.length-1]:-1;
+    for(let j=0;j<cols.length;j++){ let col=cols[j], l=low(col); while(l!==-1&&lowMap.has(l)){ col=symd(col,cols[lowMap.get(l)]); l=low(col); } cols[j]=col; if(l!==-1){ lowMap.set(l,j); const cr=simp[l], death=simp[j].filt; if(death>cr.filt)pairs.push({dim:cr.dim,birth:cr.filt,death}); pairedC.add(l); } }
+    for(let j=0;j<cols.length;j++){ if(cols[j].length===0&&!pairedC.has(j))pairs.push({dim:simp[j].dim,birth:simp[j].filt,death:Infinity}); }
+    return pairs;
+  }
+
+  function mul(s){ let a=s>>>0; return ()=>{ a=(a+0x6D2B79F5)|0; let t=Math.imul(a^a>>>15,1|a); t=(t+Math.imul(t^t>>>7,61|t))^t; return ((t^t>>>14)>>>0)/4294967296; }; }
+  function gauss(r){ let u=0,v=0; while(u===0)u=r(); while(v===0)v=r(); return Math.sqrt(-2*Math.log(u))*Math.cos(6.2832*v); }
+
+  function makeData(kind){
+    const r=mul(99), xs=[], ys=[];
+    if(kind==='uneven'){
+      const R=10, nd=12; for(let i=0;i<nd;i++){ const a=-Math.PI/3+(2*Math.PI/3)*(i/(nd-1)); xs.push(R*Math.cos(a)); ys.push(R*Math.sin(a)); }
+      const ns=7; for(let i=0;i<ns;i++){ const a=Math.PI/3+(2*Math.PI-2*Math.PI/3)*((i+1)/(ns+1)); xs.push(R*Math.cos(a)); ys.push(R*Math.sin(a)); }
+    } else if(kind==='corering'){
+      for(let i=0;i<10;i++){ xs.push(gauss(r)*1.3); ys.push(gauss(r)*1.3); }
+      const m=16; for(let i=0;i<m;i++){ const a=2*Math.PI*i/m; xs.push(12*Math.cos(a)); ys.push(12*Math.sin(a)); }
+    } else {
+      const each=13; for(const cx of [-5,5]){ for(let i=0;i<each;i++){ const a=2*Math.PI*i/each; xs.push(cx+5*Math.cos(a)); ys.push(5*Math.sin(a)); } }
+    }
+    return {xs,ys};
+  }
+
+  function distMat(xs,ys){ const n=xs.length, d=new Float32Array(n*n); for(let i=0;i<n;i++)for(let j=0;j<n;j++)d[i*n+j]=Math.hypot(xs[i]-xs[j],ys[i]-ys[j]); return {d,n}; }
+  function rescale(d,n,k){ const rho=new Float32Array(n); for(let i=0;i<n;i++){ const a=[]; for(let j=0;j<n;j++)if(j!==i)a.push(d[i*n+j]); a.sort((p,q)=>p-q); rho[i]=a[k-1]; } const dt=new Float32Array(n*n); for(let i=0;i<n;i++)for(let j=0;j<n;j++)dt[i*n+j]=i===j?0:d[i*n+j]/Math.sqrt(rho[i]*rho[j]); return dt; }
+
+  function maxFinite(d){ let m=0; for(let i=0;i<d.length;i++)if(d[i]>m)m=d[i]; return m; }
+
+  function drawDiagram(canvas, pairs, scale){
+    const r=canvas.getBoundingClientRect(), dpr=Math.min(window.devicePixelRatio||1,2);
+    canvas.width=r.width*dpr; canvas.height=r.height*dpr; const x=canvas.getContext('2d'); x.setTransform(dpr,0,0,dpr,0,0);
+    const w=r.width,h=r.height,pad=26;
+    x.clearRect(0,0,w,h); x.fillStyle=PANEL; x.fillRect(0,0,w,h);
+    const X=v=>pad+(v/scale)*(w-2*pad), Y=v=>h-pad-(Math.min(v,scale)/scale)*(h-2*pad);
+    // axes + diagonal
+    x.strokeStyle='rgba(128,128,128,0.35)'; x.lineWidth=1; x.beginPath(); x.moveTo(pad,h-pad); x.lineTo(w-pad,h-pad); x.moveTo(pad,h-pad); x.lineTo(pad,pad); x.stroke();
+    x.strokeStyle=DIAG; x.setLineDash([4,3]); x.beginPath(); x.moveTo(pad,h-pad); x.lineTo(w-pad,pad); x.stroke(); x.setLineDash([]);
+    x.fillStyle=dim; x.font='10px sans-serif'; x.textAlign='center'; x.fillText('birth →', w/2, h-7); x.save(); x.translate(9,h/2); x.rotate(-Math.PI/2); x.fillText('death →',0,0); x.restore();
+    for(const p of pairs){ if(p.death-p.birth < scale*0.02 && isFinite(p.death)) continue; const dv=isFinite(p.death)?p.death:scale; const px=X(p.birth), py=Y(dv); x.fillStyle=p.dim===0?H0:H1; x.globalAlpha=0.85; x.beginPath(); x.arc(px,py,p.dim===1?4.5:3,0,6.2832); x.fill(); if(!isFinite(p.death)){ x.globalAlpha=1; x.strokeStyle=p.dim===0?H0:H1; x.beginPath(); x.moveTo(px,py-6); x.lineTo(px,py-1); x.stroke(); } }
+    x.globalAlpha=1;
+  }
+
+  function betti1(pairs, scale, frac){ // count persistent H1 bars (persistence > frac*scale)
+    return pairs.filter(p=>p.dim===1 && (p.death-p.birth)>frac*scale).length;
+  }
+
+  const $=id=>document.getElementById(id);
+  const sel=$('pd-data'), kk=$('pd-k'), kv=$('pd-kv'), cRaw=$('pd-raw'), cCknn=$('pd-cknn'), bRaw=$('pd-raw-b'), bCknn=$('pd-cknn-b');
+
+  function run(){
+    const {xs,ys}=makeData(sel.value), {d,n}=distMat(xs,ys), k=parseInt(kk.value);
+    const dt=rescale(d,n,k);
+    const sRaw=maxFinite(d), sCknn=maxFinite(dt);
+    const pRaw=vrPersistence(d,n,sRaw), pCknn=vrPersistence(dt,n,sCknn);
+    drawDiagram(cRaw,pRaw,sRaw); drawDiagram(cCknn,pCknn,sCknn);
+    bRaw.textContent='persistent loops (H₁): '+betti1(pRaw,sRaw,0.18);
+    bCknn.textContent='persistent loops (H₁): '+betti1(pCknn,sCknn,0.18);
+  }
+  sel.addEventListener('change',run);
+  kk.addEventListener('input',()=>{ kv.textContent=kk.value; run(); });
+  window.addEventListener('resize',run);
+  run();
+</script>

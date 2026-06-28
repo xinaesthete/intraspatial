@@ -1,0 +1,122 @@
+---
+// Interactive: a fixed connection radius cannot connect data of varying density,
+// but CkNN's density-rescaled distance d̃ = d/√(ρ_iρ_j) can. Self-contained client
+// script; no imports.
+---
+
+<div class="cknn-demo">
+  <div class="row">
+    <div class="seg">
+      <button id="cc-fixed" class="seg-btn">Fixed radius (ε-ball)</button>
+      <button id="cc-cknn" class="seg-btn">CkNN (density-adaptive)</button>
+    </div>
+    <label class="sel">data
+      <select id="cc-data">
+        <option value="grids">two grids</option>
+        <option value="blobs">mixed blobs</option>
+        <option value="corering">dense core + sparse ring</option>
+      </select>
+    </label>
+    <span class="legend"><i class="dot d0"></i> dense&nbsp;&nbsp;<i class="dot d1"></i> sparse</span>
+  </div>
+
+  <canvas id="cc-cv"></canvas>
+
+  <div class="ctrl">
+    <span id="cc-tlabel" class="lab">radius ε</span>
+    <input type="range" id="cc-thr" min="0" max="15" step="0.1" value="10" />
+    <span id="cc-tval" class="val">10.0</span>
+  </div>
+  <div class="ctrl" id="cc-krow">
+    <span class="lab">k (density)</span>
+    <input type="range" id="cc-kk" min="1" max="6" step="1" value="1" />
+    <span id="cc-kval" class="val">1</span>
+  </div>
+
+  <div class="cards">
+    <div class="card"><div class="cl">Components</div><div id="cc-comp" class="cv2">–</div></div>
+    <div class="card"><div class="cl">This setting</div><div id="cc-verdict" class="cv2">–</div></div>
+    <div class="card"><div class="cl">Any value that works?</div><div id="cc-achiev" class="cv2">–</div></div>
+  </div>
+</div>
+
+<style>
+  .cknn-demo { margin: 1rem 0 1.5rem; }
+  .cknn-demo .row { display:flex; gap:12px; align-items:center; flex-wrap:wrap; margin-bottom:10px; }
+  .cknn-demo .seg { display:flex; gap:6px; }
+  .cknn-demo .seg-btn { font-size:13px; padding:5px 11px; border:1px solid var(--sl-color-gray-5); border-radius:6px; background:transparent; color:var(--sl-color-text); cursor:pointer; }
+  .cknn-demo .seg-btn.on { border-color:var(--sl-color-text-accent); color:var(--sl-color-text-accent); font-weight:600; }
+  .cknn-demo .sel { font-size:13px; color:var(--sl-color-gray-2); display:flex; gap:6px; align-items:center; }
+  .cknn-demo select { font-size:13px; padding:3px 6px; background:var(--sl-color-bg); color:var(--sl-color-text); border:1px solid var(--sl-color-gray-5); border-radius:6px; }
+  .cknn-demo .legend { font-size:13px; color:var(--sl-color-gray-2); margin-left:auto; }
+  .cknn-demo .dot { display:inline-block; width:10px; height:10px; border-radius:50%; vertical-align:middle; }
+  .cknn-demo .dot.d0 { background:#3b82f6; } .cknn-demo .dot.d1 { background:#f59e0b; }
+  .cknn-demo canvas { width:100%; height:300px; display:block; border-radius:8px; }
+  .cknn-demo .ctrl { display:flex; gap:14px; align-items:center; margin:0.6rem 0 0.2rem; }
+  .cknn-demo .ctrl input[type=range] { flex:1; min-width:140px; }
+  .cknn-demo .lab { font-size:13px; color:var(--sl-color-gray-2); min-width:78px; }
+  .cknn-demo .val { font-size:14px; font-weight:600; min-width:36px; }
+  .cknn-demo .cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:12px; margin-top:0.5rem; }
+  .cknn-demo .card { background:var(--sl-color-gray-6); border-radius:8px; padding:0.7rem 0.9rem; }
+  .cknn-demo .cl { font-size:12px; color:var(--sl-color-gray-3); }
+  .cknn-demo .cv2 { font-size:18px; font-weight:600; margin-top:2px; }
+</style>
+
+<script>
+  function probe(name, fb){ const p=document.createElement('span'); p.style.cssText='position:absolute;visibility:hidden;'; p.style.color='var('+name+')'; document.body.appendChild(p); const c=getComputedStyle(p).color; p.remove(); return c||fb; }
+  const ink = probe('--sl-color-text','#cbd5e1');
+  const accent = probe('--sl-color-text-accent','#60a5fa');
+  const PANEL='rgba(128,128,128,0.12)', GRID='rgba(128,128,128,0.40)';
+  const C0='#3b82f6', C1='#f59e0b', GOOD='rgba(20,170,150,0.6)', BRIDGE='#ef4444', GREEN='#10b981', RED='#ef4444';
+
+  function mul(s){ let a=s>>>0; return ()=>{ a=(a+0x6D2B79F5)|0; let t=Math.imul(a^a>>>15,1|a); t=(t+Math.imul(t^t>>>7,61|t))^t; return ((t^t>>>14)>>>0)/4294967296; }; }
+  function gauss(r){ let u=0,v=0; while(u===0)u=r(); while(v===0)v=r(); return Math.sqrt(-2*Math.log(u))*Math.cos(6.2832*v); }
+
+  function makeData(kind){
+    const r=mul(12345), P=[];
+    if(kind==='grids'){
+      const grid=(nx,ny,sp,cx,cy,c)=>{ const w=(nx-1)*sp,h=(ny-1)*sp; for(let i=0;i<nx;i++)for(let j=0;j<ny;j++)P.push({x:cx-w/2+i*sp,y:cy-h/2+j*sp,c}); };
+      grid(5,5,1.6,25,50,0); grid(4,4,10,52,50,1);
+    } else if(kind==='blobs'){
+      for(let i=0;i<26;i++)P.push({x:26+gauss(r)*2.2,y:50+gauss(r)*2.2,c:0});
+      for(let i=0;i<16;i++)P.push({x:62+gauss(r)*9,y:50+gauss(r)*9,c:1});
+    } else { // core + ring
+      for(let i=0;i<14;i++)P.push({x:50+gauss(r)*1.7,y:50+gauss(r)*1.7,c:0});
+      const m=18; for(let i=0;i<m;i++){ const a=2*Math.PI*i/m + (r()-0.5)*0.15; P.push({x:50+22*Math.cos(a),y:50+22*Math.sin(a),c:1}); }
+    }
+    return P;
+  }
+
+  let P=[], N=0, D=[], rho=[], mode='fixed';
+  function rebuildData(kind){
+    P=makeData(kind); N=P.length; D=[];
+    for(let i=0;i<N;i++){ D[i]=[]; for(let j=0;j<N;j++){ const dx=P[i].x-P[j].x,dy=P[i].y-P[j].y; D[i][j]=Math.sqrt(dx*dx+dy*dy); } }
+  }
+  function computeRho(k){ rho=[]; for(let i=0;i<N;i++){ const ds=[]; for(let j=0;j<N;j++)if(j!==i)ds.push(D[i][j]); ds.sort((a,b)=>a-b); rho[i]=ds[Math.min(k,ds.length)-1]; } }
+  const dt=(i,j)=> D[i][j]/Math.sqrt(rho[i]*rho[j]);
+
+  function comps(E){ const par=[]; for(let i=0;i<N;i++)par[i]=i; const f=a=>{ while(par[a]!==a){par[a]=par[par[a]];a=par[a];} return a; }; for(const e of E){ const ra=f(e[0]),rb=f(e[1]); if(ra!==rb)par[ra]=rb; } const roots={}; let c=0; for(let i=0;i<N;i++){ const r=f(i); if(!(r in roots)){roots[r]=c++;} } return {f,count:c}; }
+  function edges(m,thr){ const E=[]; for(let i=0;i<N;i++)for(let j=i+1;j<N;j++){ if(m==='fixed'?D[i][j]<thr:dt(i,j)<thr)E.push([i,j]); } return E; }
+  function evalT(m,thr){ const E=edges(m,thr), cc=comps(E); let bridges=0; for(const e of E)if(P[e[0]].c!==P[e[1]].c)bridges++; let rD=-1,dOK=true,rS=-1,sOK=true; for(let i=0;i<N;i++){ const r=cc.f(i); if(P[i].c===0){ if(rD<0)rD=r; else if(r!==rD)dOK=false; } else { if(rS<0)rS=r; else if(r!==rS)sOK=false; } } return {E,count:cc.count,bridges,correct:bridges===0&&dOK&&sOK}; }
+  function achievable(m){ const lo=0, hi=m==='fixed'?20:3.2, st=m==='fixed'?0.1:0.02; let first=null,last=null; for(let t=lo;t<=hi+1e-9;t+=st){ if(evalT(m,t).correct){ if(first===null)first=t; last=t; } } return first===null?null:[first,last]; }
+
+  const $=id=>document.getElementById(id);
+  const cv=$('cc-cv'), thr=$('cc-thr'), kk=$('cc-kk'), tval=$('cc-tval'), kval=$('cc-kval'), tlabel=$('cc-tlabel');
+  const sComp=$('cc-comp'), sVerd=$('cc-verdict'), sAch=$('cc-achiev'), bF=$('cc-fixed'), bC=$('cc-cknn'), kRow=$('cc-krow'), dataSel=$('cc-data');
+
+  function setup(){ const r=cv.getBoundingClientRect(), dpr=Math.min(window.devicePixelRatio||1,2); cv.width=r.width*dpr; cv.height=r.height*dpr; const x=cv.getContext('2d'); x.setTransform(dpr,0,0,dpr,0,0); return {x,w:r.width,h:r.height}; }
+  function draw(ev){ const s=setup(), x=s.x, pad=20; let a=1e9,b=-1e9,c=1e9,d=-1e9; for(let i=0;i<N;i++){ a=Math.min(a,P[i].x); b=Math.max(b,P[i].x); c=Math.min(c,P[i].y); d=Math.max(d,P[i].y); } const sx=(b-a)||1, sy=(d-c)||1, sc=Math.min((s.w-2*pad)/sx,(s.h-2*pad)/sy), ox=(s.w-sx*sc)/2, oy=(s.h-sy*sc)/2; const MX=wx=>ox+(wx-a)*sc, MY=wy=>oy+(wy-c)*sc; x.clearRect(0,0,s.w,s.h); x.fillStyle=PANEL; x.fillRect(0,0,s.w,s.h); for(const e of ev.E){ const br=P[e[0]].c!==P[e[1]].c; x.strokeStyle=br?BRIDGE:GOOD; x.lineWidth=br?2.4:1; x.beginPath(); x.moveTo(MX(P[e[0]].x),MY(P[e[0]].y)); x.lineTo(MX(P[e[1]].x),MY(P[e[1]].y)); x.stroke(); } for(let i=0;i<N;i++){ x.fillStyle=P[i].c===0?C0:C1; x.beginPath(); x.arc(MX(P[i].x),MY(P[i].y),3.4,0,6.2832); x.fill(); } }
+
+  function refresh(){ const t=parseFloat(thr.value); tval.textContent=t.toFixed(mode==='fixed'?1:2); const ev=evalT(mode,t); draw(ev); sComp.textContent=ev.count; if(ev.correct)sVerd.innerHTML='<span style="color:'+GREEN+'">correct ✓</span>'; else if(ev.bridges>0)sVerd.innerHTML='<span style="color:'+RED+'">bridged ✗</span>'; else sVerd.innerHTML='<span style="color:'+RED+'">sparse split ✗</span>'; }
+  function refreshAch(){ const a=achievable(mode); if(a===null)sAch.innerHTML='<span style="color:'+RED+'">impossible ✗</span>'; else sAch.innerHTML='<span style="color:'+GREEN+'">'+(mode==='fixed'?'ε':'δ')+' ∈ ['+a[0].toFixed(2)+', '+a[1].toFixed(2)+'] ✓</span>'; }
+  function setMode(m){ mode=m; bF.classList.toggle('on',m==='fixed'); bC.classList.toggle('on',m==='cknn'); kRow.style.opacity=m==='cknn'?'1':'0.45'; if(m==='fixed'){ tlabel.textContent='radius ε'; thr.min=0; thr.max=20; thr.step=0.1; thr.value=10; } else { tlabel.textContent='scale δ'; thr.min=0; thr.max=3.2; thr.step=0.05; thr.value=1.3; } refreshAch(); refresh(); }
+
+  bF.addEventListener('click',()=>setMode('fixed'));
+  bC.addEventListener('click',()=>setMode('cknn'));
+  thr.addEventListener('input',refresh);
+  kk.addEventListener('input',()=>{ kval.textContent=kk.value; computeRho(parseInt(kk.value)); refreshAch(); refresh(); });
+  dataSel.addEventListener('change',()=>{ rebuildData(dataSel.value); computeRho(parseInt(kk.value)); refreshAch(); refresh(); });
+  window.addEventListener('resize',refresh);
+
+  rebuildData('grids'); computeRho(1); setMode('fixed');
+</script>

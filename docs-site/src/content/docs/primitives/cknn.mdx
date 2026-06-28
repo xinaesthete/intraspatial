@@ -3,12 +3,25 @@ title: CkNN rescaled distance
 description: Continuous k-Nearest Neighbours — a density-rescaled distance for consistent topology.
 ---
 
+import CknnConnectivity from '../../../components/CknnConnectivity.astro';
+import CknnPersistence from '../../../components/CknnPersistence.astro';
+
 The Continuous k-Nearest Neighbours construction of Berry & Sauer (2016): a
 **density-rescaled distance**
 
 ```
 d̃_ij = d_ij / √(ρ_i ρ_j),   where ρ_i = distance to the k-th nearest neighbour.
 ```
+
+## Try it: why a fixed radius can't win
+
+A dense and a sparse cluster. In **fixed-radius** mode, sweep ε — the third card
+sweeps *every* radius and reports that none gives the correct two-component answer
+(the sparse cluster fragments, or the two bridge). Switch to **CkNN** and a whole
+band of δ works. Try the organic datasets too.
+
+<CknnConnectivity />
+
 
 ## What it means
 
@@ -27,6 +40,17 @@ everywhere. Two readouts come from the same matrix:
 This is the [fuzzy-TDA](/concepts/fuzzy-tda/) thread made concrete — with the twist
 that, for *topology*, the winning move is to keep the graph unweighted but make its
 radius density-adaptive, rather than to add a taper.
+
+## Try it: the persistence diagram
+
+Feeding `d̃` to a Vietoris–Rips persistence reducer gives a *consistent* diagram.
+On data with varying sampling density (an unevenly-sampled ring, a dense core inside
+a sparse ring), the raw-distance diagram smears the real loop because one connection
+scale can't serve both densities; the CkNN diagram pins it as a single point far
+above the diagonal. (Computed in-browser by the same reducer as
+`src/spatial/persistence.ts`.)
+
+<CknnPersistence />
 
 ## GPU approach
 
