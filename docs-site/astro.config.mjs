@@ -7,6 +7,10 @@ export default defineConfig({
   // Avoid the native `sharp` image pipeline (its build script is skipped under
   // pnpm); these docs use no optimised images.
   image: { service: passthroughImageService() },
+  // Let components import the toolbox's own source (one level up, e.g.
+  // `../../../src/spatial/...`) so demos are driven by the real library code
+  // rather than re-ported copies.
+  vite: { server: { fs: { allow: ['..'] } } },
   integrations: [
     starlight({
       title: 'GPU Spatial Primitives',
