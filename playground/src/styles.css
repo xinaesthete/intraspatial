@@ -57,6 +57,9 @@ body { background: var(--bg); color: var(--text); font: 13px/1.4 ui-sans-serif, 
   border: none; border-radius: 6px; font-weight: 600; cursor: pointer;
 }
 .run-btn:disabled { opacity: 0.6; cursor: default; }
+.run-btn.live { background: #46c08a; }
+.live-row { margin-top: 10px; }
+.live-row span { color: var(--text); }
 
 .preview { margin-top: 8px; }
 .preview-summary { color: var(--muted); font-size: 11px; margin-bottom: 6px; font-family: ui-monospace, monospace; }

@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ReactFlow,
   Background,
@@ -44,7 +44,14 @@ export default function App() {
   const [value, setValue] = useState<FieldValue | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
+  const [live, setLive] = useState(false);
   const idSeq = useRef(100);
+  const liveRef = useRef(live);
+  liveRef.current = live;
+  // Serialise an in-flight pull so overlapping auto-runs don't race on the shared
+  // GPU pools; a change during a run sets `pending` and re-runs once it finishes.
+  const inflight = useRef(false);
+  const pending = useRef(false);
 
   const onConnect = useCallback(
     (c: Connection) => setEdges((eds) => addEdge({ ...c, id: `e${idSeq.current++}` }, eds)),
@@ -72,13 +79,16 @@ export default function App() {
           return { ...n, data: { ...d, params: { ...d.params, [key]: v } } as unknown as Record<string, unknown> };
         }),
       );
-      setValue(null); // params changed → previous preview is stale
+      if (!liveRef.current) setValue(null); // stale unless live mode is about to re-run
     },
     [selectedId, setNodes],
   );
 
+  const runRef = useRef<() => void>(() => {});
   const run = useCallback(async () => {
     if (!selectedId) return;
+    if (inflight.current) { pending.current = true; return; } // coalesce while busy
+    inflight.current = true;
     setRunning(true);
     setError(null);
     try {
@@ -88,9 +98,32 @@ export default function App() {
       setError(e instanceof Error ? e.message : String(e));
       setValue(null);
     } finally {
+      inflight.current = false;
       setRunning(false);
+      if (pending.current) { pending.current = false; runRef.current(); } // run the latest
     }
   }, [nodes, edges, selectedId, selectedPort]);
+  runRef.current = run;
+
+  // Signature of the run-relevant state (params + wiring + selection), excluding
+  // node positions so dragging doesn't trigger a re-run.
+  const sig = useMemo(
+    () =>
+      JSON.stringify({
+        n: nodes.map((n) => ({ id: n.id, op: (n.data as unknown as NodeData).opName, p: (n.data as unknown as NodeData).params })),
+        e: edges.map((e) => ({ s: e.source, sh: e.sourceHandle, t: e.target, th: e.targetHandle })),
+        sel: selectedId,
+        port: selectedPort,
+      }),
+    [nodes, edges, selectedId, selectedPort],
+  );
+
+  // Auto-run: when live, re-pull (debounced) whenever the signature changes.
+  useEffect(() => {
+    if (!live || !selectedId) return;
+    const t = setTimeout(() => runRef.current(), 180);
+    return () => clearTimeout(t);
+  }, [sig, live, selectedId]);
 
   return (
     <div className="app">
@@ -153,8 +186,12 @@ export default function App() {
               </label>
             )}
 
-            <button className="run-btn" onClick={run} disabled={running}>
-              {running ? "Running…" : "▶ Run / pull"}
+            <label className="row live-row" title="Re-pull automatically when params or wiring change">
+              <span>Auto-run (live)</span>
+              <input type="checkbox" checked={live} onChange={(e) => setLive(e.target.checked)} />
+            </label>
+            <button className={`run-btn ${live ? "live" : ""}`} onClick={run} disabled={running}>
+              {running ? "Running…" : live ? "● Live — re-running on change" : "▶ Run / pull"}
             </button>
             <Preview value={value} error={error} />
           </>
