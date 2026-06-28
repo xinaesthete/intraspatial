@@ -32,6 +32,11 @@ describe("sublevelsetPersistence — H0 (components)", () => {
     const res = sublevelsetPersistence(f.data, f.width, f.height, { superlevel: true });
     const h0 = res.pairs.filter((p) => p.dim === 0 && Math.abs(p.birth - p.death) > 0.05);
     expect(h0.length).toBe(2);           // two peaks (one essential, one dies at the saddle ~0.27)
+    // Each component is born at a peak cell (high density, near its birth value).
+    for (const p of h0) {
+      expect(p.birthCell).toBeGreaterThanOrEqual(0);
+      expect(f.data[p.birthCell]).toBeCloseTo(p.birth, 5);
+    }
     // Above the saddle there are 2 components; below it they merge to 1.
     const peak = Math.max(...f.data);
     expect(fieldBettiNumbers(res, peak * 0.8)[0]).toBe(2);
@@ -53,6 +58,9 @@ describe("sublevelsetPersistence — H1 (loops)", () => {
     // Born high (value 2), dies low (the hole fills only at 0).
     expect(h1[0]!.birth).toBeCloseTo(2, 5);
     expect(h1[0]!.death).toBeCloseTo(0, 5);
+    // The killing cell sits inside the hole (a low-value interior cell).
+    expect(h1[0]!.deathCell).toBeDefined();
+    expect(data[h1[0]!.deathCell!]).toBe(0);
     expect(fieldBettiNumbers(res, 1)[1]).toBe(1); // one loop alive mid-sweep
   });
 
