@@ -16,29 +16,29 @@ import { applyEdgeChanges, applyNodeChanges } from "@xyflow/react";
 import type { EdgeChange, NodeChange } from "@xyflow/react";
 import { OpNode } from "./OpNode";
 import { GroupNode } from "./GroupNode";
-import { GroupPortNode } from "./GroupPortNode";
+import { InterfaceNode } from "./InterfaceNode";
 import { advanceNode, graphHasFeedback, runNode } from "./buildGraph";
 import type { NodeData } from "./buildGraph";
 import {
   ROOT_SCOPE,
-  boundaryOf,
+  addInterface,
   createGroup,
-  decodePort,
   deriveDisplay,
+  groupPorts,
   isGroupNode,
-  isPortStub,
+  isOpNode,
   resolveGroupOutput,
   scopeOf,
   ungroup,
 } from "./grouping";
-import type { GroupData } from "./grouping";
+import type { GroupData, IOType } from "./grouping";
 import { kindColor } from "./portKinds";
 import { defaultParamsFor, getSpec, listOpSpecs, listSourceSpecs } from "./specs";
 import { EXAMPLES } from "./examples";
 import type { Example } from "./examples";
 import { Preview } from "./Preview";
 
-const nodeTypes: NodeTypes = { op: OpNode, group: GroupNode, groupPort: GroupPortNode };
+const nodeTypes: NodeTypes = { op: OpNode, group: GroupNode, input: InterfaceNode, output: InterfaceNode };
 
 function mkNode(id: string, opName: string, x: number, y: number): Node {
   const spec = getSpec(opName);
@@ -86,34 +86,18 @@ export default function App() {
   // logical graph; grouping never rewrites the logical graph.
   const display = useMemo(() => deriveDisplay(nodes, edges, scope), [nodes, edges, scope]);
 
-  // Map a display endpoint back to a real (node, port): group-node ports decode to
-  // their internal member; stubs aren't real nodes → null.
-  const resolveEndpoint = useCallback(
-    (id: string | null, handle: string | null | undefined): { node: string; port: string } | null => {
-      const n = nodes.find((x) => x.id === id);
-      if (!n) return null;
-      if (isGroupNode(n)) { const d = decodePort(handle); return d ? { node: d.node, port: d.port } : null; }
-      return { node: id!, port: handle ?? "" };
-    },
-    [nodes],
-  );
-
+  // Edges never cross scopes, so a connection drawn in the current scope is a real
+  // logical edge as-is (a group-node port handle is its interface-node id; the
+  // executor's flatten resolves it). No translation needed.
   const onConnect = useCallback(
-    (c: Connection) => {
-      const src = resolveEndpoint(c.source, c.sourceHandle);
-      const tgt = resolveEndpoint(c.target, c.targetHandle);
-      if (!src || !tgt) return; // boundary stub / unresolved
-      setEdges((eds) => addEdge({ id: `e${idSeq.current++}`, source: src.node, sourceHandle: src.port, target: tgt.node, targetHandle: tgt.port }, eds));
-    },
-    [resolveEndpoint, setEdges],
+    (c: Connection) => setEdges((eds) => addEdge({ ...c, id: `e${idSeq.current++}` }, eds)),
+    [setEdges],
   );
 
-  // Display edges carry ids "d:<realId>"; translate removals/selection to the logical
-  // edge.
+  // Display edges ARE the logical edges for this scope (same ids), so changes apply
+  // straight through.
   const onDisplayEdgesChange = useCallback(
-    (changes: EdgeChange[]) => {
-      setEdges((eds) => applyEdgeChanges(changes.map((c) => ("id" in c && typeof c.id === "string" && c.id.startsWith("d:") ? { ...c, id: c.id.slice(2) } : c)), eds));
-    },
+    (changes: EdgeChange[]) => setEdges((eds) => applyEdgeChanges(changes, eds)),
     [setEdges],
   );
 
@@ -139,8 +123,16 @@ export default function App() {
 
   // Group the current multi-selection (≥2 op nodes in this scope), then navigate in.
   const groupableIds = useMemo(
-    () => selectedIds.filter((id) => { const n = nodes.find((x) => x.id === id); return n && !isGroupNode(n) && !isPortStub(n) && scopeOf(n) === scope; }),
+    () => selectedIds.filter((id) => { const n = nodes.find((x) => x.id === id); return n && isOpNode(n) && scopeOf(n) === scope; }),
     [selectedIds, nodes, scope],
+  );
+  const addIONode = useCallback(
+    (io: IOType) => {
+      if (scope === ROOT_SCOPE) return;
+      const id = `io#${idSeq.current++}`;
+      setNodes((ns) => ns.concat(addInterface(scope, io, id, { x: io === "input" ? 40 : 480, y: 80 + (ns.length % 5) * 60 })));
+    },
+    [scope, setNodes],
   );
   const groupSelection = useCallback(() => {
     if (groupableIds.length < 2) return;
@@ -195,18 +187,10 @@ export default function App() {
   }, [nodes, edges, selectedId, selectedPort]);
 
   // Rename a group's label or one of its boundary ports (stored as portLabels).
-  const renameGroup = useCallback(
-    (groupId: string, change: { label?: string; portId?: string; portLabel?: string }) => {
-      setNodes((ns) =>
-        ns.map((n) => {
-          if (n.id !== groupId) return n;
-          const d = n.data as unknown as GroupData;
-          const next: GroupData = { ...d, portLabels: { ...(d.portLabels ?? {}) } };
-          if (change.label !== undefined) next.label = change.label;
-          if (change.portId !== undefined && change.portLabel !== undefined) next.portLabels![change.portId] = change.portLabel;
-          return { ...n, data: next as unknown as Record<string, unknown> };
-        }),
-      );
+  // Rename any node's label (a group, or an interface node — which IS a group port).
+  const renameNode = useCallback(
+    (id: string, label: string) => {
+      setNodes((ns) => ns.map((n) => (n.id === id ? { ...n, data: { ...(n.data as object), label } as Record<string, unknown> } : n)));
     },
     [setNodes],
   );
@@ -223,10 +207,11 @@ export default function App() {
 
   const selected = useMemo(() => nodes.find((n) => n.id === selectedId) ?? null, [nodes, selectedId]);
   const selectedGroup = selected && isGroupNode(selected) ? (selected.data as unknown as GroupData) : null;
-  const selectedSpec = selected && !selectedGroup ? getSpec((selected.data as unknown as NodeData).opName) : null;
+  const selectedInterface = selected && (selected.type === "input" || selected.type === "output") ? selected : null;
+  const selectedSpec = selected && isOpNode(selected) ? getSpec((selected.data as unknown as NodeData).opName) : null;
   // Group boundary + member count are derived (not stored on the logical node).
   const selectedGroupBoundary = useMemo(
-    () => (selectedGroup && selected ? boundaryOf(nodes, edges, selected.id) : { inputs: [], outputs: [] }),
+    () => (selectedGroup && selected ? groupPorts(nodes, edges, selected.id) : { inputs: [], outputs: [] }),
     [selectedGroup, selected, nodes, edges],
   );
   const selectedGroupMembers = useMemo(
@@ -406,6 +391,12 @@ export default function App() {
           {groupableIds.length >= 2 && (
             <button className="tb-primary" onClick={groupSelection}>▦ Group {groupableIds.length} nodes</button>
           )}
+          {scope !== ROOT_SCOPE && (
+            <span className="tb-group">
+              <button onClick={() => addIONode("input")} title="Add an input to this subgraph">＋ Input</button>
+              <button onClick={() => addIONode("output")} title="Add an output to this subgraph">＋ Output</button>
+            </span>
+          )}
         </div>
         <ReactFlow
           nodes={display.nodes}
@@ -415,7 +406,7 @@ export default function App() {
           onEdgesChange={onDisplayEdgesChange}
           onConnect={onConnect}
           onSelectionChange={onSelectionChange}
-          onNodeClick={(_, n) => { if (isPortStub(n)) return; setSelectedId(n.id); setSelectedPort(null); setValue(null); setStale(false); setError(null); }}
+          onNodeClick={(_, n) => { setSelectedId(n.id); setSelectedPort(null); setValue(null); setStale(false); setError(null); }}
           onNodeDoubleClick={onNodeDoubleClick}
           fitView
         >
@@ -425,19 +416,23 @@ export default function App() {
       </main>
 
       <aside className="inspector">
-        {selected && selectedGroup ? (
+        {selected && selectedInterface ? (
+          <>
+            <h2>{selectedInterface.type === "input" ? "▸ Input" : "Output ▸"}</h2>
+            <label className="row">
+              <span>name</span>
+              <input type="text" value={(selectedInterface.data as { label: string }).label} onChange={(e) => renameNode(selected.id, e.target.value)} style={{ width: 130 }} />
+            </label>
+            <p className="muted">A {selectedInterface.type} port of this subgraph. Wire it to a member; the group node gets a matching port.</p>
+          </>
+        ) : selected && selectedGroup ? (
           <>
             <h2>▦ Group</h2>
             <label className="row">
               <span>name</span>
-              <input
-                type="text"
-                value={selectedGroup.label}
-                onChange={(e) => renameGroup(selected.id, { label: e.target.value })}
-                style={{ width: 130 }}
-              />
+              <input type="text" value={selectedGroup.label} onChange={(e) => renameNode(selected.id, e.target.value)} style={{ width: 130 }} />
             </label>
-            <p className="muted">{selectedGroupMembers} nodes</p>
+            <p className="muted">{selectedGroupMembers} nodes · double-click to open</p>
             <div className="transport-row">
               <button onClick={() => enterGroup(selected.id)}>▦ Open</button>
               <button onClick={() => dissolveGroup(selected.id)}>✕ Ungroup</button>
@@ -447,12 +442,12 @@ export default function App() {
                 <h2>Ports</h2>
                 {selectedGroupBoundary.inputs.map((p) => (
                   <label className="row" key={p.id}><span>in <em style={{ color: kindColor(p.kind), fontStyle: "normal" }}>{p.kind}</em></span>
-                    <input type="text" value={p.label} onChange={(e) => renameGroup(selected.id, { portId: p.id, portLabel: e.target.value })} style={{ width: 110 }} />
+                    <input type="text" value={p.label} onChange={(e) => renameNode(p.id, e.target.value)} style={{ width: 110 }} />
                   </label>
                 ))}
                 {selectedGroupBoundary.outputs.map((p) => (
                   <label className="row" key={p.id}><span>out <em style={{ color: kindColor(p.kind), fontStyle: "normal" }}>{p.kind}</em></span>
-                    <input type="text" value={p.label} onChange={(e) => renameGroup(selected.id, { portId: p.id, portLabel: e.target.value })} style={{ width: 110 }} />
+                    <input type="text" value={p.label} onChange={(e) => renameNode(p.id, e.target.value)} style={{ width: 110 }} />
                   </label>
                 ))}
               </div>

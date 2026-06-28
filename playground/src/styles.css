@@ -41,13 +41,20 @@ body { background: var(--bg); color: var(--text); font: 13px/1.4 ui-sans-serif, 
 .bc-seg:disabled { color: var(--text); cursor: default; font-weight: 600; }
 .bc-sep { color: var(--muted); }
 
-/* boundary port stubs shown inside a group's scope */
-.port-stub {
+/* explicit input/output interface nodes inside a group */
+.io-node {
   display: inline-flex; align-items: center; gap: 6px;
-  background: #161a26; border: 1px dashed #3a4a6a; border-radius: 6px; padding: 6px 12px;
+  background: #14110f; border: 1px solid var(--line); border-radius: 14px; padding: 5px 12px;
   color: var(--text); font-size: 11px; font-family: ui-monospace, monospace; white-space: nowrap;
 }
-.port-stub .react-flow__handle { width: 9px; height: 9px; border: none; }
+.io-node.selected { box-shadow: 0 0 0 1px var(--accent); }
+.io-node .react-flow__handle { width: 9px; height: 9px; border: none; }
+.io-arrow { font-weight: bold; }
+
+/* toolbar button group (e.g. + Input / + Output) */
+.tb-group { display: inline-flex; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+.tb-group button { padding: 6px 8px; background: var(--panel2); color: var(--text); border: none; cursor: pointer; }
+.tb-group button:hover { background: #241f33; }
 
 /* port type cues, shared by op/group nodes + stubs */
 .kind-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; flex: 0 0 auto; }

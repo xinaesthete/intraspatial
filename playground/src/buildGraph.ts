@@ -7,7 +7,7 @@ import type { FeedbackHandle, FieldValue, GpuField, GraphMemo, SimState } from "
 import { getSource, isSource } from "./sources";
 import { getSpec } from "./specs";
 import { browserBackend } from "./backend.browser";
-import { isGroupNode, isPortStub } from "./grouping";
+import { isOpNode, resolveSource } from "./grouping";
 
 export interface NodeData {
   opName: string;
@@ -30,11 +30,18 @@ export function graphHasFeedback(nodes: Node[]): boolean {
  *  Feedback nodes are built from their `init` only; the `next` (loop-closing) edge is
  *  wired in a second pass once its producer exists. */
 export function buildGraph(allNodes: Node[], allEdges: Edge[]): BuildResult {
-  // Group nodes (and any port stubs) are a UI projection — the real flat graph is
-  // what executes. Membership is just a `data.group` tag and edges are never
-  // rewritten by grouping, so we simply drop group/stub nodes here.
-  const nodes = allNodes.filter((n) => !isGroupNode(n) && !isPortStub(n));
-  const edges = allEdges;
+  // Flatten the subnet hierarchy: only real ops execute. For every edge that lands on
+  // a real op input, resolve its source back through any input/output/group
+  // pass-throughs to the real producer (resolveSource handles nesting). The result is
+  // a plain op→op edge list.
+  const nodes = allNodes.filter(isOpNode);
+  const opIds = new Set(nodes.map((n) => n.id));
+  const edges: Edge[] = [];
+  for (const e of allEdges) {
+    if (!opIds.has(e.target)) continue; // only edges feeding a real op input
+    const rs = resolveSource(allNodes, allEdges, e.source, e.sourceHandle ?? "out");
+    if (rs && opIds.has(rs.node)) edges.push({ id: e.id, source: rs.node, sourceHandle: rs.port, target: e.target, targetHandle: e.targetHandle });
+  }
 
   const graph = new Graph();
   const produced = new Map<string, Record<string, GpuField>>();

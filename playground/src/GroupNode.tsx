@@ -3,14 +3,14 @@
 // the port types are clear. Double-click navigates into it.
 import { Handle, Position } from "@xyflow/react";
 import type { NodeProps } from "@xyflow/react";
-import type { BoundaryPort, GroupData } from "./grouping";
+import type { GroupData, Port } from "./grouping";
 import { kindColor } from "./portKinds";
 
 function portTop(i: number, count: number): string {
   return `${((i + 1) / (count + 1)) * 100}%`;
 }
 
-function PortRow({ p, side }: { p: BoundaryPort; side: "in" | "out" }) {
+function PortRow({ p, side }: { p: Port; side: "in" | "out" }) {
   const dot = <span className="kind-dot" style={{ background: kindColor(p.kind) }} />;
   return (
     <span className={`port-row ${side}`}>
