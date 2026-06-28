@@ -1,4 +1,5 @@
 import { defineConfig } from "vitest/config";
+import typegpu from "unplugin-typegpu/vite";
 
 // GPU tests (`*.gpu.test.ts`) — run via the Dawn (`webgpu`) native addon.
 // Each file runs in its OWN fork process, serially (fileParallelism: false):
@@ -7,6 +8,10 @@ import { defineConfig } from "vitest/config";
 // to a fresh process that creates one device and exits cleanly. Forks (not
 // worker threads) keep the native GPU handle out of a shared thread.
 export default defineConfig({
+  // Transpiles `"use gpu"` TS kernels to WGSL at build time (TGSL). Compute
+  // primitives that fit TGSL are authored in TypeScript; ones needing atomics /
+  // workgroup shared memory / barriers stay as WGSL templates (resolveWithContext).
+  plugins: [typegpu()],
   test: {
     pool: "forks",
     fileParallelism: false,

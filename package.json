@@ -5,7 +5,7 @@
   "description": "WebGPU HTJ2K (JPEG 2000 Part 15) codec — Rust/wasm CPU core + TypeScript/TypeGPU GPU layer.",
   "packageManager": "pnpm@9.0.0",
   "engines": {
-    "node": ">=18.18"
+    "node": ">=20.11"
   },
   "scripts": {
     "test": "vitest run && vitest run -c vitest.gpu.config.ts",
@@ -27,6 +27,7 @@
     "@types/node": "^20.14.0",
     "@webgpu/types": "^0.1.40",
     "typescript": "^5.6.0",
+    "unplugin-typegpu": "0.11.6",
     "vitest": "^2.0.0"
   },
   "volta": {
