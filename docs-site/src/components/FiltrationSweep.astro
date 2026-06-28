@@ -40,7 +40,7 @@
   .fs-demo .row { display:flex; gap:14px; align-items:center; flex-wrap:wrap; margin-bottom:8px; }
   .fs-demo .sel { font-size:13px; color:var(--sl-color-gray-2); display:flex; gap:6px; align-items:center; }
   .fs-demo select { font-size:13px; padding:3px 6px; background:var(--sl-color-bg); color:var(--sl-color-text); border:1px solid var(--sl-color-gray-5); border-radius:6px; }
-  .fs-demo .btn { font-size:13px; padding:4px 11px; border:1px solid var(--sl-color-gray-5); border-radius:6px; background:transparent; color:var(--sl-color-text); cursor:pointer; }
+  .fs-demo .btn { font-size:13px; padding:4px 11px; min-width:88px; text-align:center; border:1px solid var(--sl-color-gray-5); border-radius:6px; background:transparent; color:var(--sl-color-text); cursor:pointer; }
   .fs-demo .hint { font-size:13px; color:var(--sl-color-gray-3); }
   .fs-demo .betti { margin-left:auto; font-size:14px; }
   .fs-demo .stagegrid { display:grid; grid-template-columns:1.5fr 1fr; gap:12px; align-items:stretch; }
@@ -89,7 +89,12 @@
     while(group.children.length)group.remove(group.children[0]); balls=[];
     data=makeData(kind); const n=data.n; D=[];
     for(let i=0;i<n;i++){D[i]=[];for(let j=0;j<n;j++)D[i][j]=Math.hypot(data.X[i]-data.X[j],data.Z[i]-data.Z[j]);}
-    let mx=0;for(let i=0;i<n;i++)for(let j=i+1;j<n;j++)mx=Math.max(mx,D[i][j]); maxScale=mx*1.02;
+    let mx=0;for(let i=0;i<n;i++)for(let j=i+1;j<n;j++)mx=Math.max(mx,D[i][j]); const mxFull=mx*1.02;
+    // Bound the sweep to just past the largest genuine feature death — going further
+    // pushes the triangles-only complex into the dense regime, where it sprouts
+    // spurious essential H1 (you'd need tetrahedra to kill them).
+    const full=persist(D,n,mxFull); let dF=0; for(const p of full)if(isFinite(p.dd)&&(p.dd-p.b)>mxFull*0.03)dF=Math.max(dF,p.dd);
+    maxScale=Math.min(mxFull, dF>0?dF*1.2:mxFull);
     pairs=persist(D,n,maxScale);
     for(let i=0;i<n;i++){const m=new THREE.Mesh(sphereGeo,new THREE.MeshStandardMaterial({transparent:true,opacity:0.32,roughness:0.6}));m.position.set(data.X[i],0,data.Z[i]);group.add(m);balls.push(m);}
     const nE=n*(n-1)/2; edgePos=new Float32Array(nE*6); const eg=new THREE.BufferGeometry(); eg.setAttribute('position',new THREE.BufferAttribute(edgePos,3)); edges=new THREE.LineSegments(eg,new THREE.LineBasicMaterial({color:0xffffff,transparent:true,opacity:0.55})); group.add(edges);
@@ -100,7 +105,7 @@
   function drawPD(scale){
     const r=pd.getBoundingClientRect(), dpr=Math.min(window.devicePixelRatio||1,2);
     pd.width=r.width*dpr; pd.height=r.height*dpr; const x=pd.getContext('2d'); x.setTransform(dpr,0,0,dpr,0,0);
-    const w=r.width,h=r.height,pad=28, side=Math.min(w,h)-2*pad, ox=pad, oy=pad;
+    const w=r.width,h=r.height,pad=28, side=Math.min(w,h)-2*pad, ox=(w-side)/2, oy=(h-side)/2;
     const X=v=>ox+(v/maxScale)*side, Y=v=>oy+side-(Math.min(v,maxScale)/maxScale)*side;
     x.clearRect(0,0,w,h);
     // alive region (birth ≤ scale < death) = upper-left of (scale,scale)
