@@ -23,6 +23,27 @@ function bboxParam(params: Params): [number, number, number, number] | undefined
   return b && b.length === 4 ? [b[0]!, b[1]!, b[2]!, b[3]!] : undefined;
 }
 
+// World box for the grid. An explicit `bbox` wins; otherwise we use the points'
+// own bounds plus a FIXED fractional margin. Crucially the margin does NOT depend on
+// sigma — `splatDensityGpu`'s own default pads by sigma·radiusSigma, which grows the
+// world box as fast as the kernel, so raising sigma zoomed out instead of blurring.
+// A fixed box means sigma visibly controls the blur.
+function resolveBbox(xs: number[], ys: number[], params: Params): [number, number, number, number] {
+  const explicit = bboxParam(params);
+  if (explicit) return explicit;
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (let i = 0; i < xs.length; i++) {
+    const x = xs[i]!, y = ys[i]!;
+    if (x < minX) minX = x;
+    if (x > maxX) maxX = x;
+    if (y < minY) minY = y;
+    if (y > maxY) maxY = y;
+  }
+  if (!Number.isFinite(minX)) return [0, 0, 1, 1];
+  const pad = 0.12 * Math.max(maxX - minX, maxY - minY, 1) + 1e-6;
+  return [minX - pad, minY - pad, maxX + pad, maxY + pad];
+}
+
 export const splatDensityOp: OpType = {
   name: "splatDensity",
   label: "KDE splat",
@@ -46,7 +67,7 @@ export const splatDensityOp: OpType = {
       height,
       sigma: params.sigma as number,
       radiusSigma: params.radiusSigma as number,
-      bbox: bboxParam(params),
+      bbox: resolveBbox(xs, ys, params),
     });
     return [{ shape: { kind: "grid", width, height }, dtype: "f32", data: field.data }];
   },
@@ -58,7 +79,7 @@ export const splatDensityOp: OpType = {
       height,
       sigma: params.sigma as number,
       radiusSigma: params.radiusSigma as number,
-      bbox: bboxParam(params),
+      bbox: resolveBbox(xs, ys, params),
     });
     return [{ shape: { kind: "grid", width, height }, dtype: "f32", data: field.data }];
   },
