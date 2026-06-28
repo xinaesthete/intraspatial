@@ -14,6 +14,8 @@ export type { GpuBackend, Root } from "./backend";
 export { nodeBackend } from "./backend.node";
 export type { PullOptions } from "./executor";
 export { pull, pullData } from "./executor";
+export type { GraphMemo } from "./memo";
+export { createMemo } from "./memo";
 export { registerBuiltinOps } from "./ops/index";
 
 // Side-effect import: ensure built-in ops are registered when this entry is used.

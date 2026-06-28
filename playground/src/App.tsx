@@ -10,7 +10,8 @@ import {
 import type { Connection, Edge, Node, NodeTypes } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import "./styles.css";
-import type { FieldValue } from "../../src/gpu/graph";
+import type { FieldValue, GraphMemo } from "../../src/gpu/graph";
+import { createMemo } from "../../src/gpu/graph";
 import { OpNode } from "./OpNode";
 import { runNode } from "./buildGraph";
 import type { NodeData } from "./buildGraph";
@@ -46,6 +47,7 @@ export default function App() {
   const [running, setRunning] = useState(false);
   const [live, setLive] = useState(false);
   const idSeq = useRef(100);
+  const memo = useRef<GraphMemo>(createMemo());
   const liveRef = useRef(live);
   liveRef.current = live;
   // Serialise an in-flight pull so overlapping auto-runs don't race on the shared
@@ -92,7 +94,7 @@ export default function App() {
     setRunning(true);
     setError(null);
     try {
-      const out = await runNode(nodes, edges, selectedId, selectedPort ?? undefined);
+      const out = await runNode(nodes, edges, selectedId, selectedPort ?? undefined, memo.current);
       setValue(out);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));

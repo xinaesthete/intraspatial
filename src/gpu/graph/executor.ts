@@ -18,6 +18,8 @@ import type { GraphNode } from "./graph";
 import { Graph } from "./graph";
 import { getOp } from "./registry";
 import { nodeBackend } from "./backend.node";
+import type { GraphMemo } from "./memo";
+import { hashSource, hashString, stableJSON } from "./memo";
 
 export interface PullOptions {
   /** Which backend to run native ops on. Defaults to the Node (Dawn) backend. */
@@ -28,6 +30,10 @@ export interface PullOptions {
   /** Receives a value for every produced port (`"nodeId:port"`). Lets callers
    *  inspect intermediates without re-pulling. */
   onValue?: (key: string, value: FieldValue) => void;
+  /** A persistent, content-addressed memo (from `createMemo`). When supplied, a node
+   *  whose op + params + input keys are unchanged is reused instead of re-executed —
+   *  so changing one param re-runs only that node and its dependents. */
+  cache?: GraphMemo;
 }
 
 const key = (nodeId: string, port: string) => `${nodeId}:${port}`;
@@ -71,32 +77,62 @@ async function runNode(
 export async function pull(graph: Graph, field: GpuField, opts: PullOptions = {}): Promise<FieldValue> {
   const ctx = opts.ctx ?? { backend: nodeBackend };
   const mode = opts.mode ?? "gpu";
-  const cache = new Map<string, FieldValue>();
+  const memo = opts.cache;
+  const pulled = new Map<string, FieldValue>(); // per-pull, by "nodeId:port" (dedup)
+  const contentKey = new Map<string, string>(); // nodeId -> content-addressed key
+
+  const emit = (nodeId: string, port: string, v: FieldValue) => {
+    pulled.set(key(nodeId, port), v);
+    opts.onValue?.(key(nodeId, port), v);
+  };
 
   for (const node of topoOrder(graph, [field.producer])) {
     if (node.op === "source") {
       if (!node.source) throw new Error(`executor: source node "${node.id}" has no value`);
       const v = node.source;
-      cache.set(key(node.id, "out"), v);
-      opts.onValue?.(key(node.id, "out"), v);
+      if (memo) {
+        const ck = hashSource(v);
+        contentKey.set(node.id, ck);
+        memo.set(`${ck}#out`, v);
+      }
+      emit(node.id, "out", v);
       continue;
     }
     const op = getOp(node.op);
+
+    // Content key for this node = hash(op, params, input keys). Only computed when a
+    // memo is supplied; cheap, fixed-length (a Merkle digest over the sub-DAG).
+    let ck: string | undefined;
+    if (memo) {
+      const inputKeys = op.inputs.map((spec) => {
+        const ref = node.inputs[spec.name]!;
+        return `${contentKey.get(ref.node) ?? ref.node}#${ref.port}`;
+      });
+      ck = hashString(`${node.op}|${stableJSON(node.params)}|${inputKeys.join(",")}`);
+      contentKey.set(node.id, ck);
+      // Reuse if every output is already memoised.
+      const hits = op.outputs.map((o) => memo.get(`${ck}#${o.name}`));
+      if (hits.every((h) => h !== undefined)) {
+        op.outputs.forEach((o, i) => emit(node.id, o.name, hits[i]!));
+        continue; // cache hit — skip execution entirely
+      }
+    }
+
     const inputs = op.inputs.map((spec) => {
       const ref = node.inputs[spec.name]!;
-      const v = cache.get(key(ref.node, ref.port));
+      const v = pulled.get(key(ref.node, ref.port));
       if (!v) throw new Error(`executor: input "${spec.name}" of "${node.id}" not computed`);
       return v;
     });
     const outs = await runNode(op, ctx, mode, inputs, node.params);
     op.outputs.forEach((o, i) => {
       const v = outs[i]!;
-      cache.set(key(node.id, o.name), v);
-      opts.onValue?.(key(node.id, o.name), v);
+      if (memo && ck) memo.set(`${ck}#${o.name}`, v);
+      emit(node.id, o.name, v);
     });
   }
 
-  const out = cache.get(key(field.producer, field.outPort));
+  const out = pulled.get(key(field.producer, field.outPort));
   if (!out) throw new Error(`executor: requested field not produced`);
   return out;
 }

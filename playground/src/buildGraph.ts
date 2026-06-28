@@ -3,7 +3,7 @@
 // hands it to the executor.
 import type { Edge, Node } from "@xyflow/react";
 import { Graph, pull } from "../../src/gpu/graph";
-import type { FieldValue, GpuField } from "../../src/gpu/graph";
+import type { FieldValue, GpuField, GraphMemo } from "../../src/gpu/graph";
 import { getSource, isSource } from "./sources";
 import { getSpec } from "./specs";
 import { browserBackend } from "./backend.browser";
@@ -66,17 +66,19 @@ export function buildGraph(nodes: Node[], edges: Edge[]): BuildResult {
   return { graph, produced };
 }
 
-/** Build + pull one output of one node. */
+/** Build + pull one output of one node. A persistent `cache` makes re-pulls reuse
+ *  unchanged upstream nodes, so only the changed node and its dependents recompute. */
 export async function runNode(
   nodes: Node[],
   edges: Edge[],
   nodeId: string,
   port?: string,
+  cache?: GraphMemo,
 ): Promise<FieldValue> {
   const { graph, produced } = buildGraph(nodes, edges);
   const map = produced.get(nodeId);
   if (!map) throw new Error("runNode: node not in graph");
   const handle = port ? map[port] : Object.values(map)[0];
   if (!handle) throw new Error("runNode: node has no output to pull");
-  return pull(graph, handle, { ctx: { backend: browserBackend } });
+  return pull(graph, handle, { ctx: { backend: browserBackend }, cache });
 }
