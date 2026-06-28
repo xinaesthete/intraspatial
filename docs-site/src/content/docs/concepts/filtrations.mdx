@@ -16,9 +16,22 @@ their points connect — and separate pieces merge (a **component**, H₀, dies)
 ring of points is enclosed but not yet filled, there is a **loop** (H₁) alive; once
 the interior fills with triangles, the loop dies. The counts below are the Betti
 numbers `H₀` (components) and `H₁` (loops) at the current scale, from the same
-reducer as `src/spatial/persistence.ts`. Drag to rotate.
+reducer as `src/spatial/persistence.ts`.
+
+Switch the **view** between the flat 2-D picture, a **cones** scale-space — each
+point becomes a cone of its distance function, and a slice plane at the current
+scale cuts out the 2-D disks, so sweeping the plane up the cones *is* the
+filtration — or **both** side by side. Drag the cones to rotate.
 
 <FiltrationSweep />
+
+:::note[Illustrative, not yet primitive-driven]
+The Betti counts come from the real `src/spatial/persistence.ts` reducer, but the
+drawing is a hand-built three.js approximation — it isn't yet rendered from the
+toolbox's own GPU primitives. So a few visual details can drift from the homology:
+for instance the outline may briefly show a loop the count has already closed, where
+the union of fat disks disagrees with the combinatorial complex.
+:::
 
 ## How to read it
 
@@ -36,3 +49,20 @@ This is the **filtration** a Vietoris–Rips persistence reducer walks through. 
 toolbox's job is to *build* this filtration efficiently — including the density-
 adaptive [CkNN](/primitives/cknn/) variant — and hand it to the reducer, which reads
 off how long each component and loop survives.
+
+## Sources & further reading
+
+- **This toolbox** — the Betti counts come from `src/spatial/persistence.ts`
+  (standard boundary-matrix reduction over ℤ/2); the density-adaptive scale variant
+  is [CkNN](/primitives/cknn/). The diagram conventions follow the
+  [persistence diagram](/primitives/cknn/#try-it-the-persistence-diagram) primitive.
+- R. Ghrist, *Barcodes: the persistent topology of data*,
+  [Bull. Amer. Math. Soc. 45 (2008)](https://www.ams.org/journals/bull/2008-45-01/S0273-0979-07-01191-3/)
+  — the most readable entry point.
+- G. Carlsson, *Topology and data*,
+  [Bull. Amer. Math. Soc. 46 (2009)](https://www.ams.org/journals/bull/2009-46-02/S0273-0979-09-01249-X/).
+- H. Edelsbrunner & J. Harer, *Computational Topology: An Introduction* (AMS, 2010)
+  — the standard textbook for the reduction algorithm and Vietoris–Rips/Čech complexes.
+- N. Otter et al., *A roadmap for the computation of persistent homology*,
+  [EPJ Data Science 6 (2017)](https://doi.org/10.1140/epjds/s13688-017-0109-5)
+  — practical, computation-focused (open access).

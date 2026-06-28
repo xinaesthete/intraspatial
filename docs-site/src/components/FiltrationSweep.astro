@@ -16,13 +16,23 @@
         <option value="clusters">two clusters (merging)</option>
       </select>
     </label>
+    <span class="sel">view
+      <span class="seg" id="fs-view" role="group" aria-label="view">
+        <button class="segbtn on" data-view="flat" type="button">2D</button>
+        <button class="segbtn" data-view="cones" type="button">cones</button>
+        <button class="segbtn" data-view="both" type="button">both</button>
+      </span>
+    </span>
     <span class="betti"><b style="color:#3b82f6">H₀</b> <span id="fs-h0">–</span>&nbsp;&nbsp;<b style="color:#ef4444">H₁</b> <span id="fs-h1">–</span></span>
   </div>
   <div class="stagegrid">
     <div class="col">
-      <div class="coltitle">Vietoris–Rips complex</div>
-      <div id="fs-stage"></div>
-      <div class="colcap"><span class="dot"></span>colour = connected component (H₀) · drag to rotate</div>
+      <div class="coltitle" id="fs-stagetitle">Vietoris–Rips complex</div>
+      <div class="stageviews">
+        <div id="fs-stage" class="view"></div>
+        <div id="fs-cone" class="view"></div>
+      </div>
+      <div class="colcap" id="fs-stagecap"><span class="dot"></span>colour = connected component (H₀)</div>
     </div>
     <div class="col">
       <div class="coltitle">persistence diagram</div>
@@ -44,13 +54,24 @@
   .fs-demo .sel { font-size:13px; color:var(--sl-color-gray-2); display:flex; gap:6px; align-items:center; }
   .fs-demo select { font-size:13px; padding:3px 6px; background:var(--sl-color-bg); color:var(--sl-color-text); border:1px solid var(--sl-color-gray-5); border-radius:6px; }
   .fs-demo .betti { margin-left:auto; font-size:14px; }
+  .fs-demo .seg { display:inline-flex; border:1px solid var(--sl-color-gray-5); border-radius:6px; overflow:hidden; }
+  /* margin:0 — Starlight's prose spacing adds margin-top to the 2nd/3rd buttons
+     (sibling combinator), shoving them below the first and stretching the control */
+  .fs-demo .segbtn { font-size:12px; margin:0; padding:3px 9px; background:transparent; color:var(--sl-color-gray-2); border:0; border-left:1px solid var(--sl-color-gray-5); cursor:pointer; }
+  .fs-demo .segbtn:first-child { border-left:0; }
+  .fs-demo .segbtn.on { background:var(--sl-color-gray-5); color:var(--sl-color-text); }
   .fs-demo .stagegrid { display:grid; grid-template-columns:1.4fr 1fr; gap:14px; align-items:start; }
   @media (max-width: 640px) { .fs-demo .stagegrid { grid-template-columns:1fr; } }
   /* zero Starlight's prose margin — it adds margin-top to the 2nd grid column,
      which align-items:start then offsets downward, misaligning the two panels */
   .fs-demo .col { display:flex; flex-direction:column; margin-top:0; }
   .fs-demo .coltitle { font-size:12px; font-weight:600; color:var(--sl-color-gray-2); margin-bottom:5px; height:16px; line-height:16px; }
-  .fs-demo #fs-stage { width:100%; height:320px; border-radius:8px; overflow:hidden; touch-action:none; background:var(--sl-color-gray-6); }
+  .fs-demo .stageviews { display:flex; gap:8px; }
+  /* margin-top:0 — Starlight's prose spacing adds a top margin to the 2nd .view
+     (sibling combinator), shifting the cone canvas down relative to the 2-D one */
+  .fs-demo .stageviews .view { flex:1 1 0; min-width:0; height:320px; margin-top:0; border-radius:8px; overflow:hidden; touch-action:none; background:var(--sl-color-gray-6); }
+  .fs-demo[data-view="flat"] #fs-cone { display:none; }
+  .fs-demo[data-view="cones"] #fs-stage { display:none; }
   .fs-demo #fs-pd { width:100%; height:320px; border-radius:8px; background:var(--sl-color-gray-6); }
   .fs-demo .colcap { font-size:11px; color:var(--sl-color-gray-3); margin-top:5px; height:15px; line-height:15px; display:flex; align-items:center; gap:5px; }
   .fs-demo .colcap .dot { width:8px; height:8px; border-radius:50%; flex:0 0 auto; background:linear-gradient(90deg,#3b82f6,#10b981,#f59e0b); }
@@ -64,6 +85,13 @@
 
 <script>
   import * as THREE from 'three';
+  import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
+  import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
+  import { OutlinePass } from 'three/examples/jsm/postprocessing/OutlinePass.js';
+  import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
+  import { LineSegments2 } from 'three/examples/jsm/lines/LineSegments2.js';
+  import { LineSegmentsGeometry } from 'three/examples/jsm/lines/LineSegmentsGeometry.js';
+  import { LineMaterial } from 'three/examples/jsm/lines/LineMaterial.js';
 
   // ----------------------------------------------------------------------------
   // Types
@@ -97,7 +125,10 @@
   }
 
   type Mode = 'ring' | 'eight' | 'clusters';
-  type Ball = THREE.Mesh<THREE.SphereGeometry, THREE.MeshStandardMaterial>;
+  // The 2-D view is locked top-down, so "influence balls" are flat disks (identical
+  // from above). Keeping the whole complex coplanar means OutlinePass only finds true
+  // silhouettes/holes — no false inner edges where flat triangles met tall spheres.
+  type Ball = THREE.Mesh<THREE.CircleGeometry, THREE.MeshBasicMaterial>;
 
   // ----------------------------------------------------------------------------
   // Theme colours
@@ -114,8 +145,21 @@
     return resolved || fallback;
   }
 
-  const INK = probeColor('--sl-color-text', '#cbd5e1');
-  const DIM = probeColor('--sl-color-gray-3', '#94a3b8');
+  /** Relative luminance (0–1) of an "rgb(...)" colour string. */
+  function luminance(c: string): number {
+    const m = c.match(/\d+(\.\d+)?/g);
+    if (!m) return 0.5;
+    const [r, g, b] = m.map(Number);
+    return (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+  }
+
+  // Theme-dependent inks. Mutable + re-probed on theme toggle (see applyTheme).
+  let INK = probeColor('--sl-color-text', '#cbd5e1');
+  let DIM = probeColor('--sl-color-gray-3', '#94a3b8');
+  // Slice outline ink: near-black on light, near-white on dark (stronger contrast
+  // than INK against the slice's own background). Recomputed in applyTheme.
+  const sliceInk = () => (luminance(INK) > 0.5 ? '#e8edf6' : '#0a0d12');
+  const sliceDim = () => (luminance(INK) > 0.5 ? '#3a4252' : '#5a6678');
   // Per-component colours for the 3D balls (indexed by component representative).
   const PALETTE = [
     0x3b82f6, 0xf59e0b, 0x10b981, 0xef4444, 0x8b5cf6,
@@ -275,7 +319,9 @@
   // ----------------------------------------------------------------------------
 
   const byId = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
+  const root = document.querySelector('.fs-demo') as HTMLElement;
   const stage = byId<HTMLDivElement>('fs-stage');
+  const coneStage = byId<HTMLDivElement>('fs-cone');
   const pd = byId<HTMLCanvasElement>('fs-pd');
   const h0Out = byId<HTMLSpanElement>('fs-h0');
   const h1Out = byId<HTMLSpanElement>('fs-h1');
@@ -283,6 +329,12 @@
   const scaleInput = byId<HTMLInputElement>('fs-scale');
   const playBtn = byId<HTMLButtonElement>('fs-play');
   const dataSelect = byId<HTMLSelectElement>('fs-data');
+  const stageTitle = byId<HTMLDivElement>('fs-stagetitle');
+  const stageCap = byId<HTMLDivElement>('fs-stagecap');
+  const segBtns = [...root.querySelectorAll<HTMLButtonElement>('.segbtn')];
+
+  type ViewMode = 'flat' | 'cones' | 'both';
+  let viewMode: ViewMode = 'flat';
 
   let stageW = stage.clientWidth || 520;
   const stageH = 320;
@@ -293,9 +345,20 @@
   stage.appendChild(renderer.domElement);
 
   const scene = new THREE.Scene();
-  const camera = new THREE.PerspectiveCamera(45, stageW / stageH, 0.1, 500);
-  camera.position.set(0, 24, 30);
+  // True 2-D: orthographic camera looking straight down −Y (no perspective, no
+  // rotation). up=−Z so +X is screen-right and +Z is screen-down.
+  let flatHalf = 17; // world half-height the frustum spans (reframed per shape)
+  const camera = new THREE.OrthographicCamera(-flatHalf, flatHalf, flatHalf, -flatHalf, 0.1, 200);
+  camera.position.set(0, 60, 0);
+  camera.up.set(0, 0, -1);
   camera.lookAt(0, 0, 0);
+  function setFlatFrustum(w: number, h: number): void {
+    const a = w / h;
+    camera.left = -flatHalf * a; camera.right = flatHalf * a;
+    camera.top = flatHalf; camera.bottom = -flatHalf;
+    camera.updateProjectionMatrix();
+  }
+  setFlatFrustum(stageW, stageH);
   scene.add(new THREE.AmbientLight(0xffffff, 0.8));
   const keyLight = new THREE.DirectionalLight(0xffffff, 0.65);
   keyLight.position.set(8, 30, 18);
@@ -304,7 +367,98 @@
   // Everything rotatable lives in `group`; the camera/lights stay put.
   const group = new THREE.Group();
   scene.add(group);
-  const sphereGeo = new THREE.SphereGeometry(1, 18, 14);
+  const diskGeo = new THREE.CircleGeometry(1, 44);
+  diskGeo.rotateX(-Math.PI / 2); // lie flat in the XZ plane, facing +Y (the camera)
+
+  // ----------------------------------------------------------------------------
+  // Post-processing: a glowing outline around each connected region (and its
+  // holes, i.e. loops), so connectivity reads at a glance. OutlinePass traces the
+  // silhouette of the ball union — the outer boundary of a component plus the
+  // inner boundary of any enclosed loop. selectedObjects is refreshed per build.
+  // ----------------------------------------------------------------------------
+
+  const composer = new EffectComposer(renderer);
+  composer.setPixelRatio(renderer.getPixelRatio());
+  composer.setSize(stageW, stageH);
+  composer.addPass(new RenderPass(scene, camera));
+  const outlinePass = new OutlinePass(new THREE.Vector2(stageW, stageH), scene, camera);
+  outlinePass.edgeStrength = 3.0;
+  outlinePass.edgeGlow = 0.4;
+  outlinePass.edgeThickness = 1.0;
+  outlinePass.visibleEdgeColor.set(INK); // theme ink: bright on dark, dark on light
+  outlinePass.hiddenEdgeColor.set(DIM);
+  composer.addPass(outlinePass);
+  composer.addPass(new OutputPass());
+
+  // ----------------------------------------------------------------------------
+  // Cone (scale-space) view — a second canvas. Each point becomes a cone of the
+  // distance-to-that-point function: apex at the point, widening with height, where
+  // height = scale. A horizontal slice plane at y = scale cuts each cone in a circle
+  // of radius scale/2 — exactly the 2-D disk at that scale. So sweeping the plane up
+  // the cones *is* the filtration, and the 2-D view is one slice of this object.
+  // ----------------------------------------------------------------------------
+
+  const coneRenderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+  coneRenderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+  coneRenderer.setSize(stageW, stageH);
+  coneStage.appendChild(coneRenderer.domElement);
+  const coneScene = new THREE.Scene();
+  const coneCam = new THREE.PerspectiveCamera(45, stageW / stageH, 0.1, 800);
+  coneScene.add(new THREE.AmbientLight(0xffffff, 0.85));
+  const coneKey = new THREE.DirectionalLight(0xffffff, 0.5);
+  coneKey.position.set(10, 30, 20);
+  coneScene.add(coneKey);
+  const coneGroup = new THREE.Group();
+  coneScene.add(coneGroup);
+  // Unit cone, apex at the origin opening +Y, radius = y/2 (so at y=1, r=0.5).
+  const coneUnit = new THREE.ConeGeometry(0.5, 1, 48, 1, true);
+  coneUnit.rotateX(Math.PI);       // flip apex downward
+  coneUnit.translate(0, 0.5, 0);   // apex at y=0, base (r=0.5) at y=1
+  const apexGeo = new THREE.SphereGeometry(0.4, 14, 10); // point dot at each cone apex
+
+  // The slice plane shows the actual 2-D complex (component-coloured balls, edges,
+  // filled triangles). The flat and cone views are separate WebGL contexts, so rather
+  // than share the flat canvas (cross-context + variable aspect), we re-render the
+  // same `scene` here in the cone context through a *square* ortho camera into a
+  // render target, and texture the slice with it — square in, square out, no aspect
+  // mismatch, and each disk lands exactly over its cone.
+  const sliceCam = new THREE.OrthographicCamera(-12, 12, 12, -12, 0.1, 200);
+  sliceCam.position.set(0, 60, 0);
+  sliceCam.up.set(0, 0, -1);
+  sliceCam.lookAt(0, 0, 0);
+  // Full 2-D pipeline (RenderPass → OutlinePass → OutputPass) over the flat scene,
+  // rendered off-screen here so the slice carries the same glow + colour as the 2-D
+  // view. renderToScreen=false → result lands in the composer's read buffer.
+  const sliceComposer = new EffectComposer(coneRenderer);
+  sliceComposer.renderToScreen = false;
+  sliceComposer.setSize(640, 640);
+  sliceComposer.setPixelRatio(1);
+  sliceComposer.addPass(new RenderPass(scene, sliceCam));
+  const sliceOutline = new OutlinePass(new THREE.Vector2(640, 640), scene, sliceCam);
+  sliceOutline.edgeStrength = 3.0;
+  sliceOutline.edgeGlow = 0.4;
+  sliceOutline.edgeThickness = 1.0;
+  sliceOutline.visibleEdgeColor.set(sliceInk()); // near-black on light / near-white on dark
+  sliceOutline.hiddenEdgeColor.set(sliceDim());
+  sliceComposer.addPass(sliceOutline);
+  // No OutputPass: keep the slice texture linear and let the cone renderer's own
+  // output apply sRGB when the slice plane is drawn — one encode, matching the 2-D
+  // view. (Previously OutputPass encoded sRGB into the RT and the renderer encoded
+  // again → a washed-out tone/colour-space mismatch between the two views.)
+  sliceComposer.renderTarget1.texture.colorSpace = THREE.LinearSRGBColorSpace;
+  sliceComposer.renderTarget2.texture.colorSpace = THREE.LinearSRGBColorSpace;
+
+  // Orbit state for the cone camera (azimuth/elevation around a target on the Y axis).
+  let coneAz = -0.6, coneEl = 0.42, coneDist = 40, coneTargetY = 6;
+  function updateConeCam(): void {
+    const ce = Math.cos(coneEl);
+    coneCam.position.set(
+      ce * Math.sin(coneAz) * coneDist,
+      coneTargetY + Math.sin(coneEl) * coneDist,
+      ce * Math.cos(coneAz) * coneDist,
+    );
+    coneCam.lookAt(0, coneTargetY, 0);
+  }
 
   // ----------------------------------------------------------------------------
   // Scene state (rebuilt whenever the shape changes)
@@ -315,10 +469,16 @@
   let bars: Bar[];
   let maxScale: number;
   let balls: Ball[] = [];
-  let edges: THREE.LineSegments;
+  let verts: Ball[] = []; // small solid dots marking the actual points (the 0-simplices)
+  let edges: LineSegments2; // fat (world-unit) lines, so they survive the slice minification
   let edgePos: Float32Array; // flat [x,y,z, x,y,z, ...] for every potential edge
   let tris: THREE.Mesh;
   let triPos: Float32Array; // flat triangle vertices for every potential triangle
+  // Cone-view scene state.
+  let coneMeshes: THREE.Mesh<THREE.ConeGeometry, THREE.MeshStandardMaterial>[] = [];
+  let apexMeshes: THREE.Mesh<THREE.SphereGeometry, THREE.MeshBasicMaterial>[] = []; // point dots at cone apexes
+  let slicePlane: THREE.Mesh;
+  let planeHalf = 12; // world half-width the slice plane / canvas spans
 
   function buildScene(kind: Mode): void {
     while (group.children.length) group.remove(group.children[0]);
@@ -351,19 +511,41 @@
         lastRealDeath = Math.max(lastRealDeath, bar.death);
     maxScale = Math.min(fullScale, lastRealDeath > 0 ? lastRealDeath * 1.2 : fullScale);
 
+    // Frame the 2-D view to fit the points plus their largest disks (radius maxScale/2).
+    let extent = 0;
+    for (let i = 0; i < n; i++) extent = Math.max(extent, Math.abs(data.X[i]), Math.abs(data.Z[i]));
+    flatHalf = extent + maxScale / 2 + 2;
+    setFlatFrustum(stage.clientWidth || stageW, stageH);
+
     bars = persistence(D, n, maxScale);
+
+    // Keep only the H0/H1 story this 2-D demo is about, and drop its noise:
+    //  • dim ≥ 2 (H2): the reduction emits a never-dying 2-cycle for every unpaired
+    //    triangle — no tetrahedra exist to kill them. They're meaningless here, yet
+    //    the diagram drew each as a red tick along the top edge (the noise band).
+    //  • essential H1: a cycle-creating edge between already-connected points opens a
+    //    loop nothing can close, so it never dies. A *genuine* loop always fills with
+    //    triangles before maxScale, so it's finite — only the spurious ones are essential.
+    //  • tiny finite H1: short-lived loops from point jitter.
+    const minLoopPersistence = maxScale * 0.04;
+    bars = bars.filter((bar) => {
+      if (bar.dim >= 2) return false;                     // no H2 story in 2-D
+      if (bar.dim === 0) return true;                     // keep all components
+      if (!isFinite(bar.death)) return false;             // drop never-dying loops
+      return bar.death - bar.birth >= minLoopPersistence; // drop tiny transient loops
+    });
 
     // Balls — translucent influence spheres. depthWrite:false so they blend cleanly
     // instead of fighting the depth buffer; renderOrder pushes them after the edges.
     for (let i = 0; i < n; i++) {
       const ball: Ball = new THREE.Mesh(
-        sphereGeo,
-        new THREE.MeshStandardMaterial({
+        diskGeo,
+        new THREE.MeshBasicMaterial({
           transparent: true,
           blending: THREE.AdditiveBlending,
           opacity: 0.2,
-          roughness: 0.6,
           depthWrite: false,
+          depthTest: false,
         }),
       );
       ball.renderOrder = 2;
@@ -372,16 +554,34 @@
       balls.push(ball);
     }
 
-    // Edges — preallocate one line segment per possible pair; drawRange gates how
-    // many are shown each frame.
+    // Vertices — small solid dots at each point (the 0-simplices), fixed size, on top.
+    verts = [];
+    for (let i = 0; i < n; i++) {
+      const v: Ball = new THREE.Mesh(
+        diskGeo,
+        new THREE.MeshBasicMaterial({ depthWrite: false, depthTest: false }),
+      );
+      v.scale.setScalar(0.42);
+      v.position.set(data.X[i], 0, data.Z[i]);
+      v.renderOrder = 4; // above disks, edges, triangles
+      group.add(v);
+      verts.push(v);
+    }
+
+    // Edges — fat world-unit lines (LineSegments2), rebuilt each frame from the
+    // active pairs. World-unit width means real geometric thickness, so they read
+    // both in the 2-D view and after the slice's render-target minification.
     const maxEdges = (n * (n - 1)) / 2;
     edgePos = new Float32Array(maxEdges * 6);
-    const edgeGeo = new THREE.BufferGeometry();
-    edgeGeo.setAttribute('position', new THREE.BufferAttribute(edgePos, 3));
-    edges = new THREE.LineSegments(
-      edgeGeo,
-      new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.55 }),
-    );
+    const edgeMat = new LineMaterial({
+      color: new THREE.Color(INK).getHex(), worldUnits: true, linewidth: 0.13,
+      transparent: true, opacity: 0.6, depthTest: false,
+    });
+    edgeMat.resolution.set(stageW, stageH);
+    edges = new LineSegments2(new LineSegmentsGeometry(), edgeMat);
+    edges.geometry.setPositions(edgePos); // wrap the preallocated buffer ONCE; we then
+    edges.frustumCulled = false;          // update it in place + gate with instanceCount
+    edges.renderOrder = 3; // on top of the additive disks, so they aren't washed pale
     group.add(edges);
 
     // Triangles — likewise preallocated, gated by drawRange.
@@ -389,19 +589,93 @@
     triPos = new Float32Array(maxTris * 9);
     const triGeo = new THREE.BufferGeometry();
     triGeo.setAttribute('position', new THREE.BufferAttribute(triPos, 3));
+    // Filled, calm translucent triangles. These are the 2-simplices that *fill* a
+    // loop — when they cover its interior the loop is no longer a hole and H₁ dies,
+    // so showing them makes the outline closing legible. depthTest:false + a low
+    // renderOrder avoids the z-fighting/dominance the additive wireframe had: they
+    // sit as a flat wash beneath the edges and balls.
     tris = new THREE.Mesh(
       triGeo,
       new THREE.MeshBasicMaterial({
         color: 0x8b5cf6,
         transparent: true,
-        blending: THREE.AdditiveBlending,
-        depthWrite: false,
-        wireframe: true,
-        opacity: 0.2,
+        opacity: 0.16,
         side: THREE.DoubleSide,
+        depthWrite: false,
+        depthTest: false,
       }),
     );
+    tris.renderOrder = 0;
     group.add(tris);
+
+    // Outline balls + filled triangles together. Including the triangles is what
+    // keeps the visual in step with the homology: a loop's hole closes exactly when
+    // triangles fill it (= when H₁ dies), not later when the fat balls finally meet.
+    // (OutlinePass renders selected objects solid for its mask, ignoring the tris'
+    // wireframe display material, so the filling is real even though we draw it wire.)
+    outlinePass.selectedObjects = [...balls, tris];
+    sliceOutline.selectedObjects = [...balls, tris];
+
+    buildCone();
+  }
+
+  /** (Re)build the cone-view scene for the current data + maxScale. */
+  function buildCone(): void {
+    while (coneGroup.children.length) coneGroup.remove(coneGroup.children[0]);
+    const n = data.n;
+
+    // One filled, translucent cone per point: apex at the point, base radius
+    // maxScale/2 at y = maxScale. Each gets its own material so it can be tinted by
+    // connected component every frame, exactly like its disk in the 2-D view.
+    coneMeshes = [];
+    for (let i = 0; i < n; i++) {
+      const cone = new THREE.Mesh(coneUnit, new THREE.MeshStandardMaterial({
+        transparent: true, opacity: 0.09, roughness: 0.75,
+        side: THREE.DoubleSide, depthWrite: false,
+      }));
+      cone.scale.setScalar(maxScale);
+      cone.position.set(data.X[i], 0, data.Z[i]);
+      coneGroup.add(cone);
+      coneMeshes.push(cone);
+    }
+
+    // Point dots at the cone apexes (the 0-simplices, in 3-D).
+    apexMeshes = [];
+    for (let i = 0; i < n; i++) {
+      const dot = new THREE.Mesh(apexGeo, new THREE.MeshBasicMaterial());
+      dot.position.set(data.X[i], 0, data.Z[i]);
+      coneGroup.add(dot);
+      apexMeshes.push(dot);
+    }
+
+    // Horizontal slice plane, its face textured with the re-rendered 2-D complex.
+    // Sized + the square slice camera framed to the points + their largest disks.
+    let ext = 0;
+    for (let i = 0; i < n; i++) ext = Math.max(ext, Math.abs(data.X[i]), Math.abs(data.Z[i]));
+    planeHalf = ext + maxScale / 2 + 2;
+    sliceCam.left = -planeHalf; sliceCam.right = planeHalf;
+    sliceCam.top = planeHalf; sliceCam.bottom = -planeHalf;
+    sliceCam.updateProjectionMatrix();
+    slicePlane = new THREE.Mesh(
+      new THREE.PlaneGeometry(2 * planeHalf, 2 * planeHalf),
+      new THREE.MeshBasicMaterial({
+        transparent: true, side: THREE.DoubleSide,
+        depthWrite: false, depthTest: false, // sit on top of the cones so it reads
+      }),
+    );
+    slicePlane.rotation.x = -Math.PI / 2; // lie flat in the XZ plane
+    slicePlane.renderOrder = 10;
+    coneGroup.add(slicePlane);
+
+    // Frame the camera to the cone stack's height.
+    coneTargetY = maxScale * 0.42;
+    coneDist = maxScale * 2.4;
+    updateConeCam();
+  }
+
+  /** Lift the slice plane to y = scale (its texture is refreshed in the frame loop). */
+  function updateCone(scale: number): void {
+    slicePlane.position.y = scale;
   }
 
   /**
@@ -533,8 +807,12 @@
     // palette length) spreads adjacent component reps to distinct hues; merged
     // components collapse toward a single hue.
     for (let i = 0; i < n; i++) {
+      const col = PALETTE[(reps[i] * 7) % PALETTE.length];
       balls[i].scale.setScalar(Math.max(0.18, scale / 2));
-      balls[i].material.color.setHex(PALETTE[(reps[i] * 7) % PALETTE.length]);
+      balls[i].material.color.setHex(col);
+      verts[i].material.color.setHex(col);       // point dot, 2-D + slice
+      coneMeshes[i].material.color.setHex(col);   // cone tint
+      apexMeshes[i].material.color.setHex(col);   // point dot, cone view
     }
 
     // Edges: one segment per pair within `scale`.
@@ -547,8 +825,11 @@
           edgePos[o + 3] = data.X[j]; edgePos[o + 4] = 0; edgePos[o + 5] = data.Z[j];
           edgeCount++;
         }
-    edges.geometry.setDrawRange(0, edgeCount * 2);
-    edges.geometry.attributes.position.needsUpdate = true;
+    // Update the (preallocated) line buffer in place and gate how many segments draw —
+    // no per-frame buffer recreation, so a render can't catch a half-uploaded buffer.
+    edges.visible = edgeCount > 0;
+    edges.geometry.instanceCount = edgeCount;
+    (edges.geometry.getAttribute('instanceStart') as THREE.InterleavedBufferAttribute).data.needsUpdate = true;
 
     // Triangles: every triple whose three edges are all within `scale`.
     let triCount = 0;
@@ -576,15 +857,52 @@
       scaleInput.value = String(Math.round((scale / maxScale) * 1000));
 
     drawPD(scale);
+    updateCone(scale);
   }
 
   // ----------------------------------------------------------------------------
-  // Interaction: drag to rotate, play/pause, scrub, change shape
+  // View mode + layout: the 2-D and cone views are separate canvases, shown alone
+  // or side by side. Switching re-sizes the visible renderer(s) and reframes.
   // ----------------------------------------------------------------------------
 
-  let rotY = -0.15, rotX = 0.32;
+  function layout(): void {
+    root.dataset.view = viewMode;
+    for (const b of segBtns) b.classList.toggle('on', b.dataset.view === viewMode);
+    if (viewMode !== 'cones') {
+      const w = stage.clientWidth || 300;
+      renderer.setSize(w, stageH);
+      composer.setSize(w, stageH);
+      setFlatFrustum(w, stageH);
+    }
+    if (viewMode !== 'flat') {
+      const w = coneStage.clientWidth || 300;
+      coneRenderer.setSize(w, stageH);
+      coneCam.aspect = w / stageH;
+      coneCam.updateProjectionMatrix();
+    }
+    stageTitle.textContent =
+      viewMode === 'cones' ? 'scale-space (cones)'
+        : viewMode === 'both' ? 'complex · scale-space'
+          : 'Vietoris–Rips complex';
+    stageCap.innerHTML =
+      viewMode === 'flat'
+        ? '<span class="dot"></span>colour = connected component (H₀)'
+        : 'height = scale · slice = current complex · drag to rotate';
+  }
+
+  for (const b of segBtns)
+    b.addEventListener('click', () => {
+      viewMode = (b.dataset.view as ViewMode) ?? 'flat';
+      layout();
+      update(scale);
+    });
+
+  // ----------------------------------------------------------------------------
+  // Interaction: drag to orbit the cone view, play/pause, scrub, change shape
+  // ----------------------------------------------------------------------------
+
   let dragging = false, lastX = 0, lastY = 0;
-  renderer.domElement.addEventListener('pointerdown', (e: PointerEvent) => {
+  coneRenderer.domElement.addEventListener('pointerdown', (e: PointerEvent) => {
     dragging = true;
     lastX = e.clientX;
     lastY = e.clientY;
@@ -592,8 +910,9 @@
   window.addEventListener('pointerup', () => { dragging = false; });
   window.addEventListener('pointermove', (e: PointerEvent) => {
     if (!dragging) return;
-    rotY += (e.clientX - lastX) * 0.01;
-    rotX = Math.max(-0.2, Math.min(1.3, rotX + (e.clientY - lastY) * 0.01));
+    coneAz -= (e.clientX - lastX) * 0.01;
+    coneEl = Math.max(0.06, Math.min(1.45, coneEl + (e.clientY - lastY) * 0.01));
+    updateConeCam();
     lastX = e.clientX;
     lastY = e.clientY;
   });
@@ -626,11 +945,25 @@
     setPlaying(true);
   });
   window.addEventListener('resize', () => {
-    stageW = stage.clientWidth || 520;
-    renderer.setSize(stageW, stageH);
-    camera.aspect = stageW / stageH;
-    camera.updateProjectionMatrix();
+    layout();
     update(scale);
+  });
+
+  // Re-ink theme-dependent colours when the user toggles light/dark at runtime.
+  // (CSS vars update live; we just re-probe and push the new inks into three.js.)
+  function applyTheme(): void {
+    INK = probeColor('--sl-color-text', '#cbd5e1');
+    DIM = probeColor('--sl-color-gray-3', '#94a3b8');
+    if (edges) (edges.material as LineMaterial).color.set(INK);
+    outlinePass.visibleEdgeColor.set(INK);
+    outlinePass.hiddenEdgeColor.set(DIM);
+    sliceOutline.visibleEdgeColor.set(sliceInk());
+    sliceOutline.hiddenEdgeColor.set(sliceDim());
+    drawPD(scale);
+  }
+  new MutationObserver(applyTheme).observe(document.documentElement, {
+    attributes: true,
+    attributeFilter: ['class', 'data-theme'],
   });
 
   // ----------------------------------------------------------------------------
@@ -645,12 +978,19 @@
       scale = Math.min(1, elapsed / SWEEP_MS) * maxScale;
       update(scale);
     }
-    group.rotation.y = rotY;
-    group.rotation.x = rotX;
-    renderer.render(scene, camera);
+    if (viewMode !== 'cones') composer.render();
+    if (viewMode !== 'flat') {
+      // Re-render the 2-D complex (square, full pipeline) into the slice texture,
+      // bind it to the slice face, then draw the cones.
+      sliceComposer.render();
+      (slicePlane.material as THREE.MeshBasicMaterial).map = sliceComposer.readBuffer.texture;
+      coneRenderer.setRenderTarget(null);
+      coneRenderer.render(coneScene, coneCam);
+    }
   }
 
   buildScene('ring');
   update(0);
+  layout();
   requestAnimationFrame(frame);
 </script>
