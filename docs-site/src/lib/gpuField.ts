@@ -13,8 +13,13 @@
 // Node/Dawn render path, so it bundles for the docs site. The persistence reduction
 // that consumes this field is inherently sequential and always stays on the CPU.
 //
-// Everything degrades gracefully: if WebGPU is missing or anything throws, the
-// device probe / compute returns null and the caller falls back to the CPU library.
+// Robustness (different WebGPU backends behave differently — Safari/WebKit on Metal
+// is stricter and has been crash-prone on iOS):
+//   • every call validates its output (finite, plausible range); a bad result
+//     returns null so the caller falls back to the CPU library — never garbage.
+//   • calls are single-flighted (serialised) and buffers are pooled/reused rather
+//     than created+destroyed per call, to avoid rapid alloc/free races.
+//   • any throw → null → CPU fallback; a device-loss drops the cached context.
 
 const K_MAX = 16; // max DTM neighbours the shader's local array holds
 
@@ -52,22 +57,22 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     }
     field[idx] = acc;
   } else if (params.mode == 1u) {                           // distance to nearest
-    var best = 3.4e38;
+    var best = 3.0e38;
     for (var i = 0u; i < params.n; i = i + 1u) {
       let dx = cx - pts[2u * i];
       let dy = cy - pts[2u * i + 1u];
       let d2 = dx * dx + dy * dy;
-      if (d2 < best) { best = d2; }
+      best = min(best, d2);
     }
     field[idx] = sqrt(best);
   } else {                                                  // DTM: sqrt(mean of k smallest d^2)
     let k = min(params.k, ${K_MAX}u);
     var small: array<f32, ${K_MAX}>;
-    for (var s = 0u; s < k; s = s + 1u) { small[s] = 3.4e38; }
+    for (var s = 0u; s < ${K_MAX}u; s = s + 1u) { small[s] = 3.0e38; }
     for (var i = 0u; i < params.n; i = i + 1u) {
       let dx = cx - pts[2u * i];
       let dy = cy - pts[2u * i + 1u];
-      var d2 = dx * dx + dy * dy;
+      let d2 = dx * dx + dy * dy;
       // Insert d2 into the sorted (ascending) k-array if it beats the current max.
       if (d2 < small[k - 1u]) {
         var j = k - 1u;
@@ -106,6 +111,16 @@ interface Ctx {
 
 let ctxPromise: Promise<Ctx | null> | undefined;
 
+// Pooled buffers (reused/grown, reset on device loss) — avoids per-call alloc/free,
+// which some backends (notably WebKit/Metal) handle poorly under rapid rebuilds.
+let pBuf: GPUBuffer | undefined;
+let ptsBuf: GPUBuffer | undefined, ptsCap = 0;
+let outBuf: GPUBuffer | undefined, readBuf: GPUBuffer | undefined, cellCap = 0;
+function resetPool(): void {
+  pBuf = ptsBuf = outBuf = readBuf = undefined;
+  ptsCap = 0; cellCap = 0;
+}
+
 /** Acquire (once) a browser GPU device + compute pipeline, or null if unavailable. */
 export function getGpuFieldContext(): Promise<Ctx | null> {
   ctxPromise ??= (async () => {
@@ -117,8 +132,8 @@ export function getGpuFieldContext(): Promise<Ctx | null> {
       const device = await adapter.requestDevice();
       const module = device.createShaderModule({ code: SHADER });
       const pipeline = device.createComputePipeline({ layout: "auto", compute: { module, entryPoint: "main" } });
-      // If the device is ever lost, drop the cache so the next call re-probes.
-      device.lost.then(() => { ctxPromise = undefined; });
+      // If the device is ever lost, drop the cache + pool so the next call re-probes.
+      device.lost.then(() => { ctxPromise = undefined; resetPool(); });
       return { device, pipeline };
     } catch {
       return null;
@@ -132,30 +147,53 @@ export async function gpuFieldAvailable(): Promise<boolean> {
   return (await getGpuFieldContext()) !== null;
 }
 
+/** Heuristic: WebKit (Safari / all iOS browsers). Its WebGPU backend is stricter and
+ *  has been crash-prone, so the demo defaults the GPU path OFF there (still toggleable). */
+export function isAppleWebKit(): boolean {
+  try {
+    return /Apple/.test((navigator as Navigator).vendor || "");
+  } catch {
+    return false;
+  }
+}
+
 const MODE_CODE: Record<FieldMode, number> = { kde: 0, distance: 1, dtm: 2 };
 
-/**
- * Compute the field on the GPU. Returns the row-major width*height Float32Array, or
- * null if WebGPU is unavailable / anything fails (caller should fall back to CPU).
- */
-export async function computeFieldGpu(
+/** A returned field is trusted only if every sample is finite and it carries some
+ *  signal (max > 0) — guards against a backend silently emitting NaN/Inf/zeros. */
+function looksValid(out: Float32Array): boolean {
+  let max = 0;
+  for (let i = 0; i < out.length; i++) {
+    const v = out[i]!;
+    if (!Number.isFinite(v)) return false;
+    if (v > max) max = v;
+  }
+  return max > 0;
+}
+
+// Serialise calls: overlapping compute/readback on pooled buffers races on some
+// backends. Each call waits for the previous to finish.
+let inFlight: Promise<unknown> = Promise.resolve();
+
+async function doCompute(
+  ctx: Ctx,
   xs: ArrayLike<number>,
   ys: ArrayLike<number>,
   params: GpuFieldParams,
 ): Promise<Float32Array | null> {
-  const ctx = await getGpuFieldContext();
-  if (!ctx) return null;
   const { device, pipeline } = ctx;
   const n = xs.length;
   const { width: W, height: H, bbox, mode } = params;
   const sigma = params.sigma ?? 1.5;
   const support = sigma * (params.radiusSigma ?? 4);
   const k = Math.max(1, Math.min(params.k ?? 5, n || 1, K_MAX));
+  const cells = W * H;
+  const outBytes = cells * 4;
 
-  let pBuf: GPUBuffer | undefined, ptsBuf: GPUBuffer | undefined,
-    outBuf: GPUBuffer | undefined, readBuf: GPUBuffer | undefined;
   try {
-    // Params (std430-packed scalars).
+    // Params (std430-packed scalars) — write via a typed-array view (stricter
+    // backends reject a bare ArrayBuffer).
+    pBuf ??= device.createBuffer({ size: 48, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
     const pData = new ArrayBuffer(48);
     const dv = new DataView(pData);
     dv.setUint32(0, W, true); dv.setUint32(4, H, true);
@@ -164,19 +202,23 @@ export async function computeFieldGpu(
     dv.setFloat32(24, bbox[2], true); dv.setFloat32(28, bbox[3], true);
     dv.setFloat32(32, sigma, true); dv.setFloat32(36, support, true);
     dv.setUint32(40, k, true); dv.setUint32(44, 0, true);
-    pBuf = device.createBuffer({ size: 48, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
-    device.queue.writeBuffer(pBuf, 0, pData);
+    device.queue.writeBuffer(pBuf, 0, new Uint8Array(pData));
 
-    // Points (x,y interleaved).
-    const pts = new Float32Array(Math.max(n, 1) * 2);
+    // Points (x,y interleaved), pooled + grown.
+    const ptsFloats = Math.max(n, 1) * 2;
+    if (!ptsBuf || ptsCap < ptsFloats) {
+      ptsCap = Math.max(ptsFloats, ptsCap * 2, 2);
+      ptsBuf = device.createBuffer({ size: ptsCap * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+    }
+    const pts = new Float32Array(ptsFloats);
     for (let i = 0; i < n; i++) { pts[2 * i] = xs[i]!; pts[2 * i + 1] = ys[i]!; }
-    ptsBuf = device.createBuffer({ size: pts.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
     device.queue.writeBuffer(ptsBuf, 0, pts);
 
-    const cells = W * H;
-    const outBytes = cells * 4;
-    outBuf = device.createBuffer({ size: outBytes, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC });
-    readBuf = device.createBuffer({ size: outBytes, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST });
+    if (!outBuf || !readBuf || cellCap < cells) {
+      cellCap = Math.max(cells, cellCap * 2, 1);
+      outBuf = device.createBuffer({ size: cellCap * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC });
+      readBuf = device.createBuffer({ size: cellCap * 4, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST });
+    }
 
     const bind = device.createBindGroup({
       layout: pipeline.getBindGroupLayout(0),
@@ -196,13 +238,29 @@ export async function computeFieldGpu(
     enc.copyBufferToBuffer(outBuf, 0, readBuf, 0, outBytes);
     device.queue.submit([enc.finish()]);
 
-    await readBuf.mapAsync(GPUMapMode.READ);
-    const out = new Float32Array(readBuf.getMappedRange().slice(0));
+    await readBuf.mapAsync(GPUMapMode.READ, 0, outBytes);
+    const out = new Float32Array(readBuf.getMappedRange(0, outBytes).slice(0));
     readBuf.unmap();
-    return out;
+    return looksValid(out) ? out : null;
   } catch {
     return null;
-  } finally {
-    pBuf?.destroy(); ptsBuf?.destroy(); outBuf?.destroy(); readBuf?.destroy();
   }
+}
+
+/**
+ * Compute the field on the GPU. Returns the row-major width*height Float32Array, or
+ * null if WebGPU is unavailable / the result fails validation / anything throws — in
+ * every such case the caller should fall back to the CPU library.
+ */
+export async function computeFieldGpu(
+  xs: ArrayLike<number>,
+  ys: ArrayLike<number>,
+  params: GpuFieldParams,
+): Promise<Float32Array | null> {
+  const ctx = await getGpuFieldContext();
+  if (!ctx) return null;
+  // Chain onto the previous call so only one compute/readback is in flight.
+  const run = inFlight.then(() => doCompute(ctx, xs, ys, params), () => doCompute(ctx, xs, ys, params));
+  inFlight = run.catch(() => undefined);
+  return run;
 }
