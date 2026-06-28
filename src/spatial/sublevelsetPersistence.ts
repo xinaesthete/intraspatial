@@ -30,6 +30,15 @@ export interface FieldPersistencePair {
   /** Field value at which it dies; `Infinity`/`-Infinity` for essential features
    *  still alive at the end of the filtration. */
   death: number;
+  /** Row-major grid cell of the cell that *creates* the feature — for a component
+   *  (dim 0) the local extremum (valley for sublevel, peak for superlevel) it is born
+   *  at; for a loop (dim 1) a representative of the closing edge. Lets a caller link a
+   *  spatial feature to its diagram point by identity rather than by value. */
+  birthCell: number;
+  /** Row-major grid cell of the cell that *kills* the feature — for a loop (dim 1)
+   *  the square that fills it (a cell inside the hole); undefined for essential
+   *  features that never die. */
+  deathCell?: number;
 }
 
 export interface FieldPersistenceResult {
@@ -129,6 +138,16 @@ export function sublevelsetPersistence(
     cell.faces.length ? cell.faces.map((fid) => pos.get(fid)!).sort((a, b) => a - b) : [],
   );
 
+  // Map any cell id back to a representative row-major grid cell: a vertex is its own
+  // cell; an edge / square reports its lowest-index corner. Lets callers link a
+  // persistence pair to a spatial location (e.g. which component / hole it lives in).
+  const repCell = (id: number): number => {
+    if (id < V) return id;
+    if (id < V + HE) { const k = id - V; return Math.floor(k / (W - 1)) * W + (k % (W - 1)); }
+    if (id < V + HE + VE) { const k = id - V - HE; return Math.floor(k / W) * W + (k % W); }
+    const k = id - V - HE - VE; return Math.floor(k / (W - 1)) * W + (k % (W - 1));
+  };
+
   // ---- Standard GF(2) reduction (as in persistence.ts) ----
   const lowToCol = new Map<number, number>();
   const pairedCreator = new Set<number>();
@@ -149,7 +168,10 @@ export function sublevelsetPersistence(
       const creator = cells[l]!;
       const death = cells[j]!.filt;
       if (death > creator.filt)
-        pairs.push({ dim: creator.dim, birth: toField(creator.filt), death: toField(death) });
+        pairs.push({
+          dim: creator.dim, birth: toField(creator.filt), death: toField(death),
+          birthCell: repCell(creator.id), deathCell: repCell(cells[j]!.id),
+        });
       pairedCreator.add(l);
     }
   }
@@ -160,7 +182,10 @@ export function sublevelsetPersistence(
   const essentialDeath = toField(Infinity);
   for (let j = 0; j < cols.length; j++)
     if (cols[j]!.length === 0 && !pairedCreator.has(j))
-      pairs.push({ dim: cells[j]!.dim, birth: toField(cells[j]!.filt), death: essentialDeath });
+      pairs.push({
+        dim: cells[j]!.dim, birth: toField(cells[j]!.filt), death: essentialDeath,
+        birthCell: repCell(cells[j]!.id),
+      });
 
   return { pairs };
 }

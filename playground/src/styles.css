@@ -1,0 +1,125 @@
+:root {
+  --bg: #0d0f15;
+  --panel: #151823;
+  --panel2: #1b1f2c;
+  --line: #2a3040;
+  --text: #d7dbe6;
+  --muted: #8a93a6;
+  --accent: #6ba8ff;
+}
+
+* { box-sizing: border-box; }
+html, body, #root { height: 100%; margin: 0; }
+body { background: var(--bg); color: var(--text); font: 13px/1.4 ui-sans-serif, system-ui, sans-serif; }
+
+.app { display: grid; grid-template-columns: 200px 1fr 300px; height: 100vh; }
+
+.palette, .inspector { background: var(--panel); padding: 12px; overflow-y: auto; border-right: 1px solid var(--line); }
+.inspector { border-right: none; border-left: 1px solid var(--line); }
+.palette h1 { font-size: 15px; margin: 0 0 4px; }
+.palette h2, .inspector h2 { font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); margin: 16px 0 6px; }
+.muted { color: var(--muted); font-size: 12px; }
+
+.palette-btn {
+  display: block; width: 100%; text-align: left; margin: 4px 0; padding: 6px 8px;
+  background: var(--panel2); color: var(--text); border: 1px solid var(--line); border-radius: 6px; cursor: pointer;
+}
+.palette-btn:hover { border-color: var(--accent); }
+.palette-btn.source { border-left: 3px solid #9be29b; }
+
+.canvas { position: relative; height: 100vh; min-width: 0; }
+.canvas .react-flow { width: 100%; height: 100%; }
+.canvas-toolbar { position: absolute; top: 10px; left: 10px; z-index: 5; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.canvas-toolbar .tb-primary {
+  padding: 6px 10px; background: var(--accent); color: #06101f; border: none;
+  border-radius: 6px; font-weight: 600; cursor: pointer;
+}
+.breadcrumb { display: flex; align-items: center; gap: 2px; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 3px 6px; }
+.bc-item { display: inline-flex; align-items: center; gap: 2px; }
+.bc-seg { background: none; border: none; color: var(--accent); cursor: pointer; font-size: 13px; padding: 2px 5px; border-radius: 4px; }
+.bc-seg:hover:not(:disabled) { background: var(--panel2); }
+.bc-seg:disabled { color: var(--text); cursor: default; font-weight: 600; }
+.bc-sep { color: var(--muted); }
+
+/* `input`, `output`, `group` are RESERVED React Flow node types with default
+   white-box styling (.react-flow__node-input etc.). We use them for custom
+   components, so strip the default wrapper and let our own styling show. */
+.react-flow__node-input,
+.react-flow__node-output,
+.react-flow__node-group {
+  padding: 0; border: none; background: transparent; border-radius: 0;
+  width: auto; box-shadow: none; color: inherit; text-align: left; font-size: inherit;
+}
+
+/* explicit input/output interface nodes inside a group */
+.io-node {
+  display: inline-flex; align-items: center; gap: 6px;
+  background: #14110f; border: 1px solid var(--line); border-radius: 14px; padding: 5px 12px;
+  color: var(--text); font-size: 11px; font-family: ui-monospace, monospace; white-space: nowrap;
+}
+.io-node.selected { box-shadow: 0 0 0 1px var(--accent); }
+.io-node .react-flow__handle { width: 9px; height: 9px; border: none; }
+.io-arrow { font-weight: bold; }
+
+/* toolbar button group (e.g. + Input / + Output) */
+.tb-group { display: inline-flex; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+.tb-group button { padding: 6px 8px; background: var(--panel2); color: var(--text); border: none; cursor: pointer; }
+.tb-group button:hover { background: #241f33; }
+
+/* port type cues, shared by op/group nodes + stubs */
+.kind-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; flex: 0 0 auto; }
+.kind-tag { font-size: 9px; font-family: ui-monospace, monospace; opacity: 0.9; }
+.port-row { display: inline-flex; align-items: center; gap: 4px; }
+.opnode-in .port-row { justify-content: flex-start; }
+.opnode-out .port-row { justify-content: flex-end; }
+
+/* nodes */
+.opnode {
+  background: var(--panel2); border: 1px solid var(--line); border-radius: 8px;
+  min-width: 130px; padding: 6px 10px; color: var(--text); font-size: 12px;
+}
+.opnode.source { border-left: 3px solid #9be29b; }
+.opnode.group { border-left: 3px solid #d79bff; background: #1a1726; }
+.group-sub { color: var(--muted); font-size: 10px; margin-bottom: 4px; }
+.row input[type="text"] { background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 4px; padding: 2px 4px; }
+.opnode.selected { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.opnode-title { font-weight: 600; margin-bottom: 4px; }
+.opnode-ports { display: flex; justify-content: space-between; color: var(--muted); font-size: 10px; }
+.opnode-in, .opnode-out { display: flex; flex-direction: column; gap: 4px; }
+.opnode-out { text-align: right; }
+.react-flow__handle { width: 9px; height: 9px; border: none; }
+
+/* inspector */
+.params { display: flex; flex-direction: column; gap: 6px; margin: 8px 0; }
+.row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.row > span:first-child { color: var(--muted); }
+.row .num { display: flex; align-items: center; gap: 6px; }
+.row input[type="number"] { width: 56px; background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 4px; padding: 2px 4px; }
+.row input[type="range"] { width: 90px; }
+.row select { background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 4px; padding: 2px 4px; }
+
+.run-btn {
+  width: 100%; margin: 10px 0; padding: 8px; background: var(--accent); color: #06101f;
+  border: none; border-radius: 6px; font-weight: 600; cursor: pointer;
+}
+.run-btn:disabled { opacity: 0.6; cursor: default; }
+.run-btn.live { background: #46c08a; }
+.transport { margin: 10px 0; }
+.transport-row { display: flex; gap: 8px; margin-top: 8px; }
+.transport-row button {
+  flex: 1; padding: 6px; background: var(--panel2); color: var(--text);
+  border: 1px solid var(--line); border-radius: 6px; cursor: pointer;
+}
+.transport-row button:hover:not(:disabled) { border-color: var(--accent); }
+.transport-row button:disabled { opacity: 0.5; cursor: default; }
+.live-row { margin-top: 10px; }
+.live-row span { color: var(--text); }
+
+.preview { margin-top: 8px; min-height: 332px; } /* reserve height so empty↔filled doesn't shift the panel */
+.preview-summary { color: var(--muted); font-size: 11px; margin-bottom: 6px; font-family: ui-monospace, monospace; }
+.preview-summary .stale { color: #d8a657; }
+.preview-canvas { max-width: 100%; border: 1px solid var(--line); border-radius: 6px; image-rendering: pixelated; }
+.preview-svg { max-width: 100%; border: 1px solid var(--line); border-radius: 6px; background: #11131a; display: block; }
+.preview-canvas.is-stale, .preview-svg.is-stale { opacity: 0.55; }
+.preview-empty { color: var(--muted); font-size: 12px; min-height: 300px; display: flex; align-items: center; justify-content: center; text-align: center; border: 1px dashed var(--line); border-radius: 6px; padding: 0 16px; }
+.preview-error { color: #ff8a9a; font-size: 12px; margin-top: 10px; white-space: pre-wrap; }

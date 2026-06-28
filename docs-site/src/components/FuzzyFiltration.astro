@@ -32,16 +32,41 @@
         <button class="segbtn" data-method="dtm" type="button">DTM</button>
       </span>
     </span>
+    <span class="backend" id="ff-backend" title="field-generation backend">CPU</span>
+  </div>
+
+  <div class="row params">
+    <label class="sel">resolution
+      <select id="ff-res">
+        <option value="48">48²</option>
+        <option value="64" selected>64²</option>
+        <option value="80">80²</option>
+        <option value="96">96²</option>
+      </select>
+    </label>
+    <label class="sel rng">
+      <span id="ff-falloff-label">bandwidth&nbsp;σ</span>
+      <input type="range" id="ff-falloff" min="8" max="40" step="1" value="19" />
+      <span class="val sm" id="ff-falloff-val">1.9</span>
+    </label>
+    <label class="sel rng">
+      <span>noise&nbsp;band</span>
+      <input type="range" id="ff-band" min="0" max="200" step="5" value="80" />
+      <span class="val sm" id="ff-band-val">0.08</span>
+    </label>
+    <label class="sel chk" id="ff-gpu-wrap" hidden><input type="checkbox" id="ff-gpu" /> WebGPU</label>
   </div>
 
   <div class="grid2">
     <div class="cell">
       <div class="celltitle">hard — union of balls <span class="tag">distance, sublevel</span></div>
       <canvas id="ff-fh" class="field"></canvas>
+      <div class="fldcap" id="ff-fhcap">hover a component or a hole to inspect it</div>
     </div>
     <div class="cell">
       <div class="celltitle">fuzzy — <span id="ff-fztitle">KDE superlevel set</span> <span class="tag" id="ff-fztag">density, superlevel</span></div>
       <canvas id="ff-fz" class="field"></canvas>
+      <div class="fldcap" id="ff-fzcap">hover a component or a hole to inspect it</div>
     </div>
     <div class="cell">
       <canvas id="ff-ph" class="pd"></canvas>
@@ -64,7 +89,13 @@
 <style>
   .ff-demo { margin: 1rem 0 1.5rem; }
   .ff-demo .row { display:flex; gap:16px; align-items:center; flex-wrap:wrap; margin-bottom:12px; }
+  .ff-demo .row.params { gap:18px; padding:9px 12px; border:1px solid var(--sl-color-gray-5); border-radius:8px; background:color-mix(in srgb, var(--sl-color-gray-6) 60%, transparent); }
   .ff-demo .sel { font-size:13px; color:var(--sl-color-gray-2); display:flex; gap:6px; align-items:center; }
+  .ff-demo .sel.rng { gap:8px; }
+  .ff-demo .sel.rng input[type=range] { width:110px; }
+  .ff-demo .val.sm { font-size:13px; min-width:30px; text-align:right; }
+  .ff-demo .backend { margin-left:auto; font-size:11px; font-weight:600; letter-spacing:.03em; padding:2px 8px; border-radius:999px; border:1px solid var(--sl-color-gray-5); color:var(--sl-color-gray-2); }
+  .ff-demo .backend.gpu { color:#10b981; border-color:#10b981; }
   .ff-demo .chk { cursor:pointer; }
   .ff-demo .chk input { margin:0; }
   .ff-demo select { font-size:13px; padding:3px 6px; background:var(--sl-color-bg); color:var(--sl-color-text); border:1px solid var(--sl-color-gray-5); border-radius:6px; }
@@ -80,6 +111,9 @@
   .ff-demo .tag { font-weight:400; color:var(--sl-color-gray-3); font-size:11px; }
   .ff-demo .field, .ff-demo .pd { width:100%; aspect-ratio:1/1; border-radius:8px; background:var(--sl-color-gray-6); display:block; }
   .ff-demo .pdcap { font-size:11px; color:var(--sl-color-gray-3); margin-top:5px; min-height:15px; line-height:15px; }
+  .ff-demo .fldcap { font-size:11px; color:var(--sl-color-gray-3); margin-top:5px; min-height:15px; line-height:15px; }
+  .ff-demo .fldcap.active { color:var(--sl-color-text); }
+  .ff-demo .field { cursor:crosshair; }
   .ff-demo .ctrl { display:flex; gap:12px; align-items:center; margin-top:0.9rem; }
   .ff-demo .ctrl input[type=range] { flex:1; }
   .ff-demo .btn { font-size:14px; width:32px; height:30px; display:flex; align-items:center; justify-content:center; border:1px solid var(--sl-color-gray-5); border-radius:6px; background:transparent; color:var(--sl-color-text); cursor:pointer; flex:0 0 auto; }
@@ -91,7 +125,11 @@
   import { gaussianKdeField, distanceField, dtmField } from '../../../src/spatial/scalarField';
   import { sublevelsetPersistence, fieldBettiNumbers } from '../../../src/spatial/sublevelsetPersistence';
   import type { ScalarField } from '../../../src/spatial/scalarField';
-  import type { FieldPersistenceResult } from '../../../src/spatial/sublevelsetPersistence';
+  import type { FieldPersistenceResult, FieldPersistencePair } from '../../../src/spatial/sublevelsetPersistence';
+  // GPU field generation (compute shader) when the browser exposes WebGPU; the CPU
+  // library functions above are the fallback. The persistence reduction is always CPU.
+  import { computeFieldGpu, gpuFieldAvailable } from '../lib/gpuField';
+  import type { FieldMode } from '../lib/gpuField';
 
   // ---------------------------------------------------------------------------
   // Theme inks (re-probed on light/dark toggle)
@@ -176,9 +214,33 @@
   const fzTitle = byId<HTMLSpanElement>('ff-fztitle');
   const fzTag = byId<HTMLSpanElement>('ff-fztag');
   const h0hOut = byId('ff-h0h'), h1hOut = byId('ff-h1h'), h0zOut = byId('ff-h0z'), h1zOut = byId('ff-h1z');
+  const fhCap = byId<HTMLDivElement>('ff-fhcap'), fzCap = byId<HTMLDivElement>('ff-fzcap');
+  const resSel = byId<HTMLSelectElement>('ff-res');
+  const falloffInput = byId<HTMLInputElement>('ff-falloff');
+  const falloffLabel = byId<HTMLSpanElement>('ff-falloff-label');
+  const falloffVal = byId<HTMLSpanElement>('ff-falloff-val');
+  const bandInput = byId<HTMLInputElement>('ff-band');
+  const bandVal = byId<HTMLSpanElement>('ff-band-val');
+  const gpuWrap = byId<HTMLLabelElement>('ff-gpu-wrap');
+  const gpuChk = byId<HTMLInputElement>('ff-gpu');
+  const backendEl = byId<HTMLSpanElement>('ff-backend');
 
-  const GRID = 76;        // field resolution (persistence is computed once per build)
+  // ---------------------------------------------------------------------------
+  // Tunable parameters (rebuild the fields + persistence when they change)
+  // ---------------------------------------------------------------------------
+  let gridN = 64;          // field resolution (N x N)
   let method: 'kde' | 'dtm' = 'kde';
+  let sigma = 1.9;         // KDE bandwidth, world units (the "falloff")
+  let dtmK = 5;            // DTM neighbours (the "falloff" for DTM)
+  let band = 0.08;         // diagram noise band / min-persistence threshold
+  let useGpu = false;      // compute fields on WebGPU when available + enabled
+  let gpuFellBack = false; // a GPU compute failed this rebuild → showed CPU
+
+  function setBackendBadge(): void {
+    const onGpu = useGpu && !gpuFellBack;
+    backendEl.textContent = onGpu ? 'WebGPU' : 'CPU';
+    backendEl.classList.toggle('gpu', onGpu);
+  }
 
   // ---------------------------------------------------------------------------
   // Built state (rebuilt on shape / outliers / method change)
@@ -217,9 +279,29 @@
     return { field, pers, superlevel, sMax, pointCell };
   }
 
-  function build(): void {
-    const shape = dataSel.value as Shape;
-    data = makeData(shape, noiseChk.checked);
+  // Generate one field via the active backend (GPU when enabled + available, else
+  // the CPU library). Returns a ScalarField regardless of path.
+  async function genField(mode: FieldMode): Promise<ScalarField> {
+    if (useGpu) {
+      const g = await computeFieldGpu(data.xs, data.ys,
+        { width: gridN, height: gridN, bbox, mode, sigma, k: dtmK, radiusSigma: 4 });
+      if (g) return { data: g, width: gridN, height: gridN, bbox };
+      gpuFellBack = true; // WebGPU failed → fall through to CPU, reflect in badge
+    }
+    if (mode === 'kde')
+      return gaussianKdeField(data.xs, data.ys, { width: gridN, height: gridN, sigma, bbox, radiusSigma: 4 });
+    if (mode === 'dtm')
+      return dtmField(data.xs, data.ys, { width: gridN, height: gridN, bbox, k: dtmK });
+    return distanceField(data.xs, data.ys, { width: gridN, height: gridN, bbox });
+  }
+
+  // Rebuild fields + persistence. Async (the GPU path awaits a readback); a build
+  // token guards against an older rebuild finishing after a newer one.
+  let buildSeq = 0;
+  async function rebuild(): Promise<void> {
+    const seq = ++buildSeq;
+    gpuFellBack = false;
+    data = makeData(dataSel.value as Shape, noiseChk.checked);
     // Shared framing for both fields, padded so edge kernels/balls aren't clipped.
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
     for (let i = 0; i < data.xs.length; i++) {
@@ -229,25 +311,35 @@
     const pad = 3;
     bbox = [minX - pad, minY - pad, maxX + pad, maxY + pad];
 
-    const distF = distanceField(data.xs, data.ys, { width: GRID, height: GRID, bbox });
-    hard = buildPanel(distF, false);
+    const hardF = await genField('distance');
+    const fuzzyF = await genField(method === 'kde' ? 'kde' : 'dtm');
+    if (seq !== buildSeq) return; // superseded by a newer rebuild
 
-    if (method === 'kde') {
-      const kde = gaussianKdeField(data.xs, data.ys, { width: GRID, height: GRID, sigma: 1.9, bbox, radiusSigma: 4 });
-      fuzzy = buildPanel(kde, true);
-    } else {
-      const dtm = dtmField(data.xs, data.ys, { width: GRID, height: GRID, bbox, k: 5 });
-      fuzzy = buildPanel(dtm, false);
-    }
+    hard = buildPanel(hardF, false);
+    fuzzy = buildPanel(fuzzyF, method === 'kde');
+    setBackendBadge();
+    update(u);
   }
 
   // ---------------------------------------------------------------------------
   // Field rendering: heatmap base + component-coloured set + boundary contour
   // ---------------------------------------------------------------------------
-  const off = document.createElement('canvas');
-  off.width = GRID; off.height = GRID;
-  const offCtx = off.getContext('2d')!;
-  const offImg = offCtx.createImageData(GRID, GRID);
+  // Per-target offscreen grid canvases. CRUCIAL: each field panel gets its OWN
+  // offscreen. A single shared offscreen used as the drawImage source for both
+  // panels in one frame leaks across them on Safari — its canvas rasterisation is
+  // deferred, so both drawImages end up sampling the LAST panel's content. The
+  // 'hard' panel (drawn first) then renders the 'fuzzy' field, which is why tweaking
+  // the KDE bandwidth visibly changed the 'hard' picture.
+  const offscreens = new WeakMap<HTMLCanvasElement, { canvas: HTMLCanvasElement; ctx: CanvasRenderingContext2D }>();
+  function offscreenFor(target: HTMLCanvasElement) {
+    let o = offscreens.get(target);
+    if (!o) {
+      const canvas = document.createElement('canvas');
+      o = { canvas, ctx: canvas.getContext('2d')! };
+      offscreens.set(target, o);
+    }
+    return o;
+  }
 
   // Union-find over the in-set grid cells (4-adjacency).
   function labelComponents(mask: Uint8Array, W: number, H: number): Int32Array {
@@ -273,7 +365,16 @@
     return root;
   }
 
-  function drawField(canvas: HTMLCanvasElement, panel: Panel, threshold: number): void {
+  interface HoverInfo {
+    kind: 'component' | 'loop';
+    count: number;                       // points in the component (0 for a loop)
+    birth: number;                       // the feature's birth field value
+    pair: FieldPersistencePair | null;   // the matching persistence pair (by identity)
+  }
+
+  function drawField(
+    canvas: HTMLCanvasElement, panel: Panel, threshold: number, hoverCell = -1,
+  ): HoverInfo | null {
     const { field, superlevel, pointCell } = panel;
     const W = field.width, H = field.height, fd = field.data;
     const rect = canvas.getBoundingClientRect();
@@ -297,6 +398,45 @@
       if (root >= 0) compPoint.set(root, Math.min(compPoint.get(root) ?? Infinity, i));
     }
 
+    // Hover: identify the COMPONENT (an in-set region → H0) or the LOOP (an enclosed
+    // background hole → H1) under the cursor, and link it to its persistence pair by
+    // IDENTITY — the reducer's birthCell (the component's creating extremum) / deathCell
+    // (the square that fills a hole) — rather than by matching birth values, which was
+    // unreliable (and impossible on the hard panel, where all components are born at r≈0).
+    let hover: HoverInfo | null = null;
+    let hoverCompRoot = -1;            // highlighted component
+    let hoverHoleRoot = -1;            // highlighted hole
+    let bgRoots: Int32Array | null = null;
+
+    if (hoverCell >= 0 && mask[hoverCell]) {
+      hoverCompRoot = roots[hoverCell]!;
+      let birth = superlevel ? -Infinity : Infinity, count = 0;
+      for (let i = 0; i < W * H; i++)
+        if (roots[i] === hoverCompRoot) birth = superlevel ? Math.max(birth, fd[i]!) : Math.min(birth, fd[i]!);
+      for (let i = 0; i < pointCell.length; i++) if (roots[pointCell[i]!] === hoverCompRoot) count++;
+      const pair = panel.pers.pairs.find(
+        (p) => p.dim === 0 && isAlive(p, threshold, superlevel) && roots[p.birthCell] === hoverCompRoot,
+      ) ?? null;
+      hover = { kind: 'component', count, birth, pair };
+    } else if (hoverCell >= 0) {
+      // Background cell — a hole iff its background component does not touch the border.
+      const bg = new Uint8Array(W * H);
+      for (let i = 0; i < W * H; i++) bg[i] = mask[i] ? 0 : 1;
+      bgRoots = labelComponents(bg, W, H);
+      const outer = new Set<number>();
+      for (let c = 0; c < W; c++) { outer.add(bgRoots[c]!); outer.add(bgRoots[(H - 1) * W + c]!); }
+      for (let r = 0; r < H; r++) { outer.add(bgRoots[r * W]!); outer.add(bgRoots[r * W + W - 1]!); }
+      const holeRoot = bgRoots[hoverCell]!;
+      if (holeRoot >= 0 && !outer.has(holeRoot)) {
+        hoverHoleRoot = holeRoot;
+        const br = bgRoots;
+        const pair = panel.pers.pairs.find(
+          (p) => p.dim === 1 && p.deathCell !== undefined && isAlive(p, threshold, superlevel) && br[p.deathCell] === holeRoot,
+        ) ?? null;
+        hover = { kind: 'loop', count: 0, birth: pair ? pair.birth : NaN, pair };
+      }
+    }
+
     // Field range for the faint background shading.
     let lo = Infinity, hi = -Infinity;
     for (let i = 0; i < W * H; i++) { if (fd[i]! < lo) lo = fd[i]!; if (fd[i]! > hi) hi = fd[i]!; }
@@ -304,14 +444,27 @@
     const baseTint = superlevel ? [245, 158, 11] : [59, 130, 246]; // warm fuzzy / cool hard
     const dark = lumOf(INK) > 0.5; // bright ink => dark theme
 
+    const { canvas: off, ctx: offCtx } = offscreenFor(canvas);
+    if (off.width !== W || off.height !== H) { off.width = W; off.height = H; }
+    const offImg = offCtx.createImageData(W, H);
     const px = offImg.data;
+    const H1RGB = [239, 68, 68]; // loop-highlight tint for a hovered hole
     for (let i = 0; i < W * H; i++) {
       const o = i * 4;
       if (mask[i]) {
         const root = roots[i]!;
         const pid = compPoint.get(root);
         const rgb = pid === undefined ? [120, 120, 130] : PAL_RGB[pid % PAL_RGB.length]!;
-        px[o] = rgb[0]; px[o + 1] = rgb[1]; px[o + 2] = rgb[2]; px[o + 3] = pid === undefined ? 150 : 205;
+        const aBase = pid === undefined ? 150 : 205;
+        // Component hover: lift the hovered component, fade the rest. Loop hover: fade
+        // all of the in-set so the highlighted hole reads.
+        let a = aBase;
+        if (hoverCompRoot >= 0) a = root === hoverCompRoot ? 245 : aBase * 0.3;
+        else if (hoverHoleRoot >= 0) a = aBase * 0.5;
+        px[o] = rgb[0]; px[o + 1] = rgb[1]; px[o + 2] = rgb[2]; px[o + 3] = a;
+      } else if (hoverHoleRoot >= 0 && bgRoots && bgRoots[i] === hoverHoleRoot) {
+        // The enclosed hole the cursor is in — the H₁ loop.
+        px[o] = H1RGB[0]; px[o + 1] = H1RGB[1]; px[o + 2] = H1RGB[2]; px[o + 3] = 125;
       } else {
         // Faint topographic wash of the field (so the landscape is visible).
         const t = (fd[i]! - lo) / span;            // 0..1
@@ -334,17 +487,26 @@
     ctx.stroke();
     ctx.globalAlpha = 1;
 
-    // Points.
+    // Points — the ones inside the hovered feature are ringed (a preview of the
+    // "query the points in this feature" capability); the rest fade.
     const [bx0, by0, bx1, by1] = field.bbox;
     const sx = pw / ((bx1 - bx0) || 1), sy = ph / ((by1 - by0) || 1);
     for (let i = 0; i < data.xs.length; i++) {
       const X = (data.xs[i]! - bx0) * sx;
       const Y = (by1 - data.ys[i]!) * sy;
+      const inHover = hoverCompRoot >= 0 && roots[pointCell[i]!] === hoverCompRoot;
+      ctx.globalAlpha = hoverCompRoot < 0 ? 1 : inHover ? 1 : 0.35;
       ctx.beginPath();
-      ctx.arc(X, Y, 2.4, 0, 6.2832);
+      ctx.arc(X, Y, inHover ? 3.3 : 2.4, 0, 6.2832);
       ctx.fillStyle = INK;
       ctx.fill();
+      if (inHover) {
+        ctx.lineWidth = 1.4; ctx.strokeStyle = '#fbbf24';
+        ctx.beginPath(); ctx.arc(X, Y, 5.2, 0, 6.2832); ctx.stroke();
+      }
     }
+    ctx.globalAlpha = 1;
+    return hover;
   }
 
   function lumOf(c: string): number {
@@ -403,7 +565,7 @@
   // sweep crosshair walks the diagonal the same way in both. A feature far ABOVE
   // the diagonal is persistent; near-diagonal points are noise.
   // ---------------------------------------------------------------------------
-  interface Pt { dim: number; x: number; y: number; essential: boolean; }
+  interface Pt { dim: number; x: number; y: number; essential: boolean; src: FieldPersistencePair; }
 
   function normalize(panel: Panel): Pt[] {
     const out: Pt[] = [];
@@ -414,18 +576,26 @@
         const essential = !isFinite(p.death);              // death = -Inf
         const x = 1 - Math.min(1, p.birth / s);            // co-density birth
         const y = essential ? 1 : 1 - Math.min(1, p.death / s);
-        out.push({ dim: p.dim, x, y, essential });
+        out.push({ dim: p.dim, x, y, essential, src: p });
       } else {
         const essential = !isFinite(p.death);
         const x = Math.min(1, p.birth / s);
         const y = essential ? 1 : Math.min(1, p.death / s);
-        out.push({ dim: p.dim, x, y, essential });
+        out.push({ dim: p.dim, x, y, essential, src: p });
       }
     }
     return out;
   }
 
-  function drawDiagram(canvas: HTMLCanvasElement, panel: Panel, u: number): [number, number] {
+  /** Is a pair alive at field value `thr`? (sublevel: birth ≤ thr < death;
+   *  superlevel: death < thr ≤ birth.) */
+  function isAlive(p: FieldPersistencePair, thr: number, superlevel: boolean): boolean {
+    return superlevel ? p.death < thr && thr <= p.birth : p.birth <= thr && thr < p.death;
+  }
+
+  function drawDiagram(
+    canvas: HTMLCanvasElement, panel: Panel, u: number, hoverPair: FieldPersistencePair | null = null,
+  ): [number, number] {
     const pts = normalize(panel);
     const rect = canvas.getBoundingClientRect();
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
@@ -441,8 +611,7 @@
 
     ctx.clearRect(0, 0, w, h);
 
-    // Noise band along the diagonal (low persistence).
-    const band = 0.08;
+    // Noise band along the diagonal (persistence < `band` = below the threshold).
     ctx.fillStyle = 'rgba(128,128,128,0.12)';
     ctx.beginPath();
     ctx.moveTo(X(0), Y(0)); ctx.lineTo(X(1), Y(1));
@@ -469,8 +638,9 @@
     for (const p of pts) {
       if (p.y - p.x < 0.012 && !p.essential) continue; // numerical near-diagonal dust
       const alive = p.x <= u && u < p.y;
+      const significant = p.essential || p.y - p.x >= band; // clears the noise band
       if (alive) { if (p.dim === 0) b0++; else b1++; }
-      ctx.globalAlpha = alive ? 1 : 0.3;
+      ctx.globalAlpha = alive ? (significant ? 1 : 0.45) : (significant ? 0.32 : 0.16);
       ctx.fillStyle = p.dim === 0 ? H0 : H1;
       const rad = p.dim === 1 ? (alive ? 5 : 3.4) : (alive ? 3.6 : 2.4);
       ctx.beginPath(); ctx.arc(X(p.x), Y(p.y), rad, 0, 6.2832); ctx.fill();
@@ -480,6 +650,17 @@
       }
     }
     ctx.globalAlpha = 1;
+
+    // Hover link: ring the dot of the hovered feature's persistence pair — matched by
+    // identity (the reducer's birthCell/deathCell), so it is exact for both components
+    // (H₀) and loops (H₁), on every panel.
+    if (hoverPair) {
+      const pt = pts.find((p) => p.src === hoverPair);
+      if (pt) {
+        ctx.strokeStyle = '#fbbf24'; ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.arc(X(pt.x), Y(pt.y), 8, 0, 6.2832); ctx.stroke();
+      }
+    }
 
     // Sweep crosshair at (u,u).
     ctx.strokeStyle = 'rgba(128,128,128,0.55)'; ctx.setLineDash([2, 3]);
@@ -495,16 +676,33 @@
   // ---------------------------------------------------------------------------
   // Per-frame update
   // ---------------------------------------------------------------------------
+  // Which grid cell of `canvas` the cursor is over (-1 if not hovering it).
+  function hoveredCell(canvas: HTMLCanvasElement): number {
+    return hoverCanvas === canvas && hoverCol >= 0 && hoverRow >= 0 ? hoverRow * gridN + hoverCol : -1;
+  }
+  function setHoverCap(cap: HTMLDivElement, panel: Panel, hover: HoverInfo | null): void {
+    if (!hover) { cap.textContent = 'hover a component or a hole to inspect it'; cap.classList.remove('active'); return; }
+    const unit = panel.superlevel ? 'density' : 'scale';
+    const born = isFinite(hover.birth) ? ` · born at ${unit} ${hover.birth.toFixed(2)}` : '';
+    cap.textContent = hover.kind === 'loop'
+      ? `loop — an enclosed hole (H₁)${born}`
+      : `component (H₀) — ${hover.count} point${hover.count === 1 ? '' : 's'} inside${born}`;
+    cap.classList.add('active');
+  }
+
   function update(u: number): void {
+    if (!hard || !fuzzy) return; // a rebuild is still in flight
     // Hard: r = u * sMax. Fuzzy KDE: t = (1-u) * peak (descending). Fuzzy DTM: r = u * sMax.
     const hardThr = u * hard.sMax;
     const fuzzyThr = fuzzy.superlevel ? (1 - u) * fuzzy.sMax : u * fuzzy.sMax;
-    drawField(fhCanvas, hard, hardThr);
-    drawField(fzCanvas, fuzzy, fuzzyThr);
-    const [h0h, h1h] = drawDiagram(phCanvas, hard, u);
-    const [h0z, h1z] = drawDiagram(pzCanvas, fuzzy, u);
+    const hHover = drawField(fhCanvas, hard, hardThr, hoveredCell(fhCanvas));
+    const zHover = drawField(fzCanvas, fuzzy, fuzzyThr, hoveredCell(fzCanvas));
+    const [h0h, h1h] = drawDiagram(phCanvas, hard, u, hHover ? hHover.pair : null);
+    const [h0z, h1z] = drawDiagram(pzCanvas, fuzzy, u, zHover ? zHover.pair : null);
     h0hOut.textContent = String(h0h); h1hOut.textContent = String(h1h);
     h0zOut.textContent = String(h0z); h1zOut.textContent = String(h1z);
+    setHoverCap(fhCap, hard, hHover);
+    setHoverCap(fzCap, fuzzy, zHover);
     uVal.textContent = Math.round(u * 100) + '%';
     if (document.activeElement !== uInput) uInput.value = String(Math.round(u * 1000));
   }
@@ -515,6 +713,24 @@
   let playing = true, u = 0, startTime: number | null = null;
   const SWEEP_MS = 9000, HOLD_MS = 1200;
 
+  // Hover-to-inspect: which field canvas + grid cell the cursor is over. Hovering a
+  // region highlights its connected component (the "rest of the shape"), rings the
+  // points inside it, and links to the matching dot in that panel's diagram.
+  let hoverCanvas: HTMLCanvasElement | null = null;
+  let hoverCol = -1, hoverRow = -1;
+  for (const c of [fhCanvas, fzCanvas]) {
+    c.addEventListener('pointermove', (e: PointerEvent) => {
+      const rect = c.getBoundingClientRect();
+      hoverCanvas = c;
+      hoverCol = Math.max(0, Math.min(gridN - 1, Math.floor(((e.clientX - rect.left) / rect.width) * gridN)));
+      hoverRow = Math.max(0, Math.min(gridN - 1, Math.floor(((e.clientY - rect.top) / rect.height) * gridN)));
+      if (!playing) update(u); // when playing, the frame loop already redraws
+    });
+    c.addEventListener('pointerleave', () => {
+      if (hoverCanvas === c) { hoverCanvas = null; if (!playing) update(u); }
+    });
+  }
+
   function setPlaying(on: boolean): void {
     playing = on;
     playBtn.textContent = on ? '⏸' : '▶';
@@ -524,15 +740,46 @@
   uInput.addEventListener('input', function () {
     setPlaying(false); u = Number(this.value) / 1000; update(u);
   });
-  dataSel.addEventListener('change', () => { build(); u = 0; startTime = null; setPlaying(true); update(0); });
-  noiseChk.addEventListener('change', () => { build(); u = 0; startTime = null; setPlaying(true); update(0); });
+
+  // A new dataset resets the sweep; parameter tweaks keep the current sweep position.
+  function rebuildReset(): void { u = 0; startTime = null; setPlaying(true); void rebuild(); }
+  dataSel.addEventListener('change', rebuildReset);
+  noiseChk.addEventListener('change', rebuildReset);
+  resSel.addEventListener('change', () => { gridN = Number(resSel.value); void rebuild(); });
+
+  // Falloff slider — its meaning swaps with the fuzzy method (KDE bandwidth σ vs DTM k).
+  function syncFalloff(): void {
+    if (method === 'kde') {
+      falloffInput.min = '8'; falloffInput.max = '40'; falloffInput.step = '1';
+      falloffInput.value = String(Math.round(sigma * 10));
+      falloffLabel.innerHTML = 'bandwidth&nbsp;σ';
+      falloffVal.textContent = sigma.toFixed(1);
+    } else {
+      falloffInput.min = '1'; falloffInput.max = '12'; falloffInput.step = '1';
+      falloffInput.value = String(dtmK);
+      falloffLabel.innerHTML = 'neighbours&nbsp;k';
+      falloffVal.textContent = String(dtmK);
+    }
+  }
+  falloffInput.addEventListener('input', function () {
+    const v = Number(this.value);
+    if (method === 'kde') { sigma = v / 10; falloffVal.textContent = sigma.toFixed(1); }
+    else { dtmK = v; falloffVal.textContent = String(dtmK); }
+    void rebuild();
+  });
+  bandInput.addEventListener('input', function () {
+    band = Number(this.value) / 1000; bandVal.textContent = band.toFixed(3); update(u);
+  });
+  gpuChk.addEventListener('change', function () { useGpu = this.checked; void rebuild(); });
+
   for (const b of methodBtns)
     b.addEventListener('click', () => {
       method = (b.dataset.method as 'kde' | 'dtm') ?? 'kde';
       for (const x of methodBtns) x.classList.toggle('on', x === b);
       fzTitle.textContent = method === 'kde' ? 'KDE superlevel set' : 'distance-to-measure sublevel set';
       fzTag.textContent = method === 'kde' ? 'density, superlevel' : 'DTM, sublevel';
-      build(); update(u);
+      syncFalloff();
+      void rebuild();
     });
   window.addEventListener('resize', () => update(u));
 
@@ -555,7 +802,18 @@
     }
   }
 
-  build();
-  update(0);
+  // Init: paint immediately on the CPU, then upgrade to WebGPU if the browser has it.
+  syncFalloff();
+  bandVal.textContent = band.toFixed(3);
+  void rebuild();
+  gpuFieldAvailable().then((ok) => {
+    if (!ok) return;
+    gpuWrap.hidden = false;
+    // GPU path on by default wherever WebGPU is exposed (Safari included). Any bad
+    // result still auto-falls-back via output validation in gpuField.ts.
+    gpuChk.checked = true;
+    useGpu = true;
+    void rebuild(); // recompute on the GPU (same grids → same diagram)
+  });
   requestAnimationFrame(frame);
 </script>

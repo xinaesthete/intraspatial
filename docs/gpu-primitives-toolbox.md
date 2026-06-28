@@ -122,6 +122,11 @@ Each doubles as a composition test of the `GpuField` chaining model.
 - **Shared-memory line cap** (`MAXLINE = 2048`): tile longer lines for very large
   images.
 
+Once primitives **chain** (above), correctness hinges on how shared resources are
+sequenced — the per-pass hazard is one instance of a general failure mode. The model
+for that is its own note: [`gpu-resource-sync.md`](gpu-resource-sync.md) (DAG of
+ops over resources; barriers/pooling/submits derived, not assumed).
+
 
 ## Roadmap
 

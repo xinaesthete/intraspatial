@@ -1,0 +1,106 @@
+---
+title: Roadmap & status
+description: What's built, what's in progress, and what's planned across the GPU spatial primitives toolbox — including interactivity, applications, and scaling.
+---
+
+A snapshot of where the toolbox is. Legend: ✅ done · 🚧 in progress · 📋 planned.
+
+## Primitives
+
+These are implemented as composable GPU kernels, each with a CPU golden test.
+
+| Area | Primitive | Status |
+| --- | --- | --- |
+| Transforms | 5/3 & 9/7 DWT (forward + inverse, CPU + GPU) | ✅ |
+| Spatial | NN distance, empty-space (F), ANNI | ✅ |
+| Spatial | KDE density splat, separable convolution, Getis-Ord, fuzzy adjacency | ✅ |
+| Spatial | k-th neighbour distance, CkNN rescaled distance | ✅ |
+| Fields | Gaussian KDE, distance-to-nearest, distance-to-measure (DTM) | ✅ |
+| Topology | Vietoris–Rips persistence (H₀/H₁), cubical sublevel-set persistence (H₀/H₁) | ✅ |
+
+## Demos & interactivity
+
+| Feature | Status | Notes |
+| --- | --- | --- |
+| CkNN connectivity & persistence demos | ✅ | [CkNN page](/primitives/cknn/) |
+| Filtration sweep (Vietoris–Rips, 2D / cones) | ✅ | [Filtrations page](/concepts/filtrations/) |
+| Fuzzy filtration (hard vs KDE/DTM, side-by-side diagrams) | ✅ | [Filtrations page](/concepts/filtrations/) |
+| Tunable parameters (resolution, falloff σ/k, noise band) | ✅ | |
+| WebGPU field backend with CPU fallback | ✅ | on by default where supported |
+| **Hover a component → highlight it + its points + its diagram dot** | ✅ | the fuzzy demo; linked by *identity* (the reducer's `birthCell`) |
+| **Hover an enclosed hole → highlight the loop + its H₁ diagram dot** | ✅ | linked via the reducer's `deathCell` (the cell that fills the hole) |
+| Reverse link: hover a diagram point → highlight its region | 📋 | |
+| Linked brushing across the hard ↔ fuzzy panels | 📋 | |
+| Rendering directly from the GPU primitives (not three.js approximations) | 📋 | the VR sweep is still an illustrative approximation |
+
+## Applications
+
+The demos are a means to an end: making spatial/topological structure *queryable* and
+*composable*. These are the ergonomic surfaces we want.
+
+| Capability | Status | Notes |
+| --- | --- | --- |
+| **Query the points inside a feature** | 🚧 | the hover demo previews it (it rings the contained points + counts them); the library API to return them is next |
+| Feed a feature's points/region along **dataflow edges** to the next operation | 📋 | depends on the [resource-sync model](#in-gpu-operation-graphs) — a feature becomes a node output other ops consume |
+| Persistence-based feature *selection* (keep features above a threshold, mask the rest) | 📋 | the noise-band control is the manual version |
+| Tissue/cell applications (MuSpAn-style): robust loops/components on real point clouds | 📋 | the [fuzzy-TDA](/concepts/fuzzy-tda/) motivation |
+
+## In-GPU operation graphs
+
+The next structural stage is chaining primitives into a **graph of GPU operations**
+that share pooled resources without round-tripping to the CPU. The hard-won lesson —
+that every sync bug we have hit is one mutable resource read by a consumer not ordered
+after its writer — is written up as a design note: `docs/gpu-resource-sync.md` (a DAG of
+ops over resources where ordering, barriers, pooling and download points are *derived*,
+not assumed). Status: 📋 (model defined; the `GpuField` + scheduler is the build).
+
+## Scaling & performance
+
+What costs what, so you can size a problem. Numbers below are single-thread CPU
+(JS, this machine) and **indicative** — the shape matters more than the digits.
+
+A demo "rebuild" is: generate the field(s) once, then reduce persistence once (the
+sweep slider afterwards is just redraw — cheap). Two independent axes:
+
+**Persistence reduction** (the cubical boundary-matrix reduction) is the dominant
+cost and scales with **resolution², independent of point count** — it runs on the
+grid, not the points:
+
+| Grid | cells | persistence (one field) |
+| --- | --- | --- |
+| 48² | 2.3k | ~7–15 ms |
+| 64² | 4.1k | ~15–23 ms |
+| 96² | 9.2k | ~45–60 ms |
+| 128² | 16k | ~100–110 ms |
+
+**Field generation** scales with **points × cells**, and is where the GPU earns its
+keep. KDE (truncated Gaussian) is cheap; DTM (k-nearest gather) is the heaviest:
+
+| Field | 30 pts @ 64² | 1000 pts @ 64² | 1000 pts @ 128² |
+| --- | --- | --- | --- |
+| KDE | ~0.2 ms | ~6 ms | ~25 ms |
+| distance | ~0.2 ms | ~5 ms | ~17 ms |
+| DTM | ~0.7 ms | ~27 ms | ~96 ms |
+
+Takeaways:
+
+- **Resolution is the lever**, via the persistence reducer (~quadratic in grid side).
+  The demo defaults to 64² for interactivity; 128² is a ~100 ms one-time rebuild.
+- **Point count mostly hits field generation**, which the **WebGPU path** offloads
+  (the brute-force gather is embarrassingly parallel) — most so for DTM. The
+  persistence reduction stays on the CPU (it is inherently sequential).
+- The clear next optimisation is the reducer itself: the general boundary-matrix
+  reduction is overkill for a 2D image, where H₀ and H₁ persistence can be computed
+  with **union-find in near-linear time** (a planned swap) — that would make high
+  resolution cheap and shift the bottleneck back to field generation, which is
+  already on the GPU.
+
+## Known limitations
+
+- The Vietoris–Rips sweep is an **illustrative three.js approximation**; counts come
+  from the real reducer but the drawing can drift (documented on that page).
+- Persistence here targets the **small-to-medium regime** (tens to low-hundreds of
+  points / ≤128² grids). Larger problems want a real Ripser/GUDHI binding or the
+  union-find reducer above.
+- WebGPU coverage varies by browser; the field path **validates its output and falls
+  back to the CPU** so correctness never depends on the backend.

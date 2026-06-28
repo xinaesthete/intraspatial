@@ -1,0 +1,30 @@
+{
+  "name": "tgpu-htj2k-playground",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "description": "Visual composer for the in-GPU operation graph runtime (React Flow).",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@visx/axis": "^4.0.0",
+    "@visx/grid": "^4.0.0",
+    "@visx/group": "^4.0.0",
+    "@visx/scale": "^4.0.0",
+    "@xyflow/react": "^12.3.5",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "typegpu": "^0.11.9"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.4",
+    "typescript": "^5.6.0",
+    "unplugin-typegpu": "0.11.6",
+    "vite": "^5.4.11"
+  }
+}

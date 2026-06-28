@@ -73,6 +73,14 @@ diagram (left) sprout points far from the diagonal while the fuzzy diagram (righ
 keeps the noise near it and the true feature prominent. Switch the fuzzy field
 between **KDE** and **DTM**.
 
+The second row of controls exposes the parameters that decide what counts as
+structure. **Falloff** is the kernel bandwidth `σ` (or, for DTM, the neighbour count
+`k`): widen it and nearby features merge; narrow it and a smooth ring shatters into a
+necklace of separate density beads (`H₀` climbs). **Resolution** is the grid the field
+is sampled on. **Noise band** is the persistence threshold below which a feature is
+treated as noise — the shaded strip along the diagonal — i.e. the line between signal
+and chatter that a hard filtration forces you to draw by hand.
+
 <FuzzyFiltration />
 
 :::tip[This one *is* primitive-driven]
@@ -83,6 +91,13 @@ fields come from [`src/spatial/scalarField.ts`](https://github.com/) (`gaussianK
 **sublevel-set** reducer (the field counterpart of the point-cloud Vietoris–Rips
 reducer). Both the hard ball-union and the fuzzy field are reduced by that one
 primitive: the only thing that changes is *which field you sublevel-set*.
+
+When your browser exposes **WebGPU** (badge top-right), the fields are computed by a
+compute shader — the same additive-Gaussian splat / brute-force gather the
+[KDE splat](/primitives/kde-splat/) primitive uses — and the badge turns green; without
+it, the CPU library runs instead (toggle it to compare — the diagram is identical). Any
+backend that returns a bad field is validated and silently falls back to the CPU, and the
+persistence reduction itself is inherently sequential and always stays on the CPU.
 :::
 
 ## Sources & further reading
