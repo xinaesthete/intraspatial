@@ -1,0 +1,57 @@
+---
+title: GPU Spatial Primitives
+description: Composable, interpretable GPU primitives for discrete-cell spatial analysis.
+template: splash
+hero:
+  tagline: A small toolbox of composable, interpretable GPU primitives for analysing point clouds and shapes — cells, transcripts, boundaries — on TypeGPU / WebGPU.
+  actions:
+    - text: Start here
+      link: /concepts/composable-interpretable/
+      icon: right-arrow
+    - text: Browse primitives
+      link: /primitives/nearest-neighbour-distance/
+      variant: minimal
+---
+
+import { Card, CardGrid } from '@astrojs/starlight/components';
+
+## Two fronts, one runtime
+
+This toolbox grew out of a WebGPU wavelet codec and has two complementary sides:
+
+<CardGrid>
+  <Card title="Image-signal front" icon="seti:image">
+    Data as a regular grid of samples — the DWT transform pair, convolution,
+    reductions. The classic image-analysis primitives.
+  </Card>
+  <Card title="Discrete-cell front" icon="seti:graphql">
+    Data as irregular points and shapes — neighbour search, density, hotspots,
+    fuzzy graphs. Spatial-biology-style analysis, but the maths is generic.
+  </Card>
+</CardGrid>
+
+The bridge between them is **rasterising a point cloud into a grid** (a density
+splat), after which the image primitives apply unchanged. The shared idea running
+through both is [windowing](/concepts/windowing/): a smooth, overlapping kernel in
+place of a hard threshold.
+
+## Design commitments
+
+<CardGrid>
+  <Card title="Composable" icon="puzzle">
+    Each primitive takes plain arrays in and returns plain arrays out. Chain them:
+    `points → splat → window → z-score` is a hotspot map.
+  </Card>
+  <Card title="Interpretable" icon="open-book">
+    Every output has a meaning you can state in a sentence — clustered vs dispersed,
+    hot spot vs cold spot, connection strength — not a black box.
+  </Card>
+  <Card title="Validated" icon="approve-check">
+    Every primitive has a CPU golden and a GPU test asserting bit-exact (integer) or
+    bounded-error (float) agreement.
+  </Card>
+  <Card title="Translatable" icon="external">
+    Dependency-light raw WebGPU where it counts, so the render/compute kernels port
+    to deck.gl / MDV / SpatialData.js later rather than locking in.
+  </Card>
+</CardGrid>

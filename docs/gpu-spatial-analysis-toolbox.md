@@ -280,9 +280,12 @@ ring/crypt scale, short-range exclusion). That makes it an ideal golden.
 | geometry | area, perimeter, circularity, principal angle | per-polygon reduction (one wg/shape) | → |
 | spatial statistics | cross-PCF, Ripley's cross-K | radius histogram over neighbour pairs | → |
 | spatial statistics | nearest-neighbour distance (per point) | brute-force `"use gpu"` kernel | ✓ |
-| spatial statistics | ANNI, nearest-neighbour distribution | NN distance + MC null | → |
+| spatial statistics | ANNI (clustered/random/dispersed) | NN distance + Clark-Evans z | ✓ |
+| spatial statistics | nearest-neighbour distribution | NN distance + MC null | → |
 | spatial statistics | empty-space function | NN distance from random samples | → |
-| spatial statistics | QCM, Local Getis-Ord\*, TCM (LISA) | splat layers → blend/window (render-then-compute) | → |
+| spatial statistics | Local Getis-Ord\* (LISA hotspots) | splat → box window → standardise | ✓ |
+| spatial statistics | QCM, TCM (LISA) | splat layers → blend/window (render-then-compute) | → |
+| (enabling) | separable convolution (box / Gaussian window) | `"use gpu"` two-pass gather | ✓ |
 | spatial statistics | higher-order co-occurrence (k≥3, small N) | joint co-occurrence tensor + MC null | → |
 | spatial statistics | adjacency permutation test | proximity network + MC null | → |
 | distribution | kernel density estimation | additive splat to float layer (render) | ✓ |
@@ -293,7 +296,9 @@ ring/crypt scale, short-range exclusion). That makes it an ideal golden.
 | networks | Delaunay / Voronoi | (use proximity network instead) | cpu |
 | region based | hexgrid / quadrat lattice | bin transform + scatter (prefer windowed) | → |
 | region based | windowed local stats (overlapping taper) | splat → separable window → resample | → |
+| networks | fuzzy / kernel-weighted adjacency | `μ_ij=exp(-d²/2σ²)` dense matrix | ✓ |
 | topology | Vietoris-Rips, persistent homology | GPU builds filtration; reduction | cpu |
+| topology | fuzzy / weighted VR (fuzzy simplicial set) | fuzzy adjacency → CPU reduce | ~ |
 | helpers | α-shape | depends on Delaunay | cpu |
 
 ## Constraints to design around
@@ -385,10 +390,28 @@ Division of labour:
     `.read()`, **not** a raw `mapAsync` on a pooled buffer — the latter crashed the
     vitest worker on teardown. Render stays raw WebGPU; only the readback borrows
     the project's Dawn-stable path.
+- ✓ **ANNI** (`src/gpu/spatial/anni.ts`) — Average Nearest Neighbour Index. A pure
+  *composition* of `nnDistance` + the Clark-Evans CSR test → an interpretable
+  clustered / random / dispersed verdict with a z-score.
+- ✓ **Separable convolution** (`src/gpu/spatial/convolveSeparable.ts`) — the grid
+  windowing primitive (`"use gpu"`, two passes). Box window = local sum/mean,
+  Gaussian = smoothing. Matches CPU; normalised Gaussian conserves mass.
+- ✓ **Getis-Ord Gi\* hotspots** (`src/gpu/spatial/getisOrd.ts`) — a LISA z-score
+  grid (hot/cold spots). Composes the windowed sum (convolution) with closed-form
+  standardisation; `pointHotspotsGpu` chains it onto the splat for a one-call
+  points → hotspot-map pipeline (render-then-compute).
+- ✓ **Fuzzy adjacency** (`src/gpu/spatial/fuzzyAdjacency.ts`) — kernel-weighted
+  graph `μ_ij = exp(-d²/2σ²)`, the smooth analogue of a hard within-radius edge and
+  the substrate for fuzzy TDA. See [`fuzzy-tda-and-windowing.md`](fuzzy-tda-and-windowing.md).
 
-These two establish both halves of the front: `nnDistance` the point-native
-pattern (coordinate arrays in, typed array out), `splatDensity` the points→grid
-render bridge. Everything else in the catalogue above is still `→` planned.
+The front now spans point-native stats (`nnDistance`, `anni`), the points→grid
+render bridge (`splatDensity`), grid windowing (`convolveSeparable`), composed
+interpretable maps (`getisOrd` / `pointHotspots`), and fuzzy connectivity
+(`fuzzyAdjacency`). Remaining catalogue rows are still `→` planned.
+
+A **documentation site** (Astro Starlight) presents these as composable,
+interpretable primitives: `docs-site/` (`pnpm --dir docs-site build`).
 
 See also [`gpu-primitives-toolbox.md`](gpu-primitives-toolbox.md) (the
-wavelet/image-signal front) and the [MuSpAn paper](https://www.biorxiv.org/content/10.1101/2024.12.06.627195v1.full.pdf).
+wavelet/image-signal front), [`fuzzy-tda-and-windowing.md`](fuzzy-tda-and-windowing.md),
+and the [MuSpAn paper](https://www.biorxiv.org/content/10.1101/2024.12.06.627195v1.full.pdf).
