@@ -318,9 +318,22 @@
   // ---------------------------------------------------------------------------
   // Field rendering: heatmap base + component-coloured set + boundary contour
   // ---------------------------------------------------------------------------
-  // Offscreen grid canvas, resized to the current resolution on demand.
-  const off = document.createElement('canvas');
-  const offCtx = off.getContext('2d')!;
+  // Per-target offscreen grid canvases. CRUCIAL: each field panel gets its OWN
+  // offscreen. A single shared offscreen used as the drawImage source for both
+  // panels in one frame leaks across them on Safari — its canvas rasterisation is
+  // deferred, so both drawImages end up sampling the LAST panel's content. The
+  // 'hard' panel (drawn first) then renders the 'fuzzy' field, which is why tweaking
+  // the KDE bandwidth visibly changed the 'hard' picture.
+  const offscreens = new WeakMap<HTMLCanvasElement, { canvas: HTMLCanvasElement; ctx: CanvasRenderingContext2D }>();
+  function offscreenFor(target: HTMLCanvasElement) {
+    let o = offscreens.get(target);
+    if (!o) {
+      const canvas = document.createElement('canvas');
+      o = { canvas, ctx: canvas.getContext('2d')! };
+      offscreens.set(target, o);
+    }
+    return o;
+  }
 
   // Union-find over the in-set grid cells (4-adjacency).
   function labelComponents(mask: Uint8Array, W: number, H: number): Int32Array {
@@ -377,6 +390,7 @@
     const baseTint = superlevel ? [245, 158, 11] : [59, 130, 246]; // warm fuzzy / cool hard
     const dark = lumOf(INK) > 0.5; // bright ink => dark theme
 
+    const { canvas: off, ctx: offCtx } = offscreenFor(canvas);
     if (off.width !== W || off.height !== H) { off.width = W; off.height = H; }
     const offImg = offCtx.createImageData(W, H);
     const px = offImg.data;
