@@ -118,11 +118,13 @@ export default function App() {
     [nodes, edges, selectedId, selectedPort],
   );
 
-  // Auto-run: when live, re-pull (debounced) whenever the signature changes.
+  // Auto-run: when live, re-pull on every signature change. We deliberately do NOT
+  // trailing-debounce (that only fires after you stop dragging, an onMouseUp feel) —
+  // the in-flight guard paces runs to GPU throughput and always runs the latest
+  // state, so a slider drag updates continuously in real time.
   useEffect(() => {
     if (!live || !selectedId) return;
-    const t = setTimeout(() => runRef.current(), 180);
-    return () => clearTimeout(t);
+    runRef.current();
   }, [sig, live, selectedId]);
 
   return (
