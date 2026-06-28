@@ -25,6 +25,7 @@ export default defineConfig({
           items: [
             { label: 'Overview', slug: 'index' },
             { label: 'Composable & interpretable', slug: 'concepts/composable-interpretable' },
+            { label: 'Roadmap & status', slug: 'roadmap' },
           ],
         },
         {
