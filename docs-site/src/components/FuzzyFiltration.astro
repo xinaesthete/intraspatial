@@ -32,6 +32,29 @@
         <button class="segbtn" data-method="dtm" type="button">DTM</button>
       </span>
     </span>
+    <span class="backend" id="ff-backend" title="field-generation backend">CPU</span>
+  </div>
+
+  <div class="row params">
+    <label class="sel">resolution
+      <select id="ff-res">
+        <option value="48">48²</option>
+        <option value="64" selected>64²</option>
+        <option value="80">80²</option>
+        <option value="96">96²</option>
+      </select>
+    </label>
+    <label class="sel rng">
+      <span id="ff-falloff-label">bandwidth&nbsp;σ</span>
+      <input type="range" id="ff-falloff" min="8" max="40" step="1" value="19" />
+      <span class="val sm" id="ff-falloff-val">1.9</span>
+    </label>
+    <label class="sel rng">
+      <span>noise&nbsp;band</span>
+      <input type="range" id="ff-band" min="0" max="200" step="5" value="80" />
+      <span class="val sm" id="ff-band-val">0.08</span>
+    </label>
+    <label class="sel chk" id="ff-gpu-wrap" hidden><input type="checkbox" id="ff-gpu" /> WebGPU</label>
   </div>
 
   <div class="grid2">
@@ -64,7 +87,13 @@
 <style>
   .ff-demo { margin: 1rem 0 1.5rem; }
   .ff-demo .row { display:flex; gap:16px; align-items:center; flex-wrap:wrap; margin-bottom:12px; }
+  .ff-demo .row.params { gap:18px; padding:9px 12px; border:1px solid var(--sl-color-gray-5); border-radius:8px; background:color-mix(in srgb, var(--sl-color-gray-6) 60%, transparent); }
   .ff-demo .sel { font-size:13px; color:var(--sl-color-gray-2); display:flex; gap:6px; align-items:center; }
+  .ff-demo .sel.rng { gap:8px; }
+  .ff-demo .sel.rng input[type=range] { width:110px; }
+  .ff-demo .val.sm { font-size:13px; min-width:30px; text-align:right; }
+  .ff-demo .backend { margin-left:auto; font-size:11px; font-weight:600; letter-spacing:.03em; padding:2px 8px; border-radius:999px; border:1px solid var(--sl-color-gray-5); color:var(--sl-color-gray-2); }
+  .ff-demo .backend.gpu { color:#10b981; border-color:#10b981; }
   .ff-demo .chk { cursor:pointer; }
   .ff-demo .chk input { margin:0; }
   .ff-demo select { font-size:13px; padding:3px 6px; background:var(--sl-color-bg); color:var(--sl-color-text); border:1px solid var(--sl-color-gray-5); border-radius:6px; }
@@ -92,6 +121,10 @@
   import { sublevelsetPersistence, fieldBettiNumbers } from '../../../src/spatial/sublevelsetPersistence';
   import type { ScalarField } from '../../../src/spatial/scalarField';
   import type { FieldPersistenceResult } from '../../../src/spatial/sublevelsetPersistence';
+  // GPU field generation (compute shader) when the browser exposes WebGPU; the CPU
+  // library functions above are the fallback. The persistence reduction is always CPU.
+  import { computeFieldGpu, gpuFieldAvailable } from '../lib/gpuField';
+  import type { FieldMode } from '../lib/gpuField';
 
   // ---------------------------------------------------------------------------
   // Theme inks (re-probed on light/dark toggle)
@@ -176,9 +209,32 @@
   const fzTitle = byId<HTMLSpanElement>('ff-fztitle');
   const fzTag = byId<HTMLSpanElement>('ff-fztag');
   const h0hOut = byId('ff-h0h'), h1hOut = byId('ff-h1h'), h0zOut = byId('ff-h0z'), h1zOut = byId('ff-h1z');
+  const resSel = byId<HTMLSelectElement>('ff-res');
+  const falloffInput = byId<HTMLInputElement>('ff-falloff');
+  const falloffLabel = byId<HTMLSpanElement>('ff-falloff-label');
+  const falloffVal = byId<HTMLSpanElement>('ff-falloff-val');
+  const bandInput = byId<HTMLInputElement>('ff-band');
+  const bandVal = byId<HTMLSpanElement>('ff-band-val');
+  const gpuWrap = byId<HTMLLabelElement>('ff-gpu-wrap');
+  const gpuChk = byId<HTMLInputElement>('ff-gpu');
+  const backendEl = byId<HTMLSpanElement>('ff-backend');
 
-  const GRID = 76;        // field resolution (persistence is computed once per build)
+  // ---------------------------------------------------------------------------
+  // Tunable parameters (rebuild the fields + persistence when they change)
+  // ---------------------------------------------------------------------------
+  let gridN = 64;          // field resolution (N x N)
   let method: 'kde' | 'dtm' = 'kde';
+  let sigma = 1.9;         // KDE bandwidth, world units (the "falloff")
+  let dtmK = 5;            // DTM neighbours (the "falloff" for DTM)
+  let band = 0.08;         // diagram noise band / min-persistence threshold
+  let useGpu = false;      // compute fields on WebGPU when available + enabled
+  let gpuFellBack = false; // a GPU compute failed this rebuild → showed CPU
+
+  function setBackendBadge(): void {
+    const onGpu = useGpu && !gpuFellBack;
+    backendEl.textContent = onGpu ? 'WebGPU' : 'CPU';
+    backendEl.classList.toggle('gpu', onGpu);
+  }
 
   // ---------------------------------------------------------------------------
   // Built state (rebuilt on shape / outliers / method change)
@@ -217,9 +273,29 @@
     return { field, pers, superlevel, sMax, pointCell };
   }
 
-  function build(): void {
-    const shape = dataSel.value as Shape;
-    data = makeData(shape, noiseChk.checked);
+  // Generate one field via the active backend (GPU when enabled + available, else
+  // the CPU library). Returns a ScalarField regardless of path.
+  async function genField(mode: FieldMode): Promise<ScalarField> {
+    if (useGpu) {
+      const g = await computeFieldGpu(data.xs, data.ys,
+        { width: gridN, height: gridN, bbox, mode, sigma, k: dtmK, radiusSigma: 4 });
+      if (g) return { data: g, width: gridN, height: gridN, bbox };
+      gpuFellBack = true; // WebGPU failed → fall through to CPU, reflect in badge
+    }
+    if (mode === 'kde')
+      return gaussianKdeField(data.xs, data.ys, { width: gridN, height: gridN, sigma, bbox, radiusSigma: 4 });
+    if (mode === 'dtm')
+      return dtmField(data.xs, data.ys, { width: gridN, height: gridN, bbox, k: dtmK });
+    return distanceField(data.xs, data.ys, { width: gridN, height: gridN, bbox });
+  }
+
+  // Rebuild fields + persistence. Async (the GPU path awaits a readback); a build
+  // token guards against an older rebuild finishing after a newer one.
+  let buildSeq = 0;
+  async function rebuild(): Promise<void> {
+    const seq = ++buildSeq;
+    gpuFellBack = false;
+    data = makeData(dataSel.value as Shape, noiseChk.checked);
     // Shared framing for both fields, padded so edge kernels/balls aren't clipped.
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
     for (let i = 0; i < data.xs.length; i++) {
@@ -229,25 +305,22 @@
     const pad = 3;
     bbox = [minX - pad, minY - pad, maxX + pad, maxY + pad];
 
-    const distF = distanceField(data.xs, data.ys, { width: GRID, height: GRID, bbox });
-    hard = buildPanel(distF, false);
+    const hardF = await genField('distance');
+    const fuzzyF = await genField(method === 'kde' ? 'kde' : 'dtm');
+    if (seq !== buildSeq) return; // superseded by a newer rebuild
 
-    if (method === 'kde') {
-      const kde = gaussianKdeField(data.xs, data.ys, { width: GRID, height: GRID, sigma: 1.9, bbox, radiusSigma: 4 });
-      fuzzy = buildPanel(kde, true);
-    } else {
-      const dtm = dtmField(data.xs, data.ys, { width: GRID, height: GRID, bbox, k: 5 });
-      fuzzy = buildPanel(dtm, false);
-    }
+    hard = buildPanel(hardF, false);
+    fuzzy = buildPanel(fuzzyF, method === 'kde');
+    setBackendBadge();
+    update(u);
   }
 
   // ---------------------------------------------------------------------------
   // Field rendering: heatmap base + component-coloured set + boundary contour
   // ---------------------------------------------------------------------------
+  // Offscreen grid canvas, resized to the current resolution on demand.
   const off = document.createElement('canvas');
-  off.width = GRID; off.height = GRID;
   const offCtx = off.getContext('2d')!;
-  const offImg = offCtx.createImageData(GRID, GRID);
 
   // Union-find over the in-set grid cells (4-adjacency).
   function labelComponents(mask: Uint8Array, W: number, H: number): Int32Array {
@@ -304,6 +377,8 @@
     const baseTint = superlevel ? [245, 158, 11] : [59, 130, 246]; // warm fuzzy / cool hard
     const dark = lumOf(INK) > 0.5; // bright ink => dark theme
 
+    if (off.width !== W || off.height !== H) { off.width = W; off.height = H; }
+    const offImg = offCtx.createImageData(W, H);
     const px = offImg.data;
     for (let i = 0; i < W * H; i++) {
       const o = i * 4;
@@ -441,8 +516,7 @@
 
     ctx.clearRect(0, 0, w, h);
 
-    // Noise band along the diagonal (low persistence).
-    const band = 0.08;
+    // Noise band along the diagonal (persistence < `band` = below the threshold).
     ctx.fillStyle = 'rgba(128,128,128,0.12)';
     ctx.beginPath();
     ctx.moveTo(X(0), Y(0)); ctx.lineTo(X(1), Y(1));
@@ -469,8 +543,9 @@
     for (const p of pts) {
       if (p.y - p.x < 0.012 && !p.essential) continue; // numerical near-diagonal dust
       const alive = p.x <= u && u < p.y;
+      const significant = p.essential || p.y - p.x >= band; // clears the noise band
       if (alive) { if (p.dim === 0) b0++; else b1++; }
-      ctx.globalAlpha = alive ? 1 : 0.3;
+      ctx.globalAlpha = alive ? (significant ? 1 : 0.45) : (significant ? 0.32 : 0.16);
       ctx.fillStyle = p.dim === 0 ? H0 : H1;
       const rad = p.dim === 1 ? (alive ? 5 : 3.4) : (alive ? 3.6 : 2.4);
       ctx.beginPath(); ctx.arc(X(p.x), Y(p.y), rad, 0, 6.2832); ctx.fill();
@@ -496,6 +571,7 @@
   // Per-frame update
   // ---------------------------------------------------------------------------
   function update(u: number): void {
+    if (!hard || !fuzzy) return; // a rebuild is still in flight
     // Hard: r = u * sMax. Fuzzy KDE: t = (1-u) * peak (descending). Fuzzy DTM: r = u * sMax.
     const hardThr = u * hard.sMax;
     const fuzzyThr = fuzzy.superlevel ? (1 - u) * fuzzy.sMax : u * fuzzy.sMax;
@@ -524,15 +600,46 @@
   uInput.addEventListener('input', function () {
     setPlaying(false); u = Number(this.value) / 1000; update(u);
   });
-  dataSel.addEventListener('change', () => { build(); u = 0; startTime = null; setPlaying(true); update(0); });
-  noiseChk.addEventListener('change', () => { build(); u = 0; startTime = null; setPlaying(true); update(0); });
+
+  // A new dataset resets the sweep; parameter tweaks keep the current sweep position.
+  function rebuildReset(): void { u = 0; startTime = null; setPlaying(true); void rebuild(); }
+  dataSel.addEventListener('change', rebuildReset);
+  noiseChk.addEventListener('change', rebuildReset);
+  resSel.addEventListener('change', () => { gridN = Number(resSel.value); void rebuild(); });
+
+  // Falloff slider — its meaning swaps with the fuzzy method (KDE bandwidth σ vs DTM k).
+  function syncFalloff(): void {
+    if (method === 'kde') {
+      falloffInput.min = '8'; falloffInput.max = '40'; falloffInput.step = '1';
+      falloffInput.value = String(Math.round(sigma * 10));
+      falloffLabel.innerHTML = 'bandwidth&nbsp;σ';
+      falloffVal.textContent = sigma.toFixed(1);
+    } else {
+      falloffInput.min = '1'; falloffInput.max = '12'; falloffInput.step = '1';
+      falloffInput.value = String(dtmK);
+      falloffLabel.innerHTML = 'neighbours&nbsp;k';
+      falloffVal.textContent = String(dtmK);
+    }
+  }
+  falloffInput.addEventListener('input', function () {
+    const v = Number(this.value);
+    if (method === 'kde') { sigma = v / 10; falloffVal.textContent = sigma.toFixed(1); }
+    else { dtmK = v; falloffVal.textContent = String(dtmK); }
+    void rebuild();
+  });
+  bandInput.addEventListener('input', function () {
+    band = Number(this.value) / 1000; bandVal.textContent = band.toFixed(3); update(u);
+  });
+  gpuChk.addEventListener('change', function () { useGpu = this.checked; void rebuild(); });
+
   for (const b of methodBtns)
     b.addEventListener('click', () => {
       method = (b.dataset.method as 'kde' | 'dtm') ?? 'kde';
       for (const x of methodBtns) x.classList.toggle('on', x === b);
       fzTitle.textContent = method === 'kde' ? 'KDE superlevel set' : 'distance-to-measure sublevel set';
       fzTag.textContent = method === 'kde' ? 'density, superlevel' : 'DTM, sublevel';
-      build(); update(u);
+      syncFalloff();
+      void rebuild();
     });
   window.addEventListener('resize', () => update(u));
 
@@ -555,7 +662,16 @@
     }
   }
 
-  build();
-  update(0);
+  // Init: paint immediately on the CPU, then upgrade to WebGPU if the browser has it.
+  syncFalloff();
+  bandVal.textContent = band.toFixed(3);
+  void rebuild();
+  gpuFieldAvailable().then((ok) => {
+    if (!ok) return;
+    gpuWrap.hidden = false;
+    gpuChk.checked = true;
+    useGpu = true;
+    void rebuild(); // recompute the fields on the GPU (same grids → same diagram)
+  });
   requestAnimationFrame(frame);
 </script>
