@@ -29,6 +29,7 @@ export default defineConfig({
             { label: 'Windowing, not quadrats', slug: 'concepts/windowing' },
             { label: 'Render vs compute', slug: 'concepts/render-vs-compute' },
             { label: 'Fuzzy TDA', slug: 'concepts/fuzzy-tda' },
+            { label: 'Filtrations & persistence', slug: 'concepts/filtrations' },
           ],
         },
         {

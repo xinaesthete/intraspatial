@@ -1,0 +1,38 @@
+---
+title: Filtrations & persistence
+description: Watch components and loops appear as a scale parameter sweeps — the intuition behind persistent homology.
+---
+
+import FiltrationSweep from '../../../components/FiltrationSweep.astro';
+
+Persistence diagrams are precise but hard to read cold. The intuition behind them
+is a *sweep*: pick a scale, connect everything closer than that scale, and watch the
+shape of the data change as the scale grows.
+
+## See it
+
+Each point grows an "influence ball" of radius `scale / 2`. When two balls touch,
+their points connect — and separate pieces merge (a **component**, H₀, dies). When a
+ring of points is enclosed but not yet filled, there is a **loop** (H₁) alive; once
+the interior fills with triangles, the loop dies. The counts below are the Betti
+numbers `H₀` (components) and `H₁` (loops) at the current scale, from the same
+reducer as `src/spatial/persistence.ts`. Drag to rotate.
+
+<FiltrationSweep />
+
+## How to read it
+
+- **`H₀` (components)** starts high — every point is its own island — and falls as
+  balls merge islands together. The "two clusters" shape parks at `H₀ = 2` for a
+  while before merging to `1`: that plateau is what makes two clusters a *real*,
+  persistent feature rather than noise.
+- **`H₁` (loops)** appears when a cycle of connections encloses empty space, and
+  dies when that space fills in. The "ring" holds one loop across a wide band of
+  scales; the "figure-eight" holds two. A feature that survives a wide band of
+  scales is the robust topology — exactly what a [persistence diagram](/primitives/cknn/#try-it-the-persistence-diagram)
+  records as a point far from the diagonal.
+
+This is the **filtration** a Vietoris–Rips persistence reducer walks through. The
+toolbox's job is to *build* this filtration efficiently — including the density-
+adaptive [CkNN](/primitives/cknn/) variant — and hand it to the reducer, which reads
+off how long each component and loop survives.

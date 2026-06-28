@@ -1,0 +1,112 @@
+---
+// Animated, rotatable 3D Vietoris-Rips filtration sweep. As the scale rises, balls
+// grow around each point; balls touching → edges (components merge, H0); triangles
+// fill enclosed regions (loops close, H1). Live Betti counts from a port of the
+// repo reducer (src/spatial/persistence.ts).
+---
+
+<div class="fs-demo">
+  <div class="row">
+    <label class="sel">shape
+      <select id="fs-data">
+        <option value="ring">ring (one loop)</option>
+        <option value="eight">figure-eight (two loops)</option>
+        <option value="clusters">two clusters (merging)</option>
+      </select>
+    </label>
+    <button id="fs-play" class="btn">⏸ pause</button>
+    <span class="hint">drag to rotate</span>
+    <span class="betti"><b style="color:#3b82f6">H₀</b> <span id="fs-h0">–</span>&nbsp;&nbsp;<b style="color:#ef4444">H₁</b> <span id="fs-h1">–</span></span>
+  </div>
+  <div id="fs-stage"></div>
+  <div class="ctrl">
+    <span class="lab">scale</span>
+    <input type="range" id="fs-scale" min="0" max="1000" step="1" value="0" />
+    <span id="fs-sval" class="val">0.0</span>
+  </div>
+</div>
+
+<style>
+  .fs-demo { margin: 1rem 0 1.5rem; }
+  .fs-demo .row { display:flex; gap:14px; align-items:center; flex-wrap:wrap; margin-bottom:8px; }
+  .fs-demo .sel { font-size:13px; color:var(--sl-color-gray-2); display:flex; gap:6px; align-items:center; }
+  .fs-demo select { font-size:13px; padding:3px 6px; background:var(--sl-color-bg); color:var(--sl-color-text); border:1px solid var(--sl-color-gray-5); border-radius:6px; }
+  .fs-demo .btn { font-size:13px; padding:4px 11px; border:1px solid var(--sl-color-gray-5); border-radius:6px; background:transparent; color:var(--sl-color-text); cursor:pointer; }
+  .fs-demo .hint { font-size:13px; color:var(--sl-color-gray-3); }
+  .fs-demo .betti { margin-left:auto; font-size:14px; }
+  .fs-demo #fs-stage { width:100%; height:400px; border-radius:8px; overflow:hidden; touch-action:none; }
+  .fs-demo .ctrl { display:flex; gap:12px; align-items:center; margin-top:0.6rem; }
+  .fs-demo .ctrl input { flex:1; }
+  .fs-demo .lab { font-size:13px; color:var(--sl-color-gray-2); min-width:42px; }
+  .fs-demo .val { font-size:14px; font-weight:600; min-width:42px; }
+</style>
+
+<script>
+  import * as THREE from 'three';
+
+  const PALETTE=[0x3b82f6,0xf59e0b,0x10b981,0xef4444,0x8b5cf6,0xec4899,0x14b8a6,0xeab308,0x06b6d4,0xf43f5e];
+
+  function cmp(a,b){for(let i=0;i<Math.min(a.length,b.length);i++)if(a[i]!==b[i])return a[i]-b[i];return a.length-b.length;}
+  function symd(a,b){const o=[];let i=0,j=0;while(i<a.length&&j<b.length){if(a[i]===b[j]){i++;j++;}else if(a[i]<b[j])o.push(a[i++]);else o.push(b[j++]);}while(i<a.length)o.push(a[i++]);while(j<b.length)o.push(b[j++]);return o;}
+  function persist(D,n,ms){const at=(i,j)=>D[i][j],S=[];for(let i=0;i<n;i++)S.push({v:[i],f:0,d:0});for(let i=0;i<n;i++)for(let j=i+1;j<n;j++)if(at(i,j)<=ms)S.push({v:[i,j],f:at(i,j),d:1});for(let i=0;i<n;i++)for(let j=i+1;j<n;j++){if(at(i,j)>ms)continue;for(let k=j+1;k<n;k++){const f=Math.max(at(i,j),at(i,k),at(j,k));if(f<=ms)S.push({v:[i,j,k],f,d:2});}}S.sort((a,b)=>a.f-b.f||a.d-b.d||cmp(a.v,b.v));const idx=new Map();for(let i=0;i<S.length;i++)idx.set(S[i].v.join(','),i);const cols=S.map(s=>{if(s.d===0)return [];const fc=[];for(let o=0;o<s.v.length;o++){const fa=[];for(let t=0;t<s.v.length;t++)if(t!==o)fa.push(s.v[t]);fc.push(idx.get(fa.join(',')));}fc.sort((a,b)=>a-b);return fc;});const lm=new Map(),pc=new Set(),P=[],low=c=>c.length?c[c.length-1]:-1;for(let j=0;j<cols.length;j++){let col=cols[j],l=low(col);while(l!==-1&&lm.has(l)){col=symd(col,cols[lm.get(l)]);l=low(col);}cols[j]=col;if(l!==-1){lm.set(l,j);const cr=S[l],dd=S[j].f;if(dd>cr.f)P.push({dim:cr.d,b:cr.f,dd});pc.add(l);}}for(let j=0;j<cols.length;j++){if(cols[j].length===0&&!pc.has(j))P.push({dim:S[j].d,b:S[j].f,dd:Infinity});}return P;}
+  function betti(P,s){let b0=0,b1=0;for(const p of P)if(p.b<=s&&s<p.dd){if(p.dim===0)b0++;else if(p.dim===1)b1++;}return [b0,b1];}
+
+  function makeData(kind){const X=[],Z=[];if(kind==='ring'){for(let i=0;i<22;i++){const a=2*Math.PI*i/22;X.push(10*Math.cos(a));Z.push(10*Math.sin(a));}}else if(kind==='eight'){for(const cx of[-6,6])for(let t=0;t<14;t++){const a=2*Math.PI*t/14;X.push(cx+6*Math.cos(a));Z.push(6*Math.sin(a));}}else{const s=q=>(Math.sin(q*91.7)*4137.1)%1;for(let i=0;i<12;i++){X.push(-7+(s(i)-0.5)*5);Z.push((s(i+50)-0.5)*8);}for(let i=0;i<12;i++){X.push(7+(s(i+9)-0.5)*5);Z.push((s(i+70)-0.5)*8);}}return {X,Z,n:X.length};}
+
+  const $=id=>document.getElementById(id);
+  const stage=$('fs-stage');
+  let W=stage.clientWidth||640, H=400;
+  const renderer=new THREE.WebGLRenderer({antialias:true,alpha:true});
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio||1,2)); renderer.setSize(W,H);
+  stage.appendChild(renderer.domElement);
+  const scene=new THREE.Scene();
+  const camera=new THREE.PerspectiveCamera(45,W/H,0.1,500); camera.position.set(0,26,30); camera.lookAt(0,0,0);
+  scene.add(new THREE.AmbientLight(0xffffff,0.75));
+  const dl=new THREE.DirectionalLight(0xffffff,0.7); dl.position.set(10,30,20); scene.add(dl);
+  const grid=new THREE.GridHelper(40,20,0x888888,0x888888); grid.material.opacity=0.12; grid.material.transparent=true; scene.add(grid);
+  const group=new THREE.Group(); scene.add(group);
+  const sphereGeo=new THREE.SphereGeometry(1,18,14);
+
+  let data,D,pairs,maxScale,balls=[],edges,edgePos,tris,triPos;
+  function buildScene(kind){
+    while(group.children.length)group.remove(group.children[0]); balls=[];
+    data=makeData(kind); const n=data.n; D=[];
+    for(let i=0;i<n;i++){D[i]=[];for(let j=0;j<n;j++)D[i][j]=Math.hypot(data.X[i]-data.X[j],data.Z[i]-data.Z[j]);}
+    let mx=0;for(let i=0;i<n;i++)for(let j=i+1;j<n;j++)mx=Math.max(mx,D[i][j]); maxScale=mx*1.02;
+    pairs=persist(D,n,maxScale);
+    for(let i=0;i<n;i++){const m=new THREE.Mesh(sphereGeo,new THREE.MeshStandardMaterial({transparent:true,opacity:0.34,roughness:0.6}));m.position.set(data.X[i],0,data.Z[i]);group.add(m);balls.push(m);}
+    const nE=n*(n-1)/2; edgePos=new Float32Array(nE*6); const eg=new THREE.BufferGeometry(); eg.setAttribute('position',new THREE.BufferAttribute(edgePos,3)); edges=new THREE.LineSegments(eg,new THREE.LineBasicMaterial({color:0xffffff,transparent:true,opacity:0.5})); group.add(edges);
+    const nT=n*(n-1)*(n-2)/6; triPos=new Float32Array(nT*9); const tg=new THREE.BufferGeometry(); tg.setAttribute('position',new THREE.BufferAttribute(triPos,3)); tris=new THREE.Mesh(tg,new THREE.MeshBasicMaterial({color:0x8b5cf6,transparent:true,opacity:0.18,side:THREE.DoubleSide})); group.add(tris);
+  }
+  function comps(n,scale){const par=[];for(let i=0;i<n;i++)par[i]=i;const f=a=>{while(par[a]!==a){par[a]=par[par[a]];a=par[a];}return a;};for(let i=0;i<n;i++)for(let j=i+1;j<n;j++)if(D[i][j]<=scale){const ra=f(i),rb=f(j);if(ra!==rb)par[ra]=rb;}const map={};let c=0;const lab=[];for(let i=0;i<n;i++){const r=f(i);if(!(r in map))map[r]=c++;lab[i]=map[r];}return lab;}
+  function update(scale){
+    const n=data.n,lab=comps(n,scale);
+    for(let i=0;i<n;i++){balls[i].scale.setScalar(Math.max(0.18,scale/2));balls[i].material.color.setHex(PALETTE[lab[i]%PALETTE.length]);}
+    let ec=0;for(let i=0;i<n;i++)for(let j=i+1;j<n;j++)if(D[i][j]<=scale){edgePos[ec*6]=data.X[i];edgePos[ec*6+1]=0;edgePos[ec*6+2]=data.Z[i];edgePos[ec*6+3]=data.X[j];edgePos[ec*6+4]=0;edgePos[ec*6+5]=data.Z[j];ec++;}
+    edges.geometry.setDrawRange(0,ec*2);edges.geometry.attributes.position.needsUpdate=true;
+    let tc=0;for(let i=0;i<n;i++)for(let j=i+1;j<n;j++){if(D[i][j]>scale)continue;for(let k=j+1;k<n;k++){if(D[i][k]<=scale&&D[j][k]<=scale){const b=tc*9;triPos[b]=data.X[i];triPos[b+1]=0;triPos[b+2]=data.Z[i];triPos[b+3]=data.X[j];triPos[b+4]=0;triPos[b+5]=data.Z[j];triPos[b+6]=data.X[k];triPos[b+7]=0;triPos[b+8]=data.Z[k];tc++;}}}
+    tris.geometry.setDrawRange(0,tc*3);tris.geometry.attributes.position.needsUpdate=true;
+    const bt=betti(pairs,scale); $('fs-h0').textContent=bt[0]; $('fs-h1').textContent=bt[1]; $('fs-sval').textContent=scale.toFixed(1);
+    const sl=$('fs-scale'); if(document.activeElement!==sl)sl.value=Math.round(scale/maxScale*1000);
+  }
+
+  let rotY=0.4,rotX=0.35,dragging=false,px=0,py=0;
+  renderer.domElement.addEventListener('pointerdown',e=>{dragging=true;px=e.clientX;py=e.clientY;});
+  window.addEventListener('pointerup',()=>{dragging=false;});
+  window.addEventListener('pointermove',e=>{if(!dragging)return;rotY+=(e.clientX-px)*0.01;rotX=Math.max(0.05,Math.min(1.2,rotX+(e.clientY-py)*0.01));px=e.clientX;py=e.clientY;});
+
+  let playing=true,scale=0,t0=null;const DUR=9000,HOLD=1200;
+  $('fs-play').addEventListener('click',function(){playing=!playing;this.textContent=playing?'⏸ pause':'▶ play';t0=null;});
+  $('fs-scale').addEventListener('input',function(){playing=false;$('fs-play').textContent='▶ play';scale=this.value/1000*maxScale;update(scale);});
+  $('fs-data').addEventListener('change',function(){buildScene(this.value);scale=0;t0=null;playing=true;$('fs-play').textContent='⏸ pause';});
+  window.addEventListener('resize',()=>{W=stage.clientWidth||640;renderer.setSize(W,H);camera.aspect=W/H;camera.updateProjectionMatrix();});
+
+  function frame(ts){
+    requestAnimationFrame(frame);
+    if(playing){if(t0===null)t0=ts;const el=(ts-t0)%(DUR+HOLD);scale=Math.min(1,el/DUR)*maxScale;update(scale);}
+    if(!dragging)rotY+=0.0016;
+    group.rotation.y=rotY;group.rotation.x=rotX;
+    renderer.render(scene,camera);
+  }
+  buildScene('ring'); update(0); requestAnimationFrame(frame);
+</script>
