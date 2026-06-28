@@ -1,0 +1,12 @@
+{
+  "version": "0.0.1",
+  "autoPort": true,
+  "configurations": [
+    {
+      "name": "docs-site",
+      "runtimeExecutable": "volta",
+      "runtimeArgs": ["run", "--node", "22", "pnpm", "--dir", "docs-site", "exec", "astro", "dev"],
+      "port": 4321
+    }
+  ]
+}

@@ -16,19 +16,22 @@
         <option value="clusters">two clusters (merging)</option>
       </select>
     </label>
-    <button id="fs-play" class="btn">⏸ pause</button>
-    <span class="hint">drag the scene to rotate</span>
     <span class="betti"><b style="color:#3b82f6">H₀</b> <span id="fs-h0">–</span>&nbsp;&nbsp;<b style="color:#ef4444">H₁</b> <span id="fs-h1">–</span></span>
   </div>
   <div class="stagegrid">
-    <div id="fs-stage"></div>
-    <div class="pdwrap">
-      <div class="pdtitle">persistence diagram</div>
+    <div class="col">
+      <div class="coltitle">Vietoris–Rips complex</div>
+      <div id="fs-stage"></div>
+      <div class="colcap"><span class="dot"></span>colour = connected component (H₀) · drag to rotate</div>
+    </div>
+    <div class="col">
+      <div class="coltitle">persistence diagram</div>
       <canvas id="fs-pd"></canvas>
-      <div class="pdkey">filled = alive at this scale · <span style="color:#3b82f6">H₀</span> / <span style="color:#ef4444">H₁</span></div>
+      <div class="colcap">filled = alive at this scale · <span style="color:#3b82f6">H₀</span> / <span style="color:#ef4444">H₁</span></div>
     </div>
   </div>
   <div class="ctrl">
+    <button id="fs-play" class="btn" aria-label="pause">⏸</button>
     <span class="lab">scale</span>
     <input type="range" id="fs-scale" min="0" max="1000" step="1" value="0" />
     <span id="fs-sval" class="val">0.0</span>
@@ -37,21 +40,24 @@
 
 <style>
   .fs-demo { margin: 1rem 0 1.5rem; }
-  .fs-demo .row { display:flex; gap:14px; align-items:center; flex-wrap:wrap; margin-bottom:8px; }
+  .fs-demo .row { display:flex; gap:14px; align-items:center; flex-wrap:wrap; margin-bottom:10px; }
   .fs-demo .sel { font-size:13px; color:var(--sl-color-gray-2); display:flex; gap:6px; align-items:center; }
   .fs-demo select { font-size:13px; padding:3px 6px; background:var(--sl-color-bg); color:var(--sl-color-text); border:1px solid var(--sl-color-gray-5); border-radius:6px; }
-  .fs-demo .btn { font-size:13px; padding:4px 11px; min-width:88px; text-align:center; border:1px solid var(--sl-color-gray-5); border-radius:6px; background:transparent; color:var(--sl-color-text); cursor:pointer; }
-  .fs-demo .hint { font-size:13px; color:var(--sl-color-gray-3); }
   .fs-demo .betti { margin-left:auto; font-size:14px; }
-  .fs-demo .stagegrid { display:grid; grid-template-columns:1.5fr 1fr; gap:12px; align-items:stretch; }
+  .fs-demo .stagegrid { display:grid; grid-template-columns:1.4fr 1fr; gap:14px; align-items:start; }
   @media (max-width: 640px) { .fs-demo .stagegrid { grid-template-columns:1fr; } }
-  .fs-demo #fs-stage { width:100%; height:340px; border-radius:8px; overflow:hidden; touch-action:none; background:var(--sl-color-gray-6); }
-  .fs-demo .pdwrap { display:flex; flex-direction:column; }
-  .fs-demo .pdtitle { font-size:12px; color:var(--sl-color-gray-3); margin-bottom:3px; }
-  .fs-demo #fs-pd { width:100%; height:300px; border-radius:8px; background:var(--sl-color-gray-6); }
-  .fs-demo .pdkey { font-size:11px; color:var(--sl-color-gray-3); margin-top:3px; }
-  .fs-demo .ctrl { display:flex; gap:12px; align-items:center; margin-top:0.7rem; }
+  /* zero Starlight's prose margin — it adds margin-top to the 2nd grid column,
+     which align-items:start then offsets downward, misaligning the two panels */
+  .fs-demo .col { display:flex; flex-direction:column; margin-top:0; }
+  .fs-demo .coltitle { font-size:12px; font-weight:600; color:var(--sl-color-gray-2); margin-bottom:5px; height:16px; line-height:16px; }
+  .fs-demo #fs-stage { width:100%; height:320px; border-radius:8px; overflow:hidden; touch-action:none; background:var(--sl-color-gray-6); }
+  .fs-demo #fs-pd { width:100%; height:320px; border-radius:8px; background:var(--sl-color-gray-6); }
+  .fs-demo .colcap { font-size:11px; color:var(--sl-color-gray-3); margin-top:5px; height:15px; line-height:15px; display:flex; align-items:center; gap:5px; }
+  .fs-demo .colcap .dot { width:8px; height:8px; border-radius:50%; flex:0 0 auto; background:linear-gradient(90deg,#3b82f6,#10b981,#f59e0b); }
+  .fs-demo .ctrl { display:flex; gap:12px; align-items:center; margin-top:0.8rem; }
   .fs-demo .ctrl input { flex:1; }
+  .fs-demo .btn { font-size:14px; width:32px; height:30px; display:flex; align-items:center; justify-content:center; border:1px solid var(--sl-color-gray-5); border-radius:6px; background:transparent; color:var(--sl-color-text); cursor:pointer; flex:0 0 auto; }
+  .fs-demo .btn:hover { border-color:var(--sl-color-gray-4); }
   .fs-demo .lab { font-size:13px; color:var(--sl-color-gray-2); min-width:42px; }
   .fs-demo .val { font-size:14px; font-weight:600; min-width:42px; }
 </style>
@@ -59,98 +65,588 @@
 <script>
   import * as THREE from 'three';
 
-  function probe(n,f){const p=document.createElement('span');p.style.cssText='position:absolute;visibility:hidden;';p.style.color='var('+n+')';document.body.appendChild(p);const c=getComputedStyle(p).color;p.remove();return c||f;}
-  const INK=probe('--sl-color-text','#cbd5e1'), DIMC=probe('--sl-color-gray-3','#94a3b8');
-  const PALETTE=[0x3b82f6,0xf59e0b,0x10b981,0xef4444,0x8b5cf6,0xec4899,0x14b8a6,0xeab308,0x06b6d4,0xf43f5e];
-  const H0COL='#3b82f6', H1COL='#ef4444';
+  // ----------------------------------------------------------------------------
+  // Types
+  // ----------------------------------------------------------------------------
 
-  function cmp(a,b){for(let i=0;i<Math.min(a.length,b.length);i++)if(a[i]!==b[i])return a[i]-b[i];return a.length-b.length;}
-  function symd(a,b){const o=[];let i=0,j=0;while(i<a.length&&j<b.length){if(a[i]===b[j]){i++;j++;}else if(a[i]<b[j])o.push(a[i++]);else o.push(b[j++]);}while(i<a.length)o.push(a[i++]);while(j<b.length)o.push(b[j++]);return o;}
-  function persist(D,n,ms){const at=(i,j)=>D[i][j],S=[];for(let i=0;i<n;i++)S.push({v:[i],f:0,d:0});for(let i=0;i<n;i++)for(let j=i+1;j<n;j++)if(at(i,j)<=ms)S.push({v:[i,j],f:at(i,j),d:1});for(let i=0;i<n;i++)for(let j=i+1;j<n;j++){if(at(i,j)>ms)continue;for(let k=j+1;k<n;k++){const f=Math.max(at(i,j),at(i,k),at(j,k));if(f<=ms)S.push({v:[i,j,k],f,d:2});}}S.sort((a,b)=>a.f-b.f||a.d-b.d||cmp(a.v,b.v));const idx=new Map();for(let i=0;i<S.length;i++)idx.set(S[i].v.join(','),i);const cols=S.map(s=>{if(s.d===0)return [];const fc=[];for(let o=0;o<s.v.length;o++){const fa=[];for(let t=0;t<s.v.length;t++)if(t!==o)fa.push(s.v[t]);fc.push(idx.get(fa.join(',')));}fc.sort((a,b)=>a-b);return fc;});const lm=new Map(),pc=new Set(),P=[],low=c=>c.length?c[c.length-1]:-1;for(let j=0;j<cols.length;j++){let col=cols[j],l=low(col);while(l!==-1&&lm.has(l)){col=symd(col,cols[lm.get(l)]);l=low(col);}cols[j]=col;if(l!==-1){lm.set(l,j);const cr=S[l],dd=S[j].f;if(dd>cr.f)P.push({dim:cr.d,b:cr.f,dd});pc.add(l);}}for(let j=0;j<cols.length;j++){if(cols[j].length===0&&!pc.has(j))P.push({dim:S[j].d,b:S[j].f,dd:Infinity});}return P;}
-  function betti(P,s){let b0=0,b1=0;for(const p of P)if(p.b<=s&&s<p.dd){if(p.dim===0)b0++;else if(p.dim===1)b1++;}return [b0,b1];}
+  /** A point cloud laid out on the y=0 plane (X horizontal, Z depth). */
+  interface Dataset {
+    X: number[];
+    Z: number[];
+    n: number;
+  }
 
-  function makeData(kind){const X=[],Z=[];if(kind==='ring'){for(let i=0;i<22;i++){const a=2*Math.PI*i/22;X.push(10*Math.cos(a));Z.push(10*Math.sin(a));}}else if(kind==='eight'){for(const cx of[-6,6])for(let t=0;t<14;t++){const a=2*Math.PI*t/14;X.push(cx+6*Math.cos(a));Z.push(6*Math.sin(a));}}else{const s=q=>(Math.sin(q*91.7)*4137.1)%1;for(let i=0;i<12;i++){X.push(-7+(s(i)-0.5)*5);Z.push((s(i+50)-0.5)*8);}for(let i=0;i<12;i++){X.push(7+(s(i+9)-0.5)*5);Z.push((s(i+70)-0.5)*8);}}return {X,Z,n:X.length};}
+  /** Pairwise Euclidean distance matrix, D[i][j]. */
+  type DistMatrix = number[][];
 
-  const $=id=>document.getElementById(id);
-  const stage=$('fs-stage'), pd=$('fs-pd');
-  let W=stage.clientWidth||520, H=340;
-  const renderer=new THREE.WebGLRenderer({antialias:true,alpha:true});
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio||1,2)); renderer.setSize(W,H);
+  /** A simplex in the Vietoris–Rips complex. */
+  interface Simplex {
+    /** Sorted vertex indices: [i] for a point, [i,j] for an edge, [i,j,k] for a triangle. */
+    verts: number[];
+    /** Filtration value at which it appears = max pairwise distance among its vertices. */
+    birth: number;
+    /** Topological dimension: 0 = point, 1 = edge, 2 = triangle. */
+    dim: number;
+  }
+
+  /** A persistence bar: a feature of dimension `dim` alive over [birth, death). */
+  interface Bar {
+    dim: number;
+    birth: number;
+    death: number;
+  }
+
+  type Mode = 'ring' | 'eight' | 'clusters';
+  type Ball = THREE.Mesh<THREE.SphereGeometry, THREE.MeshStandardMaterial>;
+
+  // ----------------------------------------------------------------------------
+  // Theme colours
+  // ----------------------------------------------------------------------------
+
+  /** Resolve a CSS custom property to a concrete colour string, with a fallback. */
+  function probeColor(varName: string, fallback: string): string {
+    const probe = document.createElement('span');
+    probe.style.cssText = 'position:absolute;visibility:hidden;';
+    probe.style.color = `var(${varName})`;
+    document.body.appendChild(probe);
+    const resolved = getComputedStyle(probe).color;
+    probe.remove();
+    return resolved || fallback;
+  }
+
+  const INK = probeColor('--sl-color-text', '#cbd5e1');
+  const DIM = probeColor('--sl-color-gray-3', '#94a3b8');
+  // Per-component colours for the 3D balls (indexed by component representative).
+  const PALETTE = [
+    0x3b82f6, 0xf59e0b, 0x10b981, 0xef4444, 0x8b5cf6,
+    0xec4899, 0x14b8a6, 0xeab308, 0x06b6d4, 0xf43f5e,
+  ];
+  const H0_COLOR = '#3b82f6'; // components
+  const H1_COLOR = '#ef4444'; // loops
+
+  // ----------------------------------------------------------------------------
+  // Persistent homology (a small port of src/spatial/persistence.ts)
+  // ----------------------------------------------------------------------------
+
+  /** Lexicographic comparison of two integer arrays. */
+  function compareVerts(a: number[], b: number[]): number {
+    const len = Math.min(a.length, b.length);
+    for (let i = 0; i < len; i++) if (a[i] !== b[i]) return a[i] - b[i];
+    return a.length - b.length;
+  }
+
+  /** Symmetric difference of two sorted arrays — i.e. column addition over Z/2. */
+  function symmetricDiff(a: number[], b: number[]): number[] {
+    const out: number[] = [];
+    let i = 0, j = 0;
+    while (i < a.length && j < b.length) {
+      if (a[i] === b[j]) { i++; j++; }            // present in both → cancels
+      else if (a[i] < b[j]) out.push(a[i++]);
+      else out.push(b[j++]);
+    }
+    while (i < a.length) out.push(a[i++]);
+    while (j < b.length) out.push(b[j++]);
+    return out;
+  }
+
+  /**
+   * Compute the persistence bars of the Vietoris–Rips complex on `D`, built up to
+   * `maxScale`, via the standard boundary-matrix reduction over Z/2.
+   */
+  function persistence(D: DistMatrix, n: number, maxScale: number): Bar[] {
+    const dist = (i: number, j: number) => D[i][j];
+
+    // Build the complex: every point, plus edges and triangles within maxScale.
+    const simplices: Simplex[] = [];
+    for (let i = 0; i < n; i++) simplices.push({ verts: [i], birth: 0, dim: 0 });
+    for (let i = 0; i < n; i++)
+      for (let j = i + 1; j < n; j++)
+        if (dist(i, j) <= maxScale)
+          simplices.push({ verts: [i, j], birth: dist(i, j), dim: 1 });
+    for (let i = 0; i < n; i++)
+      for (let j = i + 1; j < n; j++) {
+        if (dist(i, j) > maxScale) continue;
+        for (let k = j + 1; k < n; k++) {
+          const birth = Math.max(dist(i, j), dist(i, k), dist(j, k));
+          if (birth <= maxScale) simplices.push({ verts: [i, j, k], birth, dim: 2 });
+        }
+      }
+
+    // Filtration order: by birth, then dimension, then lexicographically.
+    simplices.sort(
+      (a, b) => a.birth - b.birth || a.dim - b.dim || compareVerts(a.verts, b.verts),
+    );
+
+    // Index every simplex so boundary columns can reference faces by position.
+    const indexOf = new Map<string, number>();
+    simplices.forEach((s, i) => indexOf.set(s.verts.join(','), i));
+
+    // Boundary matrix: each column holds the (sorted) indices of a simplex's faces.
+    const columns: number[][] = simplices.map((s) => {
+      if (s.dim === 0) return [];
+      const faces: number[] = [];
+      for (let omit = 0; omit < s.verts.length; omit++) {
+        const face = s.verts.filter((_, t) => t !== omit);
+        faces.push(indexOf.get(face.join(','))!);
+      }
+      return faces.sort((a, b) => a - b);
+    });
+
+    // Reduce: clear each column's pivot against the column already owning that pivot.
+    const lowestRow = (col: number[]) => (col.length ? col[col.length - 1] : -1);
+    const colByPivot = new Map<number, number>(); // pivot row → reducing column
+    const paired = new Set<number>();
+    const bars: Bar[] = [];
+
+    for (let j = 0; j < columns.length; j++) {
+      let col = columns[j];
+      let pivot = lowestRow(col);
+      while (pivot !== -1 && colByPivot.has(pivot)) {
+        col = symmetricDiff(col, columns[colByPivot.get(pivot)!]);
+        pivot = lowestRow(col);
+      }
+      columns[j] = col;
+      if (pivot !== -1) {
+        colByPivot.set(pivot, j);
+        const birthSimplex = simplices[pivot]; // the feature this column kills
+        const death = simplices[j].birth;
+        if (death > birthSimplex.birth)
+          bars.push({ dim: birthSimplex.dim, birth: birthSimplex.birth, death });
+        paired.add(pivot);
+      }
+    }
+
+    // Simplices that create a feature but are never paired live forever (essential).
+    for (let j = 0; j < columns.length; j++)
+      if (columns[j].length === 0 && !paired.has(j))
+        bars.push({ dim: simplices[j].dim, birth: simplices[j].birth, death: Infinity });
+
+    return bars;
+  }
+
+  /** Betti numbers [b0, b1] = number of dim-0 / dim-1 bars alive at `scale`. */
+  function betti(bars: Bar[], scale: number): [number, number] {
+    let b0 = 0, b1 = 0;
+    for (const bar of bars)
+      if (bar.birth <= scale && scale < bar.death) {
+        if (bar.dim === 0) b0++;
+        else if (bar.dim === 1) b1++;
+      }
+    return [b0, b1];
+  }
+
+  // ----------------------------------------------------------------------------
+  // Sample point clouds
+  // ----------------------------------------------------------------------------
+
+  function makeData(kind: Mode): Dataset {
+    const X: number[] = [];
+    const Z: number[] = [];
+    if (kind === 'ring') {
+      for (let i = 0; i < 22; i++) {
+        const a = (2 * Math.PI * i) / 22;
+        X.push(10 * Math.cos(a));
+        Z.push(10 * Math.sin(a));
+      }
+    } else if (kind === 'eight') {
+      for (const cx of [-6, 6])
+        for (let t = 0; t < 14; t++) {
+          const a = (2 * Math.PI * t) / 14;
+          X.push(cx + 6 * Math.cos(a));
+          Z.push(6 * Math.sin(a));
+        }
+    } else {
+      // Two clusters with deterministic pseudo-random jitter (stable across reloads).
+      const jitter = (q: number) => (Math.sin(q * 91.7) * 4137.1) % 1;
+      for (let i = 0; i < 12; i++) {
+        X.push(-7 + (jitter(i) - 0.5) * 5);
+        Z.push((jitter(i + 50) - 0.5) * 8);
+      }
+      for (let i = 0; i < 12; i++) {
+        X.push(7 + (jitter(i + 9) - 0.5) * 5);
+        Z.push((jitter(i + 70) - 0.5) * 8);
+      }
+    }
+    return { X, Z, n: X.length };
+  }
+
+  // ----------------------------------------------------------------------------
+  // DOM + three.js setup
+  // ----------------------------------------------------------------------------
+
+  const byId = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
+  const stage = byId<HTMLDivElement>('fs-stage');
+  const pd = byId<HTMLCanvasElement>('fs-pd');
+  const h0Out = byId<HTMLSpanElement>('fs-h0');
+  const h1Out = byId<HTMLSpanElement>('fs-h1');
+  const scaleOut = byId<HTMLSpanElement>('fs-sval');
+  const scaleInput = byId<HTMLInputElement>('fs-scale');
+  const playBtn = byId<HTMLButtonElement>('fs-play');
+  const dataSelect = byId<HTMLSelectElement>('fs-data');
+
+  let stageW = stage.clientWidth || 520;
+  const stageH = 320;
+
+  const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+  renderer.setSize(stageW, stageH);
   stage.appendChild(renderer.domElement);
-  const scene=new THREE.Scene();
-  const camera=new THREE.PerspectiveCamera(45,W/H,0.1,500); camera.position.set(0,24,30); camera.lookAt(0,0,0);
-  scene.add(new THREE.AmbientLight(0xffffff,0.8));
-  const dl=new THREE.DirectionalLight(0xffffff,0.65); dl.position.set(8,30,18); scene.add(dl);
-  const group=new THREE.Group(); scene.add(group);
-  const sphereGeo=new THREE.SphereGeometry(1,18,14);
 
-  let data,D,pairs,maxScale,balls=[],edges,edgePos,tris,triPos;
-  function buildScene(kind){
-    while(group.children.length)group.remove(group.children[0]); balls=[];
-    data=makeData(kind); const n=data.n; D=[];
-    for(let i=0;i<n;i++){D[i]=[];for(let j=0;j<n;j++)D[i][j]=Math.hypot(data.X[i]-data.X[j],data.Z[i]-data.Z[j]);}
-    let mx=0;for(let i=0;i<n;i++)for(let j=i+1;j<n;j++)mx=Math.max(mx,D[i][j]); const mxFull=mx*1.02;
+  const scene = new THREE.Scene();
+  const camera = new THREE.PerspectiveCamera(45, stageW / stageH, 0.1, 500);
+  camera.position.set(0, 24, 30);
+  camera.lookAt(0, 0, 0);
+  scene.add(new THREE.AmbientLight(0xffffff, 0.8));
+  const keyLight = new THREE.DirectionalLight(0xffffff, 0.65);
+  keyLight.position.set(8, 30, 18);
+  scene.add(keyLight);
+
+  // Everything rotatable lives in `group`; the camera/lights stay put.
+  const group = new THREE.Group();
+  scene.add(group);
+  const sphereGeo = new THREE.SphereGeometry(1, 18, 14);
+
+  // ----------------------------------------------------------------------------
+  // Scene state (rebuilt whenever the shape changes)
+  // ----------------------------------------------------------------------------
+
+  let data: Dataset;
+  let D: DistMatrix;
+  let bars: Bar[];
+  let maxScale: number;
+  let balls: Ball[] = [];
+  let edges: THREE.LineSegments;
+  let edgePos: Float32Array; // flat [x,y,z, x,y,z, ...] for every potential edge
+  let tris: THREE.Mesh;
+  let triPos: Float32Array; // flat triangle vertices for every potential triangle
+
+  function buildScene(kind: Mode): void {
+    while (group.children.length) group.remove(group.children[0]);
+    balls = [];
+
+    data = makeData(kind);
+    const n = data.n;
+
+    // Pairwise distances.
+    D = [];
+    for (let i = 0; i < n; i++) {
+      D[i] = [];
+      for (let j = 0; j < n; j++)
+        D[i][j] = Math.hypot(data.X[i] - data.X[j], data.Z[i] - data.Z[j]);
+    }
+
+    // Largest pairwise distance sets a hard upper bound on the sweep.
+    let maxDist = 0;
+    for (let i = 0; i < n; i++)
+      for (let j = i + 1; j < n; j++) maxDist = Math.max(maxDist, D[i][j]);
+    const fullScale = maxDist * 1.02;
+
     // Bound the sweep to just past the largest genuine feature death — going further
     // pushes the triangles-only complex into the dense regime, where it sprouts
     // spurious essential H1 (you'd need tetrahedra to kill them).
-    const full=persist(D,n,mxFull); let dF=0; for(const p of full)if(isFinite(p.dd)&&(p.dd-p.b)>mxFull*0.03)dF=Math.max(dF,p.dd);
-    maxScale=Math.min(mxFull, dF>0?dF*1.2:mxFull);
-    pairs=persist(D,n,maxScale);
-    for(let i=0;i<n;i++){const m=new THREE.Mesh(sphereGeo,new THREE.MeshStandardMaterial({transparent:true,opacity:0.32,roughness:0.6}));m.position.set(data.X[i],0,data.Z[i]);group.add(m);balls.push(m);}
-    const nE=n*(n-1)/2; edgePos=new Float32Array(nE*6); const eg=new THREE.BufferGeometry(); eg.setAttribute('position',new THREE.BufferAttribute(edgePos,3)); edges=new THREE.LineSegments(eg,new THREE.LineBasicMaterial({color:0xffffff,transparent:true,opacity:0.55})); group.add(edges);
-    const nT=n*(n-1)*(n-2)/6; triPos=new Float32Array(nT*9); const tg=new THREE.BufferGeometry(); tg.setAttribute('position',new THREE.BufferAttribute(triPos,3)); tris=new THREE.Mesh(tg,new THREE.MeshBasicMaterial({color:0x8b5cf6,transparent:true,opacity:0.2,side:THREE.DoubleSide})); group.add(tris);
-  }
-  function comps(n,scale){const par=[];for(let i=0;i<n;i++)par[i]=i;const f=a=>{while(par[a]!==a){par[a]=par[par[a]];a=par[a];}return a;};for(let i=0;i<n;i++)for(let j=i+1;j<n;j++)if(D[i][j]<=scale){const ra=f(i),rb=f(j);if(ra!==rb)par[ra]=rb;}const map={};let c=0;const lab=[];for(let i=0;i<n;i++){const r=f(i);if(!(r in map))map[r]=c++;lab[i]=map[r];}return lab;}
+    const fullBars = persistence(D, n, fullScale);
+    let lastRealDeath = 0;
+    for (const bar of fullBars)
+      if (isFinite(bar.death) && bar.death - bar.birth > fullScale * 0.03)
+        lastRealDeath = Math.max(lastRealDeath, bar.death);
+    maxScale = Math.min(fullScale, lastRealDeath > 0 ? lastRealDeath * 1.2 : fullScale);
 
-  function drawPD(scale){
-    const r=pd.getBoundingClientRect(), dpr=Math.min(window.devicePixelRatio||1,2);
-    pd.width=r.width*dpr; pd.height=r.height*dpr; const x=pd.getContext('2d'); x.setTransform(dpr,0,0,dpr,0,0);
-    const w=r.width,h=r.height,pad=28, side=Math.min(w,h)-2*pad, ox=(w-side)/2, oy=(h-side)/2;
-    const X=v=>ox+(v/maxScale)*side, Y=v=>oy+side-(Math.min(v,maxScale)/maxScale)*side;
-    x.clearRect(0,0,w,h);
-    // alive region (birth ≤ scale < death) = upper-left of (scale,scale)
-    x.fillStyle='rgba(99,102,241,0.10)'; x.fillRect(X(0),Y(maxScale),X(scale)-X(0),Y(scale)-Y(maxScale));
-    // axes + diagonal
-    x.strokeStyle='rgba(128,128,128,0.4)'; x.lineWidth=1; x.beginPath(); x.moveTo(X(0),Y(0)); x.lineTo(X(maxScale),Y(0)); x.moveTo(X(0),Y(0)); x.lineTo(X(0),Y(maxScale)); x.stroke();
-    x.strokeStyle='rgba(128,128,128,0.5)'; x.setLineDash([4,3]); x.beginPath(); x.moveTo(X(0),Y(0)); x.lineTo(X(maxScale),Y(maxScale)); x.stroke(); x.setLineDash([]);
-    x.fillStyle=DIMC; x.font='10px sans-serif'; x.textAlign='center'; x.fillText('birth →', ox+side/2, oy+side+16); x.save(); x.translate(ox-15,oy+side/2); x.rotate(-Math.PI/2); x.fillText('death →',0,0); x.restore();
-    // points
-    for(const p of pairs){ const dv=isFinite(p.dd)?p.dd:maxScale; if(isFinite(p.dd)&&(p.dd-p.b)<maxScale*0.02) continue; const alive=p.b<=scale&&scale<p.dd; x.globalAlpha=alive?1:0.22; x.fillStyle=p.dim===0?H0COL:H1COL; const rad=p.dim===1?(alive?5.5:3.5):(alive?3.4:2.2); x.beginPath(); x.arc(X(p.b),Y(dv),rad,0,6.2832); x.fill(); if(!isFinite(p.dd)){ x.globalAlpha=alive?1:0.3; x.strokeStyle=p.dim===0?H0COL:H1COL; x.beginPath(); x.moveTo(X(p.b),Y(dv)-8); x.lineTo(X(p.b),Y(dv)-1); x.stroke(); } }
-    x.globalAlpha=1;
-    // sweep crosshair at (scale,scale)
-    x.strokeStyle='rgba(128,128,128,0.55)'; x.setLineDash([2,3]); x.beginPath(); x.moveTo(X(scale),Y(scale)); x.lineTo(X(scale),Y(maxScale)); x.moveTo(X(0),Y(scale)); x.lineTo(X(scale),Y(scale)); x.stroke(); x.setLineDash([]);
-    x.fillStyle=INK; x.beginPath(); x.arc(X(scale),Y(scale),3.2,0,6.2832); x.fill();
+    bars = persistence(D, n, maxScale);
+
+    // Balls — translucent influence spheres. depthWrite:false so they blend cleanly
+    // instead of fighting the depth buffer; renderOrder pushes them after the edges.
+    for (let i = 0; i < n; i++) {
+      const ball: Ball = new THREE.Mesh(
+        sphereGeo,
+        new THREE.MeshStandardMaterial({
+          transparent: true,
+          opacity: 0.28,
+          roughness: 0.6,
+          depthWrite: false,
+        }),
+      );
+      ball.renderOrder = 2;
+      ball.position.set(data.X[i], 0, data.Z[i]);
+      group.add(ball);
+      balls.push(ball);
+    }
+
+    // Edges — preallocate one line segment per possible pair; drawRange gates how
+    // many are shown each frame.
+    const maxEdges = (n * (n - 1)) / 2;
+    edgePos = new Float32Array(maxEdges * 6);
+    const edgeGeo = new THREE.BufferGeometry();
+    edgeGeo.setAttribute('position', new THREE.BufferAttribute(edgePos, 3));
+    edges = new THREE.LineSegments(
+      edgeGeo,
+      new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.55 }),
+    );
+    group.add(edges);
+
+    // Triangles — likewise preallocated, gated by drawRange.
+    const maxTris = (n * (n - 1) * (n - 2)) / 6;
+    triPos = new Float32Array(maxTris * 9);
+    const triGeo = new THREE.BufferGeometry();
+    triGeo.setAttribute('position', new THREE.BufferAttribute(triPos, 3));
+    tris = new THREE.Mesh(
+      triGeo,
+      new THREE.MeshBasicMaterial({
+        color: 0x8b5cf6,
+        transparent: true,
+        opacity: 0.2,
+        side: THREE.DoubleSide,
+      }),
+    );
+    group.add(tris);
   }
 
-  function update(scale){
-    const n=data.n,lab=comps(n,scale);
-    for(let i=0;i<n;i++){balls[i].scale.setScalar(Math.max(0.18,scale/2));balls[i].material.color.setHex(PALETTE[lab[i]%PALETTE.length]);}
-    let ec=0;for(let i=0;i<n;i++)for(let j=i+1;j<n;j++)if(D[i][j]<=scale){edgePos[ec*6]=data.X[i];edgePos[ec*6+1]=0;edgePos[ec*6+2]=data.Z[i];edgePos[ec*6+3]=data.X[j];edgePos[ec*6+4]=0;edgePos[ec*6+5]=data.Z[j];ec++;}
-    edges.geometry.setDrawRange(0,ec*2);edges.geometry.attributes.position.needsUpdate=true;
-    let tc=0;for(let i=0;i<n;i++)for(let j=i+1;j<n;j++){if(D[i][j]>scale)continue;for(let k=j+1;k<n;k++){if(D[i][k]<=scale&&D[j][k]<=scale){const b=tc*9;triPos[b]=data.X[i];triPos[b+1]=0;triPos[b+2]=data.Z[i];triPos[b+3]=data.X[j];triPos[b+4]=0;triPos[b+5]=data.Z[j];triPos[b+6]=data.X[k];triPos[b+7]=0;triPos[b+8]=data.Z[k];tc++;}}}
-    tris.geometry.setDrawRange(0,tc*3);tris.geometry.attributes.position.needsUpdate=true;
-    const bt=betti(pairs,scale); $('fs-h0').textContent=bt[0]; $('fs-h1').textContent=bt[1]; $('fs-sval').textContent=scale.toFixed(1);
-    const sl=$('fs-scale'); if(document.activeElement!==sl)sl.value=Math.round(scale/maxScale*1000);
+  /**
+   * Connected-component representative for each point at `scale`, via union-find.
+   * The root is always the lowest index in the component, so each component's
+   * colour stays fixed across the sweep: it only changes on a genuine merge, where
+   * the survivor keeps the lower index's colour — no per-frame relabelling flicker.
+   */
+  function componentReps(n: number, scale: number): number[] {
+    const parent: number[] = [];
+    for (let i = 0; i < n; i++) parent[i] = i;
+    const find = (a: number): number => {
+      while (parent[a] !== a) {
+        parent[a] = parent[parent[a]]; // path-halving
+        a = parent[a];
+      }
+      return a;
+    };
+    for (let i = 0; i < n; i++)
+      for (let j = i + 1; j < n; j++)
+        if (D[i][j] <= scale) {
+          const ra = find(i), rb = find(j);
+          if (ra !== rb) parent[Math.max(ra, rb)] = Math.min(ra, rb); // root = min index
+        }
+    const reps: number[] = [];
+    for (let i = 0; i < n; i++) reps[i] = find(i);
+    return reps;
+  }
+
+  // ----------------------------------------------------------------------------
+  // Persistence diagram (2D canvas)
+  // ----------------------------------------------------------------------------
+
+  function drawPD(scale: number): void {
+    const rect = pd.getBoundingClientRect();
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    pd.width = rect.width * dpr;
+    pd.height = rect.height * dpr;
+    const ctx = pd.getContext('2d')!;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+    const w = rect.width, h = rect.height, pad = 28;
+    const side = Math.min(w, h) - 2 * pad;
+    const ox = (w - side) / 2, oy = (h - side) / 2;
+    // Map a birth/death value to a pixel coordinate (death axis points up).
+    const toX = (v: number) => ox + (v / maxScale) * side;
+    const toY = (v: number) => oy + side - (Math.min(v, maxScale) / maxScale) * side;
+
+    ctx.clearRect(0, 0, w, h);
+
+    // Alive region (birth ≤ scale < death) = upper-left of (scale, scale).
+    ctx.fillStyle = 'rgba(99,102,241,0.10)';
+    ctx.fillRect(toX(0), toY(maxScale), toX(scale) - toX(0), toY(scale) - toY(maxScale));
+
+    // Axes.
+    ctx.strokeStyle = 'rgba(128,128,128,0.4)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(toX(0), toY(0)); ctx.lineTo(toX(maxScale), toY(0));
+    ctx.moveTo(toX(0), toY(0)); ctx.lineTo(toX(0), toY(maxScale));
+    ctx.stroke();
+
+    // Diagonal (birth = death).
+    ctx.strokeStyle = 'rgba(128,128,128,0.5)';
+    ctx.setLineDash([4, 3]);
+    ctx.beginPath();
+    ctx.moveTo(toX(0), toY(0)); ctx.lineTo(toX(maxScale), toY(maxScale));
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    // Axis labels.
+    ctx.fillStyle = DIM;
+    ctx.font = '10px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('birth →', ox + side / 2, oy + side + 16);
+    ctx.save();
+    ctx.translate(ox - 15, oy + side / 2);
+    ctx.rotate(-Math.PI / 2);
+    ctx.fillText('death →', 0, 0);
+    ctx.restore();
+
+    // Bars as points; alive ones brighten and grow.
+    for (const bar of bars) {
+      const deathY = isFinite(bar.death) ? bar.death : maxScale;
+      // Skip negligible bars (numerical near-diagonal noise).
+      if (isFinite(bar.death) && bar.death - bar.birth < maxScale * 0.02) continue;
+      const alive = bar.birth <= scale && scale < bar.death;
+      ctx.globalAlpha = alive ? 1 : 0.22;
+      ctx.fillStyle = bar.dim === 0 ? H0_COLOR : H1_COLOR;
+      const radius = bar.dim === 1 ? (alive ? 5.5 : 3.5) : (alive ? 3.4 : 2.2);
+      ctx.beginPath();
+      ctx.arc(toX(bar.birth), toY(deathY), radius, 0, 6.2832);
+      ctx.fill();
+      // Essential (never-dying) bars get an upward tick at the top edge.
+      if (!isFinite(bar.death)) {
+        ctx.globalAlpha = alive ? 1 : 0.3;
+        ctx.strokeStyle = bar.dim === 0 ? H0_COLOR : H1_COLOR;
+        ctx.beginPath();
+        ctx.moveTo(toX(bar.birth), toY(deathY) - 8);
+        ctx.lineTo(toX(bar.birth), toY(deathY) - 1);
+        ctx.stroke();
+      }
+    }
+    ctx.globalAlpha = 1;
+
+    // Sweep crosshair at (scale, scale).
+    ctx.strokeStyle = 'rgba(128,128,128,0.55)';
+    ctx.setLineDash([2, 3]);
+    ctx.beginPath();
+    ctx.moveTo(toX(scale), toY(scale)); ctx.lineTo(toX(scale), toY(maxScale));
+    ctx.moveTo(toX(0), toY(scale)); ctx.lineTo(toX(scale), toY(scale));
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = INK;
+    ctx.beginPath();
+    ctx.arc(toX(scale), toY(scale), 3.2, 0, 6.2832);
+    ctx.fill();
+  }
+
+  // ----------------------------------------------------------------------------
+  // Per-frame update: grow balls, draw edges/triangles, refresh diagram + counts
+  // ----------------------------------------------------------------------------
+
+  function update(scale: number): void {
+    const n = data.n;
+    const reps = componentReps(n, scale);
+
+    // Ball radius = scale/2 (the Vietoris–Rips convention). ×7 (coprime to the
+    // palette length) spreads adjacent component reps to distinct hues; merged
+    // components collapse toward a single hue.
+    for (let i = 0; i < n; i++) {
+      balls[i].scale.setScalar(Math.max(0.18, scale / 2));
+      balls[i].material.color.setHex(PALETTE[(reps[i] * 7) % PALETTE.length]);
+    }
+
+    // Edges: one segment per pair within `scale`.
+    let edgeCount = 0;
+    for (let i = 0; i < n; i++)
+      for (let j = i + 1; j < n; j++)
+        if (D[i][j] <= scale) {
+          const o = edgeCount * 6;
+          edgePos[o] = data.X[i];     edgePos[o + 1] = 0; edgePos[o + 2] = data.Z[i];
+          edgePos[o + 3] = data.X[j]; edgePos[o + 4] = 0; edgePos[o + 5] = data.Z[j];
+          edgeCount++;
+        }
+    edges.geometry.setDrawRange(0, edgeCount * 2);
+    edges.geometry.attributes.position.needsUpdate = true;
+
+    // Triangles: every triple whose three edges are all within `scale`.
+    let triCount = 0;
+    for (let i = 0; i < n; i++)
+      for (let j = i + 1; j < n; j++) {
+        if (D[i][j] > scale) continue;
+        for (let k = j + 1; k < n; k++)
+          if (D[i][k] <= scale && D[j][k] <= scale) {
+            const o = triCount * 9;
+            triPos[o] = data.X[i];     triPos[o + 1] = 0; triPos[o + 2] = data.Z[i];
+            triPos[o + 3] = data.X[j]; triPos[o + 4] = 0; triPos[o + 5] = data.Z[j];
+            triPos[o + 6] = data.X[k]; triPos[o + 7] = 0; triPos[o + 8] = data.Z[k];
+            triCount++;
+          }
+      }
+    tris.geometry.setDrawRange(0, triCount * 3);
+    tris.geometry.attributes.position.needsUpdate = true;
+
+    // Readouts.
+    const [b0, b1] = betti(bars, scale);
+    h0Out.textContent = String(b0);
+    h1Out.textContent = String(b1);
+    scaleOut.textContent = scale.toFixed(1);
+    if (document.activeElement !== scaleInput)
+      scaleInput.value = String(Math.round((scale / maxScale) * 1000));
+
     drawPD(scale);
   }
 
-  // drag to rotate (no auto-rotation)
-  let rotY=-0.15, rotX=0.32, dragging=false, px=0, py=0;
-  renderer.domElement.addEventListener('pointerdown',e=>{dragging=true;px=e.clientX;py=e.clientY;});
-  window.addEventListener('pointerup',()=>{dragging=false;});
-  window.addEventListener('pointermove',e=>{if(!dragging)return;rotY+=(e.clientX-px)*0.01;rotX=Math.max(-0.2,Math.min(1.3,rotX+(e.clientY-py)*0.01));px=e.clientX;py=e.clientY;});
+  // ----------------------------------------------------------------------------
+  // Interaction: drag to rotate, play/pause, scrub, change shape
+  // ----------------------------------------------------------------------------
 
-  let playing=true,scale=0,t0=null;const DUR=9000,HOLD=1400;
-  $('fs-play').addEventListener('click',function(){playing=!playing;this.textContent=playing?'⏸ pause':'▶ play';t0=null;});
-  $('fs-scale').addEventListener('input',function(){playing=false;$('fs-play').textContent='▶ play';scale=this.value/1000*maxScale;update(scale);});
-  $('fs-data').addEventListener('change',function(){buildScene(this.value);scale=0;t0=null;playing=true;$('fs-play').textContent='⏸ pause';});
-  window.addEventListener('resize',()=>{W=stage.clientWidth||520;renderer.setSize(W,H);camera.aspect=W/H;camera.updateProjectionMatrix();update(scale);});
+  let rotY = -0.15, rotX = 0.32;
+  let dragging = false, lastX = 0, lastY = 0;
+  renderer.domElement.addEventListener('pointerdown', (e: PointerEvent) => {
+    dragging = true;
+    lastX = e.clientX;
+    lastY = e.clientY;
+  });
+  window.addEventListener('pointerup', () => { dragging = false; });
+  window.addEventListener('pointermove', (e: PointerEvent) => {
+    if (!dragging) return;
+    rotY += (e.clientX - lastX) * 0.01;
+    rotX = Math.max(-0.2, Math.min(1.3, rotX + (e.clientY - lastY) * 0.01));
+    lastX = e.clientX;
+    lastY = e.clientY;
+  });
 
-  function frame(ts){
-    requestAnimationFrame(frame);
-    if(playing){if(t0===null)t0=ts;const el=(ts-t0)%(DUR+HOLD);scale=Math.min(1,el/DUR)*maxScale;update(scale);}
-    group.rotation.y=rotY;group.rotation.x=rotX;
-    renderer.render(scene,camera);
+  let playing = true;
+  let scale = 0;
+  let startTime: number | null = null;
+  const SWEEP_MS = 9000; // time to sweep 0 → maxScale
+  const HOLD_MS = 1400;  // pause at the top before looping
+
+  function setPlaying(on: boolean): void {
+    playing = on;
+    playBtn.textContent = on ? '⏸' : '▶';
+    playBtn.setAttribute('aria-label', on ? 'pause' : 'play');
   }
-  buildScene('ring'); update(0); requestAnimationFrame(frame);
+
+  playBtn.addEventListener('click', () => {
+    setPlaying(!playing);
+    startTime = null; // resync the sweep clock on resume
+  });
+  scaleInput.addEventListener('input', function () {
+    setPlaying(false);
+    scale = (Number(this.value) / 1000) * maxScale;
+    update(scale);
+  });
+  dataSelect.addEventListener('change', function () {
+    buildScene(this.value as Mode);
+    scale = 0;
+    startTime = null;
+    setPlaying(true);
+  });
+  window.addEventListener('resize', () => {
+    stageW = stage.clientWidth || 520;
+    renderer.setSize(stageW, stageH);
+    camera.aspect = stageW / stageH;
+    camera.updateProjectionMatrix();
+    update(scale);
+  });
+
+  // ----------------------------------------------------------------------------
+  // Animation loop
+  // ----------------------------------------------------------------------------
+
+  function frame(ts: number): void {
+    requestAnimationFrame(frame);
+    if (playing) {
+      if (startTime === null) startTime = ts;
+      const elapsed = (ts - startTime) % (SWEEP_MS + HOLD_MS);
+      scale = Math.min(1, elapsed / SWEEP_MS) * maxScale;
+      update(scale);
+    }
+    group.rotation.y = rotY;
+    group.rotation.x = rotX;
+    renderer.render(scene, camera);
+  }
+
+  buildScene('ring');
+  update(0);
+  requestAnimationFrame(frame);
 </script>
