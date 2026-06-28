@@ -21,6 +21,7 @@ export interface BoundaryPort {
   id: string;     // handle id on the group node / key for the stub
   node: string;   // internal member id at the boundary
   port: string;   // internal port name
+  kind: string;   // shape kind (grid/points/matrix/…) — for type colouring
   label: string;
 }
 
@@ -54,6 +55,14 @@ function shortLabel(node: Node | undefined, port: string): string {
   if (!node) return port;
   const op = (node.data as unknown as NodeData).opName;
   return `${getSpec(op).label.split(" ")[0]}·${port}`;
+}
+
+/** Shape kind of a member's port (for type colouring). */
+function portKind(node: Node | undefined, port: string, dir: "in" | "out"): string {
+  if (!node) return "any";
+  const spec = getSpec((node.data as unknown as NodeData).opName);
+  const ports = dir === "in" ? spec.inputs : spec.outputs;
+  return ports.find((p) => p.name === port)?.kind ?? "any";
 }
 
 /** Tag the selected nodes as members of a new group; create the group node in the
@@ -112,10 +121,10 @@ export function boundaryOf(nodes: Node[], edges: Edge[], groupId: string): { inp
     const sIn = members.has(e.source), tIn = members.has(e.target);
     if (tIn && !sIn) {
       const port = e.targetHandle ?? "in", id = inId(e.target, port);
-      if (!inputs.has(id)) inputs.set(id, { id, node: e.target, port, label: lbl(id, shortLabel(byId.get(e.target), port)) });
+      if (!inputs.has(id)) inputs.set(id, { id, node: e.target, port, kind: portKind(byId.get(e.target), port, "in"), label: lbl(id, shortLabel(byId.get(e.target), port)) });
     } else if (sIn && !tIn) {
       const port = e.sourceHandle ?? "out", id = outId(e.source, port);
-      if (!outputs.has(id)) outputs.set(id, { id, node: e.source, port, label: lbl(id, shortLabel(byId.get(e.source), port)) });
+      if (!outputs.has(id)) outputs.set(id, { id, node: e.source, port, kind: portKind(byId.get(e.source), port, "out"), label: lbl(id, shortLabel(byId.get(e.source), port)) });
     }
   }
   // dangling member outputs
@@ -126,7 +135,7 @@ export function boundaryOf(nodes: Node[], edges: Edge[], groupId: string): { inp
       const pid = outId(id, o.name);
       if (outputs.has(pid)) continue;
       if (!edges.some((e) => e.source === id && (e.sourceHandle ?? "out") === o.name)) {
-        outputs.set(pid, { id: pid, node: id, port: o.name, label: lbl(pid, shortLabel(node, o.name)) });
+        outputs.set(pid, { id: pid, node: id, port: o.name, kind: o.kind, label: lbl(pid, shortLabel(node, o.name)) });
       }
     }
   }
@@ -170,11 +179,11 @@ export function deriveDisplay(nodes: Node[], edges: Edge[], scope: string): { no
     const baseY = members.length ? members.reduce((a, m) => a + m.position.y, 0) / members.length : 0;
     stubs.inputs.forEach((p, i) => dispNodes.push({
       id: `stub:${p.id}`, type: "groupPort", position: { x: minX - 220, y: baseY + (i - stubs.inputs.length / 2) * 70 },
-      data: { label: p.label, side: "in" } as Record<string, unknown>,
+      data: { label: p.label, side: "in", kind: p.kind } as Record<string, unknown>,
     }));
     stubs.outputs.forEach((p, i) => dispNodes.push({
       id: `stub:${p.id}`, type: "groupPort", position: { x: maxX + 260, y: baseY + (i - stubs.outputs.length / 2) * 70 },
-      data: { label: p.label, side: "out" } as Record<string, unknown>,
+      data: { label: p.label, side: "out", kind: p.kind } as Record<string, unknown>,
     }));
   }
 

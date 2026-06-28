@@ -32,6 +32,7 @@ import {
   ungroup,
 } from "./grouping";
 import type { GroupData } from "./grouping";
+import { kindColor } from "./portKinds";
 import { defaultParamsFor, getSpec, listOpSpecs, listSourceSpecs } from "./specs";
 import { EXAMPLES } from "./examples";
 import type { Example } from "./examples";
@@ -445,13 +446,13 @@ export default function App() {
               <div className="params">
                 <h2>Ports</h2>
                 {selectedGroupBoundary.inputs.map((p) => (
-                  <label className="row" key={p.id}><span>in</span>
-                    <input type="text" value={p.label} onChange={(e) => renameGroup(selected.id, { portId: p.id, portLabel: e.target.value })} style={{ width: 120 }} />
+                  <label className="row" key={p.id}><span>in <em style={{ color: kindColor(p.kind), fontStyle: "normal" }}>{p.kind}</em></span>
+                    <input type="text" value={p.label} onChange={(e) => renameGroup(selected.id, { portId: p.id, portLabel: e.target.value })} style={{ width: 110 }} />
                   </label>
                 ))}
                 {selectedGroupBoundary.outputs.map((p) => (
-                  <label className="row" key={p.id}><span>out</span>
-                    <input type="text" value={p.label} onChange={(e) => renameGroup(selected.id, { portId: p.id, portLabel: e.target.value })} style={{ width: 120 }} />
+                  <label className="row" key={p.id}><span>out <em style={{ color: kindColor(p.kind), fontStyle: "normal" }}>{p.kind}</em></span>
+                    <input type="text" value={p.label} onChange={(e) => renameGroup(selected.id, { portId: p.id, portLabel: e.target.value })} style={{ width: 110 }} />
                   </label>
                 ))}
               </div>

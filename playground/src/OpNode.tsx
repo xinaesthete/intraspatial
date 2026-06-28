@@ -5,15 +5,7 @@ import { Handle, Position } from "@xyflow/react";
 import type { NodeProps } from "@xyflow/react";
 import { getSpec } from "./specs";
 import type { NodeData } from "./buildGraph";
-
-const KIND_COLOR: Record<string, string> = {
-  points: "#7cc4ff",
-  grid: "#9be29b",
-  matrix: "#e2b85b",
-  scalar: "#d79bff",
-  opaque: "#ff9bb5",
-  any: "#bbbbbb",
-};
+import { kindColor } from "./portKinds";
 
 function portTop(i: number, count: number): string {
   return `${((i + 1) / (count + 1)) * 100}%`;
@@ -34,7 +26,7 @@ export function OpNode({ data, selected }: NodeProps) {
           type="target"
           position={Position.Left}
           title={`${p.name}: ${p.kind}`}
-          style={{ top: portTop(i, spec.inputs.length), background: KIND_COLOR[p.kind] ?? "#bbb" }}
+          style={{ top: portTop(i, spec.inputs.length), background: kindColor(p.kind) }}
         />
       ))}
       {spec.outputs.map((p, i) => (
@@ -44,7 +36,7 @@ export function OpNode({ data, selected }: NodeProps) {
           type="source"
           position={Position.Right}
           title={`${p.name}: ${p.kind}`}
-          style={{ top: portTop(i, spec.outputs.length), background: KIND_COLOR[p.kind] ?? "#bbb" }}
+          style={{ top: portTop(i, spec.outputs.length), background: kindColor(p.kind) }}
         />
       ))}
       <div className="opnode-ports">
