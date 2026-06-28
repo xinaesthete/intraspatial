@@ -297,8 +297,10 @@ ring/crypt scale, short-range exclusion). That makes it an ideal golden.
 | region based | hexgrid / quadrat lattice | bin transform + scatter (prefer windowed) | → |
 | region based | windowed local stats (overlapping taper) | splat → separable window → resample | → |
 | networks | fuzzy / kernel-weighted adjacency | `μ_ij=exp(-d²/2σ²)` dense matrix | ✓ |
-| topology | Vietoris-Rips, persistent homology | GPU builds filtration; reduction | cpu |
-| topology | fuzzy / weighted VR (fuzzy simplicial set) | fuzzy adjacency → CPU reduce | ~ |
+| networks | k-th neighbour distance (local density `ρ`) | WGSL-template k-smallest select | ✓ |
+| topology | CkNN rescaled distance `d̃=d/√(ρ_iρ_j)` | k-th-NN + `"use gpu"` rescale | ✓ |
+| topology | CkNN graph / self-tuning kernel | threshold / `exp(−d̃²)` (CPU readouts) | ✓ |
+| topology | Vietoris-Rips / CkNN persistence | GPU builds `d̃`; CPU reduces | ~ |
 | helpers | α-shape | depends on Delaunay | cpu |
 
 ## Constraints to design around
@@ -406,6 +408,14 @@ Division of labour:
 - ✓ **Fuzzy adjacency** (`src/gpu/spatial/fuzzyAdjacency.ts`) — kernel-weighted
   graph `μ_ij = exp(-d²/2σ²)`, the smooth analogue of a hard within-radius edge and
   the substrate for fuzzy TDA. See [`fuzzy-tda-and-windowing.md`](fuzzy-tda-and-windowing.md).
+- ✓ **k-th neighbour distance** (`src/gpu/spatial/kthNeighborDistance.ts`) — local
+  density estimate `ρ_i = d(i, x_k)`. The first **WGSL-template** spatial kernel (the
+  per-point k-smallest selection needs a local array; ADR-0003).
+- ✓ **CkNN rescaled distance** (`src/gpu/spatial/cknn.ts`) — Berry & Sauer's
+  Continuous k-NN: `d̃_ij = d_ij/√(ρ_iρ_j)`, composing the k-th-NN bandwidth. One
+  matrix → both the topology graph (`cknnGraph`, `d̃<δ`, feed to VR persistence) and
+  the geometry kernel (`selfTuningWeights`, `exp(−d̃²)`). See the
+  [fuzzy-TDA note](fuzzy-tda-and-windowing.md) (updated with this paper).
 
 The front now spans point-native stats (`nnDistance`, `anni`), the points→grid
 render bridge (`splatDensity`), grid windowing (`convolveSeparable`), composed

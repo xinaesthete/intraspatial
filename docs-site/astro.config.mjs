@@ -41,6 +41,8 @@ export default defineConfig({
             { label: 'Separable convolution', slug: 'primitives/separable-convolution' },
             { label: 'Getis-Ord hotspots', slug: 'primitives/getis-ord-hotspots' },
             { label: 'Fuzzy adjacency', slug: 'primitives/fuzzy-adjacency' },
+            { label: 'k-th neighbour distance', slug: 'primitives/kth-neighbour-distance' },
+            { label: 'CkNN rescaled distance', slug: 'primitives/cknn' },
           ],
         },
       ],
