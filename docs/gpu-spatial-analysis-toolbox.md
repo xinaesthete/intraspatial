@@ -285,7 +285,7 @@ ring/crypt scale, short-range exclusion). That makes it an ideal golden.
 | spatial statistics | QCM, Local Getis-Ord\*, TCM (LISA) | splat layers → blend/window (render-then-compute) | → |
 | spatial statistics | higher-order co-occurrence (k≥3, small N) | joint co-occurrence tensor + MC null | → |
 | spatial statistics | adjacency permutation test | proximity network + MC null | → |
-| distribution | kernel density estimation | additive splat to float layer (render) | → |
+| distribution | kernel density estimation | additive splat to float layer (render) | ✓ |
 | distribution | KL-divergence | pointwise + reduction on grids | → |
 | distribution | Wasserstein distance | Sinkhorn OT (approx) / exact CPU | ~ |
 | networks | proximity / contact network, degree | uniform-grid index + edge reduction | → |
@@ -323,9 +323,10 @@ A. **Spatial index** (`GpuPoints` + uniform-grid index = scan + counting-sort).
    This is the unlock for the whole point front, the way `GpuField` + runner is the
    unlock for the image front — and it drops scan/sort into the reductions toolbox
    for free.
-B. **Splat/blend render primitive** (`GpuPoints` → float layer via additive
-   blending). The second kernel modality; powers KDE, density, quadrat/hex counts,
-   and the layer→FBO→blend compositing that TCM and viewer integration need.
+B. **Splat/blend render primitive** ✓ (`splatDensity.ts` — KDE via additive
+   blending into an `r32float` layer). The second kernel modality; the same path
+   extends to quadrat/hex counts and the layer→FBO→blend compositing that TCM and
+   viewer integration need.
 C. **Windowed vs quadrat colocalisation** (exercise 1) — uses A+B to make the
    headline compromise runnable and validate the render path against hard quadrats
    on the synthetic fixture.
@@ -369,10 +370,25 @@ Division of labour:
   discipline. Large-N validation is deferred to the browser harness (the Node+Dawn
   teardown segfaults past a few hundred points — the same instability the image
   front hit; see ADR-0003).
+- ✓ **Kernel-density splat** (`src/gpu/spatial/splatDensity.ts`) — rasterise a
+  weighted point cloud into a Gaussian KDE density grid: the **points → grid
+  bridge**. Uses the **no-atomics additive-render path** — each point is an
+  instanced quad with a Gaussian footprint, additively blended into an `r32float`
+  render target (`float32-blendable`, requested in `device.ts`). Validated vs a CPU
+  KDE golden sampled at the same texel centres. Output is an ordinary density grid,
+  so the image-front primitives (blur, Getis-Ord, threshold, wavelet) take over
+  from here. **Dependency-light on purpose:** raw WebGPU (no TypeGPU resolve, no
+  deck.gl / luma.gl / MDV) — the WGSL and the "render each layer to a float target,
+  then composite" shape are exactly what a deck.gl custom layer or an MDV /
+  SpatialData.js overlay needs, so it *translates* later rather than locking in.
+  - *Finding (added to ADR-0003):* read texture results back via TypeGPU's
+    `.read()`, **not** a raw `mapAsync` on a pooled buffer — the latter crashed the
+    vitest worker on teardown. Render stays raw WebGPU; only the readback borrows
+    the project's Dawn-stable path.
 
-Everything in the catalogue above is still `→` planned; nnDistance is the first
-`✓`, and it establishes the `GpuPoints`-style (parallel coordinate arrays in,
-typed array out) pattern the rest will follow.
+These two establish both halves of the front: `nnDistance` the point-native
+pattern (coordinate arrays in, typed array out), `splatDensity` the points→grid
+render bridge. Everything else in the catalogue above is still `→` planned.
 
 See also [`gpu-primitives-toolbox.md`](gpu-primitives-toolbox.md) (the
 wavelet/image-signal front) and the [MuSpAn paper](https://www.biorxiv.org/content/10.1101/2024.12.06.627195v1.full.pdf).

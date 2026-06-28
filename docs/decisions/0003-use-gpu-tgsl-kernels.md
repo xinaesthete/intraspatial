@@ -45,6 +45,13 @@ Validated with a spike, then the first real primitive
   N-independent, so small-N tests still validate the kernel against the CPU golden.
 - TGSL gotchas found: requires `!==` (not `!=`); `noUncheckedIndexedAccess` means
   storage-array reads need `!` (the assertion is stripped by the transpiler).
+- **Read results back via TypeGPU `.read()`, not raw `mapAsync`.** Building the
+  density splat (`splatDensity.ts`, a raw-WebGPU render primitive) showed that a raw
+  `mapAsync` on a pooled `MAP_READ` buffer **segfaulted the vitest worker on
+  teardown**, even though the same render+readback exits cleanly outside vitest
+  (natural Node exit). Every Dawn-stable test in the repo reads via TypeGPU's
+  `.read()`. Fix: keep the render raw, but `copyTextureToBuffer` into a GPUBuffer we
+  own and wrap with `root.createBuffer(schema, rawBuffer)`, then `.read()` it.
 
 ## Consequences
 

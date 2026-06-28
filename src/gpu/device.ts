@@ -15,7 +15,11 @@ export function getDevice(): Promise<GPUDevice> {
     const gpu: GPU = (globalThis as { navigator?: { gpu?: GPU } }).navigator?.gpu ?? create([]);
     const adapter = await gpu.requestAdapter();
     if (!adapter) throw new Error("tgpu-htj2k: no WebGPU adapter available");
-    return adapter.requestDevice();
+    // Request float32-blendable when available so the spatial front can additively
+    // blend density into an r32float render target (the no-atomics splat path).
+    // Harmless for the compute kernels; falls back cleanly if unsupported.
+    const requiredFeatures = (["float32-blendable"] as GPUFeatureName[]).filter((f) => adapter.features.has(f));
+    return adapter.requestDevice({ requiredFeatures });
   })();
   return devicePromise;
 }
