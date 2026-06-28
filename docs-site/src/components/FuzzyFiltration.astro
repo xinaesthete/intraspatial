@@ -61,12 +61,12 @@
     <div class="cell">
       <div class="celltitle">hard — union of balls <span class="tag">distance, sublevel</span></div>
       <canvas id="ff-fh" class="field"></canvas>
-      <div class="fldcap" id="ff-fhcap">hover a region to inspect its feature</div>
+      <div class="fldcap" id="ff-fhcap">hover a component or a hole to inspect it</div>
     </div>
     <div class="cell">
       <div class="celltitle">fuzzy — <span id="ff-fztitle">KDE superlevel set</span> <span class="tag" id="ff-fztag">density, superlevel</span></div>
       <canvas id="ff-fz" class="field"></canvas>
-      <div class="fldcap" id="ff-fzcap">hover a region to inspect its feature</div>
+      <div class="fldcap" id="ff-fzcap">hover a component or a hole to inspect it</div>
     </div>
     <div class="cell">
       <canvas id="ff-ph" class="pd"></canvas>
@@ -125,7 +125,7 @@
   import { gaussianKdeField, distanceField, dtmField } from '../../../src/spatial/scalarField';
   import { sublevelsetPersistence, fieldBettiNumbers } from '../../../src/spatial/sublevelsetPersistence';
   import type { ScalarField } from '../../../src/spatial/scalarField';
-  import type { FieldPersistenceResult } from '../../../src/spatial/sublevelsetPersistence';
+  import type { FieldPersistenceResult, FieldPersistencePair } from '../../../src/spatial/sublevelsetPersistence';
   // GPU field generation (compute shader) when the browser exposes WebGPU; the CPU
   // library functions above are the fallback. The persistence reduction is always CPU.
   import { computeFieldGpu, gpuFieldAvailable } from '../lib/gpuField';
@@ -365,7 +365,12 @@
     return root;
   }
 
-  interface HoverInfo { root: number; birth: number; count: number; }
+  interface HoverInfo {
+    kind: 'component' | 'loop';
+    count: number;                       // points in the component (0 for a loop)
+    birth: number;                       // the feature's birth field value
+    pair: FieldPersistencePair | null;   // the matching persistence pair (by identity)
+  }
 
   function drawField(
     canvas: HTMLCanvasElement, panel: Panel, threshold: number, hoverCell = -1,
@@ -393,18 +398,43 @@
       if (root >= 0) compPoint.set(root, Math.min(compPoint.get(root) ?? Infinity, i));
     }
 
-    // Hovered component (the connected region under the cursor), if any. Its "birth"
-    // is the extreme field value within it (the peak for a superlevel set, the valley
-    // for a sublevel set) — what links it to a point in the persistence diagram.
-    const hoverRoot = hoverCell >= 0 ? roots[hoverCell]! : -1;
+    // Hover: identify the COMPONENT (an in-set region → H0) or the LOOP (an enclosed
+    // background hole → H1) under the cursor, and link it to its persistence pair by
+    // IDENTITY — the reducer's birthCell (the component's creating extremum) / deathCell
+    // (the square that fills a hole) — rather than by matching birth values, which was
+    // unreliable (and impossible on the hard panel, where all components are born at r≈0).
     let hover: HoverInfo | null = null;
-    if (hoverRoot >= 0) {
-      let birth = superlevel ? -Infinity : Infinity;
+    let hoverCompRoot = -1;            // highlighted component
+    let hoverHoleRoot = -1;            // highlighted hole
+    let bgRoots: Int32Array | null = null;
+
+    if (hoverCell >= 0 && mask[hoverCell]) {
+      hoverCompRoot = roots[hoverCell]!;
+      let birth = superlevel ? -Infinity : Infinity, count = 0;
       for (let i = 0; i < W * H; i++)
-        if (roots[i] === hoverRoot) birth = superlevel ? Math.max(birth, fd[i]!) : Math.min(birth, fd[i]!);
-      let count = 0;
-      for (let i = 0; i < pointCell.length; i++) if (roots[pointCell[i]!] === hoverRoot) count++;
-      hover = { root: hoverRoot, birth, count };
+        if (roots[i] === hoverCompRoot) birth = superlevel ? Math.max(birth, fd[i]!) : Math.min(birth, fd[i]!);
+      for (let i = 0; i < pointCell.length; i++) if (roots[pointCell[i]!] === hoverCompRoot) count++;
+      const pair = panel.pers.pairs.find(
+        (p) => p.dim === 0 && isAlive(p, threshold, superlevel) && roots[p.birthCell] === hoverCompRoot,
+      ) ?? null;
+      hover = { kind: 'component', count, birth, pair };
+    } else if (hoverCell >= 0) {
+      // Background cell — a hole iff its background component does not touch the border.
+      const bg = new Uint8Array(W * H);
+      for (let i = 0; i < W * H; i++) bg[i] = mask[i] ? 0 : 1;
+      bgRoots = labelComponents(bg, W, H);
+      const outer = new Set<number>();
+      for (let c = 0; c < W; c++) { outer.add(bgRoots[c]!); outer.add(bgRoots[(H - 1) * W + c]!); }
+      for (let r = 0; r < H; r++) { outer.add(bgRoots[r * W]!); outer.add(bgRoots[r * W + W - 1]!); }
+      const holeRoot = bgRoots[hoverCell]!;
+      if (holeRoot >= 0 && !outer.has(holeRoot)) {
+        hoverHoleRoot = holeRoot;
+        const br = bgRoots;
+        const pair = panel.pers.pairs.find(
+          (p) => p.dim === 1 && p.deathCell !== undefined && isAlive(p, threshold, superlevel) && br[p.deathCell] === holeRoot,
+        ) ?? null;
+        hover = { kind: 'loop', count: 0, birth: pair ? pair.birth : NaN, pair };
+      }
     }
 
     // Field range for the faint background shading.
@@ -418,16 +448,23 @@
     if (off.width !== W || off.height !== H) { off.width = W; off.height = H; }
     const offImg = offCtx.createImageData(W, H);
     const px = offImg.data;
+    const H1RGB = [239, 68, 68]; // loop-highlight tint for a hovered hole
     for (let i = 0; i < W * H; i++) {
       const o = i * 4;
       if (mask[i]) {
         const root = roots[i]!;
         const pid = compPoint.get(root);
         const rgb = pid === undefined ? [120, 120, 130] : PAL_RGB[pid % PAL_RGB.length]!;
-        // When hovering, lift the hovered component and fade the rest.
         const aBase = pid === undefined ? 150 : 205;
-        const a = hoverRoot < 0 ? aBase : (root === hoverRoot ? 245 : aBase * 0.3);
+        // Component hover: lift the hovered component, fade the rest. Loop hover: fade
+        // all of the in-set so the highlighted hole reads.
+        let a = aBase;
+        if (hoverCompRoot >= 0) a = root === hoverCompRoot ? 245 : aBase * 0.3;
+        else if (hoverHoleRoot >= 0) a = aBase * 0.5;
         px[o] = rgb[0]; px[o + 1] = rgb[1]; px[o + 2] = rgb[2]; px[o + 3] = a;
+      } else if (hoverHoleRoot >= 0 && bgRoots && bgRoots[i] === hoverHoleRoot) {
+        // The enclosed hole the cursor is in — the H₁ loop.
+        px[o] = H1RGB[0]; px[o + 1] = H1RGB[1]; px[o + 2] = H1RGB[2]; px[o + 3] = 125;
       } else {
         // Faint topographic wash of the field (so the landscape is visible).
         const t = (fd[i]! - lo) / span;            // 0..1
@@ -457,8 +494,8 @@
     for (let i = 0; i < data.xs.length; i++) {
       const X = (data.xs[i]! - bx0) * sx;
       const Y = (by1 - data.ys[i]!) * sy;
-      const inHover = hoverRoot >= 0 && roots[pointCell[i]!] === hoverRoot;
-      ctx.globalAlpha = hoverRoot < 0 || inHover ? 1 : 0.35;
+      const inHover = hoverCompRoot >= 0 && roots[pointCell[i]!] === hoverCompRoot;
+      ctx.globalAlpha = hoverCompRoot < 0 ? 1 : inHover ? 1 : 0.35;
       ctx.beginPath();
       ctx.arc(X, Y, inHover ? 3.3 : 2.4, 0, 6.2832);
       ctx.fillStyle = INK;
@@ -528,7 +565,7 @@
   // sweep crosshair walks the diagonal the same way in both. A feature far ABOVE
   // the diagonal is persistent; near-diagonal points are noise.
   // ---------------------------------------------------------------------------
-  interface Pt { dim: number; x: number; y: number; essential: boolean; }
+  interface Pt { dim: number; x: number; y: number; essential: boolean; src: FieldPersistencePair; }
 
   function normalize(panel: Panel): Pt[] {
     const out: Pt[] = [];
@@ -539,19 +576,25 @@
         const essential = !isFinite(p.death);              // death = -Inf
         const x = 1 - Math.min(1, p.birth / s);            // co-density birth
         const y = essential ? 1 : 1 - Math.min(1, p.death / s);
-        out.push({ dim: p.dim, x, y, essential });
+        out.push({ dim: p.dim, x, y, essential, src: p });
       } else {
         const essential = !isFinite(p.death);
         const x = Math.min(1, p.birth / s);
         const y = essential ? 1 : Math.min(1, p.death / s);
-        out.push({ dim: p.dim, x, y, essential });
+        out.push({ dim: p.dim, x, y, essential, src: p });
       }
     }
     return out;
   }
 
+  /** Is a pair alive at field value `thr`? (sublevel: birth ≤ thr < death;
+   *  superlevel: death < thr ≤ birth.) */
+  function isAlive(p: FieldPersistencePair, thr: number, superlevel: boolean): boolean {
+    return superlevel ? p.death < thr && thr <= p.birth : p.birth <= thr && thr < p.death;
+  }
+
   function drawDiagram(
-    canvas: HTMLCanvasElement, panel: Panel, u: number, hoverBirth: number | null = null,
+    canvas: HTMLCanvasElement, panel: Panel, u: number, hoverPair: FieldPersistencePair | null = null,
   ): [number, number] {
     const pts = normalize(panel);
     const rect = canvas.getBoundingClientRect();
@@ -608,24 +651,14 @@
     }
     ctx.globalAlpha = 1;
 
-    // Hover link: ring the H0 dot whose birth matches the hovered component (its
-    // peak/valley field value). x encodes birth: superlevel x = 1 - birth/sMax,
-    // sublevel x = birth/sMax.
-    if (hoverBirth !== null) {
-      const target = panel.superlevel ? 1 - Math.min(1, hoverBirth / panel.sMax) : Math.min(1, hoverBirth / panel.sMax);
-      let best: Pt | null = null, bestD = Infinity, secondD = Infinity;
-      for (const p of pts) {
-        if (p.dim !== 0) continue;
-        const d = Math.abs(p.x - target);
-        if (d < bestD) { secondD = bestD; bestD = d; best = p; }
-        else if (d < secondD) { secondD = d; }
-      }
-      // Ring the match only when it is unambiguous. On the hard (distance) panel
-      // every component is born at radius ~0, so births don't discriminate and the
-      // ring is (correctly) suppressed; on density panels the peaks differ and it links.
-      if (best && bestD < 0.025 && secondD - bestD > 0.04) {
+    // Hover link: ring the dot of the hovered feature's persistence pair — matched by
+    // identity (the reducer's birthCell/deathCell), so it is exact for both components
+    // (H₀) and loops (H₁), on every panel.
+    if (hoverPair) {
+      const pt = pts.find((p) => p.src === hoverPair);
+      if (pt) {
         ctx.strokeStyle = '#fbbf24'; ctx.lineWidth = 2;
-        ctx.beginPath(); ctx.arc(X(best.x), Y(best.y), 8, 0, 6.2832); ctx.stroke();
+        ctx.beginPath(); ctx.arc(X(pt.x), Y(pt.y), 8, 0, 6.2832); ctx.stroke();
       }
     }
 
@@ -648,9 +681,12 @@
     return hoverCanvas === canvas && hoverCol >= 0 && hoverRow >= 0 ? hoverRow * gridN + hoverCol : -1;
   }
   function setHoverCap(cap: HTMLDivElement, panel: Panel, hover: HoverInfo | null): void {
-    if (!hover) { cap.textContent = 'hover a region to inspect its feature'; cap.classList.remove('active'); return; }
-    const scale = panel.superlevel ? `density ${hover.birth.toFixed(2)}` : `scale ${hover.birth.toFixed(2)}`;
-    cap.textContent = `${hover.count} point${hover.count === 1 ? '' : 's'} in this feature · born at ${scale}`;
+    if (!hover) { cap.textContent = 'hover a component or a hole to inspect it'; cap.classList.remove('active'); return; }
+    const unit = panel.superlevel ? 'density' : 'scale';
+    const born = isFinite(hover.birth) ? ` · born at ${unit} ${hover.birth.toFixed(2)}` : '';
+    cap.textContent = hover.kind === 'loop'
+      ? `loop — an enclosed hole (H₁)${born}`
+      : `component (H₀) — ${hover.count} point${hover.count === 1 ? '' : 's'} inside${born}`;
     cap.classList.add('active');
   }
 
@@ -661,8 +697,8 @@
     const fuzzyThr = fuzzy.superlevel ? (1 - u) * fuzzy.sMax : u * fuzzy.sMax;
     const hHover = drawField(fhCanvas, hard, hardThr, hoveredCell(fhCanvas));
     const zHover = drawField(fzCanvas, fuzzy, fuzzyThr, hoveredCell(fzCanvas));
-    const [h0h, h1h] = drawDiagram(phCanvas, hard, u, hHover ? hHover.birth : null);
-    const [h0z, h1z] = drawDiagram(pzCanvas, fuzzy, u, zHover ? zHover.birth : null);
+    const [h0h, h1h] = drawDiagram(phCanvas, hard, u, hHover ? hHover.pair : null);
+    const [h0z, h1z] = drawDiagram(pzCanvas, fuzzy, u, zHover ? zHover.pair : null);
     h0hOut.textContent = String(h0h); h1hOut.textContent = String(h1h);
     h0zOut.textContent = String(h0z); h1zOut.textContent = String(h1z);
     setHoverCap(fhCap, hard, hHover);

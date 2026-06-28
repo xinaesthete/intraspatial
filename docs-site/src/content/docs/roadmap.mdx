@@ -27,7 +27,8 @@ These are implemented as composable GPU kernels, each with a CPU golden test.
 | Fuzzy filtration (hard vs KDE/DTM, side-by-side diagrams) | ✅ | [Filtrations page](/concepts/filtrations/) |
 | Tunable parameters (resolution, falloff σ/k, noise band) | ✅ | |
 | WebGPU field backend with CPU fallback | ✅ | on by default where supported |
-| **Hover a region → highlight its component + points + diagram dot** | ✅ | the fuzzy demo |
+| **Hover a component → highlight it + its points + its diagram dot** | ✅ | the fuzzy demo; linked by *identity* (the reducer's `birthCell`) |
+| **Hover an enclosed hole → highlight the loop + its H₁ diagram dot** | ✅ | linked via the reducer's `deathCell` (the cell that fills the hole) |
 | Reverse link: hover a diagram point → highlight its region | 📋 | |
 | Linked brushing across the hard ↔ fuzzy panels | 📋 | |
 | Rendering directly from the GPU primitives (not three.js approximations) | 📋 | the VR sweep is still an illustrative approximation |
