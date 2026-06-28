@@ -13,7 +13,7 @@
     <label class="sel">data
       <select id="cc-data">
         <option value="grids">two grids</option>
-        <option value="blobs">mixed blobs</option>
+        <option value="niches">dense focus + diffuse cells</option>
         <option value="corering">dense core + sparse ring</option>
       </select>
     </label>
@@ -29,8 +29,8 @@
   </div>
   <div class="ctrl" id="cc-krow">
     <span class="lab">k (density)</span>
-    <input type="range" id="cc-kk" min="1" max="6" step="1" value="1" />
-    <span id="cc-kval" class="val">1</span>
+    <input type="range" id="cc-kk" min="1" max="6" step="1" value="3" />
+    <span id="cc-kval" class="val">3</span>
   </div>
 
   <div class="cards">
@@ -72,17 +72,22 @@
   function mul(s){ let a=s>>>0; return ()=>{ a=(a+0x6D2B79F5)|0; let t=Math.imul(a^a>>>15,1|a); t=(t+Math.imul(t^t>>>7,61|t))^t; return ((t^t>>>14)>>>0)/4294967296; }; }
   function gauss(r){ let u=0,v=0; while(u===0)u=r(); while(v===0)v=r(); return Math.sqrt(-2*Math.log(u))*Math.cos(6.2832*v); }
 
+  // Datasets validated (in Node) to genuinely show the advantage: for each, NO
+  // fixed radius gives the correct two-component answer, while a band of CkNN δ
+  // does. The structural condition is √(s_dense·s_sparse) < gap < s_sparse.
   function makeData(kind){
-    const r=mul(12345), P=[];
+    const P=[];
     if(kind==='grids'){
       const grid=(nx,ny,sp,cx,cy,c)=>{ const w=(nx-1)*sp,h=(ny-1)*sp; for(let i=0;i<nx;i++)for(let j=0;j<ny;j++)P.push({x:cx-w/2+i*sp,y:cy-h/2+j*sp,c}); };
       grid(5,5,1.6,25,50,0); grid(4,4,10,52,50,1);
-    } else if(kind==='blobs'){
-      for(let i=0;i<26;i++)P.push({x:26+gauss(r)*2.2,y:50+gauss(r)*2.2,c:0});
-      for(let i=0;i<16;i++)P.push({x:62+gauss(r)*9,y:50+gauss(r)*9,c:1});
-    } else { // core + ring
-      for(let i=0;i<14;i++)P.push({x:50+gauss(r)*1.7,y:50+gauss(r)*1.7,c:0});
-      const m=18; for(let i=0;i<m;i++){ const a=2*Math.PI*i/m + (r()-0.5)*0.15; P.push({x:50+22*Math.cos(a),y:50+22*Math.sin(a),c:1}); }
+    } else if(kind==='niches'){ // a dense focus + diffuse cells around it
+      const r=mul(7);
+      for(let i=0;i<28;i++)P.push({x:25+gauss(r)*1.3,y:50+gauss(r)*1.3,c:0});
+      for(let i=0;i<12;i++)P.push({x:43+gauss(r)*6,y:50+gauss(r)*6,c:1});
+    } else { // dense core + sparse ring
+      const r=mul(11);
+      for(let i=0;i<14;i++)P.push({x:50+gauss(r)*1.5,y:50+gauss(r)*1.5,c:0});
+      const m=9; for(let i=0;i<m;i++){ const a=2*Math.PI*i/m + (r()-0.5)*0.2; P.push({x:50+11*Math.cos(a),y:50+11*Math.sin(a),c:1}); }
     }
     return P;
   }
@@ -98,7 +103,7 @@
   function comps(E){ const par=[]; for(let i=0;i<N;i++)par[i]=i; const f=a=>{ while(par[a]!==a){par[a]=par[par[a]];a=par[a];} return a; }; for(const e of E){ const ra=f(e[0]),rb=f(e[1]); if(ra!==rb)par[ra]=rb; } const roots={}; let c=0; for(let i=0;i<N;i++){ const r=f(i); if(!(r in roots)){roots[r]=c++;} } return {f,count:c}; }
   function edges(m,thr){ const E=[]; for(let i=0;i<N;i++)for(let j=i+1;j<N;j++){ if(m==='fixed'?D[i][j]<thr:dt(i,j)<thr)E.push([i,j]); } return E; }
   function evalT(m,thr){ const E=edges(m,thr), cc=comps(E); let bridges=0; for(const e of E)if(P[e[0]].c!==P[e[1]].c)bridges++; let rD=-1,dOK=true,rS=-1,sOK=true; for(let i=0;i<N;i++){ const r=cc.f(i); if(P[i].c===0){ if(rD<0)rD=r; else if(r!==rD)dOK=false; } else { if(rS<0)rS=r; else if(r!==rS)sOK=false; } } return {E,count:cc.count,bridges,correct:bridges===0&&dOK&&sOK}; }
-  function achievable(m){ const lo=0, hi=m==='fixed'?20:3.2, st=m==='fixed'?0.1:0.02; let first=null,last=null; for(let t=lo;t<=hi+1e-9;t+=st){ if(evalT(m,t).correct){ if(first===null)first=t; last=t; } } return first===null?null:[first,last]; }
+  function achievable(m){ const lo=0, hi=m==='fixed'?30:3.2, st=m==='fixed'?0.1:0.02; let first=null,last=null; for(let t=lo;t<=hi+1e-9;t+=st){ if(evalT(m,t).correct){ if(first===null)first=t; last=t; } } return first===null?null:[first,last]; }
 
   const $=id=>document.getElementById(id);
   const cv=$('cc-cv'), thr=$('cc-thr'), kk=$('cc-kk'), tval=$('cc-tval'), kval=$('cc-kval'), tlabel=$('cc-tlabel');
@@ -118,5 +123,5 @@
   dataSel.addEventListener('change',()=>{ rebuildData(dataSel.value); computeRho(parseInt(kk.value)); refreshAch(); refresh(); });
   window.addEventListener('resize',refresh);
 
-  rebuildData('grids'); computeRho(1); setMode('fixed');
+  rebuildData('grids'); computeRho(3); setMode('fixed');
 </script>
