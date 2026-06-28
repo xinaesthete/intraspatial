@@ -128,6 +128,66 @@ export function gaussianKdeField(
   return { data, width: w, height: h, bbox };
 }
 
+export interface DtmOptions extends FieldOptions {
+  /** Number of nearest points averaged. Larger k = more smoothing / robustness.
+   *  Clamped to the point count. Default 5. */
+  k?: number;
+  /** Padding added around the points' bounds when `bbox` is omitted. Default 0. */
+  pad?: number;
+}
+
+/**
+ * Distance-to-measure (DTM) field of Chazal-Cohen-Steiner-Merigot:
+ *   dtm_k(x) = sqrt( mean of the k smallest |x - p_i|^2 ).
+ *
+ * This is the *robust* relative of `distanceField`: an outlier has only itself
+ * nearby, so the k-average keeps the field high there and the point enters the
+ * sublevel filtration late (a short, near-diagonal bar) instead of spawning a
+ * full-strength ball at r=0. The persistent homology of its sublevel sets is
+ * provably stable to outliers (bottleneck/Wasserstein), unlike Cech/Vietoris-Rips.
+ *
+ * (k = 1 recovers `distanceField`.) Brute force, O(grid * N); for the small N the
+ * demos use.
+ */
+export function dtmField(
+  xs: ArrayLike<number>,
+  ys: ArrayLike<number>,
+  opts: DtmOptions,
+): ScalarField {
+  const n = xs.length;
+  if (ys.length !== n) throw new Error("dtmField: xs/ys length mismatch");
+  const { width: w, height: h } = opts;
+  if (w <= 0 || h <= 0) throw new Error("dtmField: width/height must be > 0");
+  const k = Math.max(1, Math.min(opts.k ?? 5, n || 1));
+  const bbox = resolveBbox(xs, ys, n, opts.pad ?? 0, opts.bbox);
+  const [minX, minY, maxX, maxY] = bbox;
+  const spanX = maxX - minX || 1;
+  const spanY = maxY - minY || 1;
+
+  const d2 = new Float64Array(Math.max(n, 1)); // scratch squared distances per cell
+  const data = new Float32Array(w * h);
+  for (let r = 0; r < h; r++) {
+    const cy = maxY - ((r + 0.5) / h) * spanY;
+    for (let c = 0; c < w; c++) {
+      const cx = minX + ((c + 0.5) / w) * spanX;
+      for (let i = 0; i < n; i++) {
+        const dx = cx - xs[i]!, dy = cy - ys[i]!;
+        d2[i] = dx * dx + dy * dy;
+      }
+      // Mean of the k smallest squared distances (partial selection sort — k small).
+      let sum = 0;
+      for (let s = 0; s < k; s++) {
+        let m = s;
+        for (let i = s + 1; i < n; i++) if (d2[i]! < d2[m]!) m = i;
+        const tmp = d2[s]!; d2[s] = d2[m]!; d2[m] = tmp;
+        sum += d2[s]!;
+      }
+      data[r * w + c] = Math.sqrt(sum / k);
+    }
+  }
+  return { data, width: w, height: h, bbox };
+}
+
 /**
  * Distance-to-nearest-point field: data[cell] = min_i |c - p_i| (brute force).
  *

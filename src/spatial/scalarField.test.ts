@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { gaussianKdeField, distanceField, cellCenter } from "./scalarField";
+import { gaussianKdeField, distanceField, dtmField, cellCenter } from "./scalarField";
 
 describe("gaussianKdeField", () => {
   it("peaks at the splatted point and decays with distance", () => {
@@ -40,5 +40,28 @@ describe("distanceField", () => {
     // A corner is ~sqrt(2)*5 away.
     const corner = f.data[0]!;
     expect(corner).toBeCloseTo(Math.hypot(cellCenter(f, 0, 0)[0], cellCenter(f, 0, 0)[1]), 5);
+  });
+});
+
+describe("dtmField", () => {
+  it("k=1 recovers the plain distance field", () => {
+    const xs = [-2, 3], ys = [1, -1];
+    const opts = { width: 16, height: 16, bbox: [-5, -5, 5, 5] as [number, number, number, number] };
+    const dtm = dtmField(xs, ys, { ...opts, k: 1 });
+    const dist = distanceField(xs, ys, opts);
+    for (let i = 0; i < dtm.data.length; i++)
+      expect(dtm.data[i]!).toBeCloseTo(dist.data[i]!, 5);
+  });
+
+  it("is robust: an outlier stays high under DTM but reads as a dense site under distance", () => {
+    // A tight cluster near the origin plus one lone outlier far away.
+    const xs = [-0.3, 0.3, 0, 0.1, 7], ys = [0, 0, 0.3, -0.2, 7];
+    const opts = { width: 1, height: 1, bbox: [7, 7, 7, 7] as [number, number, number, number] }; // single cell AT the outlier
+    const dist = distanceField(xs, ys, opts);
+    const dtm = dtmField(xs, ys, { ...opts, k: 3 });
+    // At the outlier the nearest distance is ~0, but the DTM (avg of 3 nearest)
+    // is large because its other neighbours are the far-away cluster.
+    expect(dist.data[0]!).toBeLessThan(1);
+    expect(dtm.data[0]!).toBeGreaterThan(5);
   });
 });
