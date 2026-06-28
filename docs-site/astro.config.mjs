@@ -33,6 +33,7 @@ export default defineConfig({
           items: [
             { label: 'Windowing, not quadrats', slug: 'concepts/windowing' },
             { label: 'Render vs compute', slug: 'concepts/render-vs-compute' },
+            { label: 'Operation graphs', slug: 'concepts/operation-graphs' },
             { label: 'Fuzzy TDA', slug: 'concepts/fuzzy-tda' },
             { label: 'Filtrations & persistence', slug: 'concepts/filtrations' },
           ],

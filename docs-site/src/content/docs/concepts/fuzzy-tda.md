@@ -34,10 +34,15 @@ embarrassingly parallel and is where this toolbox helps:
 
 - ✅ [Fuzzy adjacency](/primitives/fuzzy-adjacency/) — the kernel-weighted graph; the
   weighted 1-skeleton.
-- 🔜 Adaptive per-point bandwidth (UMAP-style), built from
-  [nearest-neighbour distance](/primitives/nearest-neighbour-distance/).
-- 🔜 Membership-sweep filtration: the GPU builds each level's edge set, the CPU
-  reduces it.
+- ✅ Adaptive per-point bandwidth (UMAP-style) — each point gets its own σ_i from its
+  [k-th neighbour distance](/primitives/kth-neighbour-distance/), symmetrised with the
+  probabilistic t-conorm `μ_ij = a + b − a·b` (`src/gpu/spatial/fuzzyAdjacencyAdaptive.ts`).
+- ✅ Membership-sweep filtration: the GPU builds the (fuzzy) edge weights, a
+  `membership → distance` map turns them into a filtration (`d = 1 − μ`), and the CPU
+  Vietoris–Rips reducer sweeps it. All four steps are nodes in the
+  [operation-graph runtime](/concepts/operation-graphs/) — wire
+  `points → kthNeighborDistance → fuzzyAdjacencyAdaptive → membershipToDistance →
+  vietorisRipsPersistence` and pull the diagram.
 
 So the rule mirrors crisp VR: **GPU builds the (now fuzzy) filtration; CPU reduces
 it.** Fuzzy adjacency is the first brick, and it falls straight out of the same

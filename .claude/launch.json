@@ -7,6 +7,12 @@
       "runtimeExecutable": "volta",
       "runtimeArgs": ["run", "--node", "22", "pnpm", "--dir", "docs-site", "exec", "astro", "dev"],
       "port": 4321
+    },
+    {
+      "name": "playground",
+      "runtimeExecutable": "volta",
+      "runtimeArgs": ["run", "--node", "22", "pnpm", "--dir", "playground", "exec", "vite"],
+      "port": 5188
     }
   ]
 }

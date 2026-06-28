@@ -1,0 +1,221 @@
+import { useCallback, useMemo, useRef, useState } from "react";
+import {
+  ReactFlow,
+  Background,
+  Controls,
+  addEdge,
+  useNodesState,
+  useEdgesState,
+} from "@xyflow/react";
+import type { Connection, Edge, Node, NodeTypes } from "@xyflow/react";
+import "@xyflow/react/dist/style.css";
+import "./styles.css";
+import type { FieldValue } from "../../src/gpu/graph";
+import { OpNode } from "./OpNode";
+import { runNode } from "./buildGraph";
+import type { NodeData } from "./buildGraph";
+import { defaultParamsFor, getSpec, listOpSpecs, listSourceSpecs } from "./specs";
+import { Preview } from "./Preview";
+
+const nodeTypes: NodeTypes = { op: OpNode };
+
+function mkNode(id: string, opName: string, x: number, y: number): Node {
+  const spec = getSpec(opName);
+  const data: NodeData = { opName, params: defaultParamsFor(spec) };
+  return { id, type: "op", position: { x, y }, data: data as unknown as Record<string, unknown> };
+}
+
+// Default example: blob clusters -> KDE density -> Getis-Ord hotspots.
+const initialNodes: Node[] = [
+  mkNode("s1", "blobPoints", 20, 160),
+  mkNode("n1", "splatDensity", 250, 120),
+  mkNode("n2", "getisOrd", 500, 120),
+];
+const initialEdges: Edge[] = [
+  { id: "e1", source: "s1", sourceHandle: "points", target: "n1", targetHandle: "points" },
+  { id: "e2", source: "n1", sourceHandle: "density", target: "n2", targetHandle: "grid" },
+];
+
+export default function App() {
+  const [nodes, setNodes, onNodesChange] = useNodesState(initialNodes);
+  const [edges, setEdges, onEdgesChange] = useEdgesState(initialEdges);
+  const [selectedId, setSelectedId] = useState<string | null>("n2");
+  const [selectedPort, setSelectedPort] = useState<string | null>(null);
+  const [value, setValue] = useState<FieldValue | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [running, setRunning] = useState(false);
+  const idSeq = useRef(100);
+
+  const onConnect = useCallback(
+    (c: Connection) => setEdges((eds) => addEdge({ ...c, id: `e${idSeq.current++}` }, eds)),
+    [setEdges],
+  );
+
+  const addNode = useCallback(
+    (opName: string) => {
+      const id = `x${idSeq.current++}`;
+      setNodes((ns) => ns.concat(mkNode(id, opName, 120 + (ns.length % 5) * 40, 360 + (ns.length % 4) * 30)));
+    },
+    [setNodes],
+  );
+
+  const selected = useMemo(() => nodes.find((n) => n.id === selectedId) ?? null, [nodes, selectedId]);
+  const selectedSpec = selected ? getSpec((selected.data as unknown as NodeData).opName) : null;
+
+  const setParam = useCallback(
+    (key: string, v: unknown) => {
+      if (!selectedId) return;
+      setNodes((ns) =>
+        ns.map((n) => {
+          if (n.id !== selectedId) return n;
+          const d = n.data as unknown as NodeData;
+          return { ...n, data: { ...d, params: { ...d.params, [key]: v } } as unknown as Record<string, unknown> };
+        }),
+      );
+      setValue(null); // params changed → previous preview is stale
+    },
+    [selectedId, setNodes],
+  );
+
+  const run = useCallback(async () => {
+    if (!selectedId) return;
+    setRunning(true);
+    setError(null);
+    try {
+      const out = await runNode(nodes, edges, selectedId, selectedPort ?? undefined);
+      setValue(out);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+      setValue(null);
+    } finally {
+      setRunning(false);
+    }
+  }, [nodes, edges, selectedId, selectedPort]);
+
+  return (
+    <div className="app">
+      <aside className="palette">
+        <h1>GPU graph composer</h1>
+        <p className="muted">Wire ops, select a node, pull its output. Edges only connect matching port types.</p>
+        <h2>Sources</h2>
+        {listSourceSpecs().map((s) => (
+          <button key={s.name} className="palette-btn source" title={s.describe} onClick={() => addNode(s.name)}>
+            {s.label}
+          </button>
+        ))}
+        <h2>Operations</h2>
+        {listOpSpecs().map((s) => (
+          <button key={s.name} className="palette-btn" title={s.describe} onClick={() => addNode(s.name)}>
+            {s.label}
+          </button>
+        ))}
+      </aside>
+
+      <main className="canvas">
+        <ReactFlow
+          nodes={nodes}
+          edges={edges}
+          nodeTypes={nodeTypes}
+          onNodesChange={onNodesChange}
+          onEdgesChange={onEdgesChange}
+          onConnect={onConnect}
+          onNodeClick={(_, n) => { setSelectedId(n.id); setSelectedPort(null); setValue(null); setError(null); }}
+          fitView
+        >
+          <Background />
+          <Controls />
+        </ReactFlow>
+      </main>
+
+      <aside className="inspector">
+        {selected && selectedSpec ? (
+          <>
+            <h2>{selectedSpec.label}</h2>
+            {selectedSpec.describe && <p className="muted">{selectedSpec.describe}</p>}
+            <div className="params">
+              {selectedSpec.params.map((p) => (
+                <ParamControl
+                  key={p.name}
+                  spec={p}
+                  value={(selected.data as unknown as NodeData).params[p.name]}
+                  onChange={(v) => setParam(p.name, v)}
+                />
+              ))}
+              {selectedSpec.params.length === 0 && <span className="muted">no parameters</span>}
+            </div>
+
+            {selectedSpec.outputs.length > 1 && (
+              <label className="row">
+                <span>output</span>
+                <select value={selectedPort ?? selectedSpec.outputs[0]!.name} onChange={(e) => setSelectedPort(e.target.value)}>
+                  {selectedSpec.outputs.map((o) => <option key={o.name} value={o.name}>{o.name}</option>)}
+                </select>
+              </label>
+            )}
+
+            <button className="run-btn" onClick={run} disabled={running}>
+              {running ? "Running…" : "▶ Run / pull"}
+            </button>
+            <Preview value={value} error={error} />
+          </>
+        ) : (
+          <p className="muted">Click a node to edit its parameters and pull its output.</p>
+        )}
+      </aside>
+    </div>
+  );
+}
+
+function ParamControl({
+  spec,
+  value,
+  onChange,
+}: {
+  spec: import("../../src/gpu/graph").ParamSpec;
+  value: unknown;
+  onChange: (v: unknown) => void;
+}) {
+  const v = value ?? spec.default;
+  if (spec.type === "bool") {
+    return (
+      <label className="row">
+        <span title={spec.describe}>{spec.name}</span>
+        <input type="checkbox" checked={Boolean(v)} onChange={(e) => onChange(e.target.checked)} />
+      </label>
+    );
+  }
+  if (spec.type === "enum") {
+    return (
+      <label className="row">
+        <span title={spec.describe}>{spec.name}</span>
+        <select value={String(v)} onChange={(e) => onChange(e.target.value)}>
+          {(spec.options ?? []).map((o) => <option key={o} value={o}>{o}</option>)}
+        </select>
+      </label>
+    );
+  }
+  const step = spec.step ?? (spec.type === "int" ? 1 : 0.01);
+  return (
+    <label className="row">
+      <span title={spec.describe}>{spec.name}</span>
+      <span className="num">
+        <input
+          type="range"
+          min={spec.min ?? 0}
+          max={spec.max ?? 1}
+          step={step}
+          value={Number(v)}
+          onChange={(e) => onChange(spec.type === "int" ? Math.round(+e.target.value) : +e.target.value)}
+        />
+        <input
+          type="number"
+          min={spec.min}
+          max={spec.max}
+          step={step}
+          value={Number(v)}
+          onChange={(e) => onChange(spec.type === "int" ? Math.round(+e.target.value) : +e.target.value)}
+        />
+      </span>
+    </label>
+  );
+}
