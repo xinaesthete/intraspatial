@@ -360,7 +360,8 @@
         sphereGeo,
         new THREE.MeshStandardMaterial({
           transparent: true,
-          opacity: 0.28,
+          blending: THREE.AdditiveBlending,
+          opacity: 0.2,
           roughness: 0.6,
           depthWrite: false,
         }),
@@ -393,6 +394,9 @@
       new THREE.MeshBasicMaterial({
         color: 0x8b5cf6,
         transparent: true,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
+        wireframe: true,
         opacity: 0.2,
         side: THREE.DoubleSide,
       }),
