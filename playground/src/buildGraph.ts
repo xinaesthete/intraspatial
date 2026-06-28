@@ -7,6 +7,7 @@ import type { FeedbackHandle, FieldValue, GpuField, GraphMemo, SimState } from "
 import { getSource, isSource } from "./sources";
 import { getSpec } from "./specs";
 import { browserBackend } from "./backend.browser";
+import { isGroupNode, isProxyEdge } from "./grouping";
 
 export interface NodeData {
   opName: string;
@@ -28,7 +29,12 @@ export function graphHasFeedback(nodes: Node[]): boolean {
 /** Build the Graph IR; `produced` maps each canvas node id to its output handles.
  *  Feedback nodes are built from their `init` only; the `next` (loop-closing) edge is
  *  wired in a second pass once its producer exists. */
-export function buildGraph(nodes: Node[], edges: Edge[]): BuildResult {
+export function buildGraph(displayNodes: Node[], displayEdges: Edge[]): BuildResult {
+  // Group proxies and their proxy edges are a UI projection — the real flat graph is
+  // what executes, so drop them here (members are kept even while hidden).
+  const nodes = displayNodes.filter((n) => !isGroupNode(n));
+  const edges = displayEdges.filter((e) => !isProxyEdge(e));
+
   const graph = new Graph();
   const produced = new Map<string, Record<string, GpuField>>();
   const feedbacks = new Map<string, FeedbackHandle>();
