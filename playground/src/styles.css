@@ -64,5 +64,6 @@ body { background: var(--bg); color: var(--text); font: 13px/1.4 ui-sans-serif, 
 .preview { margin-top: 8px; }
 .preview-summary { color: var(--muted); font-size: 11px; margin-bottom: 6px; font-family: ui-monospace, monospace; }
 .preview-canvas { max-width: 100%; border: 1px solid var(--line); border-radius: 6px; image-rendering: pixelated; }
+.preview-svg { max-width: 100%; border: 1px solid var(--line); border-radius: 6px; background: #11131a; display: block; }
 .preview-empty { color: var(--muted); font-size: 12px; margin-top: 10px; }
 .preview-error { color: #ff8a9a; font-size: 12px; margin-top: 10px; white-space: pre-wrap; }

@@ -2,6 +2,7 @@
 // a birth/death scatter, scalars/points as a compact summary.
 import { useEffect, useRef } from "react";
 import type { FieldValue } from "../../src/gpu/graph";
+import { PointsScatter } from "./PointsScatter";
 
 interface PersistencePair { dim: number; birth: number; death: number }
 
@@ -31,27 +32,6 @@ function drawHeatmap(canvas: HTMLCanvasElement, data: ArrayLike<number>, w: numb
   tmp.getContext("2d")!.putImageData(img, 0, 0);
   ctx.imageSmoothingEnabled = false;
   ctx.drawImage(tmp, 0, 0, canvas.width, canvas.height);
-}
-
-function drawScatter(canvas: HTMLCanvasElement, data: ArrayLike<number>) {
-  const S = 320, pad = 16;
-  canvas.width = S; canvas.height = S;
-  const ctx = canvas.getContext("2d")!;
-  ctx.fillStyle = "#11131a"; ctx.fillRect(0, 0, S, S);
-  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-  for (let i = 0; i + 1 < data.length; i += 2) {
-    const x = data[i]!, y = data[i + 1]!;
-    if (x < minX) minX = x; if (x > maxX) maxX = x;
-    if (y < minY) minY = y; if (y > maxY) maxY = y;
-  }
-  const span = Math.max(maxX - minX, maxY - minY, 1e-6);
-  const mx = (minX + maxX) / 2, my = (minY + maxY) / 2; // centre, keep aspect square
-  const px = (x: number) => pad + ((x - mx) / span + 0.5) * (S - 2 * pad);
-  const py = (y: number) => S - (pad + ((y - my) / span + 0.5) * (S - 2 * pad)); // world +Y up
-  ctx.fillStyle = "#6ba8ff";
-  for (let i = 0; i + 1 < data.length; i += 2) {
-    ctx.beginPath(); ctx.arc(px(data[i]!), py(data[i + 1]!), 2.5, 0, Math.PI * 2); ctx.fill();
-  }
 }
 
 function drawPersistence(canvas: HTMLCanvasElement, pairs: PersistencePair[]) {
@@ -84,7 +64,6 @@ export function Preview({ value, error }: { value: FieldValue | null; error?: st
     const s = value.shape;
     if (s.kind === "grid" && value.data) drawHeatmap(canvas, value.data, s.width, s.height);
     else if (s.kind === "matrix" && value.data) drawHeatmap(canvas, value.data, s.cols, s.rows);
-    else if (s.kind === "points" && value.data) drawScatter(canvas, value.data);
     else if (s.kind === "opaque") {
       const pairs = (value.payload as { pairs?: PersistencePair[] })?.pairs ?? [];
       drawPersistence(canvas, pairs);
@@ -108,11 +87,12 @@ export function Preview({ value, error }: { value: FieldValue | null; error?: st
     return "value";
   })();
 
-  const showCanvas = s.kind === "grid" || s.kind === "matrix" || s.kind === "opaque" || s.kind === "points";
+  const showCanvas = s.kind === "grid" || s.kind === "matrix" || s.kind === "opaque";
   return (
     <div className="preview">
       <div className="preview-summary">{summary}</div>
       {showCanvas && <canvas ref={ref} className="preview-canvas" />}
+      {s.kind === "points" && value.data && <PointsScatter data={value.data} />}
     </div>
   );
 }
