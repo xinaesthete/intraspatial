@@ -431,10 +431,10 @@
   // view. renderToScreen=false → result lands in the composer's read buffer.
   const sliceComposer = new EffectComposer(coneRenderer);
   sliceComposer.renderToScreen = false;
-  sliceComposer.setSize(640, 640);
+  sliceComposer.setSize(1024, 1024);
   sliceComposer.setPixelRatio(1);
   sliceComposer.addPass(new RenderPass(scene, sliceCam));
-  const sliceOutline = new OutlinePass(new THREE.Vector2(640, 640), scene, sliceCam);
+  const sliceOutline = new OutlinePass(new THREE.Vector2(124, 1024), scene, sliceCam);
   sliceOutline.edgeStrength = 3.0;
   sliceOutline.edgeGlow = 0.4;
   sliceOutline.edgeThickness = 1.0;
@@ -574,7 +574,7 @@
     const maxEdges = (n * (n - 1)) / 2;
     edgePos = new Float32Array(maxEdges * 6);
     const edgeMat = new LineMaterial({
-      color: new THREE.Color(INK).getHex(), worldUnits: true, linewidth: 0.13,
+      color: new THREE.Color(INK).getHex(), worldUnits: true, linewidth: 0.1,
       transparent: true, opacity: 0.6, depthTest: false,
     });
     edgeMat.resolution.set(stageW, stageH);
