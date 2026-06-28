@@ -7,13 +7,13 @@ export type { Dtype, FieldValue, GpuField, NodeId, Shape, ShapeKind } from "./ha
 export { numCells, shapesEqual } from "./handle";
 export type { ExecCtx, OpType, Params, ParamSpec, ParamType, PortSpec } from "./op";
 export { allFinite, defaultParams, param } from "./op";
-export type { EdgeRef, GraphNode } from "./graph";
+export type { EdgeRef, FeedbackHandle, GraphNode } from "./graph";
 export { Graph } from "./graph";
 export { getOp, hasOp, listOps, registerOp } from "./registry";
 export type { GpuBackend, Root } from "./backend";
 export { nodeBackend } from "./backend.node";
-export type { PullOptions } from "./executor";
-export { pull, pullData } from "./executor";
+export type { AdvanceOptions, PullOptions, SimState } from "./executor";
+export { advance, createSimState, pull, pullData } from "./executor";
 export type { GraphMemo } from "./memo";
 export { createMemo } from "./memo";
 export { registerBuiltinOps } from "./ops/index";

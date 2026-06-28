@@ -10,12 +10,14 @@ import {
 import type { Connection, Edge, Node, NodeTypes } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import "./styles.css";
-import type { FieldValue, GraphMemo } from "../../src/gpu/graph";
-import { createMemo } from "../../src/gpu/graph";
+import type { FieldValue, GraphMemo, SimState } from "../../src/gpu/graph";
+import { createMemo, createSimState } from "../../src/gpu/graph";
 import { OpNode } from "./OpNode";
-import { runNode } from "./buildGraph";
+import { advanceNode, graphHasFeedback, runNode } from "./buildGraph";
 import type { NodeData } from "./buildGraph";
 import { defaultParamsFor, getSpec, listOpSpecs, listSourceSpecs } from "./specs";
+import { EXAMPLES } from "./examples";
+import type { Example } from "./examples";
 import { Preview } from "./Preview";
 
 const nodeTypes: NodeTypes = { op: OpNode };
@@ -46,10 +48,15 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
   const [live, setLive] = useState(false);
+  const [playing, setPlaying] = useState(false);
   const idSeq = useRef(100);
   const memo = useRef<GraphMemo>(createMemo());
+  const sim = useRef<SimState>(createSimState());
+  const rafRef = useRef<number | undefined>(undefined);
   const liveRef = useRef(live);
   liveRef.current = live;
+
+  const hasFeedback = useMemo(() => graphHasFeedback(nodes), [nodes]);
   // Serialise an in-flight pull so overlapping auto-runs don't race on the shared
   // GPU pools; a change during a run sets `pending` and re-runs once it finishes.
   const inflight = useRef(false);
@@ -123,17 +130,89 @@ export default function App() {
   // Auto-run: when live, re-pull on every signature change. We deliberately do NOT
   // trailing-debounce (that only fires after you stop dragging, an onMouseUp feel) —
   // the in-flight guard paces runs to GPU throughput and always runs the latest
-  // state, so a slider drag updates continuously in real time.
+  // state, so a slider drag updates continuously in real time. Disabled for feedback
+  // graphs, which use the transport (play/step) below instead.
   useEffect(() => {
-    if (!live || !selectedId) return;
+    if (!live || !selectedId || hasFeedback) return;
     runRef.current();
-  }, [sig, live, selectedId]);
+  }, [sig, live, selectedId, hasFeedback]);
+
+  // Simulation transport: advance one tick (a graph step; the RD op may batch many
+  // Euler steps inside it) and show the result.
+  const step = useCallback(async (reset = false) => {
+    if (!selectedId) return;
+    try {
+      const out = await advanceNode(nodes, edges, selectedId, selectedPort ?? undefined, {
+        steps: 1,
+        state: sim.current,
+        reset,
+      });
+      setValue(out);
+      setError(null);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+      setPlaying(false);
+    }
+  }, [nodes, edges, selectedId, selectedPort]);
+
+  const resetSim = useCallback(() => {
+    setPlaying(false);
+    sim.current.clear();
+    setValue(null);
+    setError(null);
+  }, []);
+
+  const loadExample = useCallback(
+    (ex: Example) => {
+      setPlaying(false);
+      sim.current.clear();
+      setNodes(ex.nodes);
+      setEdges(ex.edges);
+      setSelectedId(ex.sink.node);
+      setSelectedPort(ex.sink.port ?? null);
+      setLive(false);
+      setValue(null);
+      setError(null);
+    },
+    [setNodes, setEdges],
+  );
+
+  // The play loop: advance one tick per animation frame while `playing`. Awaiting
+  // each tick paces the loop to GPU throughput. Restarts if the graph/selection
+  // changes (picks up edited params).
+  useEffect(() => {
+    if (!playing || !selectedId || !hasFeedback) return;
+    let cancelled = false;
+    const tick = async () => {
+      if (cancelled) return;
+      try {
+        const out = await advanceNode(nodes, edges, selectedId, selectedPort ?? undefined, { steps: 1, state: sim.current });
+        if (cancelled) return;
+        setValue(out);
+        rafRef.current = requestAnimationFrame(tick);
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e));
+        setPlaying(false);
+      }
+    };
+    rafRef.current = requestAnimationFrame(tick);
+    return () => {
+      cancelled = true;
+      if (rafRef.current) cancelAnimationFrame(rafRef.current);
+    };
+  }, [playing, hasFeedback, selectedId, selectedPort, nodes, edges]);
 
   return (
     <div className="app">
       <aside className="palette">
         <h1>GPU graph composer</h1>
         <p className="muted">Wire ops, select a node, pull its output. Edges only connect matching port types.</p>
+        <h2>Examples</h2>
+        {EXAMPLES.map((ex) => (
+          <button key={ex.label} className="palette-btn" title="Load this graph" onClick={() => loadExample(ex)}>
+            {ex.label}
+          </button>
+        ))}
         <h2>Sources</h2>
         {listSourceSpecs().map((s) => (
           <button key={s.name} className="palette-btn source" title={s.describe} onClick={() => addNode(s.name)}>
@@ -190,13 +269,28 @@ export default function App() {
               </label>
             )}
 
-            <label className="row live-row" title="Re-pull automatically when params or wiring change">
-              <span>Auto-run (live)</span>
-              <input type="checkbox" checked={live} onChange={(e) => setLive(e.target.checked)} />
-            </label>
-            <button className={`run-btn ${live ? "live" : ""}`} onClick={run} disabled={running}>
-              {running ? "Running…" : live ? "● Live — re-running on change" : "▶ Run / pull"}
-            </button>
+            {hasFeedback ? (
+              <div className="transport">
+                <button className={`run-btn ${playing ? "live" : ""}`} onClick={() => setPlaying((p) => !p)}>
+                  {playing ? "⏸ Pause" : "▶ Play"}
+                </button>
+                <div className="transport-row">
+                  <button onClick={() => step(false)} disabled={playing} title="Advance one tick">⏭ Step</button>
+                  <button onClick={resetSim} title="Reset to the seed">⟲ Reset</button>
+                </div>
+                <p className="muted">Feedback loop — runs over time. One tick = one graph step.</p>
+              </div>
+            ) : (
+              <>
+                <label className="row live-row" title="Re-pull automatically when params or wiring change">
+                  <span>Auto-run (live)</span>
+                  <input type="checkbox" checked={live} onChange={(e) => setLive(e.target.checked)} />
+                </label>
+                <button className={`run-btn ${live ? "live" : ""}`} onClick={run} disabled={running}>
+                  {running ? "Running…" : live ? "● Live — re-running on change" : "▶ Run / pull"}
+                </button>
+              </>
+            )}
             <Preview value={value} error={error} />
           </>
         ) : (

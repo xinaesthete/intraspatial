@@ -1,16 +1,15 @@
-// Lazy-pull executor for the operation graph.
+// Executor for the operation graph.
 //
-// `pull(graph, field)` resolves the transitive dependencies of the requested
-// field, topologically orders them, and executes each node once — caching its
-// outputs so a node feeding two consumers runs a single time. This is the
-// correctness-first baseline of docs/gpu-resource-sync.md: nodes run in dependency
-// order, each op owns its own submits internally (Tier-1), and every node is gated
-// by a sanity check that falls back to its CPU golden (invariant 5).
+// `pull(graph, field)` resolves the transitive dependencies of the requested field,
+// topologically orders them, and executes each node once (deduped), with per-node
+// validate→CPU-fallback (docs/gpu-resource-sync.md, invariant 5) and optional
+// content-addressed memoisation.
 //
-// Phase 0 carries host `FieldValue`s along edges (Tier-1, boundary-granularity);
-// the IR, pull semantics, topo order, dedup, and validate/fallback are all proven
-// here. GPU-resident interiors (Tier-2) and param-level memoisation layer on top
-// without changing this contract.
+// Feedback / time. The graph is a DAG *per tick*. A `feedback` (delay) node outputs
+// the PREVIOUS tick's value (seeded by `init`), so it acts as a source within a tick
+// and the edge wired to its `next` input is a deferred write committed after the
+// tick — this is what cuts the cycle (a unit delay, z⁻¹). `advance(graph, field,
+// {steps, state})` runs that loop; `pull` is one tick from a fresh (init) state.
 import type { FieldValue, GpuField } from "./handle";
 import type { ExecCtx, OpType } from "./op";
 import { allFinite } from "./op";
@@ -27,28 +26,36 @@ export interface PullOptions {
   /** "gpu" (default) runs each op's `execute`; "cpu" forces every op through its
    *  `cpuGolden` — an independent reference the GPU path must match. */
   mode?: "gpu" | "cpu";
-  /** Receives a value for every produced port (`"nodeId:port"`). Lets callers
-   *  inspect intermediates without re-pulling. */
+  /** Receives a value for every produced port (`"nodeId:port"`). */
   onValue?: (key: string, value: FieldValue) => void;
-  /** A persistent, content-addressed memo (from `createMemo`). When supplied, a node
-   *  whose op + params + input keys are unchanged is reused instead of re-executed —
-   *  so changing one param re-runs only that node and its dependents. */
+  /** A persistent, content-addressed memo (from `createMemo`). Ignored for graphs
+   *  containing feedback (their values change each tick). */
   cache?: GraphMemo;
 }
 
-const key = (nodeId: string, port: string) => `${nodeId}:${port}`;
+/** Per-feedback-node state, persisted across ticks. Keyed by each node's stableKey. */
+export type SimState = Map<string, FieldValue>;
+export const createSimState = (): SimState => new Map();
 
-/** Topologically order the transitive dependencies of `roots` (producer-first). */
+const key = (nodeId: string, port: string) => `${nodeId}:${port}`;
+const storeKey = (node: GraphNode) => node.stableKey ?? node.id;
+
+/** Topologically order the deps of `roots`, producer-first. Feedback nodes only
+ *  depend on their `init` input — the `next` back-edge is cut, so the loop is a DAG
+ *  per tick. Any remaining cycle (one not through a delay) is a real error. */
 function topoOrder(graph: Graph, roots: string[]): GraphNode[] {
   const order: GraphNode[] = [];
   const state = new Map<string, 0 | 1>(); // 0 = visiting, 1 = done
   const visit = (id: string) => {
     const s = state.get(id);
     if (s === 1) return;
-    if (s === 0) throw new Error(`executor: cycle through node "${id}"`);
+    if (s === 0) throw new Error(`executor: cycle through node "${id}" (a cycle must pass through a feedback node)`);
     state.set(id, 0);
     const node = graph.getNode(id);
-    for (const ref of Object.values(node.inputs)) visit(ref.node);
+    const deps = node.op === "feedback"
+      ? (node.inputs.init ? [node.inputs.init] : [])
+      : Object.values(node.inputs);
+    for (const ref of deps) visit(ref.node);
     state.set(id, 1);
     order.push(node);
   };
@@ -73,20 +80,31 @@ async function runNode(
   return out;
 }
 
-/** Execute the graph as needed to produce `field`, returning its value. */
-export async function pull(graph: Graph, field: GpuField, opts: PullOptions = {}): Promise<FieldValue> {
-  const ctx = opts.ctx ?? { backend: nodeBackend };
-  const mode = opts.mode ?? "gpu";
-  const memo = opts.cache;
-  const pulled = new Map<string, FieldValue>(); // per-pull, by "nodeId:port" (dedup)
-  const contentKey = new Map<string, string>(); // nodeId -> content-addressed key
+interface TickOptions {
+  ctx: ExecCtx;
+  mode: "gpu" | "cpu";
+  memo?: GraphMemo;
+  store: SimState;
+  onValue?: (key: string, value: FieldValue) => void;
+}
 
+/** Run one tick: execute the cut-DAG, then commit feedback `next` values into the
+ *  store for the following tick. Returns every produced value by "nodeId:port". */
+async function runTick(graph: Graph, field: GpuField, o: TickOptions): Promise<Map<string, FieldValue>> {
+  const order = topoOrder(graph, [field.producer]);
+  // Content-memo is unsound across ticks for feedback graphs (state changes), so
+  // disable it whenever a feedback node is in play.
+  const memo = order.some((n) => n.op === "feedback") ? undefined : o.memo;
+
+  const pulled = new Map<string, FieldValue>();
+  const contentKey = new Map<string, string>();
+  const feedbackNodes: GraphNode[] = [];
   const emit = (nodeId: string, port: string, v: FieldValue) => {
     pulled.set(key(nodeId, port), v);
-    opts.onValue?.(key(nodeId, port), v);
+    o.onValue?.(key(nodeId, port), v);
   };
 
-  for (const node of topoOrder(graph, [field.producer])) {
+  for (const node of order) {
     if (node.op === "source") {
       if (!node.source) throw new Error(`executor: source node "${node.id}" has no value`);
       const v = node.source;
@@ -98,10 +116,24 @@ export async function pull(graph: Graph, field: GpuField, opts: PullOptions = {}
       emit(node.id, "out", v);
       continue;
     }
-    const op = getOp(node.op);
 
-    // Content key for this node = hash(op, params, input keys). Only computed when a
-    // memo is supplied; cheap, fixed-length (a Merkle digest over the sub-DAG).
+    if (node.op === "feedback") {
+      const sk = storeKey(node);
+      let cur = o.store.get(sk);
+      if (cur === undefined) {
+        // first tick (or post-reset): seed from `init`.
+        const initRef = node.inputs.init;
+        if (!initRef) throw new Error(`executor: feedback node "${node.id}" has no init`);
+        cur = pulled.get(key(initRef.node, initRef.port));
+        if (!cur) throw new Error(`executor: feedback init of "${node.id}" not computed`);
+        o.store.set(sk, cur);
+      }
+      feedbackNodes.push(node);
+      emit(node.id, "state", cur);
+      continue;
+    }
+
+    const op = getOp(node.op);
     let ck: string | undefined;
     if (memo) {
       const inputKeys = op.inputs.map((spec) => {
@@ -110,11 +142,10 @@ export async function pull(graph: Graph, field: GpuField, opts: PullOptions = {}
       });
       ck = hashString(`${node.op}|${stableJSON(node.params)}|${inputKeys.join(",")}`);
       contentKey.set(node.id, ck);
-      // Reuse if every output is already memoised.
-      const hits = op.outputs.map((o) => memo.get(`${ck}#${o.name}`));
+      const hits = op.outputs.map((out) => memo.get(`${ck}#${out.name}`));
       if (hits.every((h) => h !== undefined)) {
-        op.outputs.forEach((o, i) => emit(node.id, o.name, hits[i]!));
-        continue; // cache hit — skip execution entirely
+        op.outputs.forEach((out, i) => emit(node.id, out.name, hits[i]!));
+        continue;
       }
     }
 
@@ -124,17 +155,68 @@ export async function pull(graph: Graph, field: GpuField, opts: PullOptions = {}
       if (!v) throw new Error(`executor: input "${spec.name}" of "${node.id}" not computed`);
       return v;
     });
-    const outs = await runNode(op, ctx, mode, inputs, node.params);
-    op.outputs.forEach((o, i) => {
+    const outs = await runNode(op, o.ctx, o.mode, inputs, node.params);
+    op.outputs.forEach((out, i) => {
       const v = outs[i]!;
-      if (memo && ck) memo.set(`${ck}#${o.name}`, v);
-      emit(node.id, o.name, v);
+      if (memo && ck) memo.set(`${ck}#${out.name}`, v);
+      emit(node.id, out.name, v);
     });
   }
 
+  // Commit: store each feedback node's fed-back value for the next tick.
+  for (const node of feedbackNodes) {
+    const nextRef = node.inputs.next;
+    if (nextRef) {
+      const v = pulled.get(key(nextRef.node, nextRef.port));
+      if (v) o.store.set(storeKey(node), v);
+    }
+  }
+
+  return pulled;
+}
+
+/** Execute the graph to produce `field`, returning its value (one tick from a fresh
+ *  feedback state, i.e. seeds at `init`). For a stepped simulation use `advance`. */
+export async function pull(graph: Graph, field: GpuField, opts: PullOptions = {}): Promise<FieldValue> {
+  const pulled = await runTick(graph, field, {
+    ctx: opts.ctx ?? { backend: nodeBackend },
+    mode: opts.mode ?? "gpu",
+    memo: opts.cache,
+    store: createSimState(),
+    onValue: opts.onValue,
+  });
   const out = pulled.get(key(field.producer, field.outPort));
   if (!out) throw new Error(`executor: requested field not produced`);
   return out;
+}
+
+export interface AdvanceOptions extends PullOptions {
+  /** Number of ticks to run (default 1). */
+  steps?: number;
+  /** Persistent feedback state across calls (from `createSimState`). */
+  state?: SimState;
+  /** Clear the feedback state before running (re-seed from `init`). */
+  reset?: boolean;
+  /** Called after each tick with the sink value. */
+  onFrame?: (frame: number, value: FieldValue) => void;
+}
+
+/** Advance a feedback graph `steps` ticks, returning the sink at the final tick. */
+export async function advance(graph: Graph, field: GpuField, opts: AdvanceOptions = {}): Promise<FieldValue> {
+  const store = opts.state ?? createSimState();
+  if (opts.reset) store.clear();
+  const steps = Math.max(1, opts.steps ?? 1);
+  const ctx = opts.ctx ?? { backend: nodeBackend };
+  const mode = opts.mode ?? "gpu";
+
+  let last: FieldValue | undefined;
+  for (let t = 0; t < steps; t++) {
+    const pulled = await runTick(graph, field, { ctx, mode, store, onValue: opts.onValue });
+    last = pulled.get(key(field.producer, field.outPort));
+    if (!last) throw new Error("advance: sink not produced");
+    opts.onFrame?.(t, last);
+  }
+  return last!;
 }
 
 /** Convenience: pull a numeric field and return its host data. */

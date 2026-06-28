@@ -57,4 +57,19 @@ per dependency, parameter controls generated from each op's declared params. Bec
 the graph is serialisable, a canvas and a code builder are two front doors to one
 runtime.
 
-**Status:** ✅ runtime + Tier-1 ops + the fuzzy-TDA node chain · `src/gpu/graph/`
+## Feedback & time
+
+A pure pull-DAG can't express a simulation (`state_{t+1} = f(state_t)`). The graph
+stays acyclic by separating **space** (the dataflow) from **time** (the iteration): a
+**feedback (unit-delay) node** outputs the *previous* tick's value (seeded by `init`),
+and the edge into its `next` input is a deferred write committed after the tick. Within
+a tick the feedback node is a source, so the loop is a DAG per tick — the z⁻¹ break
+used by synchronous dataflow languages, Houdini's solver, and GPU ping-pong textures. A
+cycle that doesn't pass through a feedback node is rejected.
+
+`pull` is one tick from the seed; `advance(field, { steps, state })` runs the loop with
+state persisted across ticks. The composer adds Play / Step / Reset transport and
+animates the sink — the reaction-diffusion example is exactly this: a Gray–Scott seed
+feeding two delay nodes whose state drives the step, whose outputs feed back.
+
+**Status:** ✅ runtime + Tier-1 ops + fuzzy-TDA chain + feedback/simulation · `src/gpu/graph/`

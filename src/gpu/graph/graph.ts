@@ -18,13 +18,23 @@ export interface EdgeRef {
 
 export interface GraphNode {
   id: NodeId;
-  /** Registry op name, or the builtin "source". */
+  /** Registry op name, or the builtins "source" / "feedback". */
   op: string;
   params: Params;
   /** Port name -> producer reference. Empty for sources. */
   inputs: Record<string, EdgeRef>;
   /** For "source" nodes: the host value this node yields (not serialised). */
   source?: FieldValue;
+  /** For "feedback" (delay) nodes: a key, stable across graph rebuilds, under which
+   *  this node's state is stored between ticks (the React Flow node id in the UI). */
+  stableKey?: string;
+}
+
+/** Handle returned by `Graph.feedback`: the delayed `state` output, plus `close` to
+ *  wire the value fed back for the next tick (the edge that closes the loop). */
+export interface FeedbackHandle {
+  state: GpuField;
+  close(next: GpuField): void;
 }
 
 let fieldSeq = 0;
@@ -63,6 +73,28 @@ export class Graph {
       { shape: { kind: "grid", width, height }, dtype: "f32", data: Float32Array.from(data) },
       "grid",
     );
+  }
+
+  /** A feedback (unit-delay) node: it outputs the *previous* tick's value (seeded
+   *  by `init`), breaking what would otherwise be a cycle. Call `close(next)` with
+   *  the value to feed back. `key` is the store key, stable across rebuilds. */
+  feedback(init: GpuField, key?: string): FeedbackHandle {
+    const id = this.nextNodeId("feedback");
+    const node: GraphNode = {
+      id,
+      op: "feedback",
+      params: {},
+      inputs: { init: { node: init.producer, port: init.outPort } },
+      stableKey: key ?? id,
+    };
+    this.nodes.set(id, node);
+    const state = makeField(id, "state", init.shape, init.dtype);
+    return {
+      state,
+      close: (next: GpuField) => {
+        node.inputs.next = { node: next.producer, port: next.outPort };
+      },
+    };
   }
 
   /** Instantiate an op node. Returns one lazy handle per declared output port. */

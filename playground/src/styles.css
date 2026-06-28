@@ -58,6 +58,14 @@ body { background: var(--bg); color: var(--text); font: 13px/1.4 ui-sans-serif, 
 }
 .run-btn:disabled { opacity: 0.6; cursor: default; }
 .run-btn.live { background: #46c08a; }
+.transport { margin: 10px 0; }
+.transport-row { display: flex; gap: 8px; margin-top: 8px; }
+.transport-row button {
+  flex: 1; padding: 6px; background: var(--panel2); color: var(--text);
+  border: 1px solid var(--line); border-radius: 6px; cursor: pointer;
+}
+.transport-row button:hover:not(:disabled) { border-color: var(--accent); }
+.transport-row button:disabled { opacity: 0.5; cursor: default; }
 .live-row { margin-top: 10px; }
 .live-row span { color: var(--text); }
 

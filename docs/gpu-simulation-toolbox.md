@@ -1,6 +1,6 @@
 # GPU simulation toolbox
 
-Status: **building** — design + first primitive (2026-06-28)
+Status: **building** — design + first primitive + graph-level feedback (2026-06-28)
 
 The toolbox so far is *analytic*: every primitive maps inputs to one snapshot
 (`splat`, `convolve`, `getisOrd`, `fuzzyAdjacency`, `kthNeighborDistance`). This note
@@ -18,23 +18,27 @@ Every existing op is single-pass. A simulation is a **state** advanced by a repe
 state₀ → step → state₁ → step → state₂ → …          (download only when you look)
 ```
 
-The [operation-graph runtime](gpu-resource-sync.md) already gives us exactly the
-boundary a time-stepped solver needs:
+The [operation-graph runtime](gpu-resource-sync.md) gives us exactly the boundary a
+time-stepped solver needs, via an explicit **feedback (unit-delay) node**:
 
-- A step is an op whose inputs and outputs are the **same resource shapes** (a grid
-  pair for fields, a points buffer for particles). Feeding a step's outputs into the
-  next step is just another edge.
-- The executor's **per-stage submit** *is* the per-step boundary — one submit per
-  step, ping-ponging two physical buffers (resource-sync invariant 1: single writer
-  per submit, never read-modify-write one buffer). The first primitive
-  (`reactionDiffusionStep`) does exactly this internally for its `steps` batch.
-- **Boundary-only transfer** (invariant 4): upload the seed once, run N steps
-  resident on the GPU, read back only the frame you display. Readback is the slow,
-  Dawn-on-Node-fragile op — a simulation is where keeping data resident pays the most.
+- A `feedback` node outputs the **previous** tick's value (seeded by `init`); the edge
+  wired to its `next` input is a deferred write committed after the tick. Within a
+  tick it acts as a *source*, so the loop is a **DAG per tick** — the standard z⁻¹
+  break (Lustre, Houdini solver, ping-pong textures). A cycle that does *not* pass
+  through a feedback node is a validation error.
+- `pull(field)` runs one tick from the seed; `advance(field, {steps, state})` runs the
+  loop, persisting feedback state across ticks. The composer drives `advance` on a
+  requestAnimationFrame loop (Play / Step / Reset) and animates the sink.
+- A step op's inputs and outputs are the **same resource shapes** (a grid pair for
+  fields). `reactionDiffusionStep` may batch many Euler steps per tick; one graph tick
+  = one op invocation. The feedback double-buffer **is** resource-sync invariant 1
+  (single writer per submit; read-modify-write gets two physical buffers).
+- **Boundary-only transfer** (invariant 4): seed once, read back only the displayed
+  frame.
 
-So a simulation is a small **subgraph** that the host (or a future loop node) pulls
-repeatedly, swapping the state handles each frame. No new execution model — just ops
-whose output shape equals their input shape.
+So a simulation is a small **subgraph with feedback edges**; the runtime owns the
+loop. Implemented: `Graph.feedback`, the executor's `advance`, and the composer's
+reaction-diffusion example.
 
 ## Three sub-fronts and how they reuse what exists
 
