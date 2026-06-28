@@ -34,11 +34,19 @@ body { background: var(--bg); color: var(--text); font: 13px/1.4 ui-sans-serif, 
   padding: 6px 10px; background: var(--accent); color: #06101f; border: none;
   border-radius: 6px; font-weight: 600; cursor: pointer;
 }
-.tb-group { display: inline-flex; border: 1px solid #4a3a6a; border-radius: 6px; overflow: hidden; }
-.tb-group button { padding: 6px 8px; background: #1a1726; color: var(--text); border: none; cursor: pointer; }
-.tb-group button:hover { background: #241f33; }
-.tb-group .tb-x { border-left: 1px solid #4a3a6a; color: var(--muted); }
-.tb-group .tb-x:hover { color: #ff8a9a; }
+.breadcrumb { display: flex; align-items: center; gap: 2px; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 3px 6px; }
+.bc-item { display: inline-flex; align-items: center; gap: 2px; }
+.bc-seg { background: none; border: none; color: var(--accent); cursor: pointer; font-size: 13px; padding: 2px 5px; border-radius: 4px; }
+.bc-seg:hover:not(:disabled) { background: var(--panel2); }
+.bc-seg:disabled { color: var(--text); cursor: default; font-weight: 600; }
+.bc-sep { color: var(--muted); }
+
+/* boundary port stubs shown inside a group's scope */
+.port-stub {
+  background: #161a26; border: 1px dashed #3a4a6a; border-radius: 6px; padding: 6px 12px;
+  color: var(--muted); font-size: 11px; font-family: ui-monospace, monospace; white-space: nowrap;
+}
+.port-stub .react-flow__handle { width: 9px; height: 9px; border: none; background: #7cc4ff; }
 
 /* nodes */
 .opnode {
