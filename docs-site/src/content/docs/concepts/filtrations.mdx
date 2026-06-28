@@ -95,11 +95,9 @@ primitive: the only thing that changes is *which field you sublevel-set*.
 When your browser exposes **WebGPU** (badge top-right), the fields are computed by a
 compute shader — the same additive-Gaussian splat / brute-force gather the
 [KDE splat](/primitives/kde-splat/) primitive uses — and the badge turns green; without
-it, the CPU library runs instead (toggle it to compare — the diagram is identical). The
-GPU path defaults **off on Safari / iOS**, whose WebGPU backend is stricter and has been
-crash-prone (you can still opt in via the toggle); any backend that returns a bad field
-is validated and silently falls back to the CPU. The persistence reduction itself is
-inherently sequential and always stays on the CPU.
+it, the CPU library runs instead (toggle it to compare — the diagram is identical). Any
+backend that returns a bad field is validated and silently falls back to the CPU, and the
+persistence reduction itself is inherently sequential and always stays on the CPU.
 :::
 
 ## Sources & further reading

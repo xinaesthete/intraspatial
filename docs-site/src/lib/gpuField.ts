@@ -147,16 +147,6 @@ export async function gpuFieldAvailable(): Promise<boolean> {
   return (await getGpuFieldContext()) !== null;
 }
 
-/** Heuristic: WebKit (Safari / all iOS browsers). Its WebGPU backend is stricter and
- *  has been crash-prone, so the demo defaults the GPU path OFF there (still toggleable). */
-export function isAppleWebKit(): boolean {
-  try {
-    return /Apple/.test((navigator as Navigator).vendor || "");
-  } catch {
-    return false;
-  }
-}
-
 const MODE_CODE: Record<FieldMode, number> = { kde: 0, distance: 1, dtm: 2 };
 
 /** A returned field is trusted only if every sample is finite and it carries some

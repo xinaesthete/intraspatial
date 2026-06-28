@@ -123,7 +123,7 @@
   import type { FieldPersistenceResult } from '../../../src/spatial/sublevelsetPersistence';
   // GPU field generation (compute shader) when the browser exposes WebGPU; the CPU
   // library functions above are the fallback. The persistence reduction is always CPU.
-  import { computeFieldGpu, gpuFieldAvailable, isAppleWebKit } from '../lib/gpuField';
+  import { computeFieldGpu, gpuFieldAvailable } from '../lib/gpuField';
   import type { FieldMode } from '../lib/gpuField';
 
   // ---------------------------------------------------------------------------
@@ -683,18 +683,11 @@
   gpuFieldAvailable().then((ok) => {
     if (!ok) return;
     gpuWrap.hidden = false;
-    // Default the GPU path ON, except on WebKit (Safari/iOS), whose WebGPU backend
-    // is stricter and has been crash-prone — leave it opt-in there. (Any bad GPU
-    // result also auto-falls-back via output validation in gpuField.ts.)
-    const webkit = isAppleWebKit();
-    if (webkit) {
-      gpuWrap.title = 'WebGPU is experimental on Safari/iOS — may be glitchy; the CPU path is used by default';
-      gpuChk.title = gpuWrap.title;
-    }
-    const on = !webkit;
-    gpuChk.checked = on;
-    useGpu = on;
-    if (on) void rebuild(); // recompute on the GPU (same grids → same diagram)
+    // GPU path on by default wherever WebGPU is exposed (Safari included). Any bad
+    // result still auto-falls-back via output validation in gpuField.ts.
+    gpuChk.checked = true;
+    useGpu = true;
+    void rebuild(); // recompute on the GPU (same grids → same diagram)
   });
   requestAnimationFrame(frame);
 </script>
