@@ -80,7 +80,14 @@ body { background: var(--bg); color: var(--text); font: 13px/1.4 ui-sans-serif, 
 }
 .opnode.source { border-left: 3px solid #9be29b; }
 .opnode.group { border-left: 3px solid #d79bff; background: #1a1726; }
+/* reusable-subgraph instance: a linked, double-bordered "blueprint" look */
+.opnode.instance { border-left: 3px solid #6fd3ff; background: #131c24; box-shadow: inset 0 0 0 1px #25323d; }
 .group-sub { color: var(--muted); font-size: 10px; margin-bottom: 4px; }
+/* subgraph palette entries + breadcrumb/badge cues */
+.palette-btn.subgraph { border-left: 3px solid #6fd3ff; }
+.palette-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.bc-seg.def { color: #6fd3ff; }
+.tb-def-badge { margin-left: auto; color: #6fd3ff; font-size: 11px; font-family: ui-monospace, monospace; opacity: 0.85; }
 .row input[type="text"] { background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 4px; padding: 2px 4px; }
 .opnode.selected { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
 .opnode-title { font-weight: 600; margin-bottom: 4px; }
