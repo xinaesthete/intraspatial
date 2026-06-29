@@ -1,6 +1,7 @@
 // @ts-check
 import { defineConfig, passthroughImageService } from 'astro/config';
 import starlight from '@astrojs/starlight';
+import react from '@astrojs/react';
 
 // https://astro.build/config
 export default defineConfig({
@@ -12,6 +13,7 @@ export default defineConfig({
   // rather than re-ported copies.
   vite: { server: { fs: { allow: ['..'] } } },
   integrations: [
+    react(),
     starlight({
       title: 'GPU Spatial Primitives',
       description:
@@ -35,6 +37,7 @@ export default defineConfig({
             { label: 'Render vs compute', slug: 'concepts/render-vs-compute' },
             { label: 'Fuzzy TDA', slug: 'concepts/fuzzy-tda' },
             { label: 'Filtrations & persistence', slug: 'concepts/filtrations' },
+            { label: 'Draw in the DWT domain', slug: 'concepts/dwt-draw' },
           ],
         },
         {

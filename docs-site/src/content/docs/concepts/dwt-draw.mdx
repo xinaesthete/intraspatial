@@ -1,0 +1,39 @@
+---
+title: Draw in the DWT domain
+description: Paint and erase wavelet coefficients and watch the inverse transform resynthesise the image live.
+---
+
+import DwtDraw from '../../../components/DwtDraw.tsx';
+
+The discrete wavelet transform is invertible, so the coefficient pyramid is not
+a read-only picture — it is an *editable representation of the image*. This demo
+lets you brush directly on the coefficients and runs the **inverse DWT** on every
+stroke, so you can feel, rather than just read about, what each subband carries.
+
+<DwtDraw client:only="react" />
+
+## What to try
+
+- **Erase a detail subband.** Pick the **Erase** brush and scrub over one of the
+  detail quadrants (warm/cool speckle). Edges in the matching direction soften in
+  the resynthesis — HL holds vertical edges, LH horizontal, HH diagonal — while
+  the PSNR drops. This is manual, spatial compression: you are choosing which
+  detail to throw away.
+- **Inject a single coefficient.** Switch to **Add +** with a small brush and a
+  high strength, then dab once in a coarse (large) detail band. A smooth,
+  wavelet-shaped ripple blooms in the image — that one number *is* a basis
+  function. Coarser levels paint broad ripples; finer levels paint tiny ones.
+- **Erase all detail** to collapse the image to its LL approximation (a blurred
+  thumbnail), then add detail back by hand.
+- Toggle **edit LL too** to paint into the approximation band and watch large
+  low-frequency blotches appear.
+
+The `5/3` kernel is integer and reversible; `9/7` is the lossy floating-point
+filter. With no edits, the inverse round-trips the original exactly (PSNR ∞).
+
+:::note
+This is the interactive sibling of the static [Wavelets &amp; the DWT
+primer](/dwt-primer/), reimplemented as a React island so it can grow more
+editing tools over time. The wavelet math is the project's own reference
+implementation.
+:::
