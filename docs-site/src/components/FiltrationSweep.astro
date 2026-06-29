@@ -7,7 +7,7 @@
 // No auto-rotation (drag to rotate).
 ---
 
-<div class="fs-demo">
+<div class="fs-demo not-content">
   <div class="row">
     <label class="sel">shape
       <select id="fs-data">
@@ -55,21 +55,15 @@
   .fs-demo select { font-size:13px; padding:3px 6px; background:var(--sl-color-bg); color:var(--sl-color-text); border:1px solid var(--sl-color-gray-5); border-radius:6px; }
   .fs-demo .betti { margin-left:auto; font-size:14px; }
   .fs-demo .seg { display:inline-flex; border:1px solid var(--sl-color-gray-5); border-radius:6px; overflow:hidden; }
-  /* margin:0 — Starlight's prose spacing adds margin-top to the 2nd/3rd buttons
-     (sibling combinator), shoving them below the first and stretching the control */
-  .fs-demo .segbtn { font-size:12px; margin:0; padding:3px 9px; background:transparent; color:var(--sl-color-gray-2); border:0; border-left:1px solid var(--sl-color-gray-5); cursor:pointer; }
+  .fs-demo .segbtn { font-size:12px; padding:3px 9px; background:transparent; color:var(--sl-color-gray-2); border:0; border-left:1px solid var(--sl-color-gray-5); cursor:pointer; }
   .fs-demo .segbtn:first-child { border-left:0; }
   .fs-demo .segbtn.on { background:var(--sl-color-gray-5); color:var(--sl-color-text); }
   .fs-demo .stagegrid { display:grid; grid-template-columns:1.4fr 1fr; gap:14px; align-items:start; }
   @media (max-width: 640px) { .fs-demo .stagegrid { grid-template-columns:1fr; } }
-  /* zero Starlight's prose margin — it adds margin-top to the 2nd grid column,
-     which align-items:start then offsets downward, misaligning the two panels */
-  .fs-demo .col { display:flex; flex-direction:column; margin-top:0; }
+  .fs-demo .col { display:flex; flex-direction:column; }
   .fs-demo .coltitle { font-size:12px; font-weight:600; color:var(--sl-color-gray-2); margin-bottom:5px; height:16px; line-height:16px; }
   .fs-demo .stageviews { display:flex; gap:8px; }
-  /* margin-top:0 — Starlight's prose spacing adds a top margin to the 2nd .view
-     (sibling combinator), shifting the cone canvas down relative to the 2-D one */
-  .fs-demo .stageviews .view { flex:1 1 0; min-width:0; height:320px; margin-top:0; border-radius:8px; overflow:hidden; touch-action:none; background:var(--sl-color-gray-6); }
+  .fs-demo .stageviews .view { flex:1 1 0; min-width:0; height:320px; border-radius:8px; overflow:hidden; touch-action:none; background:var(--sl-color-gray-6); }
   .fs-demo[data-view="flat"] #fs-cone { display:none; }
   .fs-demo[data-view="cones"] #fs-stage { display:none; }
   .fs-demo #fs-pd { width:100%; height:320px; border-radius:8px; background:var(--sl-color-gray-6); }

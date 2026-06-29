@@ -16,7 +16,7 @@
 // the diagonal and the true feature prominent.
 ---
 
-<div class="ff-demo">
+<div class="ff-demo not-content">
   <div class="row">
     <label class="sel">shape
       <select id="ff-data">
@@ -100,13 +100,12 @@
   .ff-demo .chk input { margin:0; }
   .ff-demo select { font-size:13px; padding:3px 6px; background:var(--sl-color-bg); color:var(--sl-color-text); border:1px solid var(--sl-color-gray-5); border-radius:6px; }
   .ff-demo .seg { display:inline-flex; border:1px solid var(--sl-color-gray-5); border-radius:6px; overflow:hidden; }
-  .ff-demo .segbtn { font-size:12px; margin:0; padding:3px 9px; background:transparent; color:var(--sl-color-gray-2); border:0; border-left:1px solid var(--sl-color-gray-5); cursor:pointer; }
+  .ff-demo .segbtn { font-size:12px; padding:3px 9px; background:transparent; color:var(--sl-color-gray-2); border:0; border-left:1px solid var(--sl-color-gray-5); cursor:pointer; }
   .ff-demo .segbtn:first-child { border-left:0; }
   .ff-demo .segbtn.on { background:var(--sl-color-gray-5); color:var(--sl-color-text); }
   .ff-demo .grid2 { display:grid; grid-template-columns:1fr 1fr; gap:14px; align-items:start; }
   @media (max-width: 560px) { .ff-demo .grid2 { grid-template-columns:1fr; } }
-  /* zero Starlight's prose top-margin on grid items (it offsets the 2nd column) */
-  .ff-demo .cell { display:flex; flex-direction:column; margin-top:0; }
+  .ff-demo .cell { display:flex; flex-direction:column; }
   .ff-demo .celltitle { font-size:12px; font-weight:600; color:var(--sl-color-gray-2); margin-bottom:5px; min-height:16px; line-height:16px; }
   .ff-demo .tag { font-weight:400; color:var(--sl-color-gray-3); font-size:11px; }
   .ff-demo .field, .ff-demo .pd { width:100%; aspect-ratio:1/1; border-radius:8px; background:var(--sl-color-gray-6); display:block; }
