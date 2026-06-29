@@ -16,6 +16,10 @@
 import type { Edge, Node } from "@xyflow/react";
 import type { NodeData } from "./buildGraph";
 import { getSpec } from "./specs";
+// Instance nodes reference reusable subgraph definitions; their ports derive from the
+// def interface. (Cycle with subgraphs.ts is safe — only referenced inside functions.)
+import type { DefLibrary } from "./subgraphs";
+import { instanceDefName, instancePorts, isInstanceNode } from "./subgraphs";
 
 export const ROOT_SCOPE = "__root__";
 export type IOType = "input" | "output";
@@ -51,8 +55,15 @@ export const scopeOf = (n: Node): string => ((n.data as { group?: string } | und
 
 const opName = (n: Node): string => (n.data as unknown as NodeData).opName;
 
-function opPortKind(node: Node | undefined, port: string, dir: "in" | "out"): string {
-  if (!node || !isOpNode(node)) return "any";
+function opPortKind(node: Node | undefined, port: string, dir: "in" | "out", defs: DefLibrary = {}): string {
+  if (!node) return "any";
+  if (isInstanceNode(node)) {
+    const def = defs[instanceDefName(node)];
+    if (!def) return "any";
+    const ports = dir === "in" ? instancePorts(def, defs).inputs : instancePorts(def, defs).outputs;
+    return ports.find((p) => p.id === port)?.kind ?? "any";
+  }
+  if (!isOpNode(node)) return "any";
   const spec = getSpec(opName(node));
   return (dir === "in" ? spec.inputs : spec.outputs).find((p) => p.name === port)?.kind ?? "any";
 }
@@ -89,33 +100,33 @@ export function resolveSource(
 }
 
 // Consumer-side kind for an input interface node (what it feeds), for colouring.
-function inputKind(nodes: Node[], edges: Edge[], inputNodeId: string, seen = new Set<string>()): { node: string; port: string; kind: string } {
+function inputKind(nodes: Node[], edges: Edge[], inputNodeId: string, defs: DefLibrary, seen = new Set<string>()): { node: string; port: string; kind: string } {
   if (seen.has(inputNodeId)) return { node: "", port: "", kind: "any" };
   seen.add(inputNodeId);
   const byId = idMap(nodes);
   const e = edges.find((ed) => ed.source === inputNodeId && (ed.sourceHandle ?? "out") === "out");
   if (!e) return { node: "", port: "", kind: "any" };
   const tgt = byId.get(e.target);
-  if (tgt && isGroupNode(tgt)) return inputKind(nodes, edges, e.targetHandle ?? "", seen); // nested group port
-  return { node: e.target, port: e.targetHandle ?? "in", kind: opPortKind(tgt, e.targetHandle ?? "in", "in") };
+  if (tgt && isGroupNode(tgt)) return inputKind(nodes, edges, e.targetHandle ?? "", defs, seen); // nested group port
+  return { node: e.target, port: e.targetHandle ?? "in", kind: opPortKind(tgt, e.targetHandle ?? "in", "in", defs) };
 }
 
 const idMap = (nodes: Node[]) => new Map(nodes.map((n) => [n.id, n]));
 
 /** The ports a group node exposes, derived from its interface nodes. */
-export function groupPorts(nodes: Node[], edges: Edge[], groupId: string): { inputs: Port[]; outputs: Port[] } {
+export function groupPorts(nodes: Node[], edges: Edge[], groupId: string, defs: DefLibrary = {}): { inputs: Port[]; outputs: Port[] } {
   const byId = idMap(nodes);
   const inputs: Port[] = [];
   const outputs: Port[] = [];
   for (const n of nodes) {
     if (scopeOf(n) !== groupId) continue;
     if (isInputNode(n)) {
-      const k = inputKind(nodes, edges, n.id);
+      const k = inputKind(nodes, edges, n.id, defs);
       inputs.push({ id: n.id, node: k.node, port: k.port, kind: k.kind, label: (n.data as unknown as IODataShape).label });
     } else if (isOutputNode(n)) {
       const e = edges.find((ed) => ed.target === n.id && (ed.targetHandle ?? "in") === "in");
       const src = e ? byId.get(e.source) : undefined;
-      const kind = e ? opPortKind(src, e.sourceHandle ?? "out", "out") : "any";
+      const kind = e ? opPortKind(src, e.sourceHandle ?? "out", "out", defs) : "any";
       outputs.push({ id: n.id, node: e?.source ?? "", port: e?.sourceHandle ?? "", kind, label: (n.data as unknown as IODataShape).label });
     }
   }
@@ -240,16 +251,22 @@ export function ungroup(nodes: Node[], edges: Edge[], groupId: string): { nodes:
 
 /** React Flow nodes/edges for the given scope: just a filter (edges never cross
  *  scopes), with group nodes augmented with their derived ports. */
-export function deriveDisplay(nodes: Node[], edges: Edge[], scope: string): { nodes: Node[]; edges: Edge[] } {
+export function deriveDisplay(nodes: Node[], edges: Edge[], scope: string, defs: DefLibrary = {}): { nodes: Node[]; edges: Edge[] } {
   const byId = idMap(nodes);
-  // kinds of this scope's own interface nodes (if it's a group) for colouring
-  const selfPorts = scope === ROOT_SCOPE ? { inputs: [], outputs: [] } : groupPorts(nodes, edges, scope);
+  // kinds of this scope's own interface nodes (if it's a group/def) for colouring
+  const selfPorts = scope === ROOT_SCOPE ? { inputs: [], outputs: [] } : groupPorts(nodes, edges, scope, defs);
   const kindOf = new Map<string, string>([...selfPorts.inputs, ...selfPorts.outputs].map((p) => [p.id, p.kind]));
   const dispNodes = nodes
     .filter((n) => scopeOf(n) === scope)
     .map((n) => {
+      if (isInstanceNode(n)) {
+        const def = defs[instanceDefName(n)];
+        const { inputs, outputs } = def ? instancePorts(def, defs) : { inputs: [], outputs: [] };
+        const members = def ? def.nodes.filter((m) => isOpNode(m)).length : 0;
+        return { ...n, data: { ...(n.data as object), inputs, outputs, members, def: instanceDefName(n) } as Record<string, unknown> };
+      }
       if (isGroupNode(n)) {
-        const { inputs, outputs } = groupPorts(nodes, edges, n.id);
+        const { inputs, outputs } = groupPorts(nodes, edges, n.id, defs);
         const members = nodes.filter((m) => scopeOf(m) === n.id && isOpNode(m)).length;
         return { ...n, data: { ...(n.data as object), inputs, outputs, members } as Record<string, unknown> };
       }

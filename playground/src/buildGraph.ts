@@ -8,6 +8,8 @@ import { getSource, isSource } from "./sources";
 import { getSpec } from "./specs";
 import { browserBackend } from "./backend.browser";
 import { isOpNode, resolveSource } from "./grouping";
+import { expandInstances } from "./subgraphs";
+import type { DefLibrary } from "./subgraphs";
 
 export interface NodeData {
   opName: string;
@@ -28,8 +30,10 @@ export function graphHasFeedback(nodes: Node[]): boolean {
 
 /** Build the Graph IR; `produced` maps each canvas node id to its output handles.
  *  Feedback nodes are built from their `init` only; the `next` (loop-closing) edge is
- *  wired in a second pass once its producer exists. */
-export function buildGraph(allNodes: Node[], allEdges: Edge[]): BuildResult {
+ *  wired in a second pass once its producer exists. Instances of reusable subgraphs are
+ *  expanded (inlined, namespaced) first, so only ops/groups/interfaces reach the flatten. */
+export function buildGraph(inputNodes: Node[], inputEdges: Edge[], defs: DefLibrary = {}): BuildResult {
+  const { nodes: allNodes, edges: allEdges } = expandInstances(inputNodes, inputEdges, defs);
   // Flatten the subnet hierarchy: only real ops execute. For every edge that lands on
   // a real op input, resolve its source back through any input/output/group
   // pass-throughs to the real producer (resolveSource handles nesting). The result is
@@ -132,8 +136,9 @@ export async function runNode(
   nodeId: string,
   port?: string,
   cache?: GraphMemo,
+  defs: DefLibrary = {},
 ): Promise<FieldValue> {
-  const { graph, produced } = buildGraph(nodes, edges);
+  const { graph, produced } = buildGraph(nodes, edges, defs);
   return pull(graph, pickHandle(produced, nodeId, port), { ctx: { backend: browserBackend }, cache });
 }
 
@@ -144,9 +149,9 @@ export async function advanceNode(
   edges: Edge[],
   nodeId: string,
   port: string | undefined,
-  opts: { steps?: number; state: SimState; reset?: boolean },
+  opts: { steps?: number; state: SimState; reset?: boolean; defs?: DefLibrary },
 ): Promise<FieldValue> {
-  const { graph, produced } = buildGraph(nodes, edges);
+  const { graph, produced } = buildGraph(nodes, edges, opts.defs ?? {});
   return advance(graph, pickHandle(produced, nodeId, port), {
     ctx: { backend: browserBackend },
     steps: opts.steps,

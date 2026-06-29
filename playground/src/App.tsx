@@ -16,6 +16,7 @@ import { applyEdgeChanges, applyNodeChanges } from "@xyflow/react";
 import type { EdgeChange, NodeChange } from "@xyflow/react";
 import { OpNode } from "./OpNode";
 import { GroupNode } from "./GroupNode";
+import { InstanceNode } from "./InstanceNode";
 import { InterfaceNode } from "./InterfaceNode";
 import { advanceNode, graphHasFeedback, runNode } from "./buildGraph";
 import type { NodeData } from "./buildGraph";
@@ -32,13 +33,26 @@ import {
   ungroup,
 } from "./grouping";
 import type { GroupData, IOType } from "./grouping";
+import {
+  defHasFeedback,
+  defNameOfScope,
+  defScopeId,
+  expandInstances,
+  instanceDefName,
+  instancePorts,
+  instantiate,
+  isDefScope,
+  isInstanceNode,
+  promoteToDef,
+} from "./subgraphs";
+import type { DefLibrary } from "./subgraphs";
 import { kindColor } from "./portKinds";
 import { defaultParamsFor, getSpec, listOpSpecs, listSourceSpecs } from "./specs";
 import { EXAMPLES } from "./examples";
 import type { Example } from "./examples";
 import { Preview } from "./Preview";
 
-const nodeTypes: NodeTypes = { op: OpNode, group: GroupNode, input: InterfaceNode, output: InterfaceNode };
+const nodeTypes: NodeTypes = { op: OpNode, group: GroupNode, instance: InstanceNode, input: InterfaceNode, output: InterfaceNode };
 
 function mkNode(id: string, opName: string, x: number, y: number): Node {
   const spec = getSpec(opName);
@@ -78,27 +92,82 @@ export default function App() {
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [path, setPath] = useState<string[]>([ROOT_SCOPE]);
   const scope = path[path.length - 1]!;
-  const hasFeedback = useMemo(() => graphHasFeedback(nodes), [nodes]);
+  // Reusable named subgraph definitions (live-linked: editing one updates all instances).
+  const [defs, setDefs] = useState<DefLibrary>({});
+  const hasFeedback = useMemo(
+    () => graphHasFeedback(nodes) || Object.values(defs).some((d) => defHasFeedback(d, defs)),
+    [nodes, defs],
+  );
   const inflight = useRef(false);
   const pending = useRef(false);
 
-  // The nodes/edges React Flow renders are derived per current scope from the flat
-  // logical graph; grouping never rewrites the logical graph.
-  const display = useMemo(() => deriveDisplay(nodes, edges, scope), [nodes, edges, scope]);
+  // The "active container" is what the canvas edits: either the top-level flat graph,
+  // or — when we've navigated into a reusable-subgraph definition — that definition's
+  // interior. The governing def is the LAST `def:` segment on the path; nested groups
+  // below it still live in that def's container.
+  const activeDefName = useMemo(() => {
+    for (let i = path.length - 1; i >= 0; i--) if (isDefScope(path[i]!)) return defNameOfScope(path[i]!);
+    return null;
+  }, [path]);
+  const containerNodes = activeDefName ? (defs[activeDefName]?.nodes ?? []) : nodes;
+  const containerEdges = activeDefName ? (defs[activeDefName]?.edges ?? []) : edges;
+
+  const setContainerNodes = useCallback(
+    (updater: (prev: Node[]) => Node[]) => {
+      if (activeDefName) {
+        setDefs((ds) => { const d = ds[activeDefName]; return d ? { ...ds, [activeDefName]: { ...d, nodes: updater(d.nodes) } } : ds; });
+      } else setNodes(updater);
+    },
+    [activeDefName, setNodes],
+  );
+  const setContainerEdges = useCallback(
+    (updater: (prev: Edge[]) => Edge[]) => {
+      if (activeDefName) {
+        setDefs((ds) => { const d = ds[activeDefName]; return d ? { ...ds, [activeDefName]: { ...d, edges: updater(d.edges) } } : ds; });
+      } else setEdges(updater);
+    },
+    [activeDefName, setEdges],
+  );
+
+  // The nodes/edges React Flow renders are derived per current scope from the active
+  // container; grouping/instancing never rewrites the logical graph.
+  //
+  // deriveDisplay allocates fresh objects for group/instance/interface nodes (their
+  // ports/members are derived), so a naive recompute would hand React Flow a brand-new
+  // identity for every such node on every render. During a marquee drag that re-render
+  // storm makes RF thrash — selection flickers across nodes (most visibly with the two
+  // instance nodes in the Hotspots example). We stabilise identity: a node keeps its
+  // previous object reference whenever its derived content (position/type/selected/data)
+  // is unchanged, so RF only sees the nodes that actually changed.
+  const displayCache = useRef(new Map<string, { sig: string; node: Node }>());
+  const display = useMemo(() => {
+    const raw = deriveDisplay(containerNodes, containerEdges, scope, defs);
+    const prev = displayCache.current;
+    const next = new Map<string, { sig: string; node: Node }>();
+    const nodes = raw.nodes.map((n) => {
+      const sig = JSON.stringify({ p: n.position, t: n.type, s: n.selected ?? false, d: n.data });
+      const hit = prev.get(n.id);
+      if (hit && hit.sig === sig) { next.set(n.id, hit); return hit.node; }
+      next.set(n.id, { sig, node: n });
+      return n;
+    });
+    displayCache.current = next;
+    return { nodes, edges: raw.edges };
+  }, [containerNodes, containerEdges, scope, defs]);
 
   // Edges never cross scopes, so a connection drawn in the current scope is a real
   // logical edge as-is (a group-node port handle is its interface-node id; the
   // executor's flatten resolves it). No translation needed.
   const onConnect = useCallback(
-    (c: Connection) => setEdges((eds) => addEdge({ ...c, id: `e${idSeq.current++}` }, eds)),
-    [setEdges],
+    (c: Connection) => setContainerEdges((eds) => addEdge({ ...c, id: `e${idSeq.current++}` }, eds)),
+    [setContainerEdges],
   );
 
   // Display edges ARE the logical edges for this scope (same ids), so changes apply
   // straight through.
   const onDisplayEdgesChange = useCallback(
-    (changes: EdgeChange[]) => setEdges((eds) => applyEdgeChanges(changes, eds)),
-    [setEdges],
+    (changes: EdgeChange[]) => setContainerEdges((eds) => applyEdgeChanges(changes, eds)),
+    [setContainerEdges],
   );
 
   // Memoised + identity-stable: return the same array when the selection is unchanged
@@ -110,41 +179,49 @@ export default function App() {
     });
   }, []);
 
-  // We render DERIVED display nodes; only persist position/remove back to the logical
-  // graph. Letting dimension/selection changes flow into the logical array would
-  // recompute the display, re-emit changes, and loop — React Flow owns those itself.
+  // We render DERIVED display nodes; persist position/remove/select back to the logical
+  // graph. Selection MUST be applied (React Flow is controlled — dropping `select`
+  // changes desyncs RF's internal selection from the nodes prop and makes the marquee
+  // flicker). `dimensions` is still left to RF, which measures via ResizeObserver and
+  // merges by node id; combined with the identity-stable `display` above, applying
+  // `select` no longer churns node objects, so there is no recompute loop.
   const onDisplayNodesChange = useCallback(
     (changes: NodeChange[]) => {
-      const apply = changes.filter((c) => c.type === "position" || c.type === "remove");
-      if (apply.length) setNodes((ns) => applyNodeChanges(apply, ns));
+      const apply = changes.filter((c) => c.type === "position" || c.type === "remove" || c.type === "select");
+      if (apply.length) setContainerNodes((ns) => applyNodeChanges(apply, ns));
     },
-    [setNodes],
+    [setContainerNodes],
   );
 
-  // Group the current multi-selection (≥2 op nodes in this scope), then navigate in.
+  // Group the current multi-selection (≥2 nodes in this scope), then navigate in.
+  // Anything that carries a value — ops, one-off groups, and reusable-subgraph
+  // instances — can be grouped; only the scope's own boundary interface nodes can't.
   const groupableIds = useMemo(
-    () => selectedIds.filter((id) => { const n = nodes.find((x) => x.id === id); return n && isOpNode(n) && scopeOf(n) === scope; }),
-    [selectedIds, nodes, scope],
+    () => selectedIds.filter((id) => {
+      const n = containerNodes.find((x) => x.id === id);
+      return !!n && scopeOf(n) === scope && (isOpNode(n) || isGroupNode(n) || isInstanceNode(n));
+    }),
+    [selectedIds, containerNodes, scope],
   );
   const addIONode = useCallback(
     (io: IOType) => {
       if (scope === ROOT_SCOPE) return;
       const id = `io#${idSeq.current++}`;
-      setNodes((ns) => ns.concat(addInterface(scope, io, id, { x: io === "input" ? 40 : 480, y: 80 + (ns.length % 5) * 60 })));
+      setContainerNodes((ns) => ns.concat(addInterface(scope, io, id, { x: io === "input" ? 40 : 480, y: 80 + (ns.length % 5) * 60 })));
     },
-    [scope, setNodes],
+    [scope, setContainerNodes],
   );
   const groupSelection = useCallback(() => {
     if (groupableIds.length < 2) return;
     const gid = `group#${idSeq.current++}`;
-    const r = createGroup(nodes, edges, groupableIds, gid, "Group", scope);
-    setNodes(r.nodes);
-    setEdges(r.edges);
+    const r = createGroup(containerNodes, containerEdges, groupableIds, gid, "Group", scope);
+    setContainerNodes(() => r.nodes);
+    setContainerEdges(() => r.edges);
     setSelectedId(gid);
     setSelectedPort(null);
     setValue(null);
     setStale(false);
-  }, [groupableIds, nodes, edges, scope, setNodes, setEdges]);
+  }, [groupableIds, containerNodes, containerEdges, scope, setContainerNodes, setContainerEdges]);
 
   const enterGroup = useCallback((groupId: string) => {
     setPath((p) => [...p, groupId]);
@@ -152,6 +229,16 @@ export default function App() {
     setSelectedPort(null);
     setValue(null);
   }, []);
+
+  // Open a reusable subgraph instance → edit its SHARED definition (live-linked).
+  const enterInstance = useCallback((instId: string) => {
+    const inst = containerNodes.find((n) => n.id === instId);
+    if (!inst || !isInstanceNode(inst)) return;
+    setPath((p) => [...p, defScopeId(instanceDefName(inst))]);
+    setSelectedId(null);
+    setSelectedPort(null);
+    setValue(null);
+  }, [containerNodes]);
 
   const navigateTo = useCallback((index: number) => {
     setPath((p) => p.slice(0, index + 1));
@@ -161,68 +248,152 @@ export default function App() {
 
   const dissolveGroup = useCallback(
     (groupId: string) => {
-      const r = ungroup(nodes, edges, groupId);
-      setNodes(r.nodes);
-      setEdges(r.edges);
+      const r = ungroup(containerNodes, containerEdges, groupId);
+      setContainerNodes(() => r.nodes);
+      setContainerEdges(() => r.edges);
       setPath((p) => (p.includes(groupId) ? p.slice(0, p.indexOf(groupId)) : p)); // pop if we're inside it
       setSelectedId(null);
       setValue(null);
     },
-    [nodes, edges, setNodes, setEdges],
+    [containerNodes, containerEdges, setContainerNodes, setContainerEdges],
+  );
+
+  // Promote a group (or the current ≥2-op selection) into a reusable named subgraph.
+  const promoteToReusable = useCallback(() => {
+    let workNodes = containerNodes;
+    let workEdges = containerEdges;
+    let groupId: string;
+    const sel = containerNodes.find((n) => n.id === selectedId);
+    if (sel && isGroupNode(sel)) {
+      groupId = sel.id;
+    } else if (groupableIds.length >= 2) {
+      groupId = `group#${idSeq.current++}`;
+      const g = createGroup(workNodes, workEdges, groupableIds, groupId, "Group", scope);
+      workNodes = g.nodes;
+      workEdges = g.edges;
+    } else {
+      return;
+    }
+    const name = window.prompt("Name this reusable subgraph:", "MySubgraph");
+    if (!name) return;
+    if (defs[name]) { window.alert(`A reusable subgraph named "${name}" already exists.`); return; }
+    let result;
+    try {
+      result = promoteToDef(workNodes, workEdges, defs, groupId, name, name);
+    } catch (e) {
+      window.alert(e instanceof Error ? e.message : String(e));
+      return;
+    }
+    if (activeDefName) {
+      // The container is itself a def: write its updated interior AND the new def.
+      setDefs((ds) => ({ ...result.defs, [activeDefName]: { ...ds[activeDefName]!, nodes: result.nodes, edges: result.edges } }));
+    } else {
+      setNodes(result.nodes);
+      setEdges(result.edges);
+      setDefs(result.defs);
+    }
+    setSelectedId(groupId); // the group node id is reused as the instance id
+    setSelectedPort(null);
+    setValue(null);
+    setStale(false);
+  }, [containerNodes, containerEdges, defs, selectedId, groupableIds, scope, activeDefName, setNodes, setEdges]);
+
+  // Drop another instance of an existing definition into the current scope.
+  const instantiateDef = useCallback(
+    (name: string) => {
+      const id = `inst${idSeq.current++}`;
+      const node = instantiate(name, defs[name]?.label ?? name, scope, id, { x: 160 + (containerNodes.length % 5) * 40, y: 220 + (containerNodes.length % 4) * 40 });
+      setContainerNodes((ns) => ns.concat(node));
+    },
+    [defs, scope, containerNodes.length, setContainerNodes],
+  );
+
+  // Rename a definition's shared label (updates every instance's default display).
+  const renameDef = useCallback(
+    (name: string, label: string) => setDefs((ds) => (ds[name] ? { ...ds, [name]: { ...ds[name]!, label } } : ds)),
+    [],
   );
 
   const onNodeDoubleClick = useCallback(
-    (_: unknown, node: Node) => { if (isGroupNode(node)) enterGroup(node.id); },
-    [enterGroup],
+    (_: unknown, node: Node) => {
+      if (isInstanceNode(node)) enterInstance(node.id);
+      else if (isGroupNode(node)) enterGroup(node.id);
+    },
+    [enterGroup, enterInstance],
   );
 
-  // Resolve the pull target: a group node stands in for an internal (node, port).
+  // Resolve the pull target against the EXPANDED top-level graph (the same one
+  // buildGraph runs): a group/instance node stands in for an internal (node, port).
+  // Instances become groups whose port ids are namespaced `instId/portId`.
   const resolveSink = useCallback((): { id: string; port?: string } => {
     const sel = nodes.find((n) => n.id === selectedId);
-    if (sel && isGroupNode(sel)) {
-      const r = resolveGroupOutput(nodes, edges, sel.id, selectedPort ?? undefined);
+    if (sel && (isGroupNode(sel) || isInstanceNode(sel))) {
+      const exp = expandInstances(nodes, edges, defs);
+      let portId = selectedPort ?? undefined;
+      if (isInstanceNode(sel)) {
+        const def = defs[instanceDefName(sel)];
+        const base = selectedPort ?? (def ? instancePorts(def, defs).outputs[0]?.id : undefined);
+        portId = base ? `${sel.id}/${base}` : undefined;
+      }
+      const r = resolveGroupOutput(exp.nodes, exp.edges, sel.id, portId);
       if (r) return { id: r.node, port: r.port };
     }
     return { id: selectedId!, port: selectedPort ?? undefined };
-  }, [nodes, edges, selectedId, selectedPort]);
+  }, [nodes, edges, defs, selectedId, selectedPort]);
 
   // Rename a group's label or one of its boundary ports (stored as portLabels).
   // Rename any node's label (a group, or an interface node — which IS a group port).
   const renameNode = useCallback(
     (id: string, label: string) => {
-      setNodes((ns) => ns.map((n) => (n.id === id ? { ...n, data: { ...(n.data as object), label } as Record<string, unknown> } : n)));
+      setContainerNodes((ns) => ns.map((n) => (n.id === id ? { ...n, data: { ...(n.data as object), label } as Record<string, unknown> } : n)));
     },
-    [setNodes],
+    [setContainerNodes],
   );
 
   const addNode = useCallback(
     (opName: string) => {
       const id = `x${idSeq.current++}`;
-      const n = mkNode(id, opName, 120 + (nodes.length % 5) * 40, 360 + (nodes.length % 4) * 30);
+      const n = mkNode(id, opName, 120 + (containerNodes.length % 5) * 40, 360 + (containerNodes.length % 4) * 30);
       (n.data as { group?: string }).group = scope; // new node lives in the current scope
-      setNodes((ns) => ns.concat(n));
+      setContainerNodes((ns) => ns.concat(n));
     },
-    [nodes.length, scope, setNodes],
+    [containerNodes.length, scope, setContainerNodes],
   );
 
-  const selected = useMemo(() => nodes.find((n) => n.id === selectedId) ?? null, [nodes, selectedId]);
+  // Breadcrumb label for a scope segment: "Main", a definition's label, or a (possibly
+  // nested) group node's label found in whichever container holds it.
+  const segLabel = useCallback(
+    (seg: string): string => {
+      if (seg === ROOT_SCOPE) return "Main";
+      if (isDefScope(seg)) return defs[defNameOfScope(seg)]?.label ?? "subgraph";
+      const all = [nodes, ...Object.values(defs).map((d) => d.nodes)].flat();
+      return ((all.find((n) => n.id === seg)?.data as unknown as GroupData)?.label) ?? "group";
+    },
+    [nodes, defs],
+  );
+
+  const selected = useMemo(() => containerNodes.find((n) => n.id === selectedId) ?? null, [containerNodes, selectedId]);
   const selectedGroup = selected && isGroupNode(selected) ? (selected.data as unknown as GroupData) : null;
+  const selectedInstance = selected && isInstanceNode(selected) ? selected : null;
   const selectedInterface = selected && (selected.type === "input" || selected.type === "output") ? selected : null;
   const selectedSpec = selected && isOpNode(selected) ? getSpec((selected.data as unknown as NodeData).opName) : null;
-  // Group boundary + member count are derived (not stored on the logical node).
-  const selectedGroupBoundary = useMemo(
-    () => (selectedGroup && selected ? groupPorts(nodes, edges, selected.id) : { inputs: [], outputs: [] }),
-    [selectedGroup, selected, nodes, edges],
-  );
-  const selectedGroupMembers = useMemo(
-    () => (selected ? nodes.filter((n) => scopeOf(n) === selected.id).length : 0),
-    [selected, nodes],
-  );
+  // Group/instance boundary + member count are derived (not stored on the logical node).
+  const selectedGroupBoundary = useMemo(() => {
+    if (!selected) return { inputs: [], outputs: [] };
+    if (selectedInstance) { const d = defs[instanceDefName(selected)]; return d ? instancePorts(d, defs) : { inputs: [], outputs: [] }; }
+    if (selectedGroup) return groupPorts(containerNodes, containerEdges, selected.id, defs);
+    return { inputs: [], outputs: [] };
+  }, [selectedGroup, selectedInstance, selected, containerNodes, containerEdges, defs]);
+  const selectedGroupMembers = useMemo(() => {
+    if (!selected) return 0;
+    if (selectedInstance) { const d = defs[instanceDefName(selected)]; return d ? d.nodes.filter(isOpNode).length : 0; }
+    return containerNodes.filter((n) => scopeOf(n) === selected.id).length;
+  }, [selected, selectedInstance, containerNodes, defs]);
 
   const setParam = useCallback(
     (key: string, v: unknown) => {
       if (!selectedId) return;
-      setNodes((ns) =>
+      setContainerNodes((ns) =>
         ns.map((n) => {
           if (n.id !== selectedId) return n;
           const d = n.data as unknown as NodeData;
@@ -231,7 +402,7 @@ export default function App() {
       );
       if (!liveRef.current) setStale(true); // keep the last preview visible, mark it stale
     },
-    [selectedId, setNodes],
+    [selectedId, setContainerNodes],
   );
 
   const runRef = useRef<() => void>(() => {});
@@ -243,7 +414,7 @@ export default function App() {
     setError(null);
     try {
       const sink = resolveSink();
-      const out = await runNode(nodes, edges, sink.id, sink.port, memo.current);
+      const out = await runNode(nodes, edges, sink.id, sink.port, memo.current, defs);
       setValue(out);
       setStale(false);
     } catch (e) {
@@ -254,7 +425,7 @@ export default function App() {
       setRunning(false);
       if (pending.current) { pending.current = false; runRef.current(); } // run the latest
     }
-  }, [nodes, edges, selectedId, selectedPort, resolveSink]);
+  }, [nodes, edges, defs, selectedId, selectedPort, resolveSink]);
   runRef.current = run;
 
   // Signature of the run-relevant state (params + wiring + selection), excluding
@@ -264,10 +435,11 @@ export default function App() {
       JSON.stringify({
         n: nodes.map((n) => ({ id: n.id, op: (n.data as unknown as NodeData).opName, p: (n.data as unknown as NodeData).params })),
         e: edges.map((e) => ({ s: e.source, sh: e.sourceHandle, t: e.target, th: e.targetHandle })),
+        defs, // re-run when a referenced definition's interior changes (live-link)
         sel: selectedId,
         port: selectedPort,
       }),
-    [nodes, edges, selectedId, selectedPort],
+    [nodes, edges, defs, selectedId, selectedPort],
   );
 
   // Auto-run: when live, re-pull on every signature change. We deliberately do NOT
@@ -290,6 +462,7 @@ export default function App() {
         steps: 1,
         state: sim.current,
         reset,
+        defs,
       });
       setValue(out);
       setStale(false);
@@ -298,7 +471,7 @@ export default function App() {
       setError(e instanceof Error ? e.message : String(e));
       setPlaying(false);
     }
-  }, [nodes, edges, selectedId, selectedPort, resolveSink]);
+  }, [nodes, edges, defs, selectedId, selectedPort, resolveSink]);
 
   const resetSim = useCallback(() => {
     setPlaying(false);
@@ -314,6 +487,7 @@ export default function App() {
       setPath([ROOT_SCOPE]);
       setNodes(ex.nodes);
       setEdges(ex.edges);
+      setDefs(ex.defs ?? {});
       setSelectedId(ex.sink.node);
       setSelectedPort(ex.sink.port ?? null);
       setLive(false);
@@ -333,7 +507,7 @@ export default function App() {
       if (cancelled) return;
       try {
         const sink = resolveSink();
-        const out = await advanceNode(nodes, edges, sink.id, sink.port, { steps: 1, state: sim.current });
+        const out = await advanceNode(nodes, edges, sink.id, sink.port, { steps: 1, state: sim.current, defs });
         if (cancelled) return;
         setValue(out);
         setStale(false); // each animated frame is freshly computed, never stale
@@ -348,7 +522,7 @@ export default function App() {
       cancelled = true;
       if (rafRef.current) cancelAnimationFrame(rafRef.current);
     };
-  }, [playing, hasFeedback, selectedId, selectedPort, nodes, edges]);
+  }, [playing, hasFeedback, selectedId, selectedPort, nodes, edges, defs]);
 
   return (
     <div className="app">
@@ -373,29 +547,51 @@ export default function App() {
             {s.label}
           </button>
         ))}
+        {Object.keys(defs).length > 0 && (
+          <>
+            <h2>Subgraphs</h2>
+            {Object.values(defs).map((d) => (
+              <button
+                key={d.name}
+                className="palette-btn subgraph"
+                title={d.name === activeDefName ? "Can't place a subgraph inside itself" : `Place an instance of "${d.label}"`}
+                disabled={d.name === activeDefName}
+                onClick={() => instantiateDef(d.name)}
+              >
+                ⬡ {d.label}
+              </button>
+            ))}
+          </>
+        )}
       </aside>
 
       <main className="canvas">
         <div className="canvas-toolbar">
           <div className="breadcrumb">
             {path.map((seg, i) => {
-              const label = seg === ROOT_SCOPE ? "Main" : ((nodes.find((n) => n.id === seg)?.data as unknown as GroupData)?.label ?? "group");
+              const label = segLabel(seg);
               return (
                 <span key={seg} className="bc-item">
                   {i > 0 && <span className="bc-sep">›</span>}
-                  <button className="bc-seg" disabled={i === path.length - 1} onClick={() => navigateTo(i)}>{label}</button>
+                  <button className={`bc-seg ${isDefScope(seg) ? "def" : ""}`} disabled={i === path.length - 1} onClick={() => navigateTo(i)}>{label}</button>
                 </span>
               );
             })}
           </div>
           {groupableIds.length >= 2 && (
-            <button className="tb-primary" onClick={groupSelection}>▦ Group {groupableIds.length} nodes</button>
+            <>
+              <button className="tb-primary" onClick={groupSelection}>▦ Group {groupableIds.length} nodes</button>
+              <button className="tb-primary" onClick={promoteToReusable} title="Group these nodes and save as a reusable named subgraph">⬡ Save as subgraph</button>
+            </>
           )}
           {scope !== ROOT_SCOPE && (
             <span className="tb-group">
               <button onClick={() => addIONode("input")} title="Add an input to this subgraph">＋ Input</button>
               <button onClick={() => addIONode("output")} title="Add an output to this subgraph">＋ Output</button>
             </span>
+          )}
+          {activeDefName && (
+            <span className="tb-def-badge" title="You are editing a shared reusable subgraph definition — changes apply to every instance">⬡ editing definition · live-linked</span>
           )}
         </div>
         <ReactFlow
@@ -425,6 +621,39 @@ export default function App() {
             </label>
             <p className="muted">A {selectedInterface.type} port of this subgraph. Wire it to a member; the group node gets a matching port.</p>
           </>
+        ) : selected && selectedInstance ? (
+          <>
+            <h2>⬡ Reusable subgraph</h2>
+            <label className="row">
+              <span>definition</span>
+              <input
+                type="text"
+                value={defs[instanceDefName(selected)]?.label ?? instanceDefName(selected)}
+                onChange={(e) => renameDef(instanceDefName(selected), e.target.value)}
+                style={{ width: 130 }}
+              />
+            </label>
+            <p className="muted">{selectedGroupMembers} nodes · live-linked · edits apply to every instance</p>
+            <div className="transport-row">
+              <button onClick={() => enterInstance(selected.id)}>⬡ Edit definition</button>
+            </div>
+            {selectedGroupBoundary.outputs.length > 1 && (
+              <label className="row">
+                <span>preview</span>
+                <select value={selectedPort ?? selectedGroupBoundary.outputs[0]!.id} onChange={(e) => setSelectedPort(e.target.value)}>
+                  {selectedGroupBoundary.outputs.map((o) => <option key={o.id} value={o.id}>{o.label}</option>)}
+                </select>
+              </label>
+            )}
+            {activeDefName ? (
+              <p className="muted">Open an instance in <strong>Main</strong> to run — a definition has no bound inputs.</p>
+            ) : (
+              <>
+                <button className="run-btn" onClick={run} disabled={running}>{running ? "Running…" : "▶ Run / pull"}</button>
+                <Preview value={value} error={error} stale={stale} />
+              </>
+            )}
+          </>
         ) : selected && selectedGroup ? (
           <>
             <h2>▦ Group</h2>
@@ -436,6 +665,9 @@ export default function App() {
             <div className="transport-row">
               <button onClick={() => enterGroup(selected.id)}>▦ Open</button>
               <button onClick={() => dissolveGroup(selected.id)}>✕ Ungroup</button>
+            </div>
+            <div className="transport-row">
+              <button onClick={promoteToReusable} title="Save this group as a reusable named subgraph (live-linked)">⬡ Save as reusable subgraph</button>
             </div>
             {[...selectedGroupBoundary.inputs, ...selectedGroupBoundary.outputs].length > 0 && (
               <div className="params">
@@ -460,8 +692,14 @@ export default function App() {
                 </select>
               </label>
             )}
-            <button className="run-btn" onClick={run} disabled={running}>{running ? "Running…" : "▶ Run / pull"}</button>
-            <Preview value={value} error={error} stale={stale} />
+            {activeDefName ? (
+              <p className="muted">Open an instance in <strong>Main</strong> to run — a definition has no bound inputs.</p>
+            ) : (
+              <>
+                <button className="run-btn" onClick={run} disabled={running}>{running ? "Running…" : "▶ Run / pull"}</button>
+                <Preview value={value} error={error} stale={stale} />
+              </>
+            )}
           </>
         ) : selected && selectedSpec ? (
           <>
@@ -488,17 +726,22 @@ export default function App() {
               </label>
             )}
 
-            {hasFeedback ? (
-              <div className="transport">
-                <button className={`run-btn ${playing ? "live" : ""}`} onClick={() => setPlaying((p) => !p)}>
-                  {playing ? "⏸ Pause" : "▶ Play"}
-                </button>
-                <div className="transport-row">
-                  <button onClick={() => step(false)} disabled={playing} title="Advance one tick">⏭ Step</button>
-                  <button onClick={resetSim} title="Reset to the seed">⟲ Reset</button>
+            {activeDefName ? (
+              <p className="muted">Editing the <strong>{segLabel(defScopeId(activeDefName))}</strong> definition. Open an instance in <strong>Main</strong> to run — a definition has no bound inputs.</p>
+            ) : hasFeedback ? (
+              <>
+                <div className="transport">
+                  <button className={`run-btn ${playing ? "live" : ""}`} onClick={() => setPlaying((p) => !p)}>
+                    {playing ? "⏸ Pause" : "▶ Play"}
+                  </button>
+                  <div className="transport-row">
+                    <button onClick={() => step(false)} disabled={playing} title="Advance one tick">⏭ Step</button>
+                    <button onClick={resetSim} title="Reset to the seed">⟲ Reset</button>
+                  </div>
+                  <p className="muted">Feedback loop — runs over time. One tick = one graph step.</p>
                 </div>
-                <p className="muted">Feedback loop — runs over time. One tick = one graph step.</p>
-              </div>
+                <Preview value={value} error={error} stale={stale} />
+              </>
             ) : (
               <>
                 <label className="row live-row" title="Re-pull automatically when params or wiring change">
@@ -508,9 +751,9 @@ export default function App() {
                 <button className={`run-btn ${live ? "live" : ""}`} onClick={run} disabled={running}>
                   {running ? "Running…" : live ? "● Live — re-running on change" : "▶ Run / pull"}
                 </button>
+                <Preview value={value} error={error} stale={stale} />
               </>
             )}
-            <Preview value={value} error={error} stale={stale} />
           </>
         ) : (
           <p className="muted">Click a node to edit its parameters and pull its output.</p>
