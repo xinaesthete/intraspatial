@@ -208,3 +208,9 @@ body { background: var(--bg); color: var(--text); font: 13px/1.4 ui-sans-serif, 
 .help-tip-detail { font-size: 11.5px; color: var(--muted); line-height: 1.4; margin-bottom: 8px; }
 .help-tip-math { overflow-x: auto; font-size: 14px; color: var(--text); padding: 6px 0 2px; border-top: 1px solid var(--line); }
 .help-tip-io { margin-top: 8px; font-size: 10.5px; color: var(--muted); font-family: ui-monospace, monospace; }
+
+/* --- preview lane/projection selector (complex / vec fields) --- */
+.preview-lane {
+  margin: 0 0 6px; padding: 3px 6px; font-size: 11px;
+  background: var(--panel2); border: 1px solid var(--line); border-radius: 5px; color: var(--text);
+}

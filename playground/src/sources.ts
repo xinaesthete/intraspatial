@@ -183,7 +183,27 @@ const waveGrid: SourceSpec = {
   },
 };
 
-export const SOURCES: SourceSpec[] = [ringPoints, blobPoints, grayScottSeed, noiseGrid, waveGrid];
+const grayScottSeedComplex: SourceSpec = {
+  name: "grayScottSeedComplex",
+  label: "Gray–Scott seed (complex)",
+  describe: "Reaction–diffusion seed as a single complex field (re = U, im = V) — feeds Reaction–diffusion (complex).",
+  outputs: [{ name: "state", kind: "grid" }],
+  params: [{ name: "size", type: "int", default: 96, min: 16, max: 256 }],
+  make(g, params) {
+    const size = params.size as number;
+    const seed = seedGrayScott(size, size, 0.05);
+    const data = new Float32Array(size * size * 2); // interleaved [U, V] = complex (re, im)
+    for (let i = 0; i < size * size; i++) {
+      data[i * 2] = seed.u[i]!;
+      data[i * 2 + 1] = seed.v[i]!;
+    }
+    return {
+      state: g.source({ shape: { kind: "grid", width: size, height: size }, dtype: "f32", element: { kind: "complex" }, data }),
+    };
+  },
+};
+
+export const SOURCES: SourceSpec[] = [ringPoints, blobPoints, grayScottSeed, grayScottSeedComplex, noiseGrid, waveGrid];
 
 const byName = new Map(SOURCES.map((s) => [s.name, s]));
 export function getSource(name: string): SourceSpec | undefined {

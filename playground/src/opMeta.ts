@@ -10,6 +10,7 @@ export const OP_CATEGORY: Record<string, string> = {
   ringPoints: "Sources",
   blobPoints: "Sources",
   grayScottSeed: "Sources",
+  grayScottSeedComplex: "Sources",
   noiseGrid: "Sources",
   waveGrid: "Sources",
   // image / grid
@@ -62,7 +63,8 @@ export const CATEGORY_ORDER: string[] = [
 
 /** Rich help for the showcase ops (math rendered as KaTeX). */
 export const OP_HELP: Record<string, OpHelp> = {
-  complex: { detail: "Pack two real fields into one complex field — the honest representation of a 2-component signal (e.g. reaction–diffusion U,V).", math: "z = \\mathrm{re} + i\\,\\mathrm{im}" },
+  complex: { detail: "Pack two real fields into one complex field — the honest representation of a 2-component signal (e.g. reaction–diffusion U,V). Wire U→re and V→im.", math: "z = \\mathrm{re} + i\\,\\mathrm{im}" },
+  grayScottSeedComplex: { detail: "Reaction–diffusion seed as one complex field (re = U background ≈ 1, im = V ≈ 0 with a seeded square). Feed straight into Reaction–diffusion (complex).", math: "z = U + i\\,V" },
   conjugate: { detail: "Negate the imaginary part (complex) or vector part (quaternion).", math: "\\bar{z} = \\mathrm{re} - i\\,\\mathrm{im}" },
   magnitude: { detail: "Per-sample magnitude of any element → a real field.", math: "|z| = \\sqrt{\\mathrm{re}^2 + \\mathrm{im}^2}" },
   realPart: { math: "\\Re(z) = \\mathrm{re}" },
