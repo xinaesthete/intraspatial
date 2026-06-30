@@ -10,6 +10,29 @@ GPU.
 > under Bun on the compute path, so the toolchain matches the sibling `psychogeo` project.
 > Use `pnpm`, not `bun`. See [`docs/decisions/0002-runtime-node-not-bun.md`](docs/decisions/0002-runtime-node-not-bun.md).
 
+## FAIR by design
+
+This is research tooling, and it is built to serve the
+[FAIR principles](https://www.go-fair.org/fair-principles/) — **F**indable,
+**A**ccessible, **I**nteroperable, **R**eusable — rather than treat them as an
+afterthought:
+
+- **Findable** — every op and source is a self-describing entry (name, description,
+  category, rendered maths) in a discoverable catalogue; the executor is content-addressed
+  so intermediate results have stable identities.
+- **Accessible** — runs in any WebGPU browser over standard `navigator.gpu`, no
+  proprietary runtime or install; imagery uses open HTJ2K / JPEG 2000, and composed graphs
+  serialise to plain JSON.
+- **Interoperable** — primitives take and return plain typed arrays with an explicit
+  shape/element/basis schema, so kernels port to deck.gl / MDV / SpatialData.js instead of
+  locking analysis in.
+- **Reusable** — a declarative operation graph *is* its own provenance; runs are
+  reproducible (seeded RNG, CPU goldens with bit-exact/bounded-error GPU tests), and named
+  subgraphs make reuse first-class.
+
+The remaining gap is an explicit data/usage licence (the last piece of *Reusable*). See
+[FAIR by design](docs-site/src/content/docs/concepts/fair.md) for the full treatment.
+
 ## Layout
 
 | Path | What |
