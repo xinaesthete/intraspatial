@@ -52,6 +52,7 @@ import { defaultParamsFor, getSpec, listOpSpecs, listSourceSpecs } from "./specs
 import type { NodeSpec } from "./specs";
 import { CATEGORY_ORDER } from "./opMeta";
 import { CommandPalette } from "./CommandPalette";
+import { MathTex } from "./Math";
 import { EXAMPLES } from "./examples";
 import type { Example } from "./examples";
 import { Preview } from "./Preview";
@@ -779,6 +780,16 @@ export default function App() {
           <>
             <h2>{selectedSpec.label}</h2>
             {selectedSpec.describe && <p className="muted">{selectedSpec.describe}</p>}
+            {selectedSpec.help && (
+              <div className="op-help">
+                {selectedSpec.help.detail && <p className="op-help-detail">{selectedSpec.help.detail}</p>}
+                {selectedSpec.help.math && (
+                  <div className="op-help-math">
+                    <MathTex tex={selectedSpec.help.math} />
+                  </div>
+                )}
+              </div>
+            )}
             <div className="params">
               {selectedSpec.params.map((p) => (
                 <ParamControl
