@@ -8,6 +8,11 @@
     "node": ">=20.11"
   },
   "scripts": {
+    "dev": "pnpm --filter tgpu-htj2k-playground dev",
+    "dev:playground": "pnpm --filter tgpu-htj2k-playground dev",
+    "dev:docs": "pnpm --filter docs-site dev",
+    "build:playground": "pnpm --filter tgpu-htj2k-playground build",
+    "build:docs": "pnpm --filter docs-site build",
     "test": "vitest run && vitest run -c vitest.gpu.config.ts",
     "test:cpu": "vitest run",
     "test:gpu": "vitest run -c vitest.gpu.config.ts",
