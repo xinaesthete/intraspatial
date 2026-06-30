@@ -64,10 +64,11 @@ let elementRegistered = false;
 export async function registerElementOps(): Promise<void> {
   if (elementRegistered) return;
   elementRegistered = true;
-  const [complex, arith, rd] = await Promise.all([
+  const [complex, arith, rd, calc] = await Promise.all([
     import("./complexOps"),
     import("./fieldArithmetic"),
     import("./reactionDiffusionComplex"),
+    import("./fieldCalculus"),
   ]);
   reg(complex.complexOp);
   reg(complex.realPartOp);
@@ -82,6 +83,11 @@ export async function registerElementOps(): Promise<void> {
   reg(arith.crossFieldsOp);
   reg(arith.normalizeFieldOp);
   reg(rd.reactionDiffusionComplexOp);
+  reg(calc.gradientOp);
+  reg(calc.gradientMagnitudeOp);
+  reg(calc.laplacianOp);
+  reg(calc.divergenceOp);
+  reg(calc.structureOrientationOp);
 }
 
 let waveletRegistered = false;

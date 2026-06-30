@@ -20,6 +20,13 @@ import {
 } from "../../src/gpu/graph/ops/fieldArithmetic";
 import { reactionDiffusionComplexOp } from "../../src/gpu/graph/ops/reactionDiffusionComplex";
 import { fdwtOp, idwtOp, thresholdDetailOp } from "../../src/gpu/graph/ops/waveletOps";
+import {
+  gradientOp,
+  gradientMagnitudeOp,
+  laplacianOp,
+  divergenceOp,
+  structureOrientationOp,
+} from "../../src/gpu/graph/ops/fieldCalculus";
 
 /** Idempotently register the element-algebra and wavelet op packs. Guards on the
  *  registry's actual state (`hasOp`) rather than a module-local flag, so it survives
@@ -31,6 +38,7 @@ export function registerExtraOps(): void {
     addFieldsOp, subFieldsOp, mulFieldsOp, scaleFieldOp, dotFieldsOp, crossFieldsOp, normalizeFieldOp,
     reactionDiffusionComplexOp,
     fdwtOp, idwtOp, thresholdDetailOp,
+    gradientOp, gradientMagnitudeOp, laplacianOp, divergenceOp, structureOrientationOp,
   ];
   for (const op of ops) if (!hasOp(op.name)) registerOp(op);
 }

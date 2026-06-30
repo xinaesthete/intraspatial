@@ -10,6 +10,8 @@ export const OP_CATEGORY: Record<string, string> = {
   ringPoints: "Sources",
   blobPoints: "Sources",
   grayScottSeed: "Sources",
+  noiseGrid: "Sources",
+  waveGrid: "Sources",
   // image / grid
   splatDensity: "Image & grid",
   convolveSeparable: "Image & grid",
@@ -78,4 +80,9 @@ export const OP_HELP: Record<string, OpHelp> = {
   threshold: { detail: "Hard step, or a soft logistic ramp (a fuzzy threshold).", math: "\\sigma_k(x) = \\frac{1}{1 + e^{-(x - t)\\,k}}" },
   getisOrd: { detail: "Local hotspot z-score over a box neighbourhood.", math: "G^{*}_i = \\frac{\\sum_j w_{ij} x_j - \\bar{x}\\sum_j w_{ij}}{s\\,\\sqrt{\\dots}}" },
   reactionDiffusionComplex: { detail: "Gray–Scott carried as one complex field, re = U, im = V.", math: "\\partial_t U = D_u\\nabla^2 U - UV^2 + F(1-U)" },
+  gradient: { detail: "Central-difference gradient → a vec2 field.", math: "\\nabla f = \\left(\\tfrac{\\partial f}{\\partial x},\\ \\tfrac{\\partial f}{\\partial y}\\right)" },
+  gradientMagnitude: { detail: "Edge strength.", math: "\\lVert \\nabla f \\rVert = \\sqrt{f_x^2 + f_y^2}" },
+  laplacian: { detail: "Sum of second derivatives (a blob / edge detector).", math: "\\nabla^2 f = f_{xx} + f_{yy}" },
+  divergence: { detail: "Net outflow of a vector field → a scalar field.", math: "\\nabla \\cdot v = \\tfrac{\\partial v_x}{\\partial x} + \\tfrac{\\partial v_y}{\\partial y}" },
+  structureOrientation: { detail: "Dominant local orientation: the principal eigenvector of the smoothed structure tensor, scaled by coherence.", math: "J = \\overline{\\nabla f\\,\\nabla f^{\\top}},\\quad \\theta = \\tfrac{1}{2}\\operatorname{atan2}(2J_{xy},\\,J_{xx}-J_{yy})" },
 };
