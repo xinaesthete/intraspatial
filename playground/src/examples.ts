@@ -105,21 +105,38 @@ export function reusableSubgraphExample(): Example {
   return { label: "Reusable subgraph (Hotspots ×2)", nodes, edges, defs: { [def]: hotspots }, sink: { node: "sum", port: "out" } };
 }
 
-// Wavelet denoise: a noisy field → forward DWT → shrink detail coefficients → inverse
-// DWT. Note that idwt and thresholdDetail carry no kernel/levels params — they read the
-// wavelet contract from the field produced by fdwt (ADR-0006).
+// Wavelet denoise: a smooth signal + white noise → forward DWT → shrink detail
+// coefficients → inverse DWT. With a signal present, thresholding has something
+// meaningful to recover (denoised RMSE drops below the noisy input).
+//
+// Two deliberate parameter choices, both to avoid blocky LL-only reconstructions:
+//   - 9/7 kernel, not 5/3. The 9/7's K scaling makes it near-orthonormal, so a single
+//     threshold shrinks every subband on a consistent scale. The 5/3 reversible
+//     transform is NOT normalised (coarse subbands carry far larger coefficients), so a
+//     uniform threshold over-shrinks some bands and a denoise actually *raises* error.
+//   - thresh small (detail coeffs of an O(1) field are O(1)). A threshold larger than
+//     the largest detail coefficient zeros ALL detail, leaving only the coarse LL band —
+//     reconstructed alone that gives the grid artefacts at the LL-cell scale.
+// idwt and thresholdDetail carry no kernel/levels params — they read the wavelet
+// contract from the field produced by fdwt (ADR-0006).
 export function waveletDenoiseExample(): Example {
   const nodes: Node[] = [
-    node("noise", "noiseGrid", 20, 200),
-    node("fwd", "fdwt", 250, 200),
-    node("shrink", "thresholdDetail", 470, 200),
-    node("inv", "idwt", 690, 200),
+    node("signal", "waveGrid", 20, 120),
+    node("noise", "noiseGrid", 20, 320),
+    node("mix", "addGrids", 250, 220),
+    node("fwd", "fdwt", 460, 220),
+    node("shrink", "thresholdDetail", 670, 220),
+    node("inv", "idwt", 880, 220),
   ];
-  (nodes[0]!.data as { params: Record<string, unknown> }).params = { width: 96, height: 96, kind: "value", scale: 18, seed: 3, amp: 1 };
-  (nodes[1]!.data as { params: Record<string, unknown> }).params = { kernel: "5/3", levels: 3 };
-  (nodes[2]!.data as { params: Record<string, unknown> }).params = { thresh: 8, soft: true };
+  (nodes[0]!.data as { params: Record<string, unknown> }).params = { width: 96, height: 96, kind: "radial", freq: 5, angle: 0, amp: 1 };
+  (nodes[1]!.data as { params: Record<string, unknown> }).params = { width: 96, height: 96, kind: "white", scale: 12, seed: 7, amp: 0.4 };
+  (nodes[2]!.data as { params: Record<string, unknown> }).params = { wa: 1, wb: 1 };
+  (nodes[3]!.data as { params: Record<string, unknown> }).params = { kernel: "9/7", levels: 3 };
+  (nodes[4]!.data as { params: Record<string, unknown> }).params = { thresh: 0.3, soft: true };
   const edges: Edge[] = [
-    e("e-nf", "noise", "out", "fwd", "in"),
+    e("e-sm", "signal", "out", "mix", "a"),
+    e("e-nm", "noise", "out", "mix", "b"),
+    e("e-mf", "mix", "out", "fwd", "in"),
     e("e-fs", "fwd", "coeffs", "shrink", "coeffs"),
     e("e-si", "shrink", "out", "inv", "coeffs"),
   ];

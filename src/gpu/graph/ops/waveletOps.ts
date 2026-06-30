@@ -122,7 +122,7 @@ export const thresholdDetailOp: OpType = {
   inputs: [{ name: "coeffs", kind: "grid" }],
   outputs: [{ name: "out", kind: "grid", dtype: "f32" }],
   params: [
-    { name: "thresh", type: "number", default: 4, min: 0, max: 32, step: 0.25, describe: "shrinkage threshold" },
+    { name: "thresh", type: "number", default: 0.3, min: 0, max: 8, step: 0.05, describe: "shrinkage threshold (detail coeffs are O(1) for normalised fields)" },
     { name: "soft", type: "bool", default: true, describe: "soft shrinkage instead of hard zeroing" },
   ],
   inferShapes: (inputs) => {
