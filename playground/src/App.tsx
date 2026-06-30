@@ -49,6 +49,9 @@ import {
 import type { DefLibrary } from "./subgraphs";
 import { kindColor } from "./portKinds";
 import { defaultParamsFor, getSpec, listOpSpecs, listSourceSpecs } from "./specs";
+import type { NodeSpec } from "./specs";
+import { CATEGORY_ORDER } from "./opMeta";
+import { CommandPalette } from "./CommandPalette";
 import { EXAMPLES } from "./examples";
 import type { Example } from "./examples";
 import { Preview } from "./Preview";
@@ -63,6 +66,28 @@ function mkNode(id: string, opName: string, x: number, y: number): Node {
   const spec = getSpec(opName);
   const data: NodeData = { opName, params: defaultParamsFor(spec) };
   return { id, type: "op", position: { x, y }, data: data as unknown as Record<string, unknown> };
+}
+
+/** Group node specs by category, filtered by a query (matches label/name/category),
+ *  ordered by CATEGORY_ORDER then alphabetically. Empty categories are dropped. */
+function groupByCategory(specs: NodeSpec[], filter: string): { category: string; specs: NodeSpec[] }[] {
+  const f = filter.trim().toLowerCase();
+  const match = (s: NodeSpec) =>
+    !f || s.label.toLowerCase().includes(f) || s.name.toLowerCase().includes(f) || s.category.toLowerCase().includes(f);
+  const byCat = new Map<string, NodeSpec[]>();
+  for (const s of specs) {
+    if (!match(s)) continue;
+    const arr = byCat.get(s.category) ?? [];
+    arr.push(s);
+    byCat.set(s.category, arr);
+  }
+  const rank = (c: string) => {
+    const i = CATEGORY_ORDER.indexOf(c);
+    return i < 0 ? CATEGORY_ORDER.length : i;
+  };
+  return [...byCat.keys()]
+    .sort((a, b) => rank(a) - rank(b) || a.localeCompare(b))
+    .map((c) => ({ category: c, specs: byCat.get(c)! }));
 }
 
 // Default example: blob clusters -> KDE density -> Getis-Ord hotspots.
@@ -99,6 +124,13 @@ export default function App() {
   const scope = path[path.length - 1]!;
   // Reusable named subgraph definitions (live-linked: editing one updates all instances).
   const [defs, setDefs] = useState<DefLibrary>({});
+  // Palette filtering + the `/` command palette (insert a node at the cursor).
+  const [paletteFilter, setPaletteFilter] = useState("");
+  const [cmdOpen, setCmdOpen] = useState(false);
+  const flowRef = useRef<{ screenToFlowPosition: (p: { x: number; y: number }) => { x: number; y: number } } | null>(null);
+  const paneScreenPos = useRef<{ x: number; y: number } | null>(null);
+  // All insertable node specs (sources + ops), grouped for the palette + command list.
+  const allSpecs = useMemo(() => [...listSourceSpecs(), ...listOpSpecs()], []);
   const hasFeedback = useMemo(
     () => graphHasFeedback(nodes) || Object.values(defs).some((d) => defHasFeedback(d, defs)),
     [nodes, defs],
@@ -356,14 +388,41 @@ export default function App() {
   );
 
   const addNode = useCallback(
-    (opName: string) => {
+    (opName: string, pos?: { x: number; y: number }) => {
       const id = `x${idSeq.current++}`;
-      const n = mkNode(id, opName, 120 + (containerNodes.length % 5) * 40, 360 + (containerNodes.length % 4) * 30);
+      const x = pos ? pos.x : 120 + (containerNodes.length % 5) * 40;
+      const y = pos ? pos.y : 360 + (containerNodes.length % 4) * 30;
+      const n = mkNode(id, opName, x, y);
       (n.data as { group?: string }).group = scope; // new node lives in the current scope
       setContainerNodes((ns) => ns.concat(n));
     },
     [containerNodes.length, scope, setContainerNodes],
   );
+
+  // Insert a node chosen in the command palette at the last cursor position over the
+  // canvas (converted to flow coords), falling back to the default cascade.
+  const insertFromCommand = useCallback(
+    (opName: string) => {
+      const screen = paneScreenPos.current;
+      const pos = screen && flowRef.current ? flowRef.current.screenToFlowPosition(screen) : undefined;
+      addNode(opName, pos);
+      setCmdOpen(false);
+    },
+    [addNode],
+  );
+
+  // `/` opens the command palette (unless typing in a field).
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "/" || cmdOpen) return;
+      const t = e.target as HTMLElement | null;
+      if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
+      e.preventDefault();
+      setCmdOpen(true);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [cmdOpen]);
 
   // Breadcrumb label for a scope segment: "Main", a definition's label, or a (possibly
   // nested) group node's label found in whichever container holds it.
@@ -540,17 +599,26 @@ export default function App() {
             {ex.label}
           </button>
         ))}
-        <h2>Sources</h2>
-        {listSourceSpecs().map((s) => (
-          <button key={s.name} className="palette-btn source" title={s.describe} onClick={() => addNode(s.name)}>
-            {s.label}
-          </button>
-        ))}
-        <h2>Operations</h2>
-        {listOpSpecs().map((s) => (
-          <button key={s.name} className="palette-btn" title={s.describe} onClick={() => addNode(s.name)}>
-            {s.label}
-          </button>
+        <input
+          className="palette-filter"
+          placeholder="Filter nodes…  (press / to insert)"
+          value={paletteFilter}
+          onChange={(e) => setPaletteFilter(e.target.value)}
+        />
+        {groupByCategory(allSpecs, paletteFilter).map((group) => (
+          <div key={group.category} className="palette-group">
+            <h2>{group.category}</h2>
+            {group.specs.map((s) => (
+              <button
+                key={s.name}
+                className={`palette-btn${s.isSource ? " source" : ""}`}
+                title={s.describe}
+                onClick={() => addNode(s.name)}
+              >
+                {s.label}
+              </button>
+            ))}
+          </div>
         ))}
         {Object.keys(defs).length > 0 && (
           <>
@@ -570,7 +638,7 @@ export default function App() {
         )}
       </aside>
 
-      <main className="canvas">
+      <main className="canvas" onMouseMove={(e) => { paneScreenPos.current = { x: e.clientX, y: e.clientY }; }}>
         <div className="canvas-toolbar">
           <div className="breadcrumb">
             {path.map((seg, i) => {
@@ -609,6 +677,7 @@ export default function App() {
           onSelectionChange={onSelectionChange}
           onNodeClick={(_, n) => { setSelectedId(n.id); setSelectedPort(null); setValue(null); setStale(false); setError(null); }}
           onNodeDoubleClick={onNodeDoubleClick}
+          onInit={(inst) => { flowRef.current = inst; }}
           fitView
         >
           <Background />
@@ -764,6 +833,13 @@ export default function App() {
           <p className="muted">Click a node to edit its parameters and pull its output.</p>
         )}
       </aside>
+      {cmdOpen && (
+        <CommandPalette
+          items={allSpecs.map((s) => ({ name: s.name, label: s.label, category: s.category, describe: s.describe }))}
+          onPick={insertFromCommand}
+          onClose={() => setCmdOpen(false)}
+        />
+      )}
     </div>
   );
 }
