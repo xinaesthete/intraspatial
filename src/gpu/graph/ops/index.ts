@@ -1,6 +1,15 @@
 // Registers the built-in ops. Importing this module (or the graph entry point)
 // populates the registry; `listOps()` then drives the React Flow palette.
-import { registerOp } from "../registry";
+import { hasOp, registerOp } from "../registry";
+import type { OpType } from "../op";
+
+// Register-if-absent. `registerOp` throws on a duplicate name (a useful guard against
+// real collisions), but the registry module outlives a Vite HMR re-evaluation of this
+// module, so a blind re-register on hot reload would throw. Guarding on `hasOp` keeps
+// every registrar idempotent against the registry's actual state.
+const reg = (op: OpType): void => {
+  if (!hasOp(op.name)) registerOp(op);
+};
 import { splatDensityOp } from "./splatDensity";
 import { convolveSeparableOp } from "./convolveSeparable";
 import { getisOrdOp } from "./getisOrd";
@@ -21,20 +30,20 @@ export function registerBuiltinOps(): void {
   if (registered) return;
   registered = true;
   // image / spatial-grid front
-  registerOp(splatDensityOp);
-  registerOp(convolveSeparableOp);
-  registerOp(getisOrdOp);
-  registerOp(thresholdOp);
-  registerOp(addGridsOp);
+  reg(splatDensityOp);
+  reg(convolveSeparableOp);
+  reg(getisOrdOp);
+  reg(thresholdOp);
+  reg(addGridsOp);
   // fuzzy TDA front
-  registerOp(kthNeighborDistanceOp);
-  registerOp(fuzzyAdjacencyOp);
-  registerOp(fuzzyAdjacencyAdaptiveOp);
-  registerOp(membershipToDistanceOp);
-  registerOp(vietorisRipsOp);
+  reg(kthNeighborDistanceOp);
+  reg(fuzzyAdjacencyOp);
+  reg(fuzzyAdjacencyAdaptiveOp);
+  reg(membershipToDistanceOp);
+  reg(vietorisRipsOp);
   // simulation front
-  registerOp(reactionDiffusionStepOp);
-  registerOp(feedbackOp);
+  reg(reactionDiffusionStepOp);
+  reg(feedbackOp);
 }
 
 registerBuiltinOps();
@@ -60,19 +69,19 @@ export async function registerElementOps(): Promise<void> {
     import("./fieldArithmetic"),
     import("./reactionDiffusionComplex"),
   ]);
-  registerOp(complex.complexOp);
-  registerOp(complex.realPartOp);
-  registerOp(complex.imagPartOp);
-  registerOp(complex.conjugateOp);
-  registerOp(complex.magnitudeOp);
-  registerOp(arith.addFieldsOp);
-  registerOp(arith.subFieldsOp);
-  registerOp(arith.mulFieldsOp);
-  registerOp(arith.scaleFieldOp);
-  registerOp(arith.dotFieldsOp);
-  registerOp(arith.crossFieldsOp);
-  registerOp(arith.normalizeFieldOp);
-  registerOp(rd.reactionDiffusionComplexOp);
+  reg(complex.complexOp);
+  reg(complex.realPartOp);
+  reg(complex.imagPartOp);
+  reg(complex.conjugateOp);
+  reg(complex.magnitudeOp);
+  reg(arith.addFieldsOp);
+  reg(arith.subFieldsOp);
+  reg(arith.mulFieldsOp);
+  reg(arith.scaleFieldOp);
+  reg(arith.dotFieldsOp);
+  reg(arith.crossFieldsOp);
+  reg(arith.normalizeFieldOp);
+  reg(rd.reactionDiffusionComplexOp);
 }
 
 let waveletRegistered = false;
@@ -86,9 +95,9 @@ export async function registerWaveletOps(): Promise<void> {
   if (waveletRegistered) return;
   waveletRegistered = true;
   const wav = await import("./waveletOps");
-  registerOp(wav.fdwtOp);
-  registerOp(wav.idwtOp);
-  registerOp(wav.thresholdDetailOp);
+  reg(wav.fdwtOp);
+  reg(wav.idwtOp);
+  reg(wav.thresholdDetailOp);
 }
 
 export {

@@ -5,7 +5,7 @@
 // See docs/gpu-resource-sync.md for the model this implements.
 export type { Dtype, ElementType, FieldValue, GpuField, NodeId, Shape, ShapeKind } from "./handle";
 export { elementLabel, elementLanes, elementOf, elementsEqual, numCells, SCALAR, shapesEqual } from "./handle";
-export type { ExecCtx, OpType, Params, ParamSpec, ParamType, PortSpec } from "./op";
+export type { ExecCtx, OpHelp, OpType, Params, ParamSpec, ParamType, PortSpec } from "./op";
 export { allFinite, defaultParams, param } from "./op";
 export type { EdgeRef, FeedbackHandle, GraphNode } from "./graph";
 export { Graph } from "./graph";

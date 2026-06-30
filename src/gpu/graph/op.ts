@@ -34,6 +34,15 @@ export interface ParamSpec {
 
 export type Params = Record<string, unknown>;
 
+/** Rich help for a node, shown in a tooltip/inspector beyond the one-line `describe`.
+ *  `math` is a LaTeX/KaTeX source string rendered as display math by the UI. */
+export interface OpHelp {
+  /** Longer prose explanation. */
+  detail?: string;
+  /** Display-math source (LaTeX), e.g. `z\\,w=(ac-bd)+(ad+bc)i`. */
+  math?: string;
+}
+
 export interface ExecCtx {
   backend: GpuBackend;
 }
@@ -44,6 +53,10 @@ export interface OpType {
   /** Display label + one-line description for the palette. */
   label: string;
   describe?: string;
+  /** Palette grouping, e.g. "Arithmetic", "Wavelet". Absent ⇒ grouped as "Other". */
+  category?: string;
+  /** Rich help (prose + display math) for the node tooltip. */
+  help?: OpHelp;
   inputs: PortSpec[];
   outputs: PortSpec[];
   params: ParamSpec[];
