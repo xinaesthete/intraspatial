@@ -12,6 +12,7 @@ import "@xyflow/react/dist/style.css";
 import "./styles.css";
 import type { FieldValue, GraphMemo, SimState } from "../../src/gpu/graph";
 import { createMemo, createSimState } from "../../src/gpu/graph";
+import { registerExtraOps } from "./extraOps";
 import { applyEdgeChanges, applyNodeChanges } from "@xyflow/react";
 import type { EdgeChange, NodeChange } from "@xyflow/react";
 import { OpNode } from "./OpNode";
@@ -48,9 +49,20 @@ import {
 import type { DefLibrary } from "./subgraphs";
 import { kindColor } from "./portKinds";
 import { defaultParamsFor, getSpec, listOpSpecs, listSourceSpecs } from "./specs";
+import type { NodeSpec } from "./specs";
+import { CATEGORY_ORDER } from "./opMeta";
+import { CommandPalette } from "./CommandPalette";
+import { HelpTooltip } from "./HelpTooltip";
+import { FieldTooltip } from "./FieldTooltip";
+import { PortHoverContext } from "./PortHover";
+import { MathTex } from "./Math";
 import { EXAMPLES } from "./examples";
 import type { Example } from "./examples";
 import { Preview } from "./Preview";
+
+// Register the element-algebra + wavelet op packs synchronously, before any render,
+// into the same registry the palette reads (see extraOps.ts for why not the async path).
+registerExtraOps();
 
 const nodeTypes: NodeTypes = { op: OpNode, group: GroupNode, instance: InstanceNode, input: InterfaceNode, output: InterfaceNode };
 
@@ -58,6 +70,28 @@ function mkNode(id: string, opName: string, x: number, y: number): Node {
   const spec = getSpec(opName);
   const data: NodeData = { opName, params: defaultParamsFor(spec) };
   return { id, type: "op", position: { x, y }, data: data as unknown as Record<string, unknown> };
+}
+
+/** Group node specs by category, filtered by a query (matches label/name/category),
+ *  ordered by CATEGORY_ORDER then alphabetically. Empty categories are dropped. */
+function groupByCategory(specs: NodeSpec[], filter: string): { category: string; specs: NodeSpec[] }[] {
+  const f = filter.trim().toLowerCase();
+  const match = (s: NodeSpec) =>
+    !f || s.label.toLowerCase().includes(f) || s.name.toLowerCase().includes(f) || s.category.toLowerCase().includes(f);
+  const byCat = new Map<string, NodeSpec[]>();
+  for (const s of specs) {
+    if (!match(s)) continue;
+    const arr = byCat.get(s.category) ?? [];
+    arr.push(s);
+    byCat.set(s.category, arr);
+  }
+  const rank = (c: string) => {
+    const i = CATEGORY_ORDER.indexOf(c);
+    return i < 0 ? CATEGORY_ORDER.length : i;
+  };
+  return [...byCat.keys()]
+    .sort((a, b) => rank(a) - rank(b) || a.localeCompare(b))
+    .map((c) => ({ category: c, specs: byCat.get(c)! }));
 }
 
 // Default example: blob clusters -> KDE density -> Getis-Ord hotspots.
@@ -94,6 +128,83 @@ export default function App() {
   const scope = path[path.length - 1]!;
   // Reusable named subgraph definitions (live-linked: editing one updates all instances).
   const [defs, setDefs] = useState<DefLibrary>({});
+  // Palette filtering + the `/` command palette (insert a node at the cursor).
+  const [paletteFilter, setPaletteFilter] = useState("");
+  const [cmdOpen, setCmdOpen] = useState(false);
+  const flowRef = useRef<{ screenToFlowPosition: (p: { x: number; y: number }) => { x: number; y: number } } | null>(null);
+  const paneScreenPos = useRef<{ x: number; y: number } | null>(null);
+  // Per-port values captured during the last run (key "nodeId:port"), driving the
+  // port/edge hover tooltip's data view.
+  const portValues = useRef<Map<string, FieldValue>>(new Map());
+  const [inspect, setInspect] = useState<{ title: string; kind: string; value?: FieldValue; rect: DOMRect } | null>(null);
+  const inspectTimer = useRef<number | undefined>(undefined);
+  // All insertable node specs (sources + ops), grouped for the palette + command list.
+  const allSpecs = useMemo(() => [...listSourceSpecs(), ...listOpSpecs()], []);
+  // Foldable palette categories + a rich hover tooltip (description + math).
+  const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
+  const [hoverHelp, setHoverHelp] = useState<{ spec: NodeSpec; rect: DOMRect } | null>(null);
+  const hoverTimer = useRef<number | undefined>(undefined);
+  const toggleCategory = useCallback((cat: string) => {
+    setCollapsed((s) => {
+      const n = new Set(s);
+      if (n.has(cat)) n.delete(cat);
+      else n.add(cat);
+      return n;
+    });
+  }, []);
+  const showHelp = useCallback((spec: NodeSpec, el: HTMLElement) => {
+    window.clearTimeout(hoverTimer.current);
+    const rect = el.getBoundingClientRect();
+    hoverTimer.current = window.setTimeout(() => setHoverHelp({ spec, rect }), 220);
+  }, []);
+  const hideHelp = useCallback(() => {
+    window.clearTimeout(hoverTimer.current);
+    setHoverHelp(null);
+  }, []);
+
+  // Port/edge type+data inspector. An output port shows its own value; an input port
+  // shows the value of the edge feeding it; an edge shows its source-port value.
+  const portValueAt = useCallback(
+    (nodeId: string, port: string, isInput: boolean): FieldValue | undefined => {
+      if (!isInput) return portValues.current.get(`${nodeId}:${port}`);
+      const edge = edges.find((ed) => ed.target === nodeId && ed.targetHandle === port);
+      return edge ? portValues.current.get(`${edge.source}:${edge.sourceHandle}`) : undefined;
+    },
+    [edges],
+  );
+  const portHover = useMemo(
+    () => ({
+      onPortEnter: (nodeId: string, port: string, isInput: boolean, kind: string, rect: DOMRect) => {
+        window.clearTimeout(inspectTimer.current);
+        const value = portValueAt(nodeId, port, isInput);
+        inspectTimer.current = window.setTimeout(() => setInspect({ title: port, kind, value, rect }), 120);
+      },
+      onPortLeave: () => {
+        window.clearTimeout(inspectTimer.current);
+        setInspect(null);
+      },
+    }),
+    [portValueAt],
+  );
+  const onEdgeEnter = useCallback(
+    (e: React.MouseEvent, edge: Edge) => {
+      const srcNode = nodes.find((n) => n.id === edge.source);
+      const opName = srcNode ? (srcNode.data as unknown as NodeData).opName : undefined;
+      let kind = "?";
+      try {
+        if (opName) kind = getSpec(opName).outputs.find((o) => o.name === edge.sourceHandle)?.kind ?? "?";
+      } catch {
+        /* non-op node (instance/interface) — leave kind unknown */
+      }
+      const x = e.clientX, y = e.clientY;
+      const rect = { right: x, left: x, top: y, bottom: y, width: 0, height: 0, x, y } as DOMRect;
+      window.clearTimeout(inspectTimer.current);
+      setInspect({ title: edge.sourceHandle ?? "out", kind, value: portValues.current.get(`${edge.source}:${edge.sourceHandle}`), rect });
+    },
+    [nodes],
+  );
+  const onEdgeLeave = useCallback(() => setInspect(null), []);
+
   const hasFeedback = useMemo(
     () => graphHasFeedback(nodes) || Object.values(defs).some((d) => defHasFeedback(d, defs)),
     [nodes, defs],
@@ -351,14 +462,41 @@ export default function App() {
   );
 
   const addNode = useCallback(
-    (opName: string) => {
+    (opName: string, pos?: { x: number; y: number }) => {
       const id = `x${idSeq.current++}`;
-      const n = mkNode(id, opName, 120 + (containerNodes.length % 5) * 40, 360 + (containerNodes.length % 4) * 30);
+      const x = pos ? pos.x : 120 + (containerNodes.length % 5) * 40;
+      const y = pos ? pos.y : 360 + (containerNodes.length % 4) * 30;
+      const n = mkNode(id, opName, x, y);
       (n.data as { group?: string }).group = scope; // new node lives in the current scope
       setContainerNodes((ns) => ns.concat(n));
     },
     [containerNodes.length, scope, setContainerNodes],
   );
+
+  // Insert a node chosen in the command palette at the last cursor position over the
+  // canvas (converted to flow coords), falling back to the default cascade.
+  const insertFromCommand = useCallback(
+    (opName: string) => {
+      const screen = paneScreenPos.current;
+      const pos = screen && flowRef.current ? flowRef.current.screenToFlowPosition(screen) : undefined;
+      addNode(opName, pos);
+      setCmdOpen(false);
+    },
+    [addNode],
+  );
+
+  // `/` opens the command palette (unless typing in a field).
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "/" || cmdOpen) return;
+      const t = e.target as HTMLElement | null;
+      if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
+      e.preventDefault();
+      setCmdOpen(true);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [cmdOpen]);
 
   // Breadcrumb label for a scope segment: "Main", a definition's label, or a (possibly
   // nested) group node's label found in whichever container holds it.
@@ -414,7 +552,7 @@ export default function App() {
     setError(null);
     try {
       const sink = resolveSink();
-      const out = await runNode(nodes, edges, sink.id, sink.port, memo.current, defs);
+      const out = await runNode(nodes, edges, sink.id, sink.port, memo.current, defs, (k, v) => portValues.current.set(k, v));
       setValue(out);
       setStale(false);
     } catch (e) {
@@ -463,6 +601,7 @@ export default function App() {
         state: sim.current,
         reset,
         defs,
+        onValue: (k, v) => portValues.current.set(k, v),
       });
       setValue(out);
       setStale(false);
@@ -507,7 +646,7 @@ export default function App() {
       if (cancelled) return;
       try {
         const sink = resolveSink();
-        const out = await advanceNode(nodes, edges, sink.id, sink.port, { steps: 1, state: sim.current, defs });
+        const out = await advanceNode(nodes, edges, sink.id, sink.port, { steps: 1, state: sim.current, defs, onValue: (k, v) => portValues.current.set(k, v) });
         if (cancelled) return;
         setValue(out);
         setStale(false); // each animated frame is freshly computed, never stale
@@ -525,6 +664,7 @@ export default function App() {
   }, [playing, hasFeedback, selectedId, selectedPort, nodes, edges, defs]);
 
   return (
+    <PortHoverContext.Provider value={portHover}>
     <div className="app">
       <aside className="palette">
         <h1>GPU graph composer</h1>
@@ -535,18 +675,43 @@ export default function App() {
             {ex.label}
           </button>
         ))}
-        <h2>Sources</h2>
-        {listSourceSpecs().map((s) => (
-          <button key={s.name} className="palette-btn source" title={s.describe} onClick={() => addNode(s.name)}>
-            {s.label}
-          </button>
-        ))}
-        <h2>Operations</h2>
-        {listOpSpecs().map((s) => (
-          <button key={s.name} className="palette-btn" title={s.describe} onClick={() => addNode(s.name)}>
-            {s.label}
-          </button>
-        ))}
+        <input
+          className="palette-filter"
+          placeholder="Filter nodes…  (press / to insert)"
+          value={paletteFilter}
+          onChange={(e) => setPaletteFilter(e.target.value)}
+        />
+        {groupByCategory(allSpecs, paletteFilter).map((group) => {
+          // While filtering, force every matching group open.
+          const isCollapsed = collapsed.has(group.category) && !paletteFilter.trim();
+          return (
+            <div key={group.category} className="palette-group">
+              <button className="palette-group-head" onClick={() => toggleCategory(group.category)}>
+                <span className="fold">{isCollapsed ? "▸" : "▾"}</span>
+                <span className="palette-group-name">{group.category}</span>
+                <span className="palette-group-count">{group.specs.length}</span>
+              </button>
+              {!isCollapsed &&
+                group.specs.map((s) => (
+                  <button
+                    key={s.name}
+                    className={`palette-btn${s.isSource ? " source" : ""}`}
+                    draggable
+                    onDragStart={(e) => {
+                      e.dataTransfer.setData("application/op-name", s.name);
+                      e.dataTransfer.effectAllowed = "move";
+                      hideHelp();
+                    }}
+                    onClick={() => addNode(s.name)}
+                    onMouseEnter={(e) => showHelp(s, e.currentTarget)}
+                    onMouseLeave={hideHelp}
+                  >
+                    {s.label}
+                  </button>
+                ))}
+            </div>
+          );
+        })}
         {Object.keys(defs).length > 0 && (
           <>
             <h2>Subgraphs</h2>
@@ -565,7 +730,7 @@ export default function App() {
         )}
       </aside>
 
-      <main className="canvas">
+      <main className="canvas" onMouseMove={(e) => { paneScreenPos.current = { x: e.clientX, y: e.clientY }; }}>
         <div className="canvas-toolbar">
           <div className="breadcrumb">
             {path.map((seg, i) => {
@@ -604,6 +769,17 @@ export default function App() {
           onSelectionChange={onSelectionChange}
           onNodeClick={(_, n) => { setSelectedId(n.id); setSelectedPort(null); setValue(null); setStale(false); setError(null); }}
           onNodeDoubleClick={onNodeDoubleClick}
+          onEdgeMouseEnter={onEdgeEnter}
+          onEdgeMouseLeave={onEdgeLeave}
+          onInit={(inst) => { flowRef.current = inst; }}
+          onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = "move"; }}
+          onDrop={(e) => {
+            e.preventDefault();
+            const name = e.dataTransfer.getData("application/op-name");
+            if (!name) return;
+            const pos = flowRef.current?.screenToFlowPosition({ x: e.clientX, y: e.clientY });
+            addNode(name, pos);
+          }}
           fitView
         >
           <Background />
@@ -705,6 +881,16 @@ export default function App() {
           <>
             <h2>{selectedSpec.label}</h2>
             {selectedSpec.describe && <p className="muted">{selectedSpec.describe}</p>}
+            {selectedSpec.help && (
+              <div className="op-help">
+                {selectedSpec.help.detail && <p className="op-help-detail">{selectedSpec.help.detail}</p>}
+                {selectedSpec.help.math && (
+                  <div className="op-help-math">
+                    <MathTex tex={selectedSpec.help.math} />
+                  </div>
+                )}
+              </div>
+            )}
             <div className="params">
               {selectedSpec.params.map((p) => (
                 <ParamControl
@@ -759,7 +945,17 @@ export default function App() {
           <p className="muted">Click a node to edit its parameters and pull its output.</p>
         )}
       </aside>
+      {cmdOpen && (
+        <CommandPalette
+          items={allSpecs.map((s) => ({ name: s.name, label: s.label, category: s.category, describe: s.describe }))}
+          onPick={insertFromCommand}
+          onClose={() => setCmdOpen(false)}
+        />
+      )}
+      {hoverHelp && <HelpTooltip spec={hoverHelp.spec} rect={hoverHelp.rect} />}
+      {inspect && <FieldTooltip title={inspect.title} kind={inspect.kind} value={inspect.value} rect={inspect.rect} />}
     </div>
+    </PortHoverContext.Provider>
   );
 }
 

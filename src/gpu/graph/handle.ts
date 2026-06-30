@@ -14,6 +14,59 @@
 
 export type Dtype = "f32" | "i32" | "u32";
 
+/** The algebraic type of a single sample's value (ADR-0004). A *closed* set of small
+ *  algebras, each with its own arithmetic (complex multiply, Hamilton product, dot) —
+ *  deliberately distinct from an *open* tensor axis (e.g. genes), which is bulk data
+ *  with no per-element algebra. Stored interleaved: a sample occupies `elementLanes`
+ *  contiguous lanes of the field's flat `data`. Absent on a field ⇒ `scalar`. */
+export type ElementType =
+  | { kind: "scalar" }
+  | { kind: "complex" }
+  | { kind: "vec"; n: 2 | 3 | 4 }
+  | { kind: "quaternion" };
+
+/** The implicit element of any field that doesn't declare one. */
+export const SCALAR: ElementType = { kind: "scalar" };
+
+/** Contiguous f32 lanes one sample of this element occupies. */
+export function elementLanes(e: ElementType): number {
+  switch (e.kind) {
+    case "scalar":
+      return 1;
+    case "complex":
+      return 2;
+    case "vec":
+      return e.n;
+    case "quaternion":
+      return 4;
+  }
+}
+
+export function elementsEqual(a: ElementType, b: ElementType): boolean {
+  if (a.kind !== b.kind) return false;
+  return a.kind === "vec" ? b.kind === "vec" && a.n === b.n : true;
+}
+
+export function elementLabel(e: ElementType): string {
+  return e.kind === "vec" ? `vec${e.n}` : e.kind;
+}
+
+/** The *basis* a field's values are expressed in (ADR-0006), orthogonal to domain and
+ *  element. `spatial` (the default) is the sampled signal itself; `wavelet` is a packed
+ *  Mallat coefficient pyramid that carries its own decomposition contract (kernel +
+ *  levels) so downstream ops (idwt, detail thresholding) read it from the input rather
+ *  than re-declaring it as a parameter. Absent on a field ⇒ `spatial`. */
+export type Basis =
+  | { kind: "spatial" }
+  | { kind: "wavelet"; wavelet: "5/3" | "9/7"; levels: number };
+
+/** The implicit basis of any field that doesn't declare one. */
+export const SPATIAL: Basis = { kind: "spatial" };
+
+export function basisLabel(b: Basis): string {
+  return b.kind === "wavelet" ? `wavelet ${b.wavelet}·L${b.levels}` : "spatial";
+}
+
 export type ShapeKind = "grid" | "points" | "matrix" | "scalar" | "opaque";
 
 export type Shape =
@@ -34,6 +87,10 @@ export interface GpuField {
   readonly id: number;
   readonly shape: Shape;
   readonly dtype: Dtype;
+  /** Element algebra of each sample (ADR-0004). Absent ⇒ `scalar`. */
+  readonly element?: ElementType;
+  /** Basis the values are expressed in (ADR-0006). Absent ⇒ `spatial`. */
+  readonly basis?: Basis;
   /** The node that writes this value. */
   readonly producer: NodeId;
   /** Which output port of that node. */
@@ -47,10 +104,25 @@ export interface GpuField {
 export interface FieldValue {
   shape: Shape;
   dtype: Dtype;
-  /** Host data for numeric shapes (grid/points/matrix/scalar). */
+  /** Element algebra of each sample (ADR-0004). Absent ⇒ `scalar`. */
+  element?: ElementType;
+  /** Basis the values are expressed in (ADR-0006). Absent ⇒ `spatial`. */
+  basis?: Basis;
+  /** Host data for numeric shapes (grid/points/matrix/scalar). Length is
+   *  `numCells(shape) * elementLanes(element)` — samples interleaved lane-major. */
   data?: Float32Array | Int32Array | Uint32Array;
   /** Arbitrary payload for `opaque` shapes. */
   payload?: unknown;
+}
+
+/** The element of a field or value, defaulting to `scalar` when undeclared. */
+export function elementOf(v: { element?: ElementType }): ElementType {
+  return v.element ?? SCALAR;
+}
+
+/** The basis of a field or value, defaulting to `spatial` when undeclared. */
+export function basisOf(v: { basis?: Basis }): Basis {
+  return v.basis ?? SPATIAL;
 }
 
 /** Unpack a points `FieldValue` (packed [x0,y0,x1,y1,...]) into parallel arrays. */

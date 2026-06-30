@@ -137,9 +137,32 @@ export async function runNode(
   port?: string,
   cache?: GraphMemo,
   defs: DefLibrary = {},
+  onValue?: (key: string, value: FieldValue) => void,
 ): Promise<FieldValue> {
   const { graph, produced } = buildGraph(nodes, edges, defs);
-  return pull(graph, pickHandle(produced, nodeId, port), { ctx: { backend: browserBackend }, cache });
+  return pull(graph, pickHandle(produced, nodeId, port), {
+    ctx: { backend: browserBackend },
+    cache,
+    onValue: wrapOnValue(produced, onValue),
+  });
+}
+
+/** The executor reports values keyed by *graph* node id (`fdwt#3:coeffs`); the UI keys
+ *  by *canvas* node id (`fwd:coeffs`). `produced` links them (each handle's `producer`
+ *  is the graph id), so translate back to canvas keys for the caller. */
+function wrapOnValue(
+  produced: Map<string, Record<string, GpuField>>,
+  onValue?: (key: string, value: FieldValue) => void,
+): ((key: string, value: FieldValue) => void) | undefined {
+  if (!onValue) return undefined;
+  const g2c = new Map<string, string>();
+  for (const [cid, ports] of produced) {
+    for (const portName in ports) {
+      const f = ports[portName]!;
+      g2c.set(`${f.producer}:${f.outPort}`, `${cid}:${portName}`);
+    }
+  }
+  return (key, value) => onValue(g2c.get(key) ?? key, value);
 }
 
 /** Build + advance a feedback graph by `steps` ticks, persisting `state` across
@@ -149,7 +172,7 @@ export async function advanceNode(
   edges: Edge[],
   nodeId: string,
   port: string | undefined,
-  opts: { steps?: number; state: SimState; reset?: boolean; defs?: DefLibrary },
+  opts: { steps?: number; state: SimState; reset?: boolean; defs?: DefLibrary; onValue?: (key: string, value: FieldValue) => void },
 ): Promise<FieldValue> {
   const { graph, produced } = buildGraph(nodes, edges, opts.defs ?? {});
   return advance(graph, pickHandle(produced, nodeId, port), {
@@ -157,6 +180,7 @@ export async function advanceNode(
     steps: opts.steps,
     state: opts.state,
     reset: opts.reset,
+    onValue: wrapOnValue(produced, opts.onValue),
   });
 }
 

@@ -6,7 +6,7 @@
 // context and resolved input `FieldValue`s, and returns output `FieldValue`s. The
 // registry keys these by name so the React Flow palette can list and instantiate
 // them.
-import type { Dtype, FieldValue, Shape, ShapeKind } from "./handle";
+import type { Basis, Dtype, ElementType, FieldValue, Shape, ShapeKind } from "./handle";
 import type { GpuBackend } from "./backend";
 
 export interface PortSpec {
@@ -34,6 +34,15 @@ export interface ParamSpec {
 
 export type Params = Record<string, unknown>;
 
+/** Rich help for a node, shown in a tooltip/inspector beyond the one-line `describe`.
+ *  `math` is a LaTeX/KaTeX source string rendered as display math by the UI. */
+export interface OpHelp {
+  /** Longer prose explanation. */
+  detail?: string;
+  /** Display-math source (LaTeX), e.g. `z\\,w=(ac-bd)+(ad+bc)i`. */
+  math?: string;
+}
+
 export interface ExecCtx {
   backend: GpuBackend;
 }
@@ -44,12 +53,27 @@ export interface OpType {
   /** Display label + one-line description for the palette. */
   label: string;
   describe?: string;
+  /** Palette grouping, e.g. "Arithmetic", "Wavelet". Absent ⇒ grouped as "Other". */
+  category?: string;
+  /** Rich help (prose + display math) for the node tooltip. */
+  help?: OpHelp;
   inputs: PortSpec[];
   outputs: PortSpec[];
   params: ParamSpec[];
   /** Derive output shapes from input shapes + params, so the graph can validate
    *  connections and size pools before running. */
   inferShapes(inputs: Shape[], params: Params): Shape[];
+  /** Derive output element algebras from input elements + params (ADR-0004). Absent
+   *  ⇒ every output is `scalar` (the legacy default). Runs at graph-build time, so an
+   *  op rejects a wrong element here (e.g. `complexMul` on a vec field) — this is the
+   *  build-time element type-check. Positional inputs match `inputs`. */
+  inferElements?(inputs: ElementType[], params: Params): ElementType[];
+  /** Derive output bases from input bases + params (ADR-0006). Absent ⇒ the output
+   *  passes through the first input's basis (or `spatial` for a source). Runs at
+   *  graph-build time, so an op rejects a wrong basis here (e.g. `idwt` on a spatial
+   *  field). The executor then stamps the inferred basis onto runtime values, so
+   *  generic ops carry a wavelet field through to `idwt` without knowing about it. */
+  inferBasis?(inputs: Basis[], params: Params): Basis[];
   /** Run the op. Inputs are positional, matching `inputs`; outputs positional,
    *  matching `outputs`. */
   execute(ctx: ExecCtx, inputs: FieldValue[], params: Params): Promise<FieldValue[]>;

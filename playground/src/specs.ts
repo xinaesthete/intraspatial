@@ -1,8 +1,9 @@
 // Unified node metadata for both source generators and registry ops, so the
 // palette, the custom node, and the inspector treat them the same way.
 import { getOp, listOps } from "../../src/gpu/graph";
-import type { ParamSpec } from "../../src/gpu/graph";
+import type { OpHelp, ParamSpec } from "../../src/gpu/graph";
 import { SOURCES, getSource, isSource } from "./sources";
+import { OP_CATEGORY, OP_HELP } from "./opMeta";
 
 export interface PortMeta {
   name: string;
@@ -13,22 +14,33 @@ export interface NodeSpec {
   name: string;
   label: string;
   describe?: string;
+  /** Palette grouping (resolved from the op's own `category` or the OP_CATEGORY map). */
+  category: string;
+  /** Rich help (prose + display math) for the tooltip, if any. */
+  help?: OpHelp;
   isSource: boolean;
   inputs: PortMeta[];
   outputs: PortMeta[];
   params: ParamSpec[];
 }
 
+const categoryOf = (name: string, own?: string): string => own ?? OP_CATEGORY[name] ?? "Other";
+
 export function getSpec(name: string): NodeSpec {
   if (isSource(name)) {
     const s = getSource(name)!;
-    return { name, label: s.label, describe: s.describe, isSource: true, inputs: [], outputs: s.outputs, params: s.params };
+    return {
+      name, label: s.label, describe: s.describe, category: categoryOf(name), help: OP_HELP[name],
+      isSource: true, inputs: [], outputs: s.outputs, params: s.params,
+    };
   }
   const op = getOp(name);
   return {
     name,
     label: op.label,
     describe: op.describe,
+    category: categoryOf(name, op.category),
+    help: op.help ?? OP_HELP[name],
     isSource: false,
     inputs: op.inputs.map((p) => ({ name: p.name, kind: String(p.kind) })),
     outputs: op.outputs.map((p) => ({ name: p.name, kind: String(p.kind) })),

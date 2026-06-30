@@ -1,0 +1,16 @@
+# pnpm workspace: the root codec/runtime package plus the two front-end apps that
+# reuse it (the React Flow composer and the Astro docs site). One lockfile, one
+# `pnpm install`, shared deps hoisted — and worktrees install cleanly instead of
+# each package needing its own install. The external `openjph-wasm` sibling is kept
+# out of the worktree-fragile hard-dependency path (see root package.json).
+packages:
+  - playground
+  - docs-site
+# Build scripts we trust to run on install:
+#   webgpu — the Dawn native addon (required for the GPU vitest suite)
+#   sharp  — docs-site (Astro) image processing
+#   esbuild — vite/vitest bundler platform binary
+allowBuilds:
+  esbuild: true
+  sharp: true
+  webgpu: true

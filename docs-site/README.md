@@ -1,49 +1,43 @@
-# Starlight Starter Kit: Basics
+# tgpu-htj2k docs site
 
-[![Built with Starlight](https://astro.badg.es/v2/built-with-starlight/tiny.svg)](https://starlight.astro.build)
+The documentation site for [`tgpu-htj2k`](../README.md), built with
+[Astro](https://astro.build) + [Starlight](https://starlight.astro.build). Beyond prose,
+it hosts **interactive demos** as React islands (`@astrojs/react`) and renders maths with
+KaTeX (`remark-math` + `rehype-katex`) — the same KaTeX setup the playground uses.
 
-```
-pnpm create astro@latest -- --template starlight
-```
+## Run
 
-> 🧑‍🚀 **Seasoned astronaut?** Delete this file. Have fun!
+From the **repo root** (preferred — uses the workspace + Volta Node 22 pin):
 
-## 🚀 Project Structure
-
-Inside of your Astro + Starlight project, you'll see the following folders and files:
-
-```
-.
-├── public/
-├── src/
-│   ├── assets/
-│   ├── content/
-│   │   └── docs/
-│   └── content.config.ts
-├── astro.config.mjs
-├── package.json
-└── tsconfig.json
+```sh
+pnpm dev:docs        # → http://localhost:4321
+pnpm build:docs      # production build to docs-site/dist/
 ```
 
-Starlight looks for `.md` or `.mdx` files in the `src/content/docs/` directory. Each file is exposed as a route based on its file name.
+Or from inside this directory:
 
-Images can be added to `src/assets/` and embedded in Markdown with a relative link.
+```sh
+pnpm dev             # astro dev → http://localhost:4321
+pnpm build           # astro build
+pnpm preview         # preview the production build
+```
 
-Static assets, like favicons, can be placed in the `public/` directory.
+## Structure
 
-## 🧞 Commands
+- `src/content/docs/` — the pages. Each `.md`/`.mdx` file is a route based on its path
+  (e.g. `concepts/operation-graphs.md` → `/concepts/operation-graphs`).
+- `src/components/` & `src/lib/` — React islands and their logic, e.g. the
+  **“Draw in the DWT domain”** demo and `src/lib/dwt.ts` (the DWT math ported from the
+  toolbox so the demo stays numerically identical).
+- `src/assets/` — images embedded in Markdown via relative links.
+- `public/` — static assets (favicons, etc.).
+- `astro.config.mjs` — Starlight config, including the React, `remark-math`, and
+  `rehype-katex` integrations.
 
-All commands are run from the root of the project, from a terminal:
+## Authoring notes
 
-| Command                   | Action                                           |
-| :------------------------ | :----------------------------------------------- |
-| `pnpm install`             | Installs dependencies                            |
-| `pnpm dev`             | Starts local dev server at `localhost:4321`      |
-| `pnpm build`           | Build your production site to `./dist/`          |
-| `pnpm preview`         | Preview your build locally, before deploying     |
-| `pnpm astro ...`       | Run CLI commands like `astro add`, `astro check` |
-| `pnpm astro -- --help` | Get help using the Astro CLI                     |
-
-## 👀 Want to learn more?
-
-Check out [Starlight’s docs](https://starlight.astro.build/), read [the Astro documentation](https://docs.astro.build), or jump into the [Astro Discord server](https://astro.build/chat).
+- **Maths:** inline `$…$` and display `$$…$$` render via KaTeX. The KaTeX stylesheet is
+  wired in `astro.config.mjs`.
+- **Interactive demos:** add a React component and mount it as an island with a
+  `client:*` directive (e.g. `client:visible`) from an `.mdx` page. Keep any shared math
+  in `src/lib/` so the docs and the toolbox don't drift.

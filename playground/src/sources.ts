@@ -106,7 +106,104 @@ const grayScottSeed: SourceSpec = {
   },
 };
 
-export const SOURCES: SourceSpec[] = [ringPoints, blobPoints, grayScottSeed];
+const noiseGrid: SourceSpec = {
+  name: "noiseGrid",
+  label: "Noise field",
+  describe: "A noise grid — white (per-pixel) or value (smooth lattice) noise.",
+  outputs: [{ name: "out", kind: "grid" }],
+  params: [
+    { name: "width", type: "int", default: 96, min: 8, max: 256 },
+    { name: "height", type: "int", default: 96, min: 8, max: 256 },
+    { name: "kind", type: "enum", default: "value", options: ["white", "value"] },
+    { name: "scale", type: "number", default: 12, min: 2, max: 64, step: 1, describe: "value-noise feature size (px)" },
+    { name: "seed", type: "int", default: 1, min: 1, max: 9999 },
+    { name: "amp", type: "number", default: 1, min: 0, max: 8, step: 0.1 },
+  ],
+  make(g, params) {
+    const w = params.width as number, h = params.height as number;
+    const amp = params.amp as number, seed = params.seed as number;
+    const data = new Float32Array(w * h);
+    if (params.kind === "value") {
+      const scale = Math.max(2, params.scale as number);
+      const gw = Math.ceil(w / scale) + 2, gh = Math.ceil(h / scale) + 2;
+      const lat = new Float32Array(gw * gh);
+      const rng = mulberry32(seed);
+      for (let i = 0; i < lat.length; i++) lat[i] = rng() * 2 - 1;
+      const sm = (t: number) => t * t * (3 - 2 * t); // smoothstep
+      for (let y = 0; y < h; y++) {
+        for (let x = 0; x < w; x++) {
+          const fx = x / scale, fy = y / scale;
+          const x0 = Math.floor(fx), y0 = Math.floor(fy);
+          const tx = sm(fx - x0), ty = sm(fy - y0);
+          const v00 = lat[y0 * gw + x0]!, v10 = lat[y0 * gw + x0 + 1]!;
+          const v01 = lat[(y0 + 1) * gw + x0]!, v11 = lat[(y0 + 1) * gw + x0 + 1]!;
+          const a = v00 + (v10 - v00) * tx, b = v01 + (v11 - v01) * tx;
+          data[y * w + x] = (a + (b - a) * ty) * amp;
+        }
+      }
+    } else {
+      const rng = mulberry32(seed);
+      for (let i = 0; i < data.length; i++) data[i] = (rng() * 2 - 1) * amp;
+    }
+    return { out: g.grid(data, w, h) };
+  },
+};
+
+const waveGrid: SourceSpec = {
+  name: "waveGrid",
+  label: "Wave field",
+  describe: "A periodic grid — sine grating, radial rings, or checkerboard.",
+  outputs: [{ name: "out", kind: "grid" }],
+  params: [
+    { name: "width", type: "int", default: 96, min: 8, max: 256 },
+    { name: "height", type: "int", default: 96, min: 8, max: 256 },
+    { name: "kind", type: "enum", default: "sine", options: ["sine", "radial", "checker"] },
+    { name: "freq", type: "number", default: 6, min: 0.5, max: 40, step: 0.5, describe: "cycles across the field" },
+    { name: "angle", type: "number", default: 0, min: 0, max: 180, step: 5, describe: "grating angle (deg)" },
+    { name: "amp", type: "number", default: 1, min: 0, max: 8, step: 0.1 },
+  ],
+  make(g, params) {
+    const w = params.width as number, h = params.height as number;
+    const freq = params.freq as number, amp = params.amp as number;
+    const ang = ((params.angle as number) * Math.PI) / 180;
+    const ca = Math.cos(ang), sa = Math.sin(ang);
+    const kind = params.kind as string;
+    const data = new Float32Array(w * h);
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const u = x / w - 0.5, v = y / h - 0.5;
+        let val: number;
+        if (kind === "radial") val = Math.cos(2 * Math.PI * freq * Math.hypot(u, v));
+        else if (kind === "checker") val = (Math.floor((x / w) * freq) + Math.floor((y / h) * freq)) % 2 === 0 ? 1 : -1;
+        else val = Math.cos(2 * Math.PI * freq * (u * ca + v * sa)); // grating along the angle
+        data[y * w + x] = val * amp;
+      }
+    }
+    return { out: g.grid(data, w, h) };
+  },
+};
+
+const grayScottSeedComplex: SourceSpec = {
+  name: "grayScottSeedComplex",
+  label: "Gray–Scott seed (complex)",
+  describe: "Reaction–diffusion seed as a single complex field (re = U, im = V) — feeds Reaction–diffusion (complex).",
+  outputs: [{ name: "state", kind: "grid" }],
+  params: [{ name: "size", type: "int", default: 96, min: 16, max: 256 }],
+  make(g, params) {
+    const size = params.size as number;
+    const seed = seedGrayScott(size, size, 0.05);
+    const data = new Float32Array(size * size * 2); // interleaved [U, V] = complex (re, im)
+    for (let i = 0; i < size * size; i++) {
+      data[i * 2] = seed.u[i]!;
+      data[i * 2 + 1] = seed.v[i]!;
+    }
+    return {
+      state: g.source({ shape: { kind: "grid", width: size, height: size }, dtype: "f32", element: { kind: "complex" }, data }),
+    };
+  },
+};
+
+export const SOURCES: SourceSpec[] = [ringPoints, blobPoints, grayScottSeed, grayScottSeedComplex, noiseGrid, waveGrid];
 
 const byName = new Map(SOURCES.map((s) => [s.name, s]));
 export function getSource(name: string): SourceSpec | undefined {

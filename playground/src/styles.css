@@ -130,3 +130,103 @@ body { background: var(--bg); color: var(--text); font: 13px/1.4 ui-sans-serif, 
 .preview-canvas.is-stale, .preview-svg.is-stale { opacity: 0.55; }
 .preview-empty { color: var(--muted); font-size: 12px; min-height: 300px; display: flex; align-items: center; justify-content: center; text-align: center; border: 1px dashed var(--line); border-radius: 6px; padding: 0 16px; }
 .preview-error { color: #ff8a9a; font-size: 12px; margin-top: 10px; white-space: pre-wrap; }
+
+/* --- palette filter + category groups --- */
+.palette-filter {
+  width: 100%; box-sizing: border-box; margin: 6px 0 10px;
+  padding: 6px 9px; background: var(--panel2); border: 1px solid var(--line);
+  border-radius: 6px; color: var(--text); font-size: 13px; outline: none;
+}
+.palette-filter:focus { border-color: var(--accent); }
+.palette-group { margin-bottom: 2px; }
+.palette-group h2 { margin: 12px 0 5px; }
+
+/* --- `/` command palette --- */
+.cmd-overlay {
+  position: fixed; inset: 0; z-index: 1000; padding-top: 12vh;
+  display: flex; align-items: flex-start; justify-content: center;
+  background: rgba(0, 0, 0, 0.45);
+}
+.cmd-panel {
+  width: min(520px, 90vw); max-height: 62vh; display: flex; flex-direction: column;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.5); overflow: hidden;
+}
+.cmd-input {
+  padding: 12px 14px; background: var(--panel2); border: none;
+  border-bottom: 1px solid var(--line); color: var(--text); font-size: 15px; outline: none;
+}
+.cmd-list { overflow-y: auto; padding: 4px; }
+.cmd-item {
+  display: flex; width: 100%; align-items: center; justify-content: space-between; gap: 8px;
+  padding: 7px 10px; background: transparent; border: none; border-radius: 6px;
+  color: var(--text); font-size: 13px; text-align: left; cursor: pointer;
+}
+.cmd-item.active { background: var(--accent); color: #08111f; }
+.cmd-item.active .cmd-cat { color: #08111f; opacity: 0.7; }
+.cmd-label { font-weight: 500; }
+.cmd-cat { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; }
+.cmd-empty { padding: 16px; color: var(--muted); text-align: center; }
+
+/* --- op help (description + rendered math) --- */
+.op-help {
+  margin: 6px 0 12px; padding: 10px 12px;
+  background: var(--panel2); border: 1px solid var(--line); border-radius: 8px;
+}
+.op-help-detail { margin: 0 0 8px; font-size: 12.5px; color: var(--text); line-height: 1.45; }
+.op-help-math {
+  overflow-x: auto; padding: 4px 2px; color: var(--text);
+  font-size: 15px;
+}
+.op-help-math:not(:first-child) { border-top: 1px solid var(--line); padding-top: 10px; }
+.katex-host { color: var(--text); }
+
+/* --- foldable palette category heads --- */
+.palette-group-head {
+  display: flex; align-items: center; gap: 6px; width: 100%;
+  margin: 12px 0 5px; padding: 2px 0;
+  background: none; border: none; cursor: pointer; text-align: left;
+  color: var(--muted); font-size: 11px; font-weight: 600;
+  text-transform: uppercase; letter-spacing: 0.06em;
+}
+.palette-group-head:hover { color: var(--text); }
+.palette-group-head .fold { width: 10px; font-size: 9px; color: var(--muted); }
+.palette-group-name { flex: 1; }
+.palette-group-count { color: var(--muted); font-weight: 400; opacity: 0.65; }
+
+/* --- node help hover tooltip --- */
+.help-tip {
+  position: fixed; z-index: 1200; width: 300px; max-height: 70vh; overflow: hidden;
+  pointer-events: none;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5); padding: 10px 12px;
+}
+.help-tip-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin-bottom: 5px; }
+.help-tip-title { font-weight: 600; font-size: 13px; color: var(--text); }
+.help-tip-cat { font-size: 10px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); white-space: nowrap; }
+.help-tip-desc { font-size: 12px; color: var(--text); line-height: 1.4; margin-bottom: 6px; }
+.help-tip-detail { font-size: 11.5px; color: var(--muted); line-height: 1.4; margin-bottom: 8px; }
+.help-tip-math { overflow-x: auto; font-size: 14px; color: var(--text); padding: 6px 0 2px; border-top: 1px solid var(--line); }
+.help-tip-io { margin-top: 8px; font-size: 10.5px; color: var(--muted); font-family: ui-monospace, monospace; }
+
+/* --- preview lane/projection selector (complex / vec fields) --- */
+.preview-lane {
+  margin: 0 0 6px; padding: 3px 6px; font-size: 11px;
+  background: var(--panel2); border: 1px solid var(--line); border-radius: 5px; color: var(--text);
+}
+
+/* --- port/edge type+data hover tooltip --- */
+.field-tip {
+  position: fixed; z-index: 1300; pointer-events: none;
+  min-width: 150px; max-width: 230px;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5); padding: 8px 10px;
+}
+.field-tip-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.field-tip-title { font-weight: 600; font-size: 12px; color: var(--text); font-family: ui-monospace, monospace; }
+.field-tip-kind { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+.field-tip-type { margin-top: 4px; font-size: 11px; color: var(--accent); font-family: ui-monospace, monospace; line-height: 1.3; }
+.field-tip-type.muted { color: var(--muted); }
+.field-tip-canvas { margin-top: 7px; display: block; max-width: 100%; border: 1px solid var(--line); border-radius: 4px; image-rendering: pixelated; }
+.field-tip-scalar { margin-top: 6px; font-size: 14px; font-family: ui-monospace, monospace; color: var(--text); }
+.field-tip-note { margin-top: 6px; font-size: 11px; color: var(--muted); }

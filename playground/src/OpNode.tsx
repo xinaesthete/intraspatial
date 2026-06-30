@@ -1,20 +1,23 @@
 // Custom React Flow node: title + one Handle per declared input/output port. Ports
 // are typed by shape kind (shown in the handle tooltip); editing of params happens
 // in the inspector panel, so the node itself stays compact.
+import { useContext } from "react";
 import { Handle, Position } from "@xyflow/react";
 import type { NodeProps } from "@xyflow/react";
 import { getSpec } from "./specs";
 import type { NodeData } from "./buildGraph";
 import { kindColor } from "./portKinds";
+import { PortHoverContext } from "./PortHover";
 
 function portTop(i: number, count: number): string {
   return `${((i + 1) / (count + 1)) * 100}%`;
 }
 
-export function OpNode({ data, selected }: NodeProps) {
+export function OpNode({ id, data, selected }: NodeProps) {
   const d = data as unknown as NodeData;
   const spec = getSpec(d.opName);
   const rows = Math.max(spec.inputs.length, spec.outputs.length, 1);
+  const hover = useContext(PortHoverContext);
 
   return (
     <div className={`opnode ${spec.isSource ? "source" : ""} ${selected ? "selected" : ""}`} style={{ minHeight: 28 + rows * 18 }}>
@@ -25,7 +28,8 @@ export function OpNode({ data, selected }: NodeProps) {
           id={p.name}
           type="target"
           position={Position.Left}
-          title={`${p.name}: ${p.kind}`}
+          onMouseEnter={(e) => hover?.onPortEnter(id, p.name, true, p.kind, e.currentTarget.getBoundingClientRect())}
+          onMouseLeave={() => hover?.onPortLeave()}
           style={{ top: portTop(i, spec.inputs.length), background: kindColor(p.kind) }}
         />
       ))}
@@ -35,7 +39,8 @@ export function OpNode({ data, selected }: NodeProps) {
           id={p.name}
           type="source"
           position={Position.Right}
-          title={`${p.name}: ${p.kind}`}
+          onMouseEnter={(e) => hover?.onPortEnter(id, p.name, false, p.kind, e.currentTarget.getBoundingClientRect())}
+          onMouseLeave={() => hover?.onPortLeave()}
           style={{ top: portTop(i, spec.outputs.length), background: kindColor(p.kind) }}
         />
       ))}

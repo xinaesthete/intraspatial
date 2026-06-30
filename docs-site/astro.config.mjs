@@ -2,12 +2,17 @@
 import { defineConfig, passthroughImageService } from 'astro/config';
 import starlight from '@astrojs/starlight';
 import react from '@astrojs/react';
+import remarkMath from 'remark-math';
+import rehypeKatex from 'rehype-katex';
 
 // https://astro.build/config
 export default defineConfig({
   // Avoid the native `sharp` image pipeline (its build script is skipped under
   // pnpm); these docs use no optimised images.
   image: { service: passthroughImageService() },
+  // Math: `$inline$` / `$$display$$` in Markdown → KaTeX (CSS loaded via Starlight
+  // customCss below). Shared with the playground's KaTeX op-help rendering.
+  markdown: { remarkPlugins: [remarkMath], rehypePlugins: [rehypeKatex] },
   // Let components import the toolbox's own source (one level up, e.g.
   // `../../../src/spatial/...`) so demos are driven by the real library code
   // rather than re-ported copies.
@@ -18,6 +23,7 @@ export default defineConfig({
       title: 'GPU Spatial Primitives',
       description:
         'Composable, interpretable GPU primitives for discrete-cell spatial analysis (TypeGPU / WebGPU).',
+      customCss: ['katex/dist/katex.min.css'],
       social: [
         { icon: 'github', label: 'GitHub', href: 'https://github.com/' },
       ],
@@ -27,6 +33,7 @@ export default defineConfig({
           items: [
             { label: 'Overview', slug: 'index' },
             { label: 'Composable & interpretable', slug: 'concepts/composable-interpretable' },
+            { label: 'FAIR by design', slug: 'concepts/fair' },
             { label: 'Roadmap & status', slug: 'roadmap' },
           ],
         },
