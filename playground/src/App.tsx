@@ -52,6 +52,7 @@ import { defaultParamsFor, getSpec, listOpSpecs, listSourceSpecs } from "./specs
 import type { NodeSpec } from "./specs";
 import { CATEGORY_ORDER } from "./opMeta";
 import { CommandPalette } from "./CommandPalette";
+import { HelpTooltip } from "./HelpTooltip";
 import { MathTex } from "./Math";
 import { EXAMPLES } from "./examples";
 import type { Example } from "./examples";
@@ -132,6 +133,27 @@ export default function App() {
   const paneScreenPos = useRef<{ x: number; y: number } | null>(null);
   // All insertable node specs (sources + ops), grouped for the palette + command list.
   const allSpecs = useMemo(() => [...listSourceSpecs(), ...listOpSpecs()], []);
+  // Foldable palette categories + a rich hover tooltip (description + math).
+  const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
+  const [hoverHelp, setHoverHelp] = useState<{ spec: NodeSpec; rect: DOMRect } | null>(null);
+  const hoverTimer = useRef<number | undefined>(undefined);
+  const toggleCategory = useCallback((cat: string) => {
+    setCollapsed((s) => {
+      const n = new Set(s);
+      if (n.has(cat)) n.delete(cat);
+      else n.add(cat);
+      return n;
+    });
+  }, []);
+  const showHelp = useCallback((spec: NodeSpec, el: HTMLElement) => {
+    window.clearTimeout(hoverTimer.current);
+    const rect = el.getBoundingClientRect();
+    hoverTimer.current = window.setTimeout(() => setHoverHelp({ spec, rect }), 220);
+  }, []);
+  const hideHelp = useCallback(() => {
+    window.clearTimeout(hoverTimer.current);
+    setHoverHelp(null);
+  }, []);
   const hasFeedback = useMemo(
     () => graphHasFeedback(nodes) || Object.values(defs).some((d) => defHasFeedback(d, defs)),
     [nodes, defs],
@@ -606,21 +628,31 @@ export default function App() {
           value={paletteFilter}
           onChange={(e) => setPaletteFilter(e.target.value)}
         />
-        {groupByCategory(allSpecs, paletteFilter).map((group) => (
-          <div key={group.category} className="palette-group">
-            <h2>{group.category}</h2>
-            {group.specs.map((s) => (
-              <button
-                key={s.name}
-                className={`palette-btn${s.isSource ? " source" : ""}`}
-                title={s.describe}
-                onClick={() => addNode(s.name)}
-              >
-                {s.label}
+        {groupByCategory(allSpecs, paletteFilter).map((group) => {
+          // While filtering, force every matching group open.
+          const isCollapsed = collapsed.has(group.category) && !paletteFilter.trim();
+          return (
+            <div key={group.category} className="palette-group">
+              <button className="palette-group-head" onClick={() => toggleCategory(group.category)}>
+                <span className="fold">{isCollapsed ? "▸" : "▾"}</span>
+                <span className="palette-group-name">{group.category}</span>
+                <span className="palette-group-count">{group.specs.length}</span>
               </button>
-            ))}
-          </div>
-        ))}
+              {!isCollapsed &&
+                group.specs.map((s) => (
+                  <button
+                    key={s.name}
+                    className={`palette-btn${s.isSource ? " source" : ""}`}
+                    onClick={() => addNode(s.name)}
+                    onMouseEnter={(e) => showHelp(s, e.currentTarget)}
+                    onMouseLeave={hideHelp}
+                  >
+                    {s.label}
+                  </button>
+                ))}
+            </div>
+          );
+        })}
         {Object.keys(defs).length > 0 && (
           <>
             <h2>Subgraphs</h2>
@@ -851,6 +883,7 @@ export default function App() {
           onClose={() => setCmdOpen(false)}
         />
       )}
+      {hoverHelp && <HelpTooltip spec={hoverHelp.spec} rect={hoverHelp.rect} />}
     </div>
   );
 }
