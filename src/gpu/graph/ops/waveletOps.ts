@@ -1,0 +1,126 @@
+// Wavelet-domain ops (ADR-0006): move a grid between the spatial basis and the
+// wavelet (Mallat coefficient) basis, and operate on detail coefficients in between.
+// The classic chain `fdwt → thresholdDetail → idwt` is a wavelet denoise, the
+// project's headline "prove the pair as a tool" exercise — here as composable graph
+// nodes. CPU Tier-1 (the reference math is the same one the docs demo uses); a GPU
+// path can wrap the existing FDWT/IDWT kernels later.
+//
+// These are an OPT-IN op pack (`registerWaveletOps()`), NOT eagerly registered — see
+// the Dawn-on-Node teardown lesson in ADR-0004 (eager module-graph growth on the base
+// registry tipped unrelated render-fork GPU tests over).
+import type { FieldValue, Shape } from "../handle";
+import type { OpType, Params } from "../op";
+import { dwtBands, fdwt2d, idwt2d, isDetailBand } from "../dwt";
+import type { Kernel } from "../dwt";
+
+function gridShape(s: Shape): { width: number; height: number } {
+  if (s.kind !== "grid") throw new Error("wavelet op: input must be a grid");
+  return { width: s.width, height: s.height };
+}
+
+const kernelOf = (params: Params): Kernel => (params.kernel === "9/7" ? "9/7" : "5/3");
+const levelsOf = (params: Params): number => Math.max(1, (params.levels as number) | 0);
+
+const KERNEL_PARAM = {
+  name: "kernel",
+  type: "enum" as const,
+  default: "5/3",
+  options: ["5/3", "9/7"],
+  describe: "5/3 reversible (lossless) or 9/7 irreversible (lossy)",
+};
+const LEVELS_PARAM = { name: "levels", type: "int" as const, default: 3, min: 1, max: 8, describe: "decomposition levels" };
+
+/** Forward DWT: spatial grid → packed Mallat coefficient grid (same shape). */
+export const fdwtOp: OpType = {
+  name: "fdwt",
+  label: "Forward DWT",
+  describe: "Separable 2D wavelet transform → packed coefficient grid (the wavelet-domain representation).",
+  inputs: [{ name: "in", kind: "grid" }],
+  outputs: [{ name: "coeffs", kind: "grid", dtype: "f32" }],
+  params: [KERNEL_PARAM, LEVELS_PARAM],
+  inferShapes: (inputs) => {
+    gridShape(inputs[0]!);
+    return [inputs[0]!];
+  },
+  async execute(_ctx, inputs, params) {
+    const { width, height } = gridShape(inputs[0]!.shape);
+    const data = fdwt2d(inputs[0]!.data!, width, height, kernelOf(params), levelsOf(params));
+    return [{ shape: inputs[0]!.shape, dtype: "f32", data }];
+  },
+  cpuGolden(inputs, params) {
+    const { width, height } = gridShape(inputs[0]!.shape);
+    return [{ shape: inputs[0]!.shape, dtype: "f32", data: fdwt2d(inputs[0]!.data!, width, height, kernelOf(params), levelsOf(params)) }];
+  },
+};
+
+/** Inverse DWT: packed coefficient grid → spatial grid (same shape). */
+export const idwtOp: OpType = {
+  name: "idwt",
+  label: "Inverse DWT",
+  describe: "Inverse separable 2D wavelet transform → resynthesised spatial grid.",
+  inputs: [{ name: "coeffs", kind: "grid" }],
+  outputs: [{ name: "out", kind: "grid", dtype: "f32" }],
+  params: [KERNEL_PARAM, LEVELS_PARAM],
+  inferShapes: (inputs) => {
+    gridShape(inputs[0]!);
+    return [inputs[0]!];
+  },
+  async execute(_ctx, inputs, params) {
+    const { width, height } = gridShape(inputs[0]!.shape);
+    const data = idwt2d(inputs[0]!.data!, width, height, kernelOf(params), levelsOf(params));
+    return [{ shape: inputs[0]!.shape, dtype: "f32", data }];
+  },
+  cpuGolden(inputs, params) {
+    const { width, height } = gridShape(inputs[0]!.shape);
+    return [{ shape: inputs[0]!.shape, dtype: "f32", data: idwt2d(inputs[0]!.data!, width, height, kernelOf(params), levelsOf(params)) }];
+  },
+};
+
+/** Shrink detail coefficients toward zero, leaving the LL approximation untouched —
+ *  the denoising/compression operator in the wavelet basis. Soft = sign(x)·max(|x|−t,0)
+ *  (the standard wavelet-shrinkage estimator); hard = zero below t. */
+function thresholdDetail(coeffs: ArrayLike<number>, width: number, height: number, levels: number, t: number, soft: boolean): Float32Array {
+  const out = Float32Array.from(coeffs);
+  for (const band of dwtBands(width, height, levels)) {
+    if (!isDetailBand(band)) continue;
+    for (let y = band.y; y < band.y + band.h; y++) {
+      for (let x = band.x; x < band.x + band.w; x++) {
+        const i = y * width + x;
+        const v = out[i]!;
+        if (soft) out[i] = Math.sign(v) * Math.max(Math.abs(v) - t, 0);
+        else if (Math.abs(v) < t) out[i] = 0;
+      }
+    }
+  }
+  return out;
+}
+
+/** Threshold detail subbands of a packed coefficient grid (wavelet shrinkage). */
+export const thresholdDetailOp: OpType = {
+  name: "thresholdDetail",
+  label: "Threshold detail",
+  describe: "Wavelet-shrinkage: soft/hard threshold detail subbands, leave the LL approximation.",
+  inputs: [{ name: "coeffs", kind: "grid" }],
+  outputs: [{ name: "out", kind: "grid", dtype: "f32" }],
+  params: [
+    LEVELS_PARAM,
+    { name: "thresh", type: "number", default: 4, min: 0, max: 256, step: 0.5, describe: "shrinkage threshold" },
+    { name: "soft", type: "bool", default: true, describe: "soft shrinkage instead of hard zeroing" },
+  ],
+  inferShapes: (inputs) => {
+    gridShape(inputs[0]!);
+    return [inputs[0]!];
+  },
+  async execute(_ctx, inputs, params) {
+    return [thresholdDetailFV(inputs[0]!, params)];
+  },
+  cpuGolden(inputs, params) {
+    return [thresholdDetailFV(inputs[0]!, params)];
+  },
+};
+
+function thresholdDetailFV(input: FieldValue, params: Params): FieldValue {
+  const { width, height } = gridShape(input.shape);
+  const data = thresholdDetail(input.data!, width, height, levelsOf(params), params.thresh as number, params.soft as boolean);
+  return { shape: input.shape, dtype: "f32", data };
+}

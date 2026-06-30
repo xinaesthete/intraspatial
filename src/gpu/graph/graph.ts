@@ -6,7 +6,8 @@
 //
 // Edges are *derived* from each node's `inputs` map (a RAW dependency on the
 // referenced producer); they are never hand-declared.
-import type { FieldValue, GpuField, NodeId, Shape } from "./handle";
+import type { ElementType, FieldValue, GpuField, NodeId, Shape } from "./handle";
+import { SCALAR } from "./handle";
 import type { Params } from "./op";
 import { getOp } from "./registry";
 
@@ -51,7 +52,7 @@ export class Graph {
   source(value: FieldValue, label = "source"): GpuField {
     const id = this.nextNodeId(label);
     this.nodes.set(id, { id, op: "source", params: {}, inputs: {}, source: value });
-    return makeField(id, "out", value.shape, value.dtype ?? "f32");
+    return makeField(id, "out", value.shape, value.dtype ?? "f32", value.element ?? SCALAR);
   }
 
   /** A points source from parallel x/y arrays, packed as [x0,y0,x1,y1,...]. */
@@ -88,7 +89,7 @@ export class Graph {
       stableKey: key ?? id,
     };
     this.nodes.set(id, node);
-    const state = makeField(id, "state", init.shape, init.dtype);
+    const state = makeField(id, "state", init.shape, init.dtype, init.element ?? SCALAR);
     return {
       state,
       close: (next: GpuField) => {
@@ -102,11 +103,13 @@ export class Graph {
     const def = getOp(name);
     const inputRefs: Record<string, EdgeRef> = {};
     const inShapes: Shape[] = [];
+    const inElements: ElementType[] = [];
     for (const spec of def.inputs) {
       const f = inputs[spec.name];
       if (!f) throw new Error(`graph.op(${name}): missing input "${spec.name}"`);
       inputRefs[spec.name] = { node: f.producer, port: f.outPort };
       inShapes.push(f.shape);
+      inElements.push(f.element ?? SCALAR);
     }
     // Declared defaults first, then overlay everything the caller supplied — this
     // keeps undeclared pass-through params (e.g. an explicit `bbox`) that ops read
@@ -115,9 +118,14 @@ export class Graph {
     for (const p of def.params) merged[p.name] = p.default;
     Object.assign(merged, params);
     const outShapes = def.inferShapes(inShapes, merged);
+    // Element inference is opt-in; ops that don't declare it keep the legacy
+    // all-scalar contract (ADR-0004). Rejection of a wrong element happens here.
+    const outElements = def.inferElements
+      ? def.inferElements(inElements, merged)
+      : def.outputs.map(() => SCALAR);
     const id = this.nextNodeId(name);
     this.nodes.set(id, { id, op: name, params: merged, inputs: inputRefs });
-    return def.outputs.map((o, i) => makeField(id, o.name, outShapes[i]!, o.dtype ?? "f32"));
+    return def.outputs.map((o, i) => makeField(id, o.name, outShapes[i]!, o.dtype ?? "f32", outElements[i] ?? SCALAR));
   }
 
   /** Convenience for single-output ops. */
@@ -147,6 +155,12 @@ export class Graph {
   }
 }
 
-function makeField(producer: NodeId, outPort: string, shape: Shape, dtype: GpuField["dtype"]): GpuField {
-  return { id: fieldSeq++, shape, dtype, producer, outPort, version: 0 };
+function makeField(
+  producer: NodeId,
+  outPort: string,
+  shape: Shape,
+  dtype: GpuField["dtype"],
+  element: ElementType = SCALAR,
+): GpuField {
+  return { id: fieldSeq++, shape, dtype, element, producer, outPort, version: 0 };
 }

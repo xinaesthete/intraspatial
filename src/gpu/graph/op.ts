@@ -6,7 +6,7 @@
 // context and resolved input `FieldValue`s, and returns output `FieldValue`s. The
 // registry keys these by name so the React Flow palette can list and instantiate
 // them.
-import type { Dtype, FieldValue, Shape, ShapeKind } from "./handle";
+import type { Dtype, ElementType, FieldValue, Shape, ShapeKind } from "./handle";
 import type { GpuBackend } from "./backend";
 
 export interface PortSpec {
@@ -50,6 +50,11 @@ export interface OpType {
   /** Derive output shapes from input shapes + params, so the graph can validate
    *  connections and size pools before running. */
   inferShapes(inputs: Shape[], params: Params): Shape[];
+  /** Derive output element algebras from input elements + params (ADR-0004). Absent
+   *  ⇒ every output is `scalar` (the legacy default). Runs at graph-build time, so an
+   *  op rejects a wrong element here (e.g. `complexMul` on a vec field) — this is the
+   *  build-time element type-check. Positional inputs match `inputs`. */
+  inferElements?(inputs: ElementType[], params: Params): ElementType[];
   /** Run the op. Inputs are positional, matching `inputs`; outputs positional,
    *  matching `outputs`. */
   execute(ctx: ExecCtx, inputs: FieldValue[], params: Params): Promise<FieldValue[]>;
