@@ -13,6 +13,12 @@
       "runtimeExecutable": "volta",
       "runtimeArgs": ["run", "--node", "22", "pnpm", "--dir", "playground", "exec", "vite"],
       "port": 5188
+    },
+    {
+      "name": "playground-direct",
+      "runtimeExecutable": "bash",
+      "runtimeArgs": ["-lc", "cd playground && volta run --node 22 node node_modules/vite/bin/vite.js --port 5188 --strictPort"],
+      "port": 5188
     }
   ]
 }

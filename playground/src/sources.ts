@@ -6,6 +6,7 @@ import { Graph } from "../../src/gpu/graph";
 import type { GpuField, ShapeKind } from "../../src/gpu/graph";
 import type { ParamSpec, Params } from "../../src/gpu/graph";
 import { seedGrayScott } from "../../src/gpu/sim/reactionDiffusion";
+import { packSwarm, seedSwarm } from "../../src/gpu/sim/danceField";
 
 export interface SourceSpec {
   name: string;
@@ -203,7 +204,34 @@ const grayScottSeedComplex: SourceSpec = {
   },
 };
 
-export const SOURCES: SourceSpec[] = [ringPoints, blobPoints, grayScottSeed, grayScottSeedComplex, noiseGrid, waveGrid];
+// A swarm seed for the dance field: N agents on a jittered spherical shell, carried as
+// one vec3 `points` field of 2N rows — rows [0,N) positions, [N,2N) velocities (zero at
+// birth) — the packing danceField reads (see src/gpu/sim/danceField.ts). One feedback
+// node then carries the whole pos+vel state around the loop.
+const danceSwarmSeed: SourceSpec = {
+  name: "danceSwarmSeed",
+  label: "Dance swarm seed",
+  describe: "A cloud of agents (pos ‖ vel) to seed the dance field.",
+  outputs: [{ name: "state", kind: "points" }],
+  params: [
+    { name: "n", type: "int", default: 220, min: 8, max: 800, describe: "agent count" },
+    { name: "seed", type: "int", default: 1, min: 1, max: 9999 },
+  ],
+  make(g, params) {
+    const n = params.n as number, seed = params.seed as number;
+    const swarm = seedSwarm(n, seed);
+    return {
+      state: g.source({
+        shape: { kind: "points", n: n * 2 },
+        dtype: "f32",
+        element: { kind: "vec", n: 3 },
+        data: packSwarm(swarm),
+      }, "danceSwarmSeed"),
+    };
+  },
+};
+
+export const SOURCES: SourceSpec[] = [ringPoints, blobPoints, grayScottSeed, grayScottSeedComplex, noiseGrid, waveGrid, danceSwarmSeed];
 
 const byName = new Map(SOURCES.map((s) => [s.name, s]));
 export function getSource(name: string): SourceSpec | undefined {

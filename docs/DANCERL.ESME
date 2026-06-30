@@ -1,0 +1,2782 @@
+/*---------------------------------------------------------------------*/
+/* DANCERL : Pseudo field based very high level movement control       */
+/*           Special hacked version to work with Movie & Lifecycl      */
+/*           for William's SIGGRAPH film                               */
+/*                                                                     */
+/* Written by Andy Lomas : Started 27.04.92                            */
+/*                         Last Modified 26.06.92                      */
+/*---------------------------------------------------------------------*/
+ 
+/*---------------------------------------------------------------------*/
+/* Notes : This version uses frame numbers as the basic unit of time   */
+/*---------------------------------------------------------------------*/
+ 
+/*---------------------------------------------------------------------*/
+/* Force Influences: Each point holds a list of all the forces which   */
+/*                   currently influence it                            */
+/*                                                                     */
+/*                                                                     */
+/* Currently Implemented Force Influences:                             */
+/*                                                                     */
+/* SetCollision(OName,PNum,Str)                                        */
+/*  - sets the strength of collision force at Object OName point PNum  */
+/*    to Str                                                           */
+/*                                                                     */
+/* SetRadius(OName,PNum,Rad)                                           */
+/*  - sets the radius of object OName at point PNum to Rad             */
+/*                                                                     */
+/* SetDistance(O1Name,P1Num,O2Name,P2Num,Dist,Str                      */
+/*  - sets the distance Dist that Object O1Name at point P1Num tries   */
+/*    to maintain from object O2Name at point P2Num with strength Str  */
+/*                                                                     */
+/* SetConstraint(OName,PNum,Str)                                       */
+/*  - sets the strength with which object OName at point PNum is       */
+/*    affected by the global constraining force to Str                 */
+/*                                                                     */
+/* SetSolenoid(OName,PNum,Str)                                         */
+/*  - sets the strength with which object OName at point PNum is       */
+/*    affected by a single coil solenoid pattern force                 */
+/*                                                                     */
+/* SetCircle(OName,PNum,Str)                                           */
+/*  - sets the strength with which object OName at point PNum is       */
+/*    affected by a circular stiring force (about the y axis)          */
+/*                                                                     */
+/* SetOrbit(OName,PNum,Str)                                            */
+/*  - sets the strength with which object OName at point PNum tends    */
+/*    to orbit around the centre of the scene                          */
+/*                                                                     */
+/* SetOrbit(O1Name,P1Num,O2Name,P2Num,Str)                             */
+/*  - sets the strength with which object O1Name at point P1Num tends  */
+/*    to orbit around object O2Name at point P2Num                     */
+/*                                                                     */
+/*                                                                     */
+/* Functions to reset Forces Influences etc...                         */
+/*                                                                     */
+/* ResetObjects()                                                      */
+/*  - resets the object list to zero                                   */
+/*                                                                     */
+/* ResetInfluences                                                     */
+/*  - resets all the point influence lists to zero                     */
+/*                                                                     */
+/*---------------------------------------------------------------------*/
+ 
+TimeFactor := 0.2; /* used to scale between different timescales */
+DanceTrace := 0;
+DrawHermite := true ;
+CentreOfAttention := '';
+LastCentreAccel := (0,0,0);
+DanceStepCSG := empty;
+ 
+public_UseDancerPreview := false;
+ 
+now(cread('movie'));
+ 
+now(DefInf:= new(InfType,
+                 InfName   := ''; /* user's name for influence */
+                 InfSort   := ''; /* the sort of influence */
+                 Scope     := ''; /* whether influence is global,  */
+                                    /* from all points, or one point */
+                 Parm1     := 0;  /* Parameters, used by different */
+                 Parm2     := 0;  /* influences in different ways  */
+                 Vec1      := (0,0,0);
+                 SecObj    := ''; /* Name and position of second */
+                 SecPoint  := 0;  /* point for ONEPOINT forces */
+                ) );
+ 
+now(arrutils('InfType') );
+ 
+now(DefPoint:= new(PointType,
+                   Pos        := (0,0,0);
+                   Rad        := 0;
+                   Mass       := 0;
+                   Force      := (0,0,0);
+                   OrigPos    := (0,0,0);
+                   Influences := array_of(DefInf, 1, 0);
+                  ) );
+ 
+now(arrutils('PointType') );
+ 
+now(DefGoal:= new(GoalType,
+                  GoalName   := ''; /* users name for goal */
+                  GoalSort   := ''; /* the type of goal */
+                  Relative   := false; /* is the time relative or abs */
+                  Pos        := (0,0,0); /* goal positon */
+                  Vel        := (0,0,0); /* goal velocity */
+                  LastAcc    := (0,0,0); /* last acceleration */
+                  GoalTime   := 0;       /* goal time */
+                  StartAct   := 0;
+                  StartTight := 0;
+                  FinishAct  := 0;
+                  Active     := false;
+                 ) );
+ 
+now(arrutils('GoalType') );
+ 
+now(DefFullObj:= new(FullObjType,
+                     Activity := 0;
+                     SelfActiv:= 0;
+                     BecomesCentre := false;
+                     StartAct := 0; /* when object starts activity */
+                     EndAct   := 0; /* when object end activity */
+                     FullyAct := 0; /* how long to full activity */
+                     Points   := array_of(DefPoint, 0, 0);
+                                /* point 0 reserved for centre */
+                     Density  := 1; /* density of object */
+                     Mass     := 1;
+                     Inertia  := 1; /* should be a tensor */
+                     InvIner  := 1; /* should also be a tensor */
+                     LinDamp  := 1; /* Linear Damping */
+                     AngDamp  := 1; /* Angular Damping */
+                     LinMom   := (0,0,0); /* Linear Momentum */
+                     AngMom   := (0,0,0); /* Angular Momentum */
+                     LinVel   := (0,0,0); /* Linear Velocity */
+                     AngVel   := (0,0,0); /* Angular Velocity */
+                     LinPos   := (0,0,0); /* Linear Position */
+                     AngPos   := (0,0,0); /* Angular Position */
+                     LastTS   := 1; /* Last Time Step */
+                     TotTrans := at(0,0,0);
+                     PreTrans := at(0,0,0);
+                     TotBirth := at(0,0,0);
+                     PreBirth := at(0,0,0);
+                     TransSet := false;
+                     Goals    := array_of(DefGoal, 1, 0);
+                     UsesDancerApprox := false;
+                    ) );
+ 
+ 
+now(Objects:= lookup_of(DefFullObj) ); /* Global Variable */
+ 
+now(ActiveObj:= array_of('', 1, 0) ); /* list of active object names */
+ 
+now(arrutils('sref') );
+now(arrutils('vec') );
+ 
+/*---------------------------------------------------------------------*/
+/* Dummy functions before proper reading of lifecycl                   */
+/*---------------------------------------------------------------------*/
+ 
+{ 'PARENTNAME' function #
+  dummy := ?sref;
+ 
+  ''
+};
+ 
+{ 'DANCER_APPROX' function #
+  dummy := ?sref;
+ 
+  say 'Dummy DANCER_APPROX: It should never have got here !!!!';
+ 
+};
+ 
+/*---------------------------------------------------------------------*/
+/* Mathematical Functions                                              */
+/*---------------------------------------------------------------------*/
+ 
+{ 'HERMITE' function #
+  P1:= ?vec;
+  V1:= ?vec;
+  TT1:= ?float;
+  P2:= ?vec;
+  V2:= ?vec;
+  TT2:= ?float;
+  tt:= ?float;
+  /* Calculates the position on a generalised hermite curve at time t */
+  /* with boundary conditions P1, V1 at time T1 and P2, V2 at time T2 */
+ 
+  if TT1<TT2 then begin /* New version scales so T1=0 */
+   T2  := TT2-TT1;
+   DT2 := T2*T2;
+   DT3 := T2*T2*T2;
+   t   := tt - TT1;
+ 
+   /* calculate coefficients of the cubic */
+   a:= 2*(P1-P2)/DT3 + (V1+V2)/DT2;
+   b:= -3*T2*(P1-P2)/DT3 - (2*T2*V1+T2*V2)/DT2;
+   c:= V1;
+   d:= T2*T2*T2*P1/DT3;
+ 
+   Result := array_of( (0,0,0) , 1 , 0); /* array to hold results */
+   Result := a*t*t*t + b*t*t + c*t + d › 3*a*t*t + 2*b*t + c;
+  end;
+  else begin
+   Result := array_of( (0,0,0) , 1, 0);
+   Result := V1 › P1 + V1 * (TT2 - TT1);
+  end;
+ 
+  Result
+};
+ 
+/*---------------------------------------------------------------------*/
+ 
+{ 'QUICKHERMITE' function #
+  P1:= ?vec;
+  V1:= ?vec;
+  P2:= ?vec;
+  V2:= ?vec;
+  T2:= ?float;
+  /* Calculates the acceleration at time t=0.5 on a hermite with */
+  /* boundary conditions P1, V1 at time 0 and P2, V2 at time T2 */
+ 
+  DT2 := T2*T2;
+  DT3 := T2*T2*T2;
+ 
+  /* calculate top two coefficients of the cubic */
+  a:= 2*(P1-P2)/DT3 + (V1+V2)/DT2;
+  b:= -3*T2*(P1-P2)/DT3 - (2*T2*V1+T2*V2)/DT2;
+ 
+  Result := 3*a + 2*b;
+ 
+  Result
+};
+ 
+/*---------------------------------------------------------------------*/
+ 
+{ 'CENTREOFATTENFORCE' function #
+  P1:= ?vec;
+  V1:= ?vec;
+  T2:= ?float;
+  /* Calculates the accel needed to bring an object at point P1 with */
+  /* velocity V1 to the origin still by time T2 in the future, using */
+  /* a hermite spline */
+ 
+  DT2 := T2*T2;
+  DT3 := T2*T2*T2;
+ 
+  /* calculate coefficients of the cubic */
+  a:= 2*P1/DT3 + V1/DT2;
+  b:= -3*P1/DT2 - 2*V1/T2;
+ 
+  Result := 3*a + 2*b;
+ 
+  Result
+};
+ 
+{ 'CENTREOFATTENFORCE2' function #
+  P1:= ?vec;
+  V1:= ?vec;
+  T2:= ?float;
+  /* Calculates the position on a generalised hermite curve at time t */
+  /* with boundary conditions position P1, velocity V1and accel W1 */
+  /* at time TT1 and P2, V2 and accel 0 at time TT2 */
+ 
+  W1 := LastCentreAccel;
+ 
+  DT2 := T2*T2;
+  DT3 := T2*T2*T2;
+  DT4 := T2*T2*T2*T2;
+  DT5 := T2*T2*T2*T2*T2;
+ 
+  /* calculate coefficients of the cubic */
+  a := -3*V1/DT4 - 6*P1/DT5 - W1/DT3;
+  b := 8*V1/DT3 + 15*P1/DT4 + 3*W1/DT2;
+  c := -10*P1/DT3 - 6*V1/DT2 - 3*W1/T2;
+  d := W1;
+ 
+  LastCentreAccel := ((5*a + 6*b)*0.5 + 3*c)*0.5 + d; /* Acc / 2 */
+ 
+  LastCentreAccel * 2
+};
+ 
+/*---------------------------------------------------------------------*/
+ 
+{ 'POSVELSPLINE2' function #
+  P1  := ?vec;
+  V1  := ?vec;
+  TT1 := ?float;
+  P2  := ?vec;
+  V2  := ?vec;
+  TT2 := ?float;
+  t   := ?float;
+  /* Calculates the position & velocity at time T1+t using a cubic */
+  /* polynomial spline with boundary conditions: position P1 and */
+  /* velocity V1 at time TT1; position P2, velocity V2 at time TT2 */
+ 
+  if TT1<TT2 then begin
+   /* Rescale so T1=0, T2=TT2-TT1 */
+   T2  := TT2-TT1;
+   DT2 := T2*T2;
+   DT3 := T2*T2*T2;
+ 
+   /* calculate coefficients of the cubic */
+   a:= 2*(P1-P2)/DT3 + (V1+V2)/DT2;
+   b:= -3*T2*(P1-P2)/DT3 - (2*T2*V1+T2*V2)/DT2;
+   c:= V1;
+   d:= T2*T2*T2*P1/DT3;
+ 
+   Pos := ((a*t + b)*t + c)*t + d;
+   Vel := (3*a*t + 2*b)*t + c;
+   Acc := (0,0,0);
+ 
+   Result := array_of( (0,0,0) , 1 , 0); /* array to hold results */
+   Result := Result › Pos › Vel › Acc;
+ 
+   if DrawHermite then begin
+    HermiteCSG := sphere(0.2) at(Pos) colour(2)
+                  union sphere(0.2) at(P1) colour(1)
+                  union sphere(0.2) at(P2) colour(2);
+    I := 0;
+    do(I, 0, T2, 1,
+     HermiteCSG:= HermiteCSG union
+                  sphere(0.1) at( ((a*I+b)*I+c)*I+d );
+     );
+ 
+    DanceStepCSG := DanceStepCSG union HermiteCSG;
+   end;
+ 
+  end;
+  else begin
+   Result := array_of( (0,0,0), 1, 0);
+   Result := Result › P1+t*V1 › V1 › (0,0,0);
+   /* Default values of extrapolated position and current velocity */
+  end;
+ 
+  Result
+};
+ 
+/*---------------------------------------------------------------------*/
+ 
+{ 'POSVELSPLINE3' function #
+  P1  := ?vec;
+  V1  := ?vec;
+  TT1 := ?float;
+  P2  := ?vec;
+  V2  := ?vec;
+  TT2 := ?float;
+  t   := ?float;
+  /* Calculates the position & velocity at time T1+t using a 4th order */
+  /* polynomial spline with boundary conditions: position P1 and */
+  /* velocity V1 at time TT1; position P2, velocity V2 and */
+  /* acceleration (0,0,0) at time T2 */
+ 
+  if TT1<TT2 then begin
+   /* Rescale so T1=0, T2=TT2-TT1 */
+   T2  := TT2-TT1;
+   DT2 := T2*T2;
+   DT3 := T2*T2*T2;
+   DT4 := T2*T2*T2*T2;
+ 
+   /* calculate coefficients of the cubic */
+   a := (-V1-2*V2)/DT3 - 3*(P1-P2)/DT4;
+   b := (3*V1+5*V2)/DT2 + 8*(P1-P2)/DT3;
+   c := (-3*V1-3*V2)/T2 - 6*(P1-P2)/DT2;
+   d := V1;
+   e := P1;
+ 
+   Pos := (((a*t + b)*t + c)*t + d)*t + e;
+   Vel := ((4*a*t + 3*b)*t + 2*c)*t + d;
+ 
+   Result := array_of( (0,0,0) , 1 , 0); /* array to hold results */
+   Result := › Pos › Vel;
+ 
+   if DrawHermite then begin
+    HermiteCSG := sphere(0.2) at(Pos) colour(2)
+                  union sphere(0.2) at(P1) colour(1)
+                  union sphere(0.2) at(P2) colour(2);
+    I := 0;
+    do(I, 0, T2, 1,
+     HermiteCSG:= HermiteCSG union
+                  sphere(0.1) at( (((a*I+b)*I+c)*I+d)*I+e );
+     );
+ 
+    DanceStepCSG := DanceStepCSG union HermiteCSG;
+   end;
+ 
+  end;
+  else begin
+   Result := array_of((0,0,0), 1, 0);
+   Result := › P1+t*V1 › V1;
+   /* Default values of extrapolated position and current velocity */
+  end;
+ 
+  Result
+};
+ 
+/*---------------------------------------------------------------------*/
+ 
+{ 'POSVELSPLINE4' function #
+  P1  := ?vec;
+  V1  := ?vec;
+  TT1 := ?float;
+  P2  := ?vec;
+  TT2 := ?float;
+  V3  := ?vec;
+  TT3 := ?float;
+  t:= ?float;
+  /* Calculates the position & velocity at time T1+t using a 3rd order */
+  /* polynomial spline with boundary conditions: position P1 and */
+  /* velocity V1 at time TT1, position P2 at time TT2, velocity V3 at */
+  /* time TT3 */
+ 
+  if TT1<TT2 then begin
+   /* rescale so T1=0, T2=TT2-TT1, T3=TT3-TT1 */
+   T2 := TT2-TT1;
+   T3 := TT3-TT1;
+ 
+   /* calculate coefficients of the cubic */
+   a := (V1*(2*T3-T2)+V3*T2)/(T2*T3*(3*T3-2*T2))
+        + 2*(P1-P2)/(T2*T2*(3*T3-2*T2));
+   b := (V1*(T2*T2-3*T3*T3)-V3*T2*T2)/(T2*T3*(3*T3-2*T2))
+        + 3*(P2-P1)*T3/(T2*T2*(3*T3-2*T2));
+   c := V1;
+   d := P1;
+ 
+   Pos := ((a*t + b)*t + c)*t + d;
+   Vel := (3*a*t + 2*b)*t + c;
+   Acc := 6*a*t + 2*b;
+ 
+   Result := array_of( (0,0,0) , 1 , 0); /* array to hold results */
+   Result := Result › Pos › Vel;
+ 
+   if DrawHermite then begin
+    HermiteCSG := sphere(0.2) at(Pos) colour(2)
+                  union sphere(0.2) at(P1) colour(1)
+                  union sphere(0.2) at(P2) colour(2);
+    I := 0;
+    do(I, 0, T2, 1,
+     HermiteCSG:= HermiteCSG union
+                  sphere(0.1) at( ((a*I+b)*I+c)*I+d );
+     );
+ 
+    DanceStepCSG := DanceStepCSG union HermiteCSG;
+   end;
+ 
+  end;
+  else begin
+   Result := array_of( (0,0,0), 1, 0);
+   Result := Result › P1+t*V1 › V1;
+   /* Default values of extrapolated position and current velocity */
+  end;
+ 
+  Result
+};
+ 
+/*---------------------------------------------------------------------*/
+ 
+{ 'POSPOSSPLINE' function #
+  P1  := ?vec;
+  V1  := ?vec;
+  TT1 := ?float;
+  P2  := ?vec;
+  TT2 := ?float;
+  P3  := ?vec;
+  TT3 := ?float;
+  t:= ?float;
+  /* Calculates the position & velocity at time T1+t using a 3rd order */
+  /* polynomial spline with boundary conditions: position P1 and */
+  /* velocity V1 at time TT1, position P2 at time TT2, position P3 at */
+  /* time TT3 */
+ 
+  if TT1<TT2 then begin
+   /* rescale so T1=0, T2=TT2-TT1, T3=TT3-TT1 */
+   T2 := TT2-TT1;
+   T3 := TT3-TT1;
+ 
+   /* calculate coefficients of the cubic */
+   a := P1*(T2+T3)/(T2*T2*T3*T3) + P2/(T2*T2*(T2-T3))
+        + P3/(T3*T3*(T3-T2)) + V1/(T2*T3);
+   b := -P1*(T2*T2+T2*T3+T3*T3)/(T2*T2*T3*T3) + P2*T3/(T2*T2*(T3-T2))
+        + P3*T2/(T3*T3*(T2-T3)) - V1*(T2+T3)/(T2*T3);
+   c := V1;
+   d := P1;
+ 
+   Pos := ((a*t + b)*t + c)*t + d;
+   Vel := (3*a*t + 2*b)*t + c;
+   Acc := 6*a*t + 2*b;
+ 
+   Result := array_of( (0,0,0) , 1 , 0); /* array to hold results */
+   Result := Result › Pos › Vel;
+ 
+   if DrawHermite then begin
+    HermiteCSG := sphere(0.2) at(Pos) colour(2)
+                  union sphere(0.2) at(P1) colour(1)
+                  union sphere(0.2) at(P2) colour(2);
+    I := 0;
+    do(I, 0, T2, 1,
+     HermiteCSG:= HermiteCSG union
+                  sphere(0.1) at( ((a*I+b)*I+c)*I+d );
+     );
+ 
+    DanceStepCSG := DanceStepCSG union HermiteCSG;
+   end;
+ 
+  end;
+  else begin
+   Result := array_of( (0,0,0), 1, 0);
+   Result := Result › P1+t*V1 › V1;
+   /* Default values of extrapolated position and current velocity */
+  end;
+ 
+  Result
+};
+ 
+/*---------------------------------------------------------------------*/
+ 
+{ 'POSVELSPLINE' function #
+  P1:= ?vec;
+  V1:= ?vec;
+  W1:= ?vec;
+  TT1:= ?float;
+  P2:= ?vec;
+  V2:= ?vec;
+  TT2:= ?float;
+  t:= ?float;
+  /* Calculates the position on a generalised hermite curve at time t */
+  /* with boundary conditions position P1, velocity V1 and accel W1 */
+  /* at time TT1 and P2, V2 and accel 0 at time TT2 */
+ 
+  if TT1<TT2 then begin
+   /* Rescale so T1=0, T2=TT2-TT1 */
+   T2  := TT2-TT1;
+   DT2 := T2*T2;
+   DT3 := T2*T2*T2;
+   DT4 := T2*T2*T2*T2;
+   DT5 := T2*T2*T2*T2*T2;
+ 
+   /* calculate coefficients of the cubic */
+   a := (-3*V1-3*V2)/DT4 + 6*(P2-P1)/DT5 - W1/DT3;
+   b := (8*V1+7*V2)/DT3 - 15*(P2-P1)/DT4 + 3*W1/DT2;
+   c := 10*(P2-P1)/DT3 - (6*V1+4*V2)/DT2 - 3*W1/T2;
+   d := W1;
+   e := V1;
+   f := P1;
+ 
+   say 'a: ' a;
+   say 'b: ' b;
+   say 'c: ' c;
+ 
+   Pos := ((((a*t + b)*t + c)*t + d)*t + e)*t + f;
+   Vel := (((5*a*t + 4*b)*t + 3*c)*t + 2*d)*t + e;
+   Acc := ((10*a*t + 6*b)*t + 3*c)*t + d; /* Acc / 2 */
+ 
+   Result := array_of( (0,0,0) , 1 , 0); /* array to hold results */
+   Result := Result › Pos › Vel › Acc;
+ 
+   if DrawHermite then begin
+    HermiteCSG := sphere(0.2) at(Pos) colour(2)
+                  union sphere(0.2) at(P1) colour(1)
+                  union sphere(0.2) at(P2) colour(2);
+    I := 0;
+    do(I, 0, T2, 1,
+     HermiteCSG:= HermiteCSG union
+                  sphere(0.1) at( ((((a*I+b)*I+c)*I+d)*I+e)*I+f );
+     );
+ 
+    DanceStepCSG := DanceStepCSG union HermiteCSG;
+   end;
+ 
+  end;
+  else begin
+   Result := array_of( (0,0,0), 1, 0);
+   Result := Result › P1+t*V1 › V1 › (0,0,0);
+   /* Default values of extrapolated position and current velocity */
+  end;
+ 
+  Result
+};
+ 
+/*---------------------------------------------------------------------*/
+ 
+{ 'POSSPLINE' function #
+  P1  := ?vec;
+  V1  := ?vec;
+  W1  := ?vec;
+  TT1 := ?float;
+  P2  := ?vec;
+  TT2 := ?float;
+  t   := ?float;
+  /* calculates the position, velocity and accelerations on a quartic */
+  /* spline, boundary conditions of final position */
+ 
+  if TT1<TT2 then begin
+   /* Rescale so T1=0, T2=TT2-TT1 */
+   T2  := TT2-TT1;
+   DT2 := T2*T2;
+   DT3 := T2*T2*T2;
+   DT4 := T2*T2*T2*T2;
+ 
+   a:= (P1-P2)/DT4 + V1/DT3 + 2*W1/(3*DT2);
+   b:= 2*(P2-P1)/DT3 - 2*V1/DT2 - 5*W1/(3*T2);
+ 
+   NewP := (((a*t + b)*t + W1)*t + V1)*t + P1;
+   NewV := ((4*a*t + 3*b)*t + 2*W1)*t + V1;
+   NewW := (6*a*t + 3*b)*t + W1;
+ 
+   Result := NewP › NewV › NewW;
+  end;
+  else begin
+   Result := array_of( (0,0,0), 1, 0);
+   Result := Result › P1+t*V1 › V1 › (0,0,0);
+   /* Default values of extrapolated position and current velocity */
+  end;
+ 
+  Result
+};
+ 
+/*---------------------------------------------------------------------*/
+ 
+{ 'VELSPLINE' function #
+  P1  := ?vec;
+  V1  := ?vec;
+  W1  := ?vec;
+  TT1 := ?float;
+  V2  := ?vec;
+  TT2 := ?float;
+  t   := ?float;
+  /* calculates the position, velocity and accelerations on a quartic */
+  /* spline, boundary conditions of final position */
+ 
+  if TT1<TT2 then begin
+   /* Rescale so T1=0, T2=TT2-TT1 */
+   T2  := TT2-TT1;
+   DT2 := T2*T2;
+   DT3 := T2*T2*T2;
+ 
+   a:= (V1-V2)/(2*DT3) + W1/(2*DT2);
+   b:= (V2-V1)/DT2 - 4*W1/(3*T2);
+ 
+   NewP := (((a*t + b)*t + W1)*t + V1)*t + P1;
+   NewV := ((4*a*t + 3*b)*t + 2*W1)*t + V1;
+   NewW := (6*a*t + 3*b)*t + W1;
+ 
+   Result := NewP › NewV › NewW;
+  end;
+  else begin
+   Result := array_of( (0,0,0), 1, 0);
+   Result := Result › P1+t*V1 › V1 › (0,0,0);
+   /* Default values of extrapolated position and current velocity */
+  end;
+ 
+  Result
+};
+ 
+/*---------------------------------------------------------------------*/
+ 
+{ 'COSTVUP' function #
+  From := ?float;
+  To   := ?float;
+  X    := ?float;
+  /* calculates upward cosine time variant function, range 0 to 1 */
+ 
+  if X<From then Result:= 0;
+   else {
+    if X>To then Result:= 1;
+    else Result:= 0.5 - 0.5*cos( (X-From)*Pi/(To-From) );
+    };
+  Result := Result * Result;
+ 
+  Result
+};
+ 
+/*---------------------------------------------------------------------*/
+ 
+{ 'COSTVDOWN' function #
+  From := ?float;
+  To   := ?float;
+  X    := ?float;
+  /* calculates downward cosine time variant function, range 0 to 1 */
+ 
+  if X<From then Result:= 1;
+   else {
+    if X>To then Result:= 0;
+    else Result:= 0.5 + 0.5*cos( (X-From)*Pi/(To-From) );
+    };
+  Result := Result*Result;
+ 
+  Result
+};
+ 
+/*---------------------------------------------------------------------*/
+ 
+{ 'CALCGOALWEIGHT' function #
+  CurGoal := ?GoalType;
+  CurTime := ?float;
+  /* calculates the weighting attached to a goal */
+ 
+  if CurTime<=CurGoal.GoalTime then
+   Result := COSTVDOWN(CurGoal.StartTight, CurGoal.GoalTime, CurTime);
+  else
+   Result := COSTVUP(CurGoal.GoalTime, CurGoal.FinishAct, CurTime);
+ 
+  Result
+};
+ 
+/*---------------------------------------------------------------------*/
+/* The basic definitions of forces                                     */
+/*---------------------------------------------------------------------*/
+ 
+{ 'CONSTRAINTFORCE' function #
+  Pos := ?vec; /* Position of Object */
+  S   := ?float;
+  /* Global Constraining force */
+  /* Set up as influence 'CONSTRAIN' */
+ 
+  /* Constraint Force Power of 3 */
+  /* Constraint Force Coefficient of 0.005 * S */
+ 
+  d:= length(Pos);
+  if (d<0.000001) then F:= (0,0,0);
+                  else F:= -0.0015 * S * (d*d*d) * Pos /d;
+ 
+  if DanceTrace>=5 then say 'Strength ' F;
+ 
+  F
+};
+ 
+/*---------------------------------------------------------------------*/
+ 
+{'DISTANCEFORCE' function #
+  Pos1   := ?vec; /* Position of Main Object */
+  Vel1   := ?vec; /* Velocity of Main Object */
+  Pos2   := ?vec; /* Position of Attracting Object */
+  Vel2   := ?vec; /* Velocity of Attracting Object */
+  Equil  := ?float; /* Equilibrium Force Distance */
+  Strgth := ?float; /* Strength of force */
+  /* Force that tries to maintain fixed distance between points */
+  /* Set up as influence 'DISTANCE' */
+ 
+  DPos := Pos1 - Pos2;
+  DVel := Vel1 - Vel2;
+  l := length(DPos);
+  if (l<0.000001)|(Strgth=0) then F := (0,0,0);
+   else begin
+    Dir  := DPos / l;
+    RVel := dot(DVel, Dir) * Dir;
+    RPos := Equil * Dir;
+    F    := QuickHermite(DPos, RVel, RPos, (0,0,0), 30/Strgth);
+   end;
+ 
+  if DanceTrace>=5 then say 'Strength ' F;
+ 
+  F
+};
+ 
+/*---------------------------------------------------------------------*/
+ 
+{'COLLISIONFORCE' function #
+  Pos1 := ?vec; /* Position of Main Object */
+  Pos2 := ?vec; /* Position of Repelling Object */
+  Rad1 := ?float; /* Nominal Radius of Main Object */
+  Rad2 := ?float; /* Nominal Radius of Repelling Object */
+  /* Force that keeps objects apart using nominal radii */
+ 
+  if (Rad1=0)|(Rad2=0) then F := (0,0,0);
+   else begin
+    Sep:= Rad1 + Rad2;
+    /* Repulsion Force Power of -4 */
+    K:= (Sep*Sep*Sep*Sep*Sep); /* Repulsion Force Coefficient */
+ 
+    d:= length(Pos1 - Pos2);
+    if (d<Sep)&(DanceTrace>=1) then say 'COLLISION !!!!' Rad1 Rad2;
+ 
+    if (d<Sep) then begin
+     if d<0.000001 then F:= (0,0,0);
+          else F:= 0.1*(3 - 2 * d*d / (Sep*Sep) ) * (Pos1 - Pos2) /d;
+     end;
+    else F:= 0.1*(K / (d*d*d*d) ) * (Pos1 - Pos2) / d;
+   end;
+ 
+  if DanceTrace>=6 then say 'Strength ' F;
+ 
+  F
+};
+ 
+/*---------------------------------------------------------------------*/
+ 
+{'SOLENOIDFORCE' function #
+  Pos := ?vec; /* Position of Object */
+  Str := ?float; /* Strength of Force */
+  /* Stirring force */
+  /* 'Solenoid' radius R, positioned with axis along y axis */
+ 
+  R:= 2.5;
+ 
+  VY  := (0, Pos.x2, 0);
+  VXZ := Pos - VY;
+ 
+  Y   := Pos.x2;
+  LXZ := length(VXZ);
+ 
+  if LXZ=0 then F:= (0, -Str, 0);
+   else begin
+    K := ( (R-LXZ)*(R-LXZ) + Y*Y ) / ( (R+LXZ)*(R+LXZ) + Y*Y );
+ 
+    StY := ( R*(1+K)/(1-K) - LXZ );
+    F   := ( -Y*Pos.x1/LXZ, -STY, -Y*Pos.x3/LXZ );
+    if length(F)<0.000001 then F := 0.01*(0, -Str, 0);
+                          else F := 0.01*Str * normal(F);
+   end;
+ 
+  if DanceTrace>=5 then say 'Strength ' F;
+ 
+  F
+};
+ 
+/*---------------------------------------------------------------------*/
+ 
+{'CIRCLEFORCE' function #
+  Pos := ?vec; /* Position of Object */
+  Str := ?float; /* Strength of Force */
+  /* Circular Stirring force */
+ 
+  A := (Pos.x3, 0, -Pos.x1);
+  if A^=(0,0,0) then F:= 0.004*Str*normal(A);
+                else F:= (0,0,0);
+ 
+  if DanceTrace>=5 then say 'Strength ' F;
+ 
+  F
+};
+ 
+/*---------------------------------------------------------------------*/
+ 
+{'ORBITFORCE' function #
+  Pos := ?vec; /* Position of Object */
+  Dir := ?vec; /* Direction of motion for Object */
+  Str := ?float; /* Strength of Force */
+  /* Force that makes an object tend to orbit around centre */
+ 
+  A := (Pos # Dir) # Pos;
+  if A^=(0,0,0) then F := 0.004*Str*normal(A);
+                else F := (0,0,0);
+ 
+  if DanceTrace>=5 then say 'Strength ' F;
+ 
+  F
+};
+ 
+/*---------------------------------------------------------------------*/
+ 
+{'SWIMFORCE' function #
+  Pos1 := ?vec; /* Position of Swiming Object */
+  Pos2 := ?vec; /* Position to Swim from */
+  Str := ?float; /* Strength of Force */
+  /* Force that makes an object tend to swim away from a given point */
+ 
+  if Pos1^=Pos2 then F := 0.004*Str*normal(Pos1-Pos2);
+                else F := (0,0,0);
+ 
+  if DanceTrace>=5 then say 'Strength ' F;
+ 
+  F
+};
+ 
+/*---------------------------------------------------------------------*/
+/* Functions for processing forces                                     */
+/*---------------------------------------------------------------------*/
+ 
+{ 'GLOBALFORCE' function #
+   CurPoint := ?PointType;
+   CurOName := ?sref;
+   CurInf   := ?InfType;
+ 
+  F := (0,0,0);
+ 
+  /* constraining box influence */
+  /* Parm1 : How strongly affected by constraint force */
+  if (CurInf.InfSort='CONSTRAIN') then
+   F:= ConstraintForce(CurPoint.Pos, CurInf.Parm1) * CurPoint.Mass;
+ 
+  /* solenoidal stiring influence */
+  /* Parm1 : How strongly affected by solenoidal stiring force */
+  if (CurInf.InfSort='SOLENOID') then
+   F:= SolenoidForce(CurPoint.Pos, CurInf.Parm1) * CurPoint.Mass;
+ 
+  /* circular stiring influence */
+  /* Parm1 : How strongly affected by circular stiring force */
+  if (CurInf.InfSort='CIRCLE') then
+   F:= CircleForce(CurPoint.Pos, CurInf.Parm1) * CurPoint.Mass;
+ 
+  /* orbit influence */
+  /* Parm1 : How strongly affected by orbit force */
+  if (CurInf.InfSort='ORBIT') then
+   F:= OrbitForce(CurPoint.Pos, (Objects@CurOName).LinVel, CurInf.Parm1)
+       * CurPoint.Mass;
+ 
+  /* Global Distance influence */
+  /* Parm1 : Equilibrium distance */
+  /* Parm2 : How strongly affected by SetDistance force */
+  /* Vec1  : Centre of attraction */
+  if (CurInf.InfSort='DISTANCE') then
+   F:= DistanceForce(CurPoint.Pos, (Objects@CurOName).LinVel,
+                     CurInf.Vec1, (0,0,0), CurInf.Parm1, CurInf.Parm2)
+                     * CurPoint.Mass / TimeFactor;
+ 
+  /* Swimming influence */
+  /* Parm1 : How strongly affected by Swim force */
+  if (CurInf.InfSort='SWIM') then
+   F:= SwimForce(CurPoint.Pos, (Objects@CurOName).LinPos, CurInf.Parm1)
+                     * CurPoint.Mass;
+ 
+  F
+};
+ 
+/*---------------------------------------------------------------------*/
+ 
+{ 'ALLPOINTSFORCE' function #
+   CurPoint := ?PointType;
+   CurOName := ?sref;
+   CurInf   := ?InfType;
+ 
+   F      := (0,0,0);
+   Obj2   := 0;
+   Point2 := 0;
+ 
+   /* loop through second objects */
+   do(Obj2, 1, highbound(ActiveObj),
+ 
+   /* check object not same as current one */
+   if (CurOName^=ActiveObj@Obj2) then
+    begin
+     SecObj:= Objects@(ActiveObj@Obj2);
+ 
+     /* loop through points on second object */
+     do(Point2, 0, highbound( SecObj.Points ),
+ 
+      /* calculate force between points */
+      SecPoint:= (SecObj.Points)@Point2;
+ 
+      /* Collision force type */
+      /* Parm1 : How strongly affected by collision forces */
+      if (CurInf.InfSort='COLLISION')&(SecPoint.Rad^=0) then
+       F := F + CollisionForce(CurPoint.Pos, SecPoint.Pos,
+                               CurPoint.Rad, SecPoint.Rad)
+              * CurPoint.Mass * SecPoint.Mass
+              * CurInf.Parm1 * SecObj.Activity;
+ 
+      ); /* end Point2 loop */
+    end;
+   ); /* end Obj2 loop */
+  F
+};
+ 
+/*---------------------------------------------------------------------*/
+ 
+{ 'ONEPOINTFORCE' function #
+   CurPoint := ?PointType;
+   CurOName := ?sref;
+   SecPoint := ?PointType;
+   CurInf   := ?InfType;
+ 
+  /* Orbit influence */
+  /* Parm1 : How strongly affected by orbit force */
+  if (CurInf.InfSort='ORBIT') then
+   F:= OrbitForce(CurPoint.Pos - SecPoint.Pos,
+       (Objects@CurOName).LinVel - (Objects@(CurInf.SecObj)).LinVel,
+       CurInf.Parm1)
+       * CurPoint.Mass;
+ 
+  /* Distance influence */
+  /* Parm1 : Equilibrium distance */
+  /* Parm2 : How strongly affected by SetDistance force */
+  if (CurInf.InfSort='DISTANCE') then
+   F:= DistanceForce(CurPoint.Pos, (Objects@CurOName).LinVel,
+                     SecPoint.Pos, (Objects@(CurInf.SecObj)).LinVel,
+                     CurInf.Parm1, CurInf.Parm2)
+                     * CurPoint.Mass / TimeFactor;
+ 
+  F
+};
+ 
+/*---------------------------------------------------------------------*/
+ 
+{ 'CALCFORCES' function #
+  dummy := ?stmt;
+  /* calculates the forces acting on all the point that make up object */
+ 
+  Obj1   := 0; /* declare control variables for loops */
+  Point1 := 0;
+  ChNum  := 0;
+  InfNum := 0;
+ 
+  /* loop through all the active objects */
+  do(Obj1, 1, highbound(ActiveObj),
+   CurObjName:= ActiveObj@Obj1;
+ 
+   CurObj:= Objects@CurObjName;
+ 
+   if DanceTrace>=3 then say 'Forces on Object ' CurObjName;
+   if DanceTrace>=4 then say 'Object Mass :' CurObj.Mass;
+   if DanceTrace>=5 then begin
+    say 'Object Activity :' CurObj.Activity;
+    say 'Object SelfActivity :' CurObj.SelfActiv;
+   end;
+ 
+   /* loop thorugh all the points object made up of */
+   do(Point1, 0, highbound(CurObj.Points),
+    CurPoint:= (CurObj.Points)@Point1;
+    CurPoint.Force:= (0,0,0);
+ 
+    /* calculate direct influence forces on point */
+    do(InfNum, 1, highbound(CurPoint.Influences),
+     CurInf:= (CurPoint.Influences)@InfNum;
+ 
+     if DanceTrace>=4 then
+       say 'Point ' Point1'  Influence ' CurInf.InfSort CurInf.Scope;
+ 
+     if (CurInf.Scope='GLOBAL')&(CurObjName^=CentreOfAttention) then
+       CurPoint.Force := CurPoint.Force
+         + GlobalForce(CurPoint, CurObjName, CurInf);
+ 
+     if CurInf.Scope='ALLPOINTS' then
+       CurPoint.Force := CurPoint.Force
+         + AllPointsForce(CurPoint, CurObjName, CurInf);
+ 
+     if CurInf.Scope='ONEPOINT' then
+       begin
+         SecPoint:=((Objects@(CurInf.SecObj)).Points)@(CurInf.SecPoint);
+         CurPoint.Force := CurPoint.Force
+           + OnePointForce(CurPoint, CurObjName, SecPoint, CurInf);
+       end;
+ 
+     ); /* end InfNum loop */
+ 
+    /* scale by object activity */
+    CurPoint.Force := CurPoint.Force * CurObj.SelfActiv;
+ 
+    (CurObj.Points)@Point1:= CurPoint; /* place point back into array */
+    ); /* end Point1 loop */
+ 
+   Objects@CurObjName:= CurObj; /* place object back into array */
+   ); /* end Obj1 loop */
+ 
+};
+ 
+/*---------------------------------------------------------------------*/
+ 
+{ 'APPLYFORCES' function #
+  TimeStep := ?float; /* discrete time step for iteration */
+  CurTime  := ?float; /* the current time */
+  /* calculates total force and moment on each main object */
+  /* uses this mass and inertia to calculate transform */
+ 
+  ONum := 0; /* control variables for loops */
+  PNum := 0;
+  GNum := 0;
+ 
+  do(ONum, 1, highbound(ActiveObj),
+   OName  := ActiveObj@ONum;
+   CurObj := Objects@OName;
+   LinPos := CurObj.LinPos;
+   LinVel := CurObj.LinVel;
+   AngPos := CurObj.AngPos;
+   AngVel := CurObj.InvIner * CurObj.AngMom;
+ 
+   if DanceTrace>=3 then say 'Applying to Object ' OName;
+   if DanceTrace>=4 then begin
+    say 'Old LinPos :' LinPos;
+    say 'Old LinVel :' LinVel;
+    say 'Old AngPos :' AngPos;
+    say 'Old AngVel :' AngVel;
+   end;
+ 
+   LinPosWgt := 1;       /* The current weight for each of the */
+   LinVelWgt := 1;       /* various quantities */
+   AngPosWgt := 1;
+   AngVelWgt := 1;
+ 
+   /* calculate external force & moment due to forces on points */
+   TotalF := (0,0,0);
+   TotalM := (0,0,0);
+ 
+   if OName=CentreOfAttention then begin
+    if DanceTrace>=4 then say 'Calculating Centre Of Attention Force';
+    TotalF := DistanceForce(LinPos,LinVel,(0,0,0),(0,0,0),0,0.4)
+              * CurObj.SelfActiv * CurObj.Mass / TimeFactor;
+   end;
+ 
+   do(PNum, 0, highbound(CurObj.Points),
+    CurPnt := (CurObj.Points)@PNum;
+    TotalF := TotalF + CurPnt.Force;
+    TotalM := TotalM + ( (CurPnt.Pos - LinPos) # CurPnt.Force );
+    ); /* end PNum loop */
+ 
+   TotalF   := TotalF * TimeFactor;
+   TotalM   := TotalM * TimeFactor;
+   if DanceTrace>=4 then say 'Total Force ' TotalF;
+   if DanceTrace>=4 then say 'Total Moment ' TotalM;
+ 
+   TimeMult := TimeStep * TimeFactor;
+ 
+   /* calculate desired position change etc due to forces */
+   TempLinVel := LinVel + TotalF / CurObj.Mass -
+                  LinVel*(1-CurObj.LinDamp**TimeMult)*CurObj.Activity;
+   TempAngVel := AngVel + TotalM * CurObj.InvIner -
+                 AngVel*(1-CurObj.AngDamp**TimeMult)*CurObj.Activity;
+ 
+   DLinVel := TempLinVel - LinVel;
+   DLinPos := TempLinVel * TimeStep;
+   DAngVel := TempAngVel - AngVel;
+   DAngPos := TempAngVel * TimeStep;
+      /****
+   /* calculate change in desired position etc.. due to goals */
+   do(GNum, 1, highbound(CurObj.Goals),
+    CurGoal   := (CurObj.Goals)@GNum;
+ 
+   if (CurGoal.Active)
+      &(CurTime>=CurGoal.StartAct)&(CurTime<=CurGoal.FinishAct)
+    then begin
+     CurWeight := CalcGoalWeight(CurGoal, CurTime + TimeStep);
+ 
+     if (CurGoal.GoalSort='LINPOSVEL')
+       |(CurGoal.GoalSort='LINPOS')
+       |(CurGoal.GoalSort='LINVEL')
+      then begin
+ 
+       if CurWeight<LinPosWgt then begin
+        DLinPos := DLinPos * CurWeight / LinPosWgt;
+        LinPosWgt := CurWeight;
+        LinPosFactor := 1;
+       end;
+       else begin
+        if CurWeight=0 then LinPosFactor := 1;
+        else LinPosFactor := LinPosWgt / CurWeight;
+       end; /* CurWeight<LinPosWgt */
+ 
+       if CurWeight<LinVelWgt then begin
+        DLinVel := DLinVel * CurWeight / LinVelWgt;
+        LinVelWgt := CurWeight;
+        LinVelFactor := 1;
+       end;
+       else begin
+        if CurWeight=0 then LinVelFactor := 1;
+        else LinVelFactor := LinVelWgt / CurWeight;
+       end; /* CurWeight<LinVelWgt */
+ 
+       if CurGoal.GoalSort='LINPOSVEL' then
+        GoalValues :=PosVelSpline3(LinPos,LinVel,CurGoal.LastAcc,CurTime,
+                      CurGoal.Pos,CurGoal.Vel,CurGoal.GoalTime,TimeStep);
+ 
+       if CurGoal.GoalSort='LINPOS' then
+        GoalValues := PosSpline(LinPos,LinVel,CurGoal.LastAcc,CurTime,
+                      CurGoal.Pos,CurGoal.GoalTime,TimeStep);
+ 
+       if CurGoal.GoalSort='LINVEL' then
+        GoalValues := VelSpline(LinPos,LinVel,CurGoal.LastAcc,CurTime,
+                      CurGoal.Vel,CurGoal.GoalTime,TimeStep);
+ 
+       DLinPos := DLinPos + LinPosFactor * (GoalValues@1 - LinPos);
+       DLinVel := DLinVel + LinVelFactor * (GoalValues@2 - LinVel);
+ 
+       CurGoal.LastAcc := GoalValues@3; /* the new acceleration value */
+      end; /* GoalSort='LINEAR' */
+ 
+    /* This is where other goals will go */
+ 
+      (CurObj.Goals)@GNum := CurGoal; /* put info back into goal */
+     end; /* CurTime>StartAct */
+ 
+    );  *****/
+ 
+   /* Calculate changes */
+   LinPos := LinPos + DLinPos;
+   LinVel := LinVel + DLinVel;
+   AngPos := Angpos + DAngPos;
+   AngVel := AngVel + DAngVel;
+ 
+   if DanceTrace>=4 then begin
+    say 'New LinPos :' LinPos;
+    say 'New LinVel :' LinVel;
+    say 'New AngPos :' AngPos;
+    say 'New AngVel :' AngVel;
+   end;
+ 
+   CurObj.LinMom := LinVel * CurObj.Mass;
+   CurObj.AngMom := AngVel * CurObj.Inertia;
+   CurObj.LinPos := LinPos;
+   CurObj.AngPos := AngPos;
+   CurObj.LinVel := LinVel;
+   CurObj.AngVel := AngVel;
+ 
+   /* calculate transform */
+   Centre := ((CurObj.Points)@0).OrigPos;
+   MagAngPos:= length(AngPos);
+   if MagAngPos>0.000001 then begin
+     NewTrans :=  at( -Centre)
+                  rot( MagAngPos * 180/Pi, AngPos )
+                  at( LinPos ) ;
+     end;
+    else NewTrans := at(LinPos - Centre);
+ 
+   CurObj.TotTrans := NewTrans;
+ 
+   /* apply transform to the points */
+   do(PNum, 0, highbound(CurObj.Points),
+    CurPoint := (CurObj.Points)@PNum;
+    CurPoint.Pos := CurPoint.OrigPos CurObj.TotTrans;
+    (CurObj.Points)@PNum := CurPoint;
+    ); /* end PNum loop */
+ 
+   CurObj.LastTS := TimeStep;
+   Objects@OName := CurObj; /* place object back into array */
+   ); /* end ONum loop */
+};
+ 
+/*---------------------------------------------------------------------*/
+/* Functions for initial setting up of forces on objects               */
+/*---------------------------------------------------------------------*/
+ 
+{ 'NEWINFLUENCE' function #
+  O1Name  := ?sref;
+  P1Num   := ?float;
+  InfSort := ?sref;
+  Scope   := ?sref;
+  O2Name  := ?sref;
+  P2Num   := ?float;
+  /* checks Object O1Name at point P1Num to see if there is */
+  /* already a corresponding correct sort of influence. If there is */
+  /* it returns a pointer to this influence, otherwise a new influence */
+  /* is added and a pointer to this returned */
+ 
+  CurObj   := Objects@O1Name;
+  CurPoint := (CurObj.Points)@P1Num;
+ 
+  InfNum   := 0;
+  Match    := false;
+  while( (^Match) & (InfNum<highbound(CurPoint.Influences)),
+   InfNum := InfNum + 1;
+   CurInf := (CurPoint.Influences)@InfNum;
+   if (Scope^='ONEPOINT') & (InfSort=CurInf.InfSort)
+                          & (Scope=CurInf.Scope) then Match := true;
+ 
+   if (Scope='ONEPOINT') & (InfSort=CurInf.InfSort)
+                         & (O2Name=CurInf.SecObj)
+                         & (P2Num=CurInf.SecPoint) then Match := true;
+   );
+ 
+  if ^Match then
+   begin
+    CurInf := DefInf;
+    CurInf.InfSort := InfSort;
+    CurInf.Scope := Scope;
+    CurInf.SecObj := O2Name;
+    CurInf.SecPoint := P2Num;
+    CurPoint.Influences := CurPoint.Influences › CurInf;
+    InfNum := highbound(CurPoint.Influences);
+    (CurObj.Points)@P1Num := CurPoint;
+    Objects@O1Name := CurObj;
+   end;
+ 
+  InfNum
+};
+ 
+now(add_defaults('NEWINFLUENCE','sref,float,sref,sref,sref="",float=0'));
+ 
+/*---------------------------------------------------------------------*/
+ 
+{ 'SETCOLLISION' function #
+  OName := ?sref;
+  PNum  := ?float;
+  Str   := ?float;
+  /* Sets the strength with which point PNum on object OName is */
+  /* affected by collision forces */
+ 
+  InfNum := NewInfluence(OName,PNum,'COLLISION','ALLPOINTS');
+ 
+  CurObj    := Objects@OName;
+  CurPoint  := (CurObj.Points)@PNum;
+  CurInf    := (CurPoint.Influences)@InfNum;
+ 
+  CurInf.Parm1   := Str;
+ 
+  (CurPoint.Influences)@InfNum := CurInf;
+  (CurObj.Points)@PNum         := CurPoint;
+  Objects@OName                := CurObj;
+ 
+};
+ 
+add_defaults('SETCOLLISION','sref, float, float=1');
+ 
+{ 'SETCOLLISION' function #
+  OName := ?sref;
+  Str   := ?float;
+  /* by default sets collision detection for all points other than 0 */
+ 
+  PNum := 0;
+  do(PNum, 1, highbound( (Objects@OName).Points ),
+   SetCollision(OName, PNum, Str);
+   );
+ 
+};
+ 
+add_defaults('SETCOLLISION','sref, float=1');
+ 
+/*---------------------------------------------------------------------*/
+ 
+{ 'SETMASS' function #
+  OName := ?sref;
+  PNum  := ?float;
+  Mass  := ?float;
+  /* Sets the mass of point PNum on object OName to Rad */
+ 
+  CurObj   := Objects@OName;
+  CurPoint := (CurObj.Points)@PNum;
+ 
+  CurPoint.Mass := Mass;
+ 
+  (CurObj.Points)@PNum := CurPoint;
+  Objects@OName        := CurObj;
+ 
+};
+ 
+add_defaults('SETMASS','sref, float=0, float');
+ 
+/*---------------------------------------------------------------------*/
+ 
+{ 'SETRADIUS' function #
+  OName := ?sref;
+  PNum  := ?float;
+  Rad   := ?float;
+  /* Sets the mass of point PNum on object OName to Rad */
+ 
+  CurObj   := Objects@OName;
+  CurPoint := (CurObj.Points)@PNum;
+ 
+  CurPoint.Rad := Rad;
+ 
+  (CurObj.Points)@PNum := CurPoint;
+  Objects@OName        := CurObj;
+ 
+};
+ 
+add_defaults('SETMASS','sref, float=0, float');
+ 
+/*---------------------------------------------------------------------*/
+ 
+{ 'SETDISTANCE' function #
+  O1Name := ?sref;
+  P1Num  := ?float;
+  O2Name := ?sref;
+  P2Num  := ?float;
+  Dist   := ?float;
+  Strngth:= ?float;
+  /* Sets the distance that object O1Name point P1Num likes tries to */
+  /* maintain from object O2Name point P2Num to Dist, with strength  */
+  /* Strngth */
+ 
+  InfNum :=NewInfluence(O1Name,P1Num,'DISTANCE','ONEPOINT',O2Name,P2Num);
+ 
+  CurObj   := Objects@O1Name;
+  CurPoint := (CurObj.Points)@P1Num;
+  CurInf   := (CurPoint.Influences)@InfNum;
+ 
+  CurInf.Parm1    := Dist;
+  CurInf.Parm2    := Strngth;
+ 
+  (CurPoint.Influences)@InfNum := CurInf;
+  (CurObj.Points)@P1Num        := CurPoint;
+  Objects@O1Name               := CurObj;
+ 
+};
+ 
+add_defaults('SETDISTANCE','sref,float=0,sref,float=0,float,float=1');
+ 
+/*---------------------------------------------------------------------*/
+ 
+{ 'SETDISTANCE' function #
+  O1Name := ?sref;
+  O2Name := ?sref;
+  Dist   := ?float;
+  Strngth:= ?float;
+  /* Sets the distance that object O1Name likes tries to */
+  /* maintain from object O2Name to Dist, with strength  */
+  /* Strngth */
+ 
+  SetDistance(O1Name,0,O2Name,0,Dist,Strngth);
+ 
+};
+ 
+add_defaults('SETDISTANCE','sref,sref,float,float=1');
+ 
+/*---------------------------------------------------------------------*/
+ 
+{ 'SETDISTANCE' function #
+  O1Name := ?sref;
+  P1Num  := ?float;
+  Dist   := ?float;
+  Vec    := ?vec;
+  Strngth:= ?float;
+  /* Sets the distance that object O1Name point P1Num likes tries to */
+  /* maintain from point Vec to Dist, with strength Strngth */
+ 
+  InfNum := NewInfluence(O1Name,P1Num,'DISTANCE','GLOBAL');
+ 
+  CurObj   := Objects@O1Name;
+  CurPoint := (CurObj.Points)@P1Num;
+  CurInf   := (CurPoint.Influences)@InfNum;
+ 
+  CurInf.Parm1 := Dist;
+  CurInf.Parm2 := Strngth;
+  CurInf.Vec1  := Vec;
+ 
+  (CurPoint.Influences)@InfNum := CurInf;
+  (CurObj.Points)@P1Num        := CurPoint;
+  Objects@O1Name               := CurObj;
+ 
+};
+ 
+add_defaults('SETDISTANCE','sref,float,vec=(0,0,0),float,float=1');
+ 
+/*---------------------------------------------------------------------*/
+ 
+{ 'SETDISTANCE' function #
+  O1Name := ?sref;
+  P1Num  := ?float;
+  Dist   := ?float;
+  Strngth:= ?float;
+ 
+  SetDistance(O1Name,P1Num,Dist,(0,0,0),Strngth);
+ 
+};
+ 
+add_defaults('SETDISTANCE','sref,float,float,float=1');
+ 
+/*---------------------------------------------------------------------*/
+ 
+{ 'SETCONSTRAINT' function #
+  OName := ?sref;
+  PNum  := ?float;
+  Str   := ?float;
+  /* Sets the strength Str with which object OName at point PNum is */
+  /* affected by the global constraining force */
+ 
+  InfNum := NewInfluence(OName,PNum,'CONSTRAIN','GLOBAL');
+ 
+  CurObj   := Objects@OName;
+  CurPoint := (CurObj.Points)@PNum;
+  CurInf   := (CurPoint.Influences)@InfNum;
+ 
+  CurInf.Parm1 := Str;
+ 
+  (CurPoint.Influences)@InfNum := CurInf;
+  (CurObj.Points)@PNum         := CurPoint;
+  Objects@OName                := CurObj;
+ 
+};
+ 
+add_defaults('SETCONSTRAINT','sref, float=0, float=1');
+ 
+/*---------------------------------------------------------------------*/
+ 
+{ 'SETSOLENOID' function #
+  OName := ?sref;
+  PNum  := ?float;
+  Str   := ?float;
+  /* Sets the strength Str with which object OName at point PNum is */
+  /* affected by the global constraining force */
+ 
+  InfNum := NewInfluence(OName,PNum,'SOLENOID','GLOBAL');
+ 
+  CurObj   := Objects@OName;
+  CurPoint := (CurObj.Points)@PNum;
+  CurInf   := (CurPoint.Influences)@InfNum;
+ 
+  CurInf.Parm1 := Str;
+ 
+  (CurPoint.Influences)@InfNum := CurInf;
+  (CurObj.Points)@PNum         := CurPoint;
+  Objects@OName                := CurObj;
+ 
+};
+ 
+add_defaults('SETSOLENOID','sref, float=0, float=1');
+ 
+/*---------------------------------------------------------------------*/
+ 
+{ 'SETCIRCLE' function #
+  OName := ?sref;
+  PNum  := ?float;
+  Str   := ?float;
+  /* Sets the strength Str with which object OName at point PNum is */
+  /* affected by the global constraining force */
+ 
+  InfNum := NewInfluence(OName,PNum,'CIRCLE','GLOBAL');
+ 
+  CurObj   := Objects@OName;
+  CurPoint := (CurObj.Points)@PNum;
+  CurInf   := (CurPoint.Influences)@InfNum;
+ 
+  CurInf.Parm1 := Str;
+ 
+  (CurPoint.Influences)@InfNum := CurInf;
+  (CurObj.Points)@PNum         := CurPoint;
+  Objects@OName                := CurObj;
+ 
+};
+ 
+add_defaults('SETCIRCLE','sref, float=0, float=1');
+ 
+/*---------------------------------------------------------------------*/
+ 
+{ 'SETORBIT' function #
+  OName := ?sref;
+  PNum  := ?float;
+  Str   := ?float;
+  /* Sets the strength Str with which object OName at point PNum is */
+  /* affected by the global orbit force */
+ 
+  InfNum := NewInfluence(OName,PNum,'ORBIT','GLOBAL');
+ 
+  CurObj   := Objects@OName;
+  CurPoint := (CurObj.Points)@PNum;
+  CurInf   := (CurPoint.Influences)@InfNum;
+ 
+  CurInf.Parm1 := Str;
+ 
+  (CurPoint.Influences)@InfNum := CurInf;
+  (CurObj.Points)@PNum         := CurPoint;
+  Objects@OName                := CurObj;
+ 
+};
+ 
+now(add_defaults('SETORBIT','sref, float=0, float=1'));
+ 
+{ 'SETORBIT' function #
+  O1Name := ?sref;
+  P1Num  := ?float;
+  O2Name := ?sref;
+  P2Num  := ?float;
+  Str    := ?float;
+  /* Sets the strength Str with which object O1Name at point P1Num is */
+  /* affected by an orbital force around object O2Name at point P2Num */
+ 
+  InfNum := NewInfluence(O1Name,P1Num,'ORBIT','ONEPOINT',O2Name,P2Num);
+ 
+  CurObj   := Objects@O1Name;
+  CurPoint := (CurObj.Points)@P1Num;
+  CurInf   := (CurPoint.Influences)@InfNum;
+ 
+  CurInf.Parm1 := Str;
+ 
+  (CurPoint.Influences)@InfNum := CurInf;
+  (CurObj.Points)@P1Num        := CurPoint;
+  Objects@O1Name               := CurObj;
+ 
+};
+ 
+add_defaults('SETORBIT','sref, float=0, sref, float=0, float=1');
+ 
+{ 'SETORBIT' function #
+  O1Name := ?sref;
+  O2Name := ?sref;
+  Str    := ?float;
+  /* Sets the strength Str with which object O1Name is */
+  /* affected by an orbital force around object O2Name */
+ 
+  SetOrbit(O1Name,0,O2Name,0,Str);
+ 
+};
+ 
+add_defaults('SETORBIT','sref, sref, float=1');
+ 
+/*---------------------------------------------------------------------*/
+ 
+{ 'SETSWIM' function #
+  OName := ?sref;
+  PNum  := ?float;
+  Str   := ?float;
+  /* Sets the strength Str with which object OName at point PNum is */
+  /* affected by the tendency to swim away from the object's centre */
+ 
+  InfNum := NewInfluence(OName,PNum,'SWIM','GLOBAL');
+ 
+  CurObj   := Objects@OName;
+  CurPoint := (CurObj.Points)@PNum;
+  CurInf   := (CurPoint.Influences)@InfNum;
+ 
+  CurInf.Parm1 := Str;
+ 
+  (CurPoint.Influences)@InfNum := CurInf;
+  (CurObj.Points)@PNum         := CurPoint;
+  Objects@OName                := CurObj;
+ 
+};
+ 
+now(add_defaults('SETSWIM','sref, float=1, float=1'));
+ 
+/*---------------------------------------------------------------------*/
+/* Functions to set up goals for objects                               */
+/*---------------------------------------------------------------------*/
+ 
+{ 'NEWGOAL' function #
+  OName    := ?sref;
+  GoalName := ?sref;
+  /* checks Object OName see if there is already a */
+  /* goal with the given name. If there is it returns a pointer to */
+  /* this goal, otherwise a new goal is added and a pointer to this */
+  /* is returned. Note: if the name '' is supplied then a new goal is */
+  /* always added */
+ 
+  CurObj   := Objects@OName;
+ 
+  GoalNum  := 0;
+  Match    := false;
+ 
+  if GoalName^='' then
+   while( (^Match) & (GoalNum<highbound(CurObj.Goals)),
+    GoalNum := GoalNum + 1;
+    if GoalName=((CurObj.Goals)@GoalNum).GoalName then Match := true;
+    );
+ 
+  if ^Match then
+   begin
+    CurGoal          := DefGoal;
+    CurGoal.GoalName := GoalName;
+    CurObj.Goals     := CurObj.Goals › CurGoal;
+    GoalNum          := highbound(CurObj.Goals);
+    Objects@OName    := CurObj;
+   end;
+ 
+  GoalNum
+};
+ 
+/*---------------------------------------------------------------------*/
+ 
+{ 'SETPOSVELGOAL' function #
+  OName  := ?sref;
+  GPos   := ?vec;
+  GVel   := ?vec;
+  GTime  := ?float;
+  Start  := ?float;
+  Finish := ?float;
+  GName  := ?sref;
+  /* sets a linear goal of reaching point GPos with velocity GVel at */
+  /* time GTime */
+ 
+  GoalNum := NewGoal(OName, GName);
+ 
+  CurObj  := Objects@OName;
+  CurGoal := (CurObj.Goals)@GoalNum;
+ 
+  CurObj  := Objects@OName;
+ 
+  CurGoal.GoalSort   := 'LINPOSVEL';
+  CurGoal.Pos        := GPos;
+  CurGoal.Vel        := GVel;
+  CurGoal.GoalTime   := GTime;
+  CurGoal.StartAct   := Start;
+  CurGoal.StartTight := GTime-50;
+  CurGoal.FinishAct  := Finish;
+  CurGoal.Active     := true;
+ 
+  (CurObj.Goals)@GoalNum := CurGoal;
+ 
+  Objects@OName := CurObj;
+};
+ 
+add_defaults('SETPOSVELGOAL','sref,vec,vec,float,float,float,sref=""');
+ 
+/*---------------------------------------------------------------------*/
+ 
+{ 'SETPOSGOAL' function #
+  OName  := ?sref;
+  GPos   := ?vec;
+  GTime  := ?float;
+  Start  := ?float;
+  Finish := ?float;
+  GName  := ?sref;
+  /* sets a linear goal of reaching point GPos with velocity GVel at */
+  /* time GTime */
+ 
+  GoalNum := NewGoal(OName, GName);
+ 
+  CurObj  := Objects@OName;
+  CurGoal := (CurObj.Goals)@GoalNum;
+ 
+  CurObj  := Objects@OName;
+ 
+  CurGoal.GoalSort   := 'LINPOS';
+  CurGoal.Pos        := GPos;
+  CurGoal.GoalTime   := GTime;
+  CurGoal.StartAct   := Start;
+  CurGoal.StartTight := GTime-50;
+  CurGoal.FinishAct  := Finish;
+  CurGoal.Active     := true;
+ 
+  (CurObj.Goals)@GoalNum := CurGoal;
+ 
+  Objects@OName := CurObj;
+};
+ 
+add_defaults('SETPOSGOAL','sref,vec,float,float,float,sref=""');
+ 
+/*---------------------------------------------------------------------*/
+ 
+{ 'SETVELGOAL' function #
+  OName  := ?sref;
+  GVel   := ?vec;
+  GTime  := ?float;
+  Start  := ?float;
+  Finish := ?float;
+  GName  := ?sref;
+  /* sets a linear goal of reaching point GPos with velocity GVel at */
+  /* time GTime */
+ 
+  GoalNum := NewGoal(OName, GName);
+ 
+  CurObj  := Objects@OName;
+  CurGoal := (CurObj.Goals)@GoalNum;
+ 
+  CurGoal.GoalSort   := 'LINVEL';
+  CurGoal.Vel        := GVel;
+  CurGoal.GoalTime   := GTime;
+  CurGoal.StartAct   := Start;
+  CurGoal.StartTight := GTime-50;
+  CurGoal.FinishAct  := Finish;
+  CurGoal.Active     := true;
+ 
+  (CurObj.Goals)@GoalNum := CurGoal;
+ 
+  Objects@OName := CurObj;
+};
+ 
+add_defaults('SETVELGOAL','sref,vec,vec,float,float,float,sref=""');
+ 
+/*---------------------------------------------------------------------*/
+ 
+{ 'RESETGOALS' function #
+  OName := ?sref;
+  /* clears all the goals of object OName */
+ 
+  CurObj := Objects@OName;
+ 
+  CurObj.Goals:= array_of(DefGoal, 1, 0);
+ 
+  Objects@OName := CurObj;
+};
+ 
+{ 'RESETGOALS' function #
+  dummy := ?stmt;
+  /* resets the goals of all objetcs (including inactive ones) */
+ 
+  ONum:= 0;
+  do(ONum, 1, number(Objects),
+   if ONum=1 then OName := first(Objects,'');
+             else OName := next(Objects,OName);
+   ResetGoals(OName);
+   ); /* end ONum loop */
+};
+ 
+/*---------------------------------------------------------------------*/
+ 
+{ 'REMOVEGOAL' function #
+  OName := ?sref;
+  GName := ?sref;
+  /* removes a goal with a given name */
+  /* it might be workth improving this function in future */
+ 
+  if OName^='' then begin
+   GoalNum := NewGoal(OName, GName);
+   CurObj  := Objects@OName;
+   CurGoal := (CurObj.Goals)@GoalNum;
+   CurGoal.Active := false;
+   (CurObj.Goals)@GoalNum := CurGoal;
+   Objects@OName := CurObj;
+  end;
+ 
+};
+ 
+/*---------------------------------------------------------------------*/
+/* Functions to create new objects and points                          */
+/*---------------------------------------------------------------------*/
+ 
+{ 'SETPOS' function #
+  OName := ?sref;
+  PNum  := ?float;
+  NewPos:= ?vec;
+  /* Sets the position of a point */
+ 
+  CurObj       := Objects@OName;
+  CurPoint     := (CurObj.Points)@PNum;
+ 
+  CurPoint.Pos := NewPos;
+ 
+  (CurObj.Points)@PNum := CurPoint;
+  Objects@OName        := CurObj;
+ 
+};
+ 
+add_defaults('SETPOS','sref, float=0, vec');
+ 
+/*---------------------------------------------------------------------*/
+ 
+{ 'SETORIGPOS' function #
+  OName := ?sref;
+  PNum  := ?float;
+  NewPos:= ?vec;
+  /* Sets the original position of a point */
+ 
+  CurObj       := Objects@OName;
+  CurPoint     := (CurObj.Points)@PNum;
+ 
+  CurPoint.OrigPos := NewPos;
+ 
+  (CurObj.Points)@PNum := CurPoint;
+  Objects@OName        := CurObj;
+ 
+};
+ 
+add_defaults('SETPOS','sref, float=0, vec');
+ 
+/*---------------------------------------------------------------------*/
+ 
+{ 'SETDENSITY' function #
+  OName   := ?sref;
+  Density := ?float;
+  /* Sets the mass of point PNum on object OName to Rad */
+ 
+  CurObj    := Objects@OName;
+ 
+  CurObj.Density := Density;
+ 
+  Objects@OName        := CurObj;
+ 
+};
+ 
+add_defaults('SETMASS','sref, float=0, float');
+ 
+/*---------------------------------------------------------------------*/
+ 
+{ 'SETLASTTS' function #
+  OName   := ?sref;
+  TimeStep:= ?float;
+  /* Sets the value of the last time step */
+ 
+  CurObj:= Objects@OName;
+  CurObj.LastTS:= TimeStep;
+ 
+  Objects@OName := CurObj;
+ 
+};
+ 
+/*---------------------------------------------------------------------*/
+ 
+{ 'SETTOTTRANS' function #
+  OName    := ?sref;
+  NewTrans := ?trans;
+  /* Sets the value of the current total transform */
+ 
+  CurObj := Objects@OName;
+  CurObj.TotTrans := NewTrans;
+  CurObj.TransSet := true;
+ 
+  Objects@OName := CurObj;
+ 
+};
+ 
+/*---------------------------------------------------------------------*/
+ 
+{ 'SETPRETRANS' function #
+  OName    := ?sref;
+  NewTrans := ?trans;
+  /* Sets the value of the previous total transform */
+ 
+  CurObj := Objects@OName;
+  CurObj.PreTrans := NewTrans;
+ 
+  Objects@OName := CurObj;
+ 
+};
+ 
+/*---------------------------------------------------------------------*/
+ 
+{ 'SETACTIVITY' function #
+  OName     := ?sref;
+  NewActive := ?float;
+  /* Sets the activity value for an object */
+ 
+  CurObj := Objects@OName;
+  CurObj.Activity := NewActive;
+ 
+  Objects@OName := CurObj;
+ 
+};
+ 
+/*---------------------------------------------------------------------*/
+ 
+{ 'SETSELFACTIVITY' function #
+  OName     := ?sref;
+  NewActive := ?float;
+  /* Sets the self activity value for an object */
+ 
+  CurObj := Objects@OName;
+  CurObj.SelfActiv := NewActive;
+ 
+  Objects@OName := CurObj;
+ 
+};
+ 
+/*---------------------------------------------------------------------*/
+ 
+{ 'SETACTIVE' function #
+  OName       := ?sref;
+  NewStartAct := ?float;
+  NewEndAct   := ?float;
+  /* Sets the frames for which an object is active */
+ 
+  CurObj:= Objects@OName;
+ 
+  CurObj.StartAct := NewStartAct;
+  CurObj.EndAct   := NewEndAct;
+  CurObj.FullyAct := 25;
+ 
+  Objects@OName := CurObj;
+ 
+};
+ 
+/*---------------------------------------------------------------------*/
+ 
+{ 'SETSTARTACT' function #
+  OName       := ?sref;
+  NewStartAct := ?float;
+  /* Sets the frame an object starts to become active */
+ 
+  CurObj:= Objects@OName;
+  CurObj.StartAct:= NewStartAct;
+ 
+  Objects@OName := CurObj;
+ 
+};
+ 
+/*---------------------------------------------------------------------*/
+ 
+{ 'SETFULLYACT' function #
+  OName      := ?sref;
+  NewFullyAct := ?float;
+  /* Sets the time it takes an object becomes fully active or */
+  /* deactivate */
+ 
+  CurObj:= Objects@OName;
+  CurObj.FullyAct:= NewFullyAct;
+ 
+  Objects@OName := CurObj;
+ 
+};
+ 
+/*---------------------------------------------------------------------*/
+ 
+{ 'SETENDACT' function #
+  OName      := ?sref;
+  NewEndAct := ?float;
+  /* Sets the frame number an object deactivates (ie dies) */
+ 
+  CurObj:= Objects@OName;
+  CurObj.FullyAct:= NewEndAct;
+ 
+  Objects@OName := CurObj;
+ 
+};
+ 
+/*---------------------------------------------------------------------*/
+ 
+{ 'SETCENTREOFATTENTION' function #
+  OName      := ?sref;
+  /* Sets flag for object to become centre of attention */
+ 
+  CurObj:= Objects@OName;
+  CurObj.BecomesCentre := true;
+ 
+  Objects@OName := CurObj;
+ 
+};
+ 
+/*---------------------------------------------------------------------*/
+ 
+{ 'NEWPOINT' function #
+  ObjName:= ?sref;
+  OrigPos:= ?vec;
+  Mass:= ?float;
+  Rad:= ?float;
+ 
+  CurObj          := Objects@ObjName;
+  CurObj.Points   := CurObj.Points › DefPoint;
+  PNum            := highbound( CurObj.Points);
+  Objects@ObjName := CurObj;
+ 
+  SetMass(ObjName, PNum, Mass);
+  SetRadius(ObjName, PNum, Rad);
+  SetOrigPos(ObjName, PNum, OrigPos);
+ 
+  PNum
+};
+ 
+add_defaults('NEWPOINT','sref, vec=(0,0,0), float=1, float=1');
+ 
+/*---------------------------------------------------------------------*/
+ 
+{ 'NEWOBJECT' function #
+  ObjName:= ?sref;
+  LinDamp := ?float;
+  AngDamp := ?float;
+ 
+  NewObj:= DefFullObj;
+  NewObj.LinDamp:= LinDamp;
+  NewObj.AngDamp:= AngDamp;
+ 
+  Objects@ObjName:= NewObj;
+};
+ 
+add_defaults('NEWOBJECT','sref, float=0.85, float=0.95');
+ 
+/*---------------------------------------------------------------------*/
+ 
+{ 'NEWLOBJECT' function #
+  ObjName    := ?sref;
+  NoOfPoints := ?float;
+  LinDamp    := ?float;
+  AngDamp    := ?float;
+  Denisity   := ?float;
+  /* creates a new object of type suitable for use by lifecycl */
+  /* i.e. a six point approximation object */
+ 
+  if DanceTrace>=2 then say 'Creating Dancer Object for ' ObjName;
+ 
+  NewObj:= DefFullObj;
+  NewObj.LinDamp:= LinDamp;
+  NewObj.AngDamp:= AngDamp;
+  NewObj.UsesDancerApprox:= true;
+ 
+  Objects@ObjName:= NewObj;
+ 
+  /* create the points for a standard lifecycl object */
+  i := 0;
+  do(i, 1, NoOfPoints,
+   dummy:= NewPoint(ObjName, (0,0,0), 1, 1);
+   SetCollision(ObjName,i,1);
+   );
+ 
+};
+ 
+add_defaults('NEWLOBJECT','sref,float,float=0.85,float=0.95,float=1');
+ 
+/*---------------------------------------------------------------------*/
+ 
+{ 'SETUPCAMERAOBJECTS' function #
+  Start := ?float;
+  /* hack to create two special dancerl objects, camera and focus */
+ 
+  NewObject('camera',0.7,0.7); /* set up objects with quite */
+  NewObject('focus',0.7,0.7);  /* a lot of damping */
+ 
+  SetActive('camera',Start,100000);
+  SetActive('focus',Start,100000);
+ 
+  dummy:= NewPoint('camera', (0,0,0), 0.1, 0.1); /* radius 0.1 */
+  dummy:= NewPoint('focus', (0,0,0), 0.1, 0);    /* radius 0 */
+ 
+  SetDistance('focus',0,0,(0,0,0),0.4);
+ 
+};
+ 
+/*---------------------------------------------------------------------*/
+ 
+{ 'SETCAMERADISTANCE' function #
+  Dist := ?float;
+ 
+  SetDistance('camera',0,Dist,(0,0,0),0.4);
+ 
+};
+ 
+/*---------------------------------------------------------------------*/
+ 
+{ 'SETBASICINFLUENCES' function #
+  dummy := ?stmt;
+  /* sets basic influences for lifecycl objects */
+ 
+  ONum:= 0;
+  do(ONum, 1, number(Objects),
+   if ONum=1 then OName := first(Objects,'');
+             else OName := next(Objects,OName);
+   i := 0;
+   do(i, 1, highbound( (Objects@OName).Points ),
+    SetCollision(OName,i,1);
+    );
+   SetConstraint(OName,0,1);
+   ); /* end ONum loop */
+ 
+};
+ 
+/*---------------------------------------------------------------------*/
+/* Function to calculate object mass, centre of gravity, inertia etc.. */
+/*---------------------------------------------------------------------*/
+ 
+{ 'CALCMASSCENTRE' function #
+  OName := ?sref;
+  /* Calcultes the mass, centre of gravity, inertia of a given object */
+ 
+  CurObj := Objects@OName;
+  PNum   := 0;
+  TotM   := 0;
+  TotMxP := (0,0,0);
+ 
+  /* loop though points other than centre */
+  do(PNum, 1, highbound(CurObj.Points),
+   TotM   := TotM + ((CurObj.Points)@PNum).Mass;
+   TotMxP := TotMxP
+         + ((CurObj.Points)@PNum).Mass * ((CurObj.Points)@PNum).OrigPos;
+   );
+ 
+  if TotM=0
+   then begin
+    say 'WARNING! Zero Mass for entire object !!!!';
+    ToTM:= 0.000000001;
+    COG := (0,0,0);
+   end;
+   else COG := TotMxP / TotM;
+ 
+   CurObj.Mass := TotM;
+ 
+   CurObj.Inertia := TotM;
+   CurObj.InvIner := 1/CurObj.Inertia;
+ 
+   CentrePoint := (CurObj.Points)@0; /* point 0 reserved for centre */
+   CentrePoint.OrigPos := COG;
+   CentrePoint.Mass    := TotM; /* total mass to centre of gravity */
+   (CurObj.Points)@0 := CentrePoint;
+ 
+   Objects@OName:= CurObj; /* place info back into Objects */
+};
+ 
+{ 'CALCMASSCENTRE' function #
+  dummy := ?stmt;
+  /* if called with no parameter, then calculate for all objects */
+  /* (including currently inactive ones) */
+ 
+  ONum:= 0;
+  do(ONum, 1, number(Objects),
+   if ONum=1 then OName := first(Objects,'');
+             else OName := next(Objects,OName);
+   CalcMassCentre(OName);
+   ); /* end ONum loop */
+};
+ 
+/*---------------------------------------------------------------------*/
+ 
+{ 'CALCMOMENTUM' function #
+  OName     := ?sref;
+  /* Calculates the linear and angular momentum of object OName given */
+  /* the last two transformations, over time step TimeStep */
+ 
+  /* Note: centre of gravity of object must be already calculated */
+  /*       by a call to CALCMASSCENTRE */
+ 
+  CurObj := Objects@OName;
+  Centre:= ((CurObj.Points)@0).OrigPos; /* point 0 reserved for centre */
+ 
+  LinVel := ((Centre CurObj.TotTrans) - (Centre CurObj.PreTrans))
+         / CurObj.LastTS;
+  CurObj.LinMom := LinVel * CurObj.Mass;
+  CurObj.LinVel := LinVel;
+  CurObj.LinPos := Centre CurObj.TotTrans;
+ 
+  DRot  := Rotate(CurObj.TotTrans) inv(Rotate(CurObj.PreTrans));
+  Quat  := Mat2Quat(DRot);
+  Theta := acos(Quat.q0);
+  if (Theta=0) then AngVel:= (0,0,0);
+   else AngVel:= 2*Theta * (Quat.q1,Quat.q2,Quat.q3) / sin(Theta)
+                 / CurObj.LastTS;
+  CurObj.AngVel := AngVel;
+  CurObj.AngMom :=CurObj.Inertia * AngVel; /* should be tensor */
+ 
+  /* calculate angular position vector */
+  Quat := Mat2Quat(Rotate(CurObj.TotTrans));
+  Theta := acos(Quat.q0);
+  if (Theta=0) then AngPos:= (0,0,0);
+   else AngPos := 2*Theta * (Quat.q1,Quat.q2,Quat.q3) / sin(Theta);
+  CurObj.AngPos := AngPos;
+ 
+  if (DanceTrace>=1) then
+   begin
+    say 'Calc Linear Velocity :' LinVel;
+    say 'Calc Angular Velocity :' AngVel;
+    say 'Calc Linear Momentum :' CurObj.LinMom;
+    say 'Calc Angular Momentum :' CurObj.AngMom;
+   end;
+ 
+  Objects@OName := CurObj;
+};
+ 
+{ 'CALCMOMENTUM' function #
+  dummy := ?stmt;
+  /* if called with no parameter, then calculate for all objects */
+  /* (including currently inactive ones) */
+ 
+  ONum:= 0;
+  do(ONum, 1, number(Objects),
+   if ONum=1 then OName := first(Objects,'');
+             else OName := next(Objects,OName);
+   CalcMomentum(OName);
+   ); /* end ONum loop */
+};
+ 
+/*---------------------------------------------------------------------*/
+ 
+{ 'CALCPOINTPOSITIONS' function #
+  OName:= ?sref;
+  /* sets the positions of the points in object OName by applying */
+  /* TotTrans to each of the original point positions */
+ 
+  CurObj := Objects@OName;
+ 
+  PNum := 0;
+  do(PNum, 0, highbound(CurObj.Points),
+   CurPoint := (CurObj.Points)@PNum;
+   CurPoint.Pos := CurPoint.OrigPos CurObj.TotTrans;
+   (CurObj.Points)@PNum:= CurPoint;
+   );
+ 
+  CurObj.LinPos := ((CurObj.Points)@0).Pos;
+ 
+  Objects@OName := CurObj;
+};
+ 
+{ 'CALCPOINTPOSITIONS' function #
+  dummy := ?stmt;
+  /* sets the positions of the points of all the objects by applying */
+  /* TotTrans to each of the original points */
+  /* (including currently inactive ones) */
+ 
+  ONum:= 0;
+  do(ONum, 1, number(Objects),
+   if ONum=1 then OName := first(Objects,'');
+             else OName := next(Objects,OName);
+   CalcPointPositions(OName);
+   ); /* end ONum loop */
+};
+ 
+/*---------------------------------------------------------------------*/
+/* Activity Functions                                                  */
+/*---------------------------------------------------------------------*/
+ 
+{ 'NEWLYACTIVE' function #
+  OName := ?sref;
+  /* takes last two transforms from movie scene to calculate object's */
+  /* current linear and angular momentum */
+ 
+  if (DanceTrace>=1) then say 'Calculating Newly Active Object' OName;
+ 
+  CurObj:= Objects@OName;
+  PName := ParentName(OName);
+ 
+  if ^CurObj.TransSet then begin
+   if UseDancerPreview
+    then begin
+     if PName^='' then
+      begin
+       CurObj.PreTrans := CurObj.PreBirth (Objects@PName).PreTrans;
+       CurObj.TotTrans := CurObj.TotBirth (Objects@PName).TotTrans;
+      end;
+    end;
+ 
+    else begin
+     CurObj.PreTrans := (movie_sc.list@OName).prev_trans;
+     say 'Prev_Trans : ' CurObj.PreTrans;
+     CurObj.TotTrans := (movie_sc.list@OName).this_trans;
+     say 'This_Trans : ' CurObj.TotTrans;
+ 
+     PName := ParentName(OName);
+     if PName^='' then
+      begin
+       CurObj.PreBirth := CurObj.PreTrans
+                          inv( (Objects@PName).PreTrans );
+       CurObj.TotBirth := CurObj.TotTrans
+                          inv( (Objects@PName).TotTrans );
+      end;
+    end;
+  end;
+ 
+  Objects@OName := CurObj;
+ 
+  if CurObj.UsesDancerApprox then begin
+   if DanceTrace>=2 then say 'About to Calculate Dancer Approx of' OName;
+   Dancer_Approx(OName);
+  end;
+  if DanceTrace>=2 then say 'About to Calculate Mass & Centre of' OName;
+  CalcMassCentre(OName);
+  if DanceTrace>1 then say 'About to Calculate point positions of' OName;
+  CalcPointPositions(OName);
+  if DanceTrace>=2 then say 'About to Calculate momentum of ' OName;
+  CalcMomentum(OName);
+ 
+  if CurObj.BecomesCentre then begin
+   CentreOfAttention := OName;
+   if DanceTrace>=1 then say 'Making ' OName ' Centre Of Attention ';
+  end;
+ 
+  if DanceTrace>=1 then say 'Finished Calculating Newly Active Object';
+};
+ 
+/*---------------------------------------------------------------------*/
+ 
+{ 'OLDACTIVE' function #
+  OName := ?sref;
+  /* calculates new positions from lifecycle for an object that is */
+  /* already active */
+ 
+  if (Objects@OName).UsesDancerApprox then begin
+   if DanceTrace>=3 then say 'Calculating Old Active Object' OName;
+   Dancer_Approx(OName);
+   CurObj := Objects@OName;
+ 
+   OldCentre := ((CurObj.Points)@0).Pos;
+   NewCentre := ((CurObj.Points)@0).OrigPos CurObj.TotTrans;
+   /* translate so new centre placed at old */
+   CurObj.TotTrans := CurObj.TotTrans at(OldCentre - NewCentre);
+   Objects@OName := CurObj;
+ 
+   CalcMassCentre(OName);
+   CalcPointPositions(OName);
+  end;
+ 
+};
+ 
+/*---------------------------------------------------------------------*/
+ 
+{ 'CALCACTIVEOBJ' function #
+  FrNum := ?float;
+  /* calculates the active objects at frame number FrNum */
+  /* if an object has just become active it calcualtes it momentum */
+  /* from last two transforms in movie scene */
+ 
+  ActiveObj:= array_of('', 1, 0); /* empty list of active objects */
+ 
+  ONum := 0;
+  do(ONum, 1, number(Objects),
+   if ONum=1 then OName:= first(Objects,'');
+             else OName:= next(Objects,OName);
+ 
+   CurObj := Objects@OName;
+   StartA := CurObj.StartAct;
+   EndA   := CurObj.EndAct;
+   FullyA := CurObj.FullyAct;
+ 
+   if (FrNum>=StartA)&(FrNum<=EndA) then
+    begin
+     ActiveObj := ActiveObj › OName; /* make object active */
+     CurObj.SelfActiv := COSTVUP( StartA, StartA + FullyA, FrNum );
+     CurObj.Activity := CurObj.SelfActiv
+                        * COSTVDOWN( EndA - FullyA, EndA, FrNum );
+     Objects@OName:= CurObj; /* place info back into lookup */
+ 
+     if (FrNum=StartA) then NewlyActive(OName);
+                       else OldActive(OName);
+ 
+    end;
+ 
+   ); /* end do ONum loop */
+ 
+};
+ 
+/*---------------------------------------------------------------------*/
+ 
+{ 'OLDCALCACTIVEOBJ' function #
+  FrNum := ?float;
+  /* calculates the active objects at frame number FrNum */
+  /* if an object has just become active it calcualtes it momentum */
+  /* from last two transforms in movie scene */
+ 
+  ActiveObj:= array_of('', 1, 0); /* empty list of active objects */
+ 
+  ONum:= 0;
+  do(ONum, 1, number(Objects),
+   if ONum= 1 then OName:= first(Objects,'');
+              else OName:= next(Objects,OName);
+ 
+   CurObj := Objects@OName;
+   StartA := CurObj.StartAct;
+   EndA   := CurObj.EndAct;
+   FullyA := CurObj.FullyAct;
+ 
+   if (FrNum>=StartA)&(FrNum<=EndA) then
+    begin
+     ActiveObj:= ActiveObj › OName; /* make object active */
+     CurObj.SelfActiv := COSTVUP( StartA, StartA + FullyA, FrNum );
+     CurObj.Activity := CurObj.SelfActiv
+                        * COSTVDOWN( EndA - FullyA, EndA, FrNum );
+     Objects@OName:= CurObj; /* place info back into lookup */
+    end;
+ 
+   ); /* end do ONum loop */
+ 
+};
+ 
+/*---------------------------------------------------------------------*/
+/* General Utilities                                                   */
+/*---------------------------------------------------------------------*/
+ 
+{ 'DANCECSG' function #
+  OName := ?sref;
+  /* creates a simple ball representation CSG object for a FullObj */
+ 
+  CurObj    := Objects@OName;
+  ResultCSG := empty;
+  PNum      := 0;
+ 
+  do(PNum, 1, highbound(CurObj.Points),
+   CurPoint := (CurObj.Points)@PNum;
+   ResultCSG:= ResultCSG union
+   ( sphere(CurPoint.Rad) at(CurPoint.Pos) );
+   );
+ 
+      /*
+  ResultCSG := sphere(1) at(((CurObj.Points)@0).Pos) union empty;
+      */
+ 
+  ResultCSG
+};
+ 
+{ 'DANCECSG' function #
+  dummy := ?stmt;
+  /* constructs csg object to represent all active dancer objects */
+ 
+  Result:= empty;
+ 
+  Obj1 := 0;
+  do(Obj1, 1, highbound(ActiveObj),
+   CurObjName := ActiveObj@Obj1;
+   Result:= Result union DanceCsg(CurObjName);
+   );
+ 
+  Result
+};
+ 
+/*---------------------------------------------------------------------*/
+ 
+{ 'SAYINFLUENCE' function #
+  CurInf := ?InfType;
+ 
+  say '  Type     ' CurInf.InfSort;
+  say '  Scope    ' CurInf.Scope;
+  say '  Parm1    ' CurInf.Parm1;
+  say '  Parm2    ' CurInf.Parm2;
+  say '  Vec1     ' CurInf.Vec1;
+  say '  SecObj   ' CurInf.SecObj;
+  say '  SecPoint ' CurInf.SecPoint;
+ 
+};
+ 
+/*---------------------------------------------------------------------*/
+ 
+{ 'SAYPOINT' function #
+  OName := ?sref;
+  PNum  := ?float;
+ 
+  CurObj   := Objects@OName;
+  CurPoint := (CurObj.Points)@PNum;
+ 
+  say 'Object ' OName ' Point ' PNum;
+  say ' Pos     ' CurPoint.Pos;
+  say ' Mass    ' CurPoint.Mass;
+  say ' Force   ' CurPoint.Force;
+  say ' OrigPos ' CurPoint.OrigPos;
+  say ' Rad     ' CurPoint.Rad;
+  say ' Influences :';
+ 
+  i:= 0;
+  do(i, 1, highbound(CurPoint.Influences),
+   CurInf := (CurPoint.Influences)@i;
+   say ' Influence ' i;
+   Sayinfluence(CurInf);
+   );
+ 
+};
+ 
+/*---------------------------------------------------------------------*/
+ 
+{ 'SAYOBJECT' function #;
+  OName := ?sref;
+ 
+  CurObj := Objects@OName;
+ 
+  say 'Object ' OName;
+  say ' Activity  ' CurObj.Activity;
+  say ' SelfActiv ' CurObj.SelfActiv;
+  say ' CentOfAtt ' CurObj.BecomesCentre;
+  say ' StartAct  ' CurObj.StartAct;
+  say ' Density   ' CurObj.Density;
+  say ' Mass      ' CurObj.Mass;
+  say ' Inertia   ' CurObj.Inertia;
+  say ' InvIner   ' CurObj.InvIner;
+  say ' LinDamp   ' CurObj.LinDamp;
+  say ' AngDamp   ' CurObj.AngDamp;
+  say ' LinMom    ' CurObj.LinMom;
+  say ' AngMom    ' CurObj.AngMom;
+  say ' LinVel    ' CurObj.LinVel;
+  say ' AngVel    ' CurObj.AngVel;
+  say ' LastTS    ' CurObj.LastTS;
+  say ' TotTrans  ' CurObj.TotTrans;
+  say ' PreTrans  ' CurObj.PreTrans;
+  say ' TotBirth  ' CurObj.TotBirth;
+  say ' PreBirth  ' CurObj.PreBirth;
+ 
+};
+ 
+/*---------------------------------------------------------------------*/
+ 
+{ 'SAYOBJECTPOINTS' function #
+  OName := ?sref;
+ 
+  say 'Object ' OName;
+ 
+  i:= 0;
+  do(i, 0, highbound( (Objects@OName).Points ),
+   SayPoint(OName,i);
+   );
+ 
+};
+ 
+/*---------------------------------------------------------------------*/
+ 
+{ 'SAYOBJECTNAMES' function #
+  OName := ?sref;
+ 
+  say 'Current Dancer Objects :';
+  ONum:= 0;
+  do(ONum, 1, number(Objects),
+   if ONum= 1 then OName:= first(Objects,'');
+              else OName:= next(Objects,OName);
+  say '  ' OName;
+  );
+ 
+};
+ 
+/*---------------------------------------------------------------------*/
+ 
+{ 'PUTNUMBER' function #
+  tt := ?float;
+  ff := ?file;
+ 
+  put(string(tt)||' ',ff);
+};
+ 
+{ 'PUTTRANS' function #
+  tt := ?trans;
+  ff := ?file;
+ 
+  putnumber(tt.r11,ff);
+  putnumber(tt.r12,ff);
+  putnumber(tt.r13,ff);
+  putnumber(tt.r21,ff);
+  putnumber(tt.r22,ff);
+  putnumber(tt.r23,ff);
+  putnumber(tt.r31,ff);
+  putnumber(tt.r32,ff);
+  putnumber(tt.r33,ff);
+  putnumber(tt.p1,ff);
+  putnumber(tt.p2,ff);
+  putnumber(tt.p3,ff);
+  putnumber(tt.s,ff);
+ 
+};
+ 
+{ 'GETTRANS' function #
+  ff := ?file;
+ 
+  tt:= unitt;
+  tt.r11:= getnumber(ff);
+  tt.r12:= getnumber(ff);
+  tt.r13:= getnumber(ff);
+  tt.r21:= getnumber(ff);
+  tt.r22:= getnumber(ff);
+  tt.r23:= getnumber(ff);
+  tt.r31:= getnumber(ff);
+  tt.r32:= getnumber(ff);
+  tt.r33:= getnumber(ff);
+  tt.p1:= getnumber(ff);
+  tt.p2:= getnumber(ff);
+  tt.p3:= getnumber(ff);
+  tt.s:= getnumber(ff);
+ 
+  tt
+};
+ 
+{ 'SAVE_BIRTH' function #
+  fname := ?sref;
+ 
+  ff:= fopen(fname,'w');
+ 
+  ONum := 0;
+  do(ONum, 1, number(Objects),
+   if ONum=1 then OName:= first(Objects,'');
+             else OName:= next(Objects,OName);
+   CurObj:= Objects@OName;
+   put(OName||' ',ff);
+   puttrans(CurObj.PreBirth,ff);
+   puttrans(CurObj.TotBirth,ff);
+   );
+ 
+  fclose(ff);
+ 
+};
+ 
+{ 'LOAD_BIRTH' function #
+  fname := ?sref;
+ 
+  ff:= fopen(fname,'r');
+ 
+  ONum := 0;
+  do(ONum, 1, number(Objects),
+   OName:= getstring(ff);
+   CurObj:= Objects@OName;
+   CurObj.PreBirth := gettrans(ff);
+   CurObj.TotBirth := gettrans(ff);
+   Objects@OName := CurObj;
+   );
+ 
+  fclose(ff);
+ 
+};
+ 
+ 
+ 
+/*---------------------------------------------------------------------*/
+/* Functions to reset objects & transforms                             */
+/*---------------------------------------------------------------------*/
+ 
+{ 'RESETOBJECTS' function #
+  dummy := ?stmt;
+  /* sets object lookup to zero */
+ 
+  ONum := 0;
+  do(ONum, 1, number(Objects),
+   if ONum=1 then OName:= first(Objects,'');
+             else OName:= next(Objects,OName);
+ 
+  Objects@OName := DefFullObj;
+  );
+ 
+  Objects:= lookup_of(DefFullObj);
+ 
+};
+ 
+/*---------------------------------------------------------------------*/
+ 
+{ 'RESETTRANSFORMS' function #
+  dummy := ?stmt;
+  /* set all the object transforms to zero */
+  /* (including currently inactive ones */
+ 
+  ONum:= 0;
+  do(ONum, 1, number(Objects),
+   if ONum=1 then OName:= first(Objects,'');
+             else OName:= next(Objects,OName);
+   CurObj          := Objects@OName;
+   CurObj.TotTrans := at(0,0,0);
+   Objects@OName   := CurObj;
+   ); /* end ONum loop */
+};
+ 
+{ 'RESETINFLUENCES' function #
+  dummy := ?stmt;
+  /* set all the object influences to zero */
+  /* (including currently inactive ones */
+ 
+  ONum := 0;
+  PNum := 0;
+ 
+  do(ONum, 1, number(Objects),
+   if ONum=1 then OName := first(Objects,'');
+             else OName := next(Objects,OName);
+   CurObj := Objects@OName;
+ 
+   do(Pnum, 0, highbound(CurObj.Points),
+    CurPoint             := (CurObj.Points)@PNum;
+    CurPoint.Influences  := array_of(DefInf, 1, 0);
+    (CurObj.Points)@Pnum := CurPoint;
+    );
+ 
+   Objects@OName := CurObj;
+   ); /* end ONum loop */
+};
+ 
+/*---------------------------------------------------------------------*/
+/* Main Function : DANCESTEP & DANCETRANS                              */
+/*---------------------------------------------------------------------*/
+ 
+{ 'DANCESTEP' function #
+  FrNum   := ?float; /* the current frame number */
+ 
+  NumSteps:= 1;
+  /* Does all the calculations for a single frame step */
+  if DanceTrace>=1 then say 'Doing Dancer step for frame ' FrNum;
+ 
+  if DanceTrace>=2 then say 'About to calculate active objects';
+  CalcActiveObj(FrNum); /* Calculate which objects are active */
+                        /* and set their activity levels */
+ 
+  if highbound(ActiveObj)^=0 then /* check at least one obj active */
+   begin
+ 
+    ONum := 0;
+    do(ONum, 1, highbound(ActiveObj),
+     OName  := ActiveObj@ONum;
+     CurObj := Objects@OName;
+     CurObj.PreTrans:= CurObj.TotTrans;
+     Objects@OName := CurObj;
+     );
+ 
+    loop := 0;
+    do(loop, 0, NumSteps-1,
+     if DanceTrace>=2 then say 'About to calculate forces';
+     CalcForces();
+     if DanceTrace>=2 then say 'About to apply forces';
+     ApplyForces( 1/NumSteps, (FrNum + loop/NumSteps) );
+     );
+   end;
+ 
+  if DanceTrace>=1 then begin
+   say 'Camera Distance :' length((Objects@'camera').LinPos);
+   say 'Focus Distance :' length((Objects@'focus').LinPos);
+  end;
+ 
+  if DanceTrace>=1 then say 'Finishing DanceStep';
+ 
+ };
+add_defaults('DANCESTEP','float, float=1');
+ 
+/*---------------------------------------------------------------------*/
+ 
+{ 'OLDDANCESTEP' function #
+  FrNum   := ?float; /* the current frame number */
+  NumSteps:= ?float; /* number of sub steps for each frame */
+  Recalc  := ?bool; /* recalculate c.o.g. & momentum from positions? */
+  /* Does all the calculations for a single frame step */
+ 
+  if Recalc then CalcMassCentre();
+ 
+  OldCalcActiveObj(FrNum); /* Calculate which objects are active */
+                           /* and set their activity levels */
+ 
+  if highbound(ActiveObj)^=0 then /* check at least one obj active */
+ 
+  loop := 0;
+ 
+  do(loop, 0, NumSteps-1,
+   DanceStepCSG := empty;
+   CalcForces();
+   ApplyForces( 1/NumSteps, (FrNum + loop/NumSteps) );
+   );
+ };
+ 
+add_defaults('OLDDANCESTEP','float, float=1, bool=false');
+ 
+/*---------------------------------------------------------------------*/
+ 
+{ 'DANCETRANS' function #
+  OName:= ?sref;
+  /* returns the current transformation for object OName */
+ 
+  (Objects@OName).TotTrans
+};
+ 
+/*---------------------------------------------------------------------*/
+ 
+{ 'DANCER' function #
+  dummy := ?stmt;
+  /* The function for Movie to call as a motion to set the transform */
+ 
+  trns := (Objects@(movie_sc.current_name)).TotTrans;
+ 
+  movie_sc.current_item := movie_sc.current_item tr2item(trns);
+ 
+};
+ 

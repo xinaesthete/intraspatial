@@ -49,6 +49,27 @@ export function reactionDiffusionExample(): Example {
   return { label: "Reaction–diffusion (complex)", nodes, edges, sink: { node: "rd", port: "state" } };
 }
 
+// Dance field — a reinterpretation of Andy Lomas's 1992 DANCERL controller for William
+// Latham's films (written in the IBM ESME/Mutator language Stephen Todd & Latham built).
+// A swarm seed feeds a delay node whose pos+vel state drives one danceField step, fed
+// back to run over time (Play). Motion emerges from the superposition of force
+// influences (containment, orbit, vortex, solenoid, swim, cohesion, separation) — the
+// same params the Mutator (src/evo) breeds. Preview the `swarm` output (a top-down
+// scatter); the dedicated 3D view comes in the Studio.
+export function danceFieldExample(): Example {
+  const nodes: Node[] = [
+    node("seed", "danceSwarmSeed", 20, 200),
+    node("fb", "feedback", 240, 200),
+    node("dance", "danceField", 460, 200),
+  ];
+  const edges: Edge[] = [
+    e("e-si", "seed", "state", "fb", "init"),
+    e("e-in", "fb", "state", "dance", "state"),
+    e("e-back", "dance", "state", "fb", "next"),
+  ];
+  return { label: "Dance field (DANCERL)", nodes, edges, sink: { node: "dance", port: "swarm" } };
+}
+
 // A reusable "Hotspots" subgraph (points → KDE density → Getis-Ord Gi*), instantiated
 // twice over two different blob sources and combined — the same definition reused, so
 // editing it (e.g. the KDE bandwidth) updates both instances at once.
@@ -145,4 +166,4 @@ export function waveletDenoiseExample(): Example {
   return { label: "Wavelet denoise", nodes, edges, sink: { node: "inv", port: "out" } };
 }
 
-export const EXAMPLES: Example[] = [reactionDiffusionExample(), reusableSubgraphExample(), waveletDenoiseExample()];
+export const EXAMPLES: Example[] = [danceFieldExample(), reactionDiffusionExample(), reusableSubgraphExample(), waveletDenoiseExample()];
