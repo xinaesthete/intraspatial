@@ -643,6 +643,12 @@ export default function App() {
                   <button
                     key={s.name}
                     className={`palette-btn${s.isSource ? " source" : ""}`}
+                    draggable
+                    onDragStart={(e) => {
+                      e.dataTransfer.setData("application/op-name", s.name);
+                      e.dataTransfer.effectAllowed = "move";
+                      hideHelp();
+                    }}
                     onClick={() => addNode(s.name)}
                     onMouseEnter={(e) => showHelp(s, e.currentTarget)}
                     onMouseLeave={hideHelp}
@@ -711,6 +717,14 @@ export default function App() {
           onNodeClick={(_, n) => { setSelectedId(n.id); setSelectedPort(null); setValue(null); setStale(false); setError(null); }}
           onNodeDoubleClick={onNodeDoubleClick}
           onInit={(inst) => { flowRef.current = inst; }}
+          onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = "move"; }}
+          onDrop={(e) => {
+            e.preventDefault();
+            const name = e.dataTransfer.getData("application/op-name");
+            if (!name) return;
+            const pos = flowRef.current?.screenToFlowPosition({ x: e.clientX, y: e.clientY });
+            addNode(name, pos);
+          }}
           fitView
         >
           <Background />
