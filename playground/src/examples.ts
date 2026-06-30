@@ -29,22 +29,24 @@ export interface Example {
 
 const e = (id: string, s: string, sh: string, t: string, th: string): Edge => ({ id, source: s, sourceHandle: sh, target: t, targetHandle: th });
 
+// Gray–Scott reaction–diffusion as a feedback loop, with the (U,V) state carried as a
+// single complex field (re = U, im = V — ADR-0004). Because it's one field, the loop is
+// one seed → one feedback (delay) → one step → back, instead of the two parallel
+// feedback nodes the scalar (U,V)-as-two-grids formulation needs. The feedback node
+// propagates the complex element around the loop, so every edge stays complex. Preview
+// the `state` output and switch the lane selector to `im` to watch V (the classic view).
 export function reactionDiffusionExample(): Example {
   const nodes: Node[] = [
-    node("seed", "grayScottSeed", 20, 200),
-    node("fbU", "feedback", 230, 120),
-    node("fbV", "feedback", 230, 300),
-    node("rd", "reactionDiffusionStep", 450, 200),
+    node("seed", "grayScottSeedComplex", 20, 200),
+    node("fb", "feedback", 240, 200),
+    node("rd", "reactionDiffusionComplex", 460, 200),
   ];
   const edges: Edge[] = [
-    e("e-su", "seed", "u", "fbU", "init"),
-    e("e-sv", "seed", "v", "fbV", "init"),
-    e("e-uin", "fbU", "state", "rd", "u"),
-    e("e-vin", "fbV", "state", "rd", "v"),
-    e("e-uback", "rd", "u", "fbU", "next"),
-    e("e-vback", "rd", "v", "fbV", "next"),
+    e("e-si", "seed", "state", "fb", "init"),
+    e("e-in", "fb", "state", "rd", "state"),
+    e("e-back", "rd", "state", "fb", "next"),
   ];
-  return { label: "Reaction–diffusion", nodes, edges, sink: { node: "rd", port: "v" } };
+  return { label: "Reaction–diffusion (complex)", nodes, edges, sink: { node: "rd", port: "state" } };
 }
 
 // A reusable "Hotspots" subgraph (points → KDE density → Getis-Ord Gi*), instantiated
