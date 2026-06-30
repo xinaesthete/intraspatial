@@ -12,6 +12,7 @@ import "@xyflow/react/dist/style.css";
 import "./styles.css";
 import type { FieldValue, GraphMemo, SimState } from "../../src/gpu/graph";
 import { createMemo, createSimState } from "../../src/gpu/graph";
+import { registerExtraOps } from "./extraOps";
 import { applyEdgeChanges, applyNodeChanges } from "@xyflow/react";
 import type { EdgeChange, NodeChange } from "@xyflow/react";
 import { OpNode } from "./OpNode";
@@ -51,6 +52,10 @@ import { defaultParamsFor, getSpec, listOpSpecs, listSourceSpecs } from "./specs
 import { EXAMPLES } from "./examples";
 import type { Example } from "./examples";
 import { Preview } from "./Preview";
+
+// Register the element-algebra + wavelet op packs synchronously, before any render,
+// into the same registry the palette reads (see extraOps.ts for why not the async path).
+registerExtraOps();
 
 const nodeTypes: NodeTypes = { op: OpNode, group: GroupNode, instance: InstanceNode, input: InterfaceNode, output: InterfaceNode };
 
