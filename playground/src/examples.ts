@@ -5,6 +5,12 @@ import type { Edge, Node } from "@xyflow/react";
 import { defaultParamsFor, getSpec } from "./specs";
 import { defScopeId } from "./subgraphs";
 import type { DefLibrary, SubgraphDef } from "./subgraphs";
+import { registerExtraOps } from "./extraOps";
+
+// Some examples reference opt-in pack ops (fdwt/idwt/…). This module builds its example
+// graphs at load via getSpec, which needs those ops registered — and it is imported by
+// App before App's own registerExtraOps() runs, so register here too (idempotent).
+registerExtraOps();
 
 function node(id: string, opName: string, x: number, y: number): Node {
   const data = { opName, params: defaultParamsFor(getSpec(opName)) };
@@ -99,4 +105,25 @@ export function reusableSubgraphExample(): Example {
   return { label: "Reusable subgraph (Hotspots ×2)", nodes, edges, defs: { [def]: hotspots }, sink: { node: "sum", port: "out" } };
 }
 
-export const EXAMPLES: Example[] = [reactionDiffusionExample(), reusableSubgraphExample()];
+// Wavelet denoise: a noisy field → forward DWT → shrink detail coefficients → inverse
+// DWT. Note that idwt and thresholdDetail carry no kernel/levels params — they read the
+// wavelet contract from the field produced by fdwt (ADR-0006).
+export function waveletDenoiseExample(): Example {
+  const nodes: Node[] = [
+    node("noise", "noiseGrid", 20, 200),
+    node("fwd", "fdwt", 250, 200),
+    node("shrink", "thresholdDetail", 470, 200),
+    node("inv", "idwt", 690, 200),
+  ];
+  (nodes[0]!.data as { params: Record<string, unknown> }).params = { width: 96, height: 96, kind: "value", scale: 18, seed: 3, amp: 1 };
+  (nodes[1]!.data as { params: Record<string, unknown> }).params = { kernel: "5/3", levels: 3 };
+  (nodes[2]!.data as { params: Record<string, unknown> }).params = { thresh: 8, soft: true };
+  const edges: Edge[] = [
+    e("e-nf", "noise", "out", "fwd", "in"),
+    e("e-fs", "fwd", "coeffs", "shrink", "coeffs"),
+    e("e-si", "shrink", "out", "inv", "coeffs"),
+  ];
+  return { label: "Wavelet denoise", nodes, edges, sink: { node: "inv", port: "out" } };
+}
+
+export const EXAMPLES: Example[] = [reactionDiffusionExample(), reusableSubgraphExample(), waveletDenoiseExample()];

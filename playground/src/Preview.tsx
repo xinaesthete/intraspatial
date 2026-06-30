@@ -4,7 +4,7 @@
 // by default, or a chosen lane (re/im, x/y/z…) via the selector.
 import { useEffect, useRef, useState } from "react";
 import type { ElementType, FieldValue } from "../../src/gpu/graph";
-import { elementLanes } from "../../src/gpu/graph";
+import { basisLabel, basisOf, elementLanes } from "../../src/gpu/graph";
 import { PointsScatter } from "./PointsScatter";
 
 interface PersistencePair { dim: number; birth: number; death: number }
@@ -133,7 +133,9 @@ export function Preview({ value, error, stale }: { value: FieldValue | null; err
 
 function describe(value: FieldValue, s: NonNullable<FieldValue["shape"]>, lanes: number): string {
   const el = lanes > 1 && value.element ? `${value.element.kind === "vec" ? `vec${value.element.n}` : value.element.kind} ` : "";
-  if (s.kind === "grid") return `${el}grid ${s.width}×${s.height}`;
+  const b = basisOf(value);
+  const basis = b.kind !== "spatial" ? ` · ${basisLabel(b)}` : "";
+  if (s.kind === "grid") return `${el}grid ${s.width}×${s.height}${basis}`;
   if (s.kind === "matrix") return `matrix ${s.rows}×${s.cols}`;
   if (s.kind === "points") return `points ×${s.n}`;
   if (s.kind === "scalar") return `scalar ${value.data?.[0]?.toFixed(4) ?? "?"}`;
