@@ -53,6 +53,8 @@ import type { NodeSpec } from "./specs";
 import { CATEGORY_ORDER } from "./opMeta";
 import { CommandPalette } from "./CommandPalette";
 import { HelpTooltip } from "./HelpTooltip";
+import { FieldTooltip } from "./FieldTooltip";
+import { PortHoverContext } from "./PortHover";
 import { MathTex } from "./Math";
 import { EXAMPLES } from "./examples";
 import type { Example } from "./examples";
@@ -131,6 +133,11 @@ export default function App() {
   const [cmdOpen, setCmdOpen] = useState(false);
   const flowRef = useRef<{ screenToFlowPosition: (p: { x: number; y: number }) => { x: number; y: number } } | null>(null);
   const paneScreenPos = useRef<{ x: number; y: number } | null>(null);
+  // Per-port values captured during the last run (key "nodeId:port"), driving the
+  // port/edge hover tooltip's data view.
+  const portValues = useRef<Map<string, FieldValue>>(new Map());
+  const [inspect, setInspect] = useState<{ title: string; kind: string; value?: FieldValue; rect: DOMRect } | null>(null);
+  const inspectTimer = useRef<number | undefined>(undefined);
   // All insertable node specs (sources + ops), grouped for the palette + command list.
   const allSpecs = useMemo(() => [...listSourceSpecs(), ...listOpSpecs()], []);
   // Foldable palette categories + a rich hover tooltip (description + math).
@@ -154,6 +161,50 @@ export default function App() {
     window.clearTimeout(hoverTimer.current);
     setHoverHelp(null);
   }, []);
+
+  // Port/edge type+data inspector. An output port shows its own value; an input port
+  // shows the value of the edge feeding it; an edge shows its source-port value.
+  const portValueAt = useCallback(
+    (nodeId: string, port: string, isInput: boolean): FieldValue | undefined => {
+      if (!isInput) return portValues.current.get(`${nodeId}:${port}`);
+      const edge = edges.find((ed) => ed.target === nodeId && ed.targetHandle === port);
+      return edge ? portValues.current.get(`${edge.source}:${edge.sourceHandle}`) : undefined;
+    },
+    [edges],
+  );
+  const portHover = useMemo(
+    () => ({
+      onPortEnter: (nodeId: string, port: string, isInput: boolean, kind: string, rect: DOMRect) => {
+        window.clearTimeout(inspectTimer.current);
+        const value = portValueAt(nodeId, port, isInput);
+        inspectTimer.current = window.setTimeout(() => setInspect({ title: port, kind, value, rect }), 120);
+      },
+      onPortLeave: () => {
+        window.clearTimeout(inspectTimer.current);
+        setInspect(null);
+      },
+    }),
+    [portValueAt],
+  );
+  const onEdgeEnter = useCallback(
+    (e: React.MouseEvent, edge: Edge) => {
+      const srcNode = nodes.find((n) => n.id === edge.source);
+      const opName = srcNode ? (srcNode.data as unknown as NodeData).opName : undefined;
+      let kind = "?";
+      try {
+        if (opName) kind = getSpec(opName).outputs.find((o) => o.name === edge.sourceHandle)?.kind ?? "?";
+      } catch {
+        /* non-op node (instance/interface) — leave kind unknown */
+      }
+      const x = e.clientX, y = e.clientY;
+      const rect = { right: x, left: x, top: y, bottom: y, width: 0, height: 0, x, y } as DOMRect;
+      window.clearTimeout(inspectTimer.current);
+      setInspect({ title: edge.sourceHandle ?? "out", kind, value: portValues.current.get(`${edge.source}:${edge.sourceHandle}`), rect });
+    },
+    [nodes],
+  );
+  const onEdgeLeave = useCallback(() => setInspect(null), []);
+
   const hasFeedback = useMemo(
     () => graphHasFeedback(nodes) || Object.values(defs).some((d) => defHasFeedback(d, defs)),
     [nodes, defs],
@@ -501,7 +552,7 @@ export default function App() {
     setError(null);
     try {
       const sink = resolveSink();
-      const out = await runNode(nodes, edges, sink.id, sink.port, memo.current, defs);
+      const out = await runNode(nodes, edges, sink.id, sink.port, memo.current, defs, (k, v) => portValues.current.set(k, v));
       setValue(out);
       setStale(false);
     } catch (e) {
@@ -550,6 +601,7 @@ export default function App() {
         state: sim.current,
         reset,
         defs,
+        onValue: (k, v) => portValues.current.set(k, v),
       });
       setValue(out);
       setStale(false);
@@ -594,7 +646,7 @@ export default function App() {
       if (cancelled) return;
       try {
         const sink = resolveSink();
-        const out = await advanceNode(nodes, edges, sink.id, sink.port, { steps: 1, state: sim.current, defs });
+        const out = await advanceNode(nodes, edges, sink.id, sink.port, { steps: 1, state: sim.current, defs, onValue: (k, v) => portValues.current.set(k, v) });
         if (cancelled) return;
         setValue(out);
         setStale(false); // each animated frame is freshly computed, never stale
@@ -612,6 +664,7 @@ export default function App() {
   }, [playing, hasFeedback, selectedId, selectedPort, nodes, edges, defs]);
 
   return (
+    <PortHoverContext.Provider value={portHover}>
     <div className="app">
       <aside className="palette">
         <h1>GPU graph composer</h1>
@@ -716,6 +769,8 @@ export default function App() {
           onSelectionChange={onSelectionChange}
           onNodeClick={(_, n) => { setSelectedId(n.id); setSelectedPort(null); setValue(null); setStale(false); setError(null); }}
           onNodeDoubleClick={onNodeDoubleClick}
+          onEdgeMouseEnter={onEdgeEnter}
+          onEdgeMouseLeave={onEdgeLeave}
           onInit={(inst) => { flowRef.current = inst; }}
           onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = "move"; }}
           onDrop={(e) => {
@@ -898,7 +953,9 @@ export default function App() {
         />
       )}
       {hoverHelp && <HelpTooltip spec={hoverHelp.spec} rect={hoverHelp.rect} />}
+      {inspect && <FieldTooltip title={inspect.title} kind={inspect.kind} value={inspect.value} rect={inspect.rect} />}
     </div>
+    </PortHoverContext.Provider>
   );
 }
 
