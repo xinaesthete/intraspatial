@@ -24,7 +24,14 @@ Replace the boxcar with a smooth, overlapping kernel — Gaussian, Hann,
 Epanechnikov. Overlap recovers the cross-boundary relationships; the taper removes
 the discontinuity; averaging over overlapping windows makes the result nearly
 insensitive to grid phase. This is the move from a histogram to a
-[kernel density estimate](/primitives/kde-splat/).
+[kernel density estimate](/primitives/kde-splat/):
+
+$$
+\hat{f}(x) = \frac{1}{n}\sum_{i=1}^{n} K_h\!\left(x - x_i\right),
+\qquad K_h(u) = \frac{1}{h}\,K\!\left(\frac{u}{h}\right)
+$$
+
+where the boxcar is the degenerate case $K(u) = \tfrac{1}{2}\,\mathbb{1}_{|u|\le 1}$.
 
 ## Why it unifies the toolbox
 
