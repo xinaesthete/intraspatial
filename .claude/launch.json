@@ -5,7 +5,7 @@
     {
       "name": "docs-site",
       "runtimeExecutable": "volta",
-      "runtimeArgs": ["run", "--node", "22", "pnpm", "--dir", "docs-site", "exec", "astro", "dev"],
+      "runtimeArgs": ["run", "--node", "22", "pnpm", "--dir", "docs-site", "run", "dev"],
       "port": 4321
     },
     {
