@@ -158,6 +158,10 @@ async function runTick(graph: Graph, field: GpuField, o: TickOptions): Promise<M
     const outs = await runNode(op, o.ctx, o.mode, inputs, node.params);
     op.outputs.forEach((out, i) => {
       const v = outs[i]!;
+      // Stamp the build-time-inferred basis (ADR-0006) so it propagates through ops
+      // that don't set it themselves (e.g. editing wavelet coefficients then idwt).
+      const b = node.outBases?.[i];
+      if (b && v.basis === undefined) v.basis = b;
       if (memo && ck) memo.set(`${ck}#${out.name}`, v);
       emit(node.id, out.name, v);
     });

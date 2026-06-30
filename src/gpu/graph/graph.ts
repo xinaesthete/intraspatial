@@ -6,8 +6,8 @@
 //
 // Edges are *derived* from each node's `inputs` map (a RAW dependency on the
 // referenced producer); they are never hand-declared.
-import type { ElementType, FieldValue, GpuField, NodeId, Shape } from "./handle";
-import { SCALAR } from "./handle";
+import type { Basis, ElementType, FieldValue, GpuField, NodeId, Shape } from "./handle";
+import { SCALAR, SPATIAL } from "./handle";
 import type { Params } from "./op";
 import { getOp } from "./registry";
 
@@ -29,6 +29,9 @@ export interface GraphNode {
   /** For "feedback" (delay) nodes: a key, stable across graph rebuilds, under which
    *  this node's state is stored between ticks (the React Flow node id in the UI). */
   stableKey?: string;
+  /** Inferred output bases (ADR-0006), positional by output port. The executor stamps
+   *  these onto produced values so the basis propagates without each op setting it. */
+  outBases?: Basis[];
 }
 
 /** Handle returned by `Graph.feedback`: the delayed `state` output, plus `close` to
@@ -51,8 +54,8 @@ export class Graph {
   /** Add a source node carrying a host value; returns its lazy handle. */
   source(value: FieldValue, label = "source"): GpuField {
     const id = this.nextNodeId(label);
-    this.nodes.set(id, { id, op: "source", params: {}, inputs: {}, source: value });
-    return makeField(id, "out", value.shape, value.dtype ?? "f32", value.element ?? SCALAR);
+    this.nodes.set(id, { id, op: "source", params: {}, inputs: {}, source: value, outBases: [value.basis ?? SPATIAL] });
+    return makeField(id, "out", value.shape, value.dtype ?? "f32", value.element ?? SCALAR, value.basis ?? SPATIAL);
   }
 
   /** A points source from parallel x/y arrays, packed as [x0,y0,x1,y1,...]. */
@@ -87,9 +90,10 @@ export class Graph {
       params: {},
       inputs: { init: { node: init.producer, port: init.outPort } },
       stableKey: key ?? id,
+      outBases: [init.basis ?? SPATIAL],
     };
     this.nodes.set(id, node);
-    const state = makeField(id, "state", init.shape, init.dtype, init.element ?? SCALAR);
+    const state = makeField(id, "state", init.shape, init.dtype, init.element ?? SCALAR, init.basis ?? SPATIAL);
     return {
       state,
       close: (next: GpuField) => {
@@ -104,12 +108,14 @@ export class Graph {
     const inputRefs: Record<string, EdgeRef> = {};
     const inShapes: Shape[] = [];
     const inElements: ElementType[] = [];
+    const inBases: Basis[] = [];
     for (const spec of def.inputs) {
       const f = inputs[spec.name];
       if (!f) throw new Error(`graph.op(${name}): missing input "${spec.name}"`);
       inputRefs[spec.name] = { node: f.producer, port: f.outPort };
       inShapes.push(f.shape);
       inElements.push(f.element ?? SCALAR);
+      inBases.push(f.basis ?? SPATIAL);
     }
     // Declared defaults first, then overlay everything the caller supplied — this
     // keeps undeclared pass-through params (e.g. an explicit `bbox`) that ops read
@@ -123,9 +129,18 @@ export class Graph {
     const outElements = def.inferElements
       ? def.inferElements(inElements, merged)
       : def.outputs.map(() => SCALAR);
+    // Basis inference is opt-in; ops that don't declare it pass the first input's basis
+    // through to every output (a source ⇒ spatial). Rejection of a wrong basis (e.g.
+    // idwt on a spatial field) happens in the op's inferBasis (ADR-0006).
+    const passThrough = inBases[0] ?? SPATIAL;
+    const outBases = def.inferBasis
+      ? def.inferBasis(inBases, merged)
+      : def.outputs.map(() => passThrough);
     const id = this.nextNodeId(name);
-    this.nodes.set(id, { id, op: name, params: merged, inputs: inputRefs });
-    return def.outputs.map((o, i) => makeField(id, o.name, outShapes[i]!, o.dtype ?? "f32", outElements[i] ?? SCALAR));
+    this.nodes.set(id, { id, op: name, params: merged, inputs: inputRefs, outBases });
+    return def.outputs.map((o, i) =>
+      makeField(id, o.name, outShapes[i]!, o.dtype ?? "f32", outElements[i] ?? SCALAR, outBases[i] ?? SPATIAL),
+    );
   }
 
   /** Convenience for single-output ops. */
@@ -161,6 +176,7 @@ function makeField(
   shape: Shape,
   dtype: GpuField["dtype"],
   element: ElementType = SCALAR,
+  basis: Basis = SPATIAL,
 ): GpuField {
-  return { id: fieldSeq++, shape, dtype, element, producer, outPort, version: 0 };
+  return { id: fieldSeq++, shape, dtype, element, basis, producer, outPort, version: 0 };
 }

@@ -6,7 +6,7 @@
 // context and resolved input `FieldValue`s, and returns output `FieldValue`s. The
 // registry keys these by name so the React Flow palette can list and instantiate
 // them.
-import type { Dtype, ElementType, FieldValue, Shape, ShapeKind } from "./handle";
+import type { Basis, Dtype, ElementType, FieldValue, Shape, ShapeKind } from "./handle";
 import type { GpuBackend } from "./backend";
 
 export interface PortSpec {
@@ -68,6 +68,12 @@ export interface OpType {
    *  op rejects a wrong element here (e.g. `complexMul` on a vec field) — this is the
    *  build-time element type-check. Positional inputs match `inputs`. */
   inferElements?(inputs: ElementType[], params: Params): ElementType[];
+  /** Derive output bases from input bases + params (ADR-0006). Absent ⇒ the output
+   *  passes through the first input's basis (or `spatial` for a source). Runs at
+   *  graph-build time, so an op rejects a wrong basis here (e.g. `idwt` on a spatial
+   *  field). The executor then stamps the inferred basis onto runtime values, so
+   *  generic ops carry a wavelet field through to `idwt` without knowing about it. */
+  inferBasis?(inputs: Basis[], params: Params): Basis[];
   /** Run the op. Inputs are positional, matching `inputs`; outputs positional,
    *  matching `outputs`. */
   execute(ctx: ExecCtx, inputs: FieldValue[], params: Params): Promise<FieldValue[]>;

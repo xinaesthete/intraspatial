@@ -3,8 +3,8 @@
 // ops into it, and `pull` a sink to execute the minimal required subgraph.
 //
 // See docs/gpu-resource-sync.md for the model this implements.
-export type { Dtype, ElementType, FieldValue, GpuField, NodeId, Shape, ShapeKind } from "./handle";
-export { elementLabel, elementLanes, elementOf, elementsEqual, numCells, SCALAR, shapesEqual } from "./handle";
+export type { Basis, Dtype, ElementType, FieldValue, GpuField, NodeId, Shape, ShapeKind } from "./handle";
+export { basisLabel, basisOf, elementLabel, elementLanes, elementOf, elementsEqual, numCells, SCALAR, SPATIAL, shapesEqual } from "./handle";
 export type { ExecCtx, OpHelp, OpType, Params, ParamSpec, ParamType, PortSpec } from "./op";
 export { allFinite, defaultParams, param } from "./op";
 export type { EdgeRef, FeedbackHandle, GraphNode } from "./graph";

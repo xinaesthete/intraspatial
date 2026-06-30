@@ -51,6 +51,22 @@ export function elementLabel(e: ElementType): string {
   return e.kind === "vec" ? `vec${e.n}` : e.kind;
 }
 
+/** The *basis* a field's values are expressed in (ADR-0006), orthogonal to domain and
+ *  element. `spatial` (the default) is the sampled signal itself; `wavelet` is a packed
+ *  Mallat coefficient pyramid that carries its own decomposition contract (kernel +
+ *  levels) so downstream ops (idwt, detail thresholding) read it from the input rather
+ *  than re-declaring it as a parameter. Absent on a field ⇒ `spatial`. */
+export type Basis =
+  | { kind: "spatial" }
+  | { kind: "wavelet"; wavelet: "5/3" | "9/7"; levels: number };
+
+/** The implicit basis of any field that doesn't declare one. */
+export const SPATIAL: Basis = { kind: "spatial" };
+
+export function basisLabel(b: Basis): string {
+  return b.kind === "wavelet" ? `wavelet ${b.wavelet}·L${b.levels}` : "spatial";
+}
+
 export type ShapeKind = "grid" | "points" | "matrix" | "scalar" | "opaque";
 
 export type Shape =
@@ -73,6 +89,8 @@ export interface GpuField {
   readonly dtype: Dtype;
   /** Element algebra of each sample (ADR-0004). Absent ⇒ `scalar`. */
   readonly element?: ElementType;
+  /** Basis the values are expressed in (ADR-0006). Absent ⇒ `spatial`. */
+  readonly basis?: Basis;
   /** The node that writes this value. */
   readonly producer: NodeId;
   /** Which output port of that node. */
@@ -88,6 +106,8 @@ export interface FieldValue {
   dtype: Dtype;
   /** Element algebra of each sample (ADR-0004). Absent ⇒ `scalar`. */
   element?: ElementType;
+  /** Basis the values are expressed in (ADR-0006). Absent ⇒ `spatial`. */
+  basis?: Basis;
   /** Host data for numeric shapes (grid/points/matrix/scalar). Length is
    *  `numCells(shape) * elementLanes(element)` — samples interleaved lane-major. */
   data?: Float32Array | Int32Array | Uint32Array;
@@ -98,6 +118,11 @@ export interface FieldValue {
 /** The element of a field or value, defaulting to `scalar` when undeclared. */
 export function elementOf(v: { element?: ElementType }): ElementType {
   return v.element ?? SCALAR;
+}
+
+/** The basis of a field or value, defaulting to `spatial` when undeclared. */
+export function basisOf(v: { basis?: Basis }): Basis {
+  return v.basis ?? SPATIAL;
 }
 
 /** Unpack a points `FieldValue` (packed [x0,y0,x1,y1,...]) into parallel arrays. */
