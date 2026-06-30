@@ -111,15 +111,30 @@ Grounding in existing assets (mapped this session):
   descriptor as the basis metadata). The current CPU ops use the in-place layout for
   demo-parity.
 
+## Update (2026-06-30): the `basis` facet is now built (for wavelet)
+
+The implicit-convention approach below was superseded almost immediately: a field now
+carries an explicit **`basis` facet** (`spatial` | `wavelet{wavelet, levels}`) on
+`GpuField`/`FieldValue`, threaded through the builder alongside `element` (new
+`OpType.inferBasis`, builder stores `outBases`, executor stamps it onto runtime values).
+This was prompted by the concrete contract problem the user raised: `thresholdDetail`/`idwt`
+should not each re-declare `levels` (and `idwt` the kernel) as params that must *match* the
+producing `fdwt` — `fdwt` now tags its output `wavelet{kernel, levels}` and the consumers
+read it (`idwt` has no params; `thresholdDetail` keeps only `thresh`/`soft`). Build-time
+`inferBasis` rejects e.g. `idwt` on a `spatial` field. The default is **pass-through** (first
+input's basis), so editing coefficients with a generic op (`scaleField`, …) and then `idwt`
+still works. The `basisOf`/`basisLabel` helpers + the playground preview ("grid 96×96 ·
+wavelet 5/3·L3") make it visible. Fourier/`fft` remain unbuilt (no FFT kernel); the facet is
+ready for them.
+
 ## Consequences
 
 - **Built:** `dwt.ts` + `fdwt`/`idwt`/`thresholdDetail` ops + tests, registered opt-in via
   `registerWaveletOps()`. The playground composer must call it to surface these ops (same as
-  `registerElementOps`).
+  `registerElementOps`). **Plus the `basis` facet itself** (see the update above).
 - **Proposed / deferred (the real decisions, for when you are ready):**
-  - The **`basis` facet** itself — implicit-convention (today) vs an explicit `basis` field on
-    `GpuField`/`FieldValue` vs a descriptor payload. The facet would let ops type-check the
-    basis at build time and would make "this field is the DWT/FFT of that one" explicit.
+  - The **Fourier basis** + a **GPU FFT kernel** — the facet now exists; `fft`/`ifft` would add
+    a `fourier` basis variant and bridge to the `complex` element type.
   - A **GPU FFT kernel** (the gate for the entire spectral basis), then `fft`/`ifft` ops that
     bridge to the `complex` element type and turn `mulFields`-complex into spectral convolution.
   - A **GPU-backed wavelet op** wrapping the existing 5/3/9/7 kernels (reconciling the layout).
