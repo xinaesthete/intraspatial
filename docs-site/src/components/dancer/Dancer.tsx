@@ -5,15 +5,17 @@
 // browser-only.
 import { useEffect, useRef, useState } from "react";
 import { DancerSim, type DancerParams } from "./sim";
-import { GpuDancerSim } from "./gpuSim";
+import { DancerGpuSim } from "../../../../src/gpu/sim/dancerGpu";
 import { createDancerRenderer, type DancerRenderer } from "./renderer";
 import { drawDistanceMatrix, matrixCell } from "./matrix";
 import { BreedingStrip } from "./BreedingStrip";
 
 const AGENTS = 180;
-// The swarm runs GPU-resident (three.js TSL compute over storage buffers) — the full force
-// set + caller compile and run cleanly. If GPU init throws, we transparently fall back to the
-// (golden) CPU sim below. Set false to force the CPU path (e.g. for A/B comparison).
+// The swarm runs GPU-resident on our own TypeGPU kernel (src/gpu/sim/dancerGpu), adopting
+// three.js's WebGPU device so our compute writes three's instanceMatrix buffer directly — the
+// render reads pose (position + orientation) off the GPU with no per-frame readback (smooth
+// under camera drag; cones face their travel). A throttled snapshot feeds the CPU-side panels.
+// If GPU init throws, we transparently fall back to the (golden) CPU sim. Set false for CPU.
 const USE_GPU = true;
 
 export default function Dancer() {
@@ -24,7 +26,7 @@ export default function Dancer() {
   const [status, setStatus] = useState<"init" | "running" | "unsupported" | "error">("init");
   const [showAbout, setShowAbout] = useState(true);
   const [showBreed, setShowBreed] = useState(false);
-  const simRef = useRef<DancerSim | GpuDancerSim | null>(null);
+  const simRef = useRef<DancerSim | DancerGpuSim | null>(null);
   // cross-link state, read by the render loop each frame (refs → no re-render on hover)
   const hoverAgentRef = useRef<number | null>(null); // hovered dancer (3D) → matrix row
   const hoverCellRef = useRef<[number, number] | null>(null); // hovered matrix cell → 3D pair
@@ -42,7 +44,8 @@ export default function Dancer() {
     let raf = 0;
     let disposed = false;
     let frame = 0;
-    let sim: DancerSim | GpuDancerSim = new DancerSim(AGENTS, 1);
+    const sim: DancerSim = new DancerSim(AGENTS, 1); // CPU golden (fallback + peripherals)
+    let gpu: DancerGpuSim | null = null;
     simRef.current = sim;
 
     const resize = () => {
@@ -64,10 +67,18 @@ export default function Dancer() {
 
         if (USE_GPU) {
           try {
-            const g = new GpuDancerSim(r.renderer, AGENTS, 1, sim.params);
-            await g.init();
+            const device = (r.renderer.backend as unknown as { device?: GPUDevice }).device;
+            if (!device) throw new Error("no WebGPU device on renderer backend");
+            const g = new DancerGpuSim(device, AGENTS, 1, sim.params);
+            g.init();
+            // share three's instanceMatrix GPUBuffer so the render reads pose off the GPU
+            const mtxBuf = await r.gpuInstanceMatrixBuffer();
+            if (!mtxBuf) throw new Error("no instanceMatrix buffer");
+            g.setMatrixTarget(mtxBuf, 1);
+            g.writeMatrices(); // seed pose into the matrices before first frame
+            r.setGpuMatrix(true);
             if (disposed) return;
-            sim = g;
+            gpu = g;
             simRef.current = g;
           } catch (err) {
             console.warn("dancer: GPU sim unavailable, using CPU", err);
@@ -110,10 +121,19 @@ export default function Dancer() {
           });
         }
 
-        // Render synchronously each frame from the latest positions; advance the sim in
-        // the background (a GPU step + readback is async), one step in flight at a time so
-        // the render never blocks on the GPU.
-        let stepping = false;
+        // GPU path: step() enqueues the sim + writes three's instanceMatrix (no readback) —
+        // the render reads pose straight off the GPU, so camera motion never stalls. A
+        // low-frequency snapshot feeds the CPU-side panels (colour, trails, matrix, pick).
+        const zeros = new Float32Array(AGENTS * 3);
+        let snapPos: Float32Array = new Float32Array(AGENTS * 3);
+        let snapSpeed: Float32Array = new Float32Array(AGENTS);
+        let snapping = false;
+        const speedsFrom = (vel: Float32Array): Float32Array => {
+          const out = new Float32Array(AGENTS);
+          for (let i = 0; i < AGENTS; i++) out[i] = Math.hypot(vel[i * 3] ?? 0, vel[i * 3 + 1] ?? 0, vel[i * 3 + 2] ?? 0);
+          return out;
+        };
+
         const loop = () => {
           if (disposed || !renderer) return;
           const ha = hoverAgentRef.current;
@@ -121,18 +141,35 @@ export default function Dancer() {
           const agents: number[] = [];
           if (ha !== null) agents.push(ha);
           if (hc) agents.push(hc[0], hc[1]);
-          const p = sim.positions();
-          renderer.update(p, sim.orientations(), sim.speeds(), { agents, pair: hc });
-          renderer.render();
-          if (matrixRef.current) drawDistanceMatrix(matrixRef.current, p, sim.n, { row: ha, pair: hc });
-          if (frame % 15 === 0) setFigure(sim.currentFigure());
-          frame++;
-          if (!stepping) {
-            stepping = true;
-            Promise.resolve(sim.step()).finally(() => {
-              stepping = false;
-            });
+
+          if (gpu) {
+            gpu.step(); // advance + write instanceMatrix on the GPU (no readback)
+            if (frame % 12 === 0 && !snapping) {
+              snapping = true;
+              gpu
+                .readBlocks()
+                .then((b) => {
+                  snapPos = b.pos;
+                  snapSpeed = speedsFrom(b.vel);
+                })
+                .catch(() => {})
+                .finally(() => {
+                  snapping = false;
+                });
+            }
+            renderer.update(snapPos, zeros, snapSpeed, { agents, pair: hc });
+            renderer.render();
+            if (matrixRef.current) drawDistanceMatrix(matrixRef.current, snapPos, gpu.n, { row: ha, pair: hc });
+            if (frame % 15 === 0) setFigure(gpu.currentFigure());
+          } else {
+            sim.step();
+            const p = sim.positions();
+            renderer.update(p, sim.orientations(), sim.speeds(), { agents, pair: hc });
+            renderer.render();
+            if (matrixRef.current) drawDistanceMatrix(matrixRef.current, p, sim.n, { row: ha, pair: hc });
+            if (frame % 15 === 0) setFigure(sim.currentFigure());
           }
+          frame++;
           raf = requestAnimationFrame(loop);
         };
         raf = requestAnimationFrame(loop);

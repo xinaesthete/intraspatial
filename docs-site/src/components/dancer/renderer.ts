@@ -4,7 +4,7 @@
 // picking (→ which dancer) and highlighting a set of dancers + a connecting line for a
 // hovered pair (the distance-matrix cross-link). Orbit camera, soft lighting, glow.
 import * as THREE from "three";
-import { WebGPURenderer } from "three/webgpu";
+import { StorageInstancedBufferAttribute, WebGPURenderer } from "three/webgpu";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { TrailBuffer } from "../../../../src/gpu/sim/trails";
 
@@ -25,6 +25,12 @@ export interface DancerRenderer {
   resize(width: number, height: number): void;
   /** Pick the dancer under normalised device coords (x,y ∈ [-1,1]); null if none. */
   pick(ndcX: number, ndcY: number): number | null;
+  /** Turn on GPU-driven instance matrices: the render reads pose from the storage
+   *  `instanceMatrix` buffer (written by our compute) — `update()` stops touching matrices. */
+  setGpuMatrix(on: boolean): void;
+  /** The raw GPUBuffer backing `instanceMatrix` (materialising it with a render if needed), so
+   *  our TypeGPU compute can write model matrices into it. Null if not yet available. */
+  gpuInstanceMatrixBuffer(): Promise<GPUBuffer | null>;
   dispose(): void;
 }
 
@@ -61,9 +67,14 @@ export async function createDancerRenderer(canvas: HTMLCanvasElement, n: number)
     metalness: 0.1,
   });
   const mesh = new THREE.InstancedMesh(geometry, material, n);
-  mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+  // A storage instanceMatrix so the render can read pose straight from a GPUBuffer our compute
+  // writes (zero readback). In CPU-fallback mode we still setMatrixAt + needsUpdate (three
+  // uploads the array); in GPU mode we never touch it and never set needsUpdate.
+  mesh.instanceMatrix = new StorageInstancedBufferAttribute(new Float32Array(n * 16), 16);
   mesh.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(n * 3), 3);
   scene.add(mesh);
+  let gpuMatrix = false;
+  let lastPositions: Float32Array | null = null;
 
   // trails — additive line segments from the ring buffer
   const trail = new TrailBuffer(n, TRAIL_LEN);
@@ -104,22 +115,28 @@ export async function createDancerRenderer(canvas: HTMLCanvasElement, n: number)
 
   const update = (positions: Float32Array, orientations: Float32Array, speeds: Float32Array, highlight?: Highlight): void => {
     const count = Math.min(n, (positions.length / 3) | 0);
+    lastPositions = positions;
     const hi = highlight ? new Set(highlight.agents) : null;
     for (let i = 0; i < count; i++) {
-      const px = positions[i * 3] ?? 0, py = positions[i * 3 + 1] ?? 0, pz = positions[i * 3 + 2] ?? 0;
-      pos.set(px, py, pz);
-      const ax = orientations[i * 3] ?? 0, ay = orientations[i * 3 + 1] ?? 0, az = orientations[i * 3 + 2] ?? 0;
-      const angle = Math.hypot(ax, ay, az);
-      if (angle > 1e-6) {
-        axis.set(ax / angle, ay / angle, az / angle);
-        quat.setFromAxisAngle(axis, angle);
-      } else {
-        quat.identity();
+      // In GPU mode the compute owns instanceMatrix (rendered straight from its buffer); we
+      // only maintain per-instance colour here. In CPU mode we compose the matrix too.
+      if (!gpuMatrix) {
+        const px = positions[i * 3] ?? 0, py = positions[i * 3 + 1] ?? 0, pz = positions[i * 3 + 2] ?? 0;
+        pos.set(px, py, pz);
+        const ax = orientations[i * 3] ?? 0, ay = orientations[i * 3 + 1] ?? 0, az = orientations[i * 3 + 2] ?? 0;
+        const angle = Math.hypot(ax, ay, az);
+        if (angle > 1e-6) {
+          axis.set(ax / angle, ay / angle, az / angle);
+          quat.setFromAxisAngle(axis, angle);
+        } else {
+          quat.identity();
+        }
+        const on = hi?.has(i) ?? false;
+        scl.setScalar(on ? 2.4 : 1);
+        m.compose(pos, quat, scl);
+        mesh.setMatrixAt(i, m);
       }
       const on = hi?.has(i) ?? false;
-      scl.setScalar(on ? 2.4 : 1);
-      m.compose(pos, quat, scl);
-      mesh.setMatrixAt(i, m);
       if (on) {
         col.setRGB(1, 1, 1);
       } else {
@@ -129,7 +146,7 @@ export async function createDancerRenderer(canvas: HTMLCanvasElement, n: number)
       mesh.setColorAt(i, col);
     }
     mesh.count = count;
-    mesh.instanceMatrix.needsUpdate = true;
+    if (!gpuMatrix) mesh.instanceMatrix.needsUpdate = true;
     if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
 
     // trails
@@ -164,12 +181,46 @@ export async function createDancerRenderer(canvas: HTMLCanvasElement, n: number)
     camera.updateProjectionMatrix();
   };
 
+  const pickVec = new THREE.Vector3();
   const pick = (ndcX: number, ndcY: number): number | null => {
+    // GPU mode: instanceMatrix.array is stale (compute writes the GPU buffer), so raycasting
+    // won't work — pick the nearest projected dancer from the latest CPU positions instead.
+    if (gpuMatrix && lastPositions) {
+      const count = Math.min(n, (lastPositions.length / 3) | 0);
+      let best: number | null = null;
+      let bestD = 0.03; // NDC radius
+      for (let i = 0; i < count; i++) {
+        pickVec.set(lastPositions[i * 3] ?? 0, lastPositions[i * 3 + 1] ?? 0, lastPositions[i * 3 + 2] ?? 0).project(camera);
+        if (pickVec.z < -1 || pickVec.z > 1) continue;
+        const dx = pickVec.x - ndcX, dy = pickVec.y - ndcY;
+        const dist = Math.hypot(dx, dy);
+        if (dist < bestD) {
+          bestD = dist;
+          best = i;
+        }
+      }
+      return best;
+    }
     ndc.set(ndcX, ndcY);
     raycaster.setFromCamera(ndc, camera);
     const hits = raycaster.intersectObject(mesh);
     const hit = hits[0];
     return hit && hit.instanceId !== undefined ? hit.instanceId : null;
+  };
+
+  const setGpuMatrix = (on: boolean): void => {
+    gpuMatrix = on;
+  };
+
+  const gpuInstanceMatrixBuffer = async (): Promise<GPUBuffer | null> => {
+    // The attribute's GPUBuffer is created on first render; ensure one has happened.
+    const backend = renderer.backend as unknown as { get(o: object): { buffer?: GPUBuffer } | undefined };
+    let data = backend.get(mesh.instanceMatrix);
+    if (!data?.buffer) {
+      await renderer.renderAsync(scene, camera);
+      data = backend.get(mesh.instanceMatrix);
+    }
+    return data?.buffer ?? null;
   };
 
   const dispose = (): void => {
@@ -183,5 +234,5 @@ export async function createDancerRenderer(canvas: HTMLCanvasElement, n: number)
     renderer.dispose();
   };
 
-  return { renderer, update, render, resize, pick, dispose };
+  return { renderer, update, render, resize, pick, setGpuMatrix, gpuInstanceMatrixBuffer, dispose };
 }

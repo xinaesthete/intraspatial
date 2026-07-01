@@ -597,6 +597,11 @@ export class DancerGpuSim {
     this.device.queue.submit([enc.finish()]);
   }
 
+  /** The Ceilidh figure called at the current frame (for the HUD). */
+  currentFigure(): string {
+    return figureAt(this.frame, this.params.period, this.params.callerSeed).figure;
+  }
+
   /** Raw GPUBuffer of current positions — hand to three.js to render from (no readback). */
   positionBuffer(): GPUBuffer {
     return this.root.unwrap(this.posBuf);
