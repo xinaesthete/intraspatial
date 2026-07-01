@@ -104,6 +104,17 @@ const matrixLayout = tgpu.bindGroupLayout({
   mtx: { storage: (n: number) => d.arrayOf(d.mat4x4f, n), access: "mutable" },
 });
 
+// Trail history bridge: each step appends the current position into a per-agent ring inside a
+// buffer three.js renders the motion trails from — so trails live on the GPU (no CPU snapshot).
+// Layout: agent i owns the contiguous slots [i*cap .. i*cap+cap); `head` is the slot written
+// this frame. The renderer reads it back with linear/cubic interpolation (ringBuffer.ts math).
+const TrailDims = d.struct({ n: d.u32, cap: d.u32, head: d.u32 });
+const trailLayout = tgpu.bindGroupLayout({
+  tdims: { uniform: TrailDims },
+  tpos: { storage: (n: number) => d.arrayOf(d.vec3f, n), access: "readonly" },
+  thist: { storage: (n: number) => d.arrayOf(d.vec3f, n), access: "mutable" },
+});
+
 // ── device-function helpers (mirror src/gpu/sim/vec3.ts + quat.ts) ────────────────────────
 
 /** normalize with vec3.ts semantics: |v|<eps ⇒ fallback (default zero). */
@@ -249,6 +260,33 @@ const modelMatrix = tgpu.fn([d.vec3f, d.vec3f, d.f32], d.mat4x4f)((t, r, s) => {
   );
 });
 
+const trailWriteFn = tgpu
+  .computeFn({ in: { gid: d.builtin.globalInvocationId }, workgroupSize: [WG] })(({ gid }) => {
+    "use gpu";
+    const i = gid.x;
+    const dims = trailLayout.$.tdims;
+    if (i < dims.n) {
+      trailLayout.$.thist[i * dims.cap + dims.head] = d.vec3f(trailLayout.$.tpos[i]!);
+    }
+  })
+  .$name("dancerTrailWrite");
+
+// Seed every slot of an agent's ring with its current position (so a fresh trail is a point,
+// not a streak through the origin) — one dispatch, loops over cap.
+const trailSeedFn = tgpu
+  .computeFn({ in: { gid: d.builtin.globalInvocationId }, workgroupSize: [WG] })(({ gid }) => {
+    "use gpu";
+    const i = gid.x;
+    const dims = trailLayout.$.tdims;
+    if (i < dims.n) {
+      const p = d.vec3f(trailLayout.$.tpos[i]!);
+      for (let s = d.u32(0); s < dims.cap; s++) {
+        trailLayout.$.thist[i * dims.cap + s] = d.vec3f(p);
+      }
+    }
+  })
+  .$name("dancerTrailSeed");
+
 const matrixFn = tgpu
   .computeFn({ in: { gid: d.builtin.globalInvocationId }, workgroupSize: [WG] })(({ gid }) => {
     "use gpu";
@@ -384,6 +422,8 @@ interface DancerPipe {
   stepPipeline: GPUComputePipeline;
   gatherPipeline: GPUComputePipeline;
   matrixPipeline: GPUComputePipeline;
+  trailPipeline: GPUComputePipeline;
+  trailSeedPipeline: GPUComputePipeline;
 }
 
 // One TypeGPU root + compiled pipelines PER device (initFromDevice / pipeline compilation is
@@ -410,7 +450,13 @@ function getDancerPipe(device: GPUDevice): DancerPipe {
   const mLayout = device.createPipelineLayout({ bindGroupLayouts: mres.usedBindGroupLayouts.map((l) => root.unwrap(l)) });
   const matrixPipeline = device.createComputePipeline({ layout: mLayout, compute: { module: mmodule, entryPoint: "dancerMatrix" } });
 
-  const pipe: DancerPipe = { root, copyPipeline, stepPipeline, gatherPipeline, matrixPipeline };
+  const tres = tgpu.resolveWithContext([trailWriteFn, trailSeedFn], { names: "strict" });
+  const tmodule = device.createShaderModule({ code: tres.code });
+  const tLayout = device.createPipelineLayout({ bindGroupLayouts: tres.usedBindGroupLayouts.map((l) => root.unwrap(l)) });
+  const trailPipeline = device.createComputePipeline({ layout: tLayout, compute: { module: tmodule, entryPoint: "dancerTrailWrite" } });
+  const trailSeedPipeline = device.createComputePipeline({ layout: tLayout, compute: { module: tmodule, entryPoint: "dancerTrailSeed" } });
+
+  const pipe: DancerPipe = { root, copyPipeline, stepPipeline, gatherPipeline, matrixPipeline, trailPipeline, trailSeedPipeline };
   pipeCache.set(device, pipe);
   return pipe;
 }
@@ -445,6 +491,8 @@ export class DancerGpuSim {
   private stepPipeline!: GPUComputePipeline;
   private gatherPipeline!: GPUComputePipeline;
   private matrixPipeline!: GPUComputePipeline;
+  private trailPipeline!: GPUComputePipeline;
+  private trailSeedPipeline!: GPUComputePipeline;
   private paramsBuf!: ParamsBuffer;
   private posSnap!: Vec3Buffer;
   private posBuf!: Vec3Buffer;
@@ -461,6 +509,10 @@ export class DancerGpuSim {
   // when set, the caller holds this frame for figure selection (figures paused) while the sim
   // keeps advancing — so the dance freezes into one figure without stopping the motion.
   private figuresFrozenAt: number | null = null;
+  // trail history bridge (three renders trails from this GPU buffer; set via setTrailTarget)
+  private trailDimsBuf: (TgpuBuffer<typeof TrailDims> & UniformFlag) | null = null;
+  private trailBind: GPUBindGroup | null = null;
+  private trailCap = 0;
 
   constructor(device: GPUDevice, n: number, seed: number, params: DancerGpuParams) {
     this.device = device;
@@ -477,6 +529,8 @@ export class DancerGpuSim {
     this.stepPipeline = pipe.stepPipeline;
     this.gatherPipeline = pipe.gatherPipeline;
     this.matrixPipeline = pipe.matrixPipeline;
+    this.trailPipeline = pipe.trailPipeline;
+    this.trailSeedPipeline = pipe.trailSeedPipeline;
     const root = this.root;
 
     const body = seedSwarmBody(n, this.seed);
@@ -576,8 +630,28 @@ export class DancerGpuSim {
       m.dispatchWorkgroups(this.groups);
       m.end();
     }
+    if (this.trailBind && this.trailDimsBuf) {
+      // append the just-computed position into each agent's ring at head = frame % cap
+      this.trailDimsBuf.write({ n: this.n, cap: this.trailCap, head: this.frame % this.trailCap });
+      const t = enc.beginComputePass();
+      t.setPipeline(this.trailPipeline);
+      t.setBindGroup(0, this.trailBind);
+      t.dispatchWorkgroups(this.groups);
+      t.end();
+    }
     device.queue.submit([enc.finish()]);
     this.frame++;
+  }
+
+  /** Trail ring capacity (frames of history), and the slot index of the newest sample — the
+   *  renderer needs `head` to walk the ring from newest to oldest. */
+  trailCapacity(): number {
+    return this.trailCap;
+  }
+  trailHead(): number {
+    // the last write used head = (frame-1) % cap after step()'s frame++ … but the renderer reads
+    // AFTER the current step, so newest = frame-1. Guard the empty case.
+    return this.trailCap > 0 ? ((this.frame - 1) % this.trailCap + this.trailCap) % this.trailCap : 0;
   }
 
   /** Bind a raw mat4 storage buffer (three.js's `StorageInstancedBufferAttribute` for the
@@ -613,6 +687,29 @@ export class DancerGpuSim {
   /** The Ceilidh figure called at the current frame (for the HUD). */
   currentFigure(): string {
     return figureAt(this.figureFrame(), this.params.period, this.params.callerSeed).figure;
+  }
+
+  /** Bind a raw vec3 storage buffer of length `n*cap` (three's trail-history attribute) as the
+   *  trail target. After this, every `step()` appends the current position into each agent's
+   *  ring, and pre-seeds all `cap` slots to the current position so the trail doesn't start from
+   *  garbage. The renderer reads this buffer back (linear/cubic) to draw the trails — GPU-side,
+   *  no CPU snapshot. */
+  setTrailTarget(rawHistoryBuffer: GPUBuffer, cap: number): void {
+    const root = this.root;
+    const n = this.n;
+    this.trailCap = Math.max(1, cap);
+    this.trailDimsBuf ??= root.createBuffer(TrailDims).$usage("uniform");
+    const thist = root.createBuffer(d.arrayOf(d.vec3f, n * this.trailCap), rawHistoryBuffer).$usage("storage");
+    this.trailBind = root.unwrap(root.createBindGroup(trailLayout, { tdims: this.trailDimsBuf, tpos: this.posBuf, thist }));
+    this.trailDimsBuf.write({ n, cap: this.trailCap, head: 0 });
+    // seed every slot with the current position in one pass (no streak from the origin)
+    const enc = this.device.createCommandEncoder();
+    const p = enc.beginComputePass();
+    p.setPipeline(this.trailSeedPipeline);
+    p.setBindGroup(0, this.trailBind);
+    p.dispatchWorkgroups(this.groups);
+    p.end();
+    this.device.queue.submit([enc.finish()]);
   }
 
   /** Raw GPUBuffer of current positions — hand to three.js to render from (no readback). */
