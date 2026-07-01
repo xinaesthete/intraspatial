@@ -230,7 +230,20 @@ const swarmSeed: SourceSpec = {
   },
 };
 
-export const SOURCES: SourceSpec[] = [ringPoints, blobPoints, grayScottSeed, grayScottSeedComplex, noiseGrid, waveGrid, swarmSeed];
+// A scalar seed for the caller's clock (a frame counter): outputs `start`, then the
+// `clock` op adds `rate` each tick around a feedback loop.
+const clockStart: SourceSpec = {
+  name: "clockStart",
+  label: "Clock start",
+  describe: "A scalar frame counter seed for the Ceilidh caller's clock.",
+  outputs: [{ name: "t", kind: "scalar" }],
+  params: [{ name: "start", type: "number", default: 0, min: 0, max: 100000, step: 1 }],
+  make(g, params) {
+    return { t: g.source({ shape: { kind: "scalar" }, dtype: "f32", data: new Float32Array([params.start as number]) }, "clockStart") };
+  },
+};
+
+export const SOURCES: SourceSpec[] = [ringPoints, blobPoints, grayScottSeed, grayScottSeedComplex, noiseGrid, waveGrid, swarmSeed, clockStart];
 
 const byName = new Map(SOURCES.map((s) => [s.name, s]));
 export function getSource(name: string): SourceSpec | undefined {

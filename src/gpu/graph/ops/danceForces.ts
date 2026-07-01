@@ -24,12 +24,14 @@ import {
   cohereForce,
   constrainForce,
   orbitForce,
+  partnerOrbitForce,
   separateForce,
   solenoidForce,
   springForce,
   swimForce,
   vortexForce,
 } from "../../sim/forces";
+import { figureAt, figureTargetVel, partnerIndex } from "../../sim/figures";
 
 const VEC3: ElementType = { kind: "vec", n: 3 };
 const SCALAR: ElementType = { kind: "scalar" };
@@ -306,10 +308,120 @@ function runIntegrate(ins: FieldValue[], params: Params): FieldValue[] {
   ];
 }
 
+// ── clock: a graph-native frame counter (drives the caller's figures) ────────────────
+
+export const clockOp: OpType = {
+  name: "clock",
+  label: "Clock",
+  describe: "A frame counter: outputs prev + rate each tick (seed from a scalar, close the loop).",
+  category: "Dance forces",
+  inputs: [{ name: "prev", kind: "scalar" }],
+  outputs: [{ name: "t", kind: "scalar", dtype: "f32" }],
+  params: [{ name: "rate", type: "number", default: 1, min: 0, max: 8, step: 0.5 }],
+  inferShapes() {
+    return [{ kind: "scalar" }];
+  },
+  async execute(_ctx, ins, params) {
+    return tickClock(ins, params);
+  },
+  cpuGolden(ins, params) {
+    return tickClock(ins, params);
+  },
+};
+
+function tickClock(ins: FieldValue[], params: Params): FieldValue[] {
+  const prev = ins[0];
+  const cur = prev?.data?.[0] ?? 0;
+  return [{ shape: { kind: "scalar" }, dtype: "f32", data: new Float32Array([cur + num(params, "rate")]) }];
+}
+
+// ── caller: the Ceilidh choreographer (figures + partner progression) ────────────────
+
+const CALLER_PARAMS: ParamSpec[] = [
+  { name: "period", type: "int", default: 160, min: 30, max: 600, describe: "frames per figure" },
+  { name: "seed", type: "int", default: 0, min: 0, max: 9, describe: "which figure sequence" },
+  { name: "tightness", type: "number", default: 1, min: 0, max: 2, step: 0.05, describe: "how hard dancers scramble to the called state" },
+  { name: "gain", type: "number", default: 0.08, min: 0, max: 0.3, step: 0.005 },
+  { name: "speed", type: "number", default: 0.6, min: 0, max: 2, step: 0.05, describe: "target speed of motion" },
+];
+
+export const callerOp: OpType = {
+  name: "caller",
+  label: "Caller (Ceilidh)",
+  describe: "Drives each dancer toward the called figure's state of motion; couples advance through partners.",
+  category: "Dance forces",
+  inputs: [
+    { name: "pos", kind: "points" },
+    { name: "vel", kind: "points" },
+    { name: "frame", kind: "scalar" },
+  ],
+  outputs: [{ name: "force", kind: "points", dtype: "f32" }],
+  params: CALLER_PARAMS,
+  inferShapes(inShapes) {
+    return [{ kind: "points", n: pointsN(inShapes[0]!, "caller") }];
+  },
+  inferElements(inEls) {
+    requireVec3(inEls[0], "caller.pos");
+    requireVec3(inEls[1], "caller.vel");
+    return [VEC3];
+  },
+  async execute(_ctx, ins, params) {
+    return callForces(ins, params);
+  },
+  cpuGolden(ins, params) {
+    return callForces(ins, params);
+  },
+};
+
+function callForces(ins: FieldValue[], params: Params): FieldValue[] {
+  const posV = ins[0];
+  const velV = ins[1];
+  const frameV = ins[2];
+  if (!posV || !velV) throw new Error("caller: missing pos or vel input");
+  const n = pointsN(posV.shape, "caller");
+  const pos = requireData(posV, "caller.pos");
+  const vel = requireData(velV, "caller.vel");
+  const frame = frameV?.data?.[0] ?? 0;
+  const period = num(params, "period");
+  const seed = num(params, "seed");
+  const tightness = num(params, "tightness");
+  const gain = num(params, "gain");
+  const speed = num(params, "speed");
+
+  const { figure, figureIndex } = figureAt(frame, period, seed);
+  const out = new Float32Array(n * 3);
+  const k = gain * tightness;
+  for (let i = 0; i < n; i++) {
+    const p = readVec3(pos, i);
+    const v = readVec3(vel, i);
+    const partner = readVec3(pos, partnerIndex(i, figureIndex, n));
+    const target = figureTargetVel(figure, p, i, partner, speed);
+    // accel toward the called state of motion; the figure/partner change at each call
+    // makes (target − vel) jump, and the integrator's jerk limit turns that into an
+    // urgent-but-smooth scramble.
+    writeVec3(out, i, [(target[0] - v[0]) * k, (target[1] - v[1]) * k, (target[2] - v[2]) * k]);
+  }
+  return [{ shape: { kind: "points", n }, dtype: "f32", element: VEC3, data: out }];
+}
+
+// ── partnerOrbit: a standalone couple-swing force ────────────────────────────────────
+
+export const partnerOrbitOp = makeForceOp({
+  name: "partnerOrbit", label: "Partner orbit", describe: "Each dancer swings around a partner (offset in the ring) — DANCERL pairwise orbit.",
+  needsVel: true,
+  params: [strengthSpec(0.5), { name: "offset", type: "int", default: 1, min: 1, max: 16, describe: "partner = (i + offset) mod N" }],
+  kernel: (i, pos, vel, n, p) => {
+    const off = Math.max(1, Math.round(num(p, "offset")));
+    const partner = readVec3(pos, (i + off) % n);
+    return partnerOrbitForce(readVec3(pos, i), readVec3(vel ?? pos, i), partner, num(p, "strength"));
+  },
+});
+
 // ── Registration ─────────────────────────────────────────────────────────────────────
 
 export const FORCE_OPS: OpType[] = [
-  constrainOp, swimOp, vortexOp, solenoidOp, orbitOp, cohereOp, separateOp, springOp, bodyTapOp, integrateOp,
+  constrainOp, swimOp, vortexOp, solenoidOp, orbitOp, cohereOp, separateOp, springOp,
+  partnerOrbitOp, callerOp, clockOp, bodyTapOp, integrateOp,
 ];
 
 let registered = false;

@@ -84,4 +84,39 @@ describe("dance force building blocks", () => {
     for (let i = 0; i < data.length; i++) if (Math.abs((data[i] ?? 0) - (d0[i] ?? 0)) > 1e-3) moved++;
     expect(moved).toBeGreaterThan(n);
   });
+
+  it("drives figures via a graph-native clock and the caller (couples scramble)", async () => {
+    const n = 32;
+    const g = new Graph();
+    const body0 = g.source(
+      { shape: { kind: "points", n: n * BODY_BLOCK_COUNT }, dtype: "f32", element: { kind: "vec", n: 3 }, data: seedSwarmBody(n, 2) },
+      "swarmSeed",
+    );
+    const fb = g.feedback(body0, "body");
+    const taps = g.op("bodyTap", { body: fb.state });
+    const pos = taps[0];
+    const vel = taps[1];
+    if (!pos || !vel) throw new Error("no taps");
+    // clock loop
+    const t0 = g.source({ shape: { kind: "scalar" }, dtype: "f32", data: new Float32Array([0]) }, "clockStart");
+    const cfb = g.feedback(t0, "clock");
+    const t = g.op1("clock", { prev: cfb.state }, { rate: 1 });
+    cfb.close(t);
+    // caller with a short period so a figure boundary is crossed within the run
+    const force = g.op1("caller", { pos, vel, frame: t }, { period: 20, tightness: 1.2 });
+    const integ = g.op("integrate", { body: fb.state, force });
+    const bodyNext = integ[0];
+    const swarm = integ[1];
+    if (!bodyNext || !swarm) throw new Error("no integrate outputs");
+    fb.close(bodyNext);
+
+    const store = createSimState();
+    // The clock advances each tick; pull it out to confirm.
+    const clockAfter = await advance(g, t, { steps: 50, state: store, mode: "cpu" });
+    expect(clockAfter.data?.[0]).toBeCloseTo(50, 6);
+
+    const s = await advance(g, swarm, { steps: 1, state: store, mode: "cpu" });
+    expect(s.data?.length).toBe(n * 2);
+    expect(Array.from(s.data ?? []).every((v) => Number.isFinite(v))).toBe(true);
+  });
 });
