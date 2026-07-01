@@ -26,10 +26,13 @@ export default function Dancer() {
   const [status, setStatus] = useState<"init" | "running" | "unsupported" | "error">("init");
   const [showAbout, setShowAbout] = useState(true);
   const [showBreed, setShowBreed] = useState(false);
+  const [showMatrix, setShowMatrix] = useState(false); // hidden by default (more interesting for e.g. protein folding)
+  const [paused, setPaused] = useState(false); // freeze the Ceilidh figure progression
   const simRef = useRef<DancerSim | DancerGpuSim | null>(null);
   // cross-link state, read by the render loop each frame (refs → no re-render on hover)
   const hoverAgentRef = useRef<number | null>(null); // hovered dancer (3D) → matrix row
   const hoverCellRef = useRef<[number, number] | null>(null); // hovered matrix cell → 3D pair
+  const showMatrixRef = useRef(false); // mirror for the render loop (avoids re-subscribing the effect)
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -144,7 +147,11 @@ export default function Dancer() {
 
           if (gpu) {
             gpu.step(); // advance + write instanceMatrix on the GPU (no readback)
-            if (frame % 12 === 0 && !snapping) {
+            // The snapshot readback (for CPU-side trails/colour/matrix) mapAsync-syncs the GPU;
+            // suspend it during camera interaction so it can't contend with the drag render (the
+            // periodic pause). Trails/colour briefly freeze while dragging — acceptable until
+            // they move onto the GPU.
+            if (frame % 12 === 0 && !snapping && !renderer.isInteracting()) {
               snapping = true;
               gpu
                 .readBlocks()
@@ -159,14 +166,14 @@ export default function Dancer() {
             }
             renderer.update(snapPos, zeros, snapSpeed, { agents, pair: hc });
             renderer.render();
-            if (matrixRef.current) drawDistanceMatrix(matrixRef.current, snapPos, gpu.n, { row: ha, pair: hc });
+            if (matrixRef.current && showMatrixRef.current) drawDistanceMatrix(matrixRef.current, snapPos, gpu.n, { row: ha, pair: hc });
             if (frame % 15 === 0) setFigure(gpu.currentFigure());
           } else {
             sim.step();
             const p = sim.positions();
             renderer.update(p, sim.orientations(), sim.speeds(), { agents, pair: hc });
             renderer.render();
-            if (matrixRef.current) drawDistanceMatrix(matrixRef.current, p, sim.n, { row: ha, pair: hc });
+            if (matrixRef.current && showMatrixRef.current) drawDistanceMatrix(matrixRef.current, p, sim.n, { row: ha, pair: hc });
             if (frame % 15 === 0) setFigure(sim.currentFigure());
           }
           frame++;
@@ -191,6 +198,14 @@ export default function Dancer() {
     };
   }, []);
 
+  useEffect(() => {
+    showMatrixRef.current = showMatrix;
+  }, [showMatrix]);
+
+  useEffect(() => {
+    simRef.current?.pauseFigures(paused);
+  }, [paused]);
+
   const toggleFullscreen = () => {
     const stage = stageRef.current;
     if (!stage) return;
@@ -208,6 +223,12 @@ export default function Dancer() {
             <span className="dancer-figure-label">figure</span> {figure}
           </div>
           <div className="dancer-hud-right">
+            <button className="dancer-fs" onClick={() => setPaused((v) => !v)} aria-pressed={paused} title="hold the current Ceilidh figure (motion keeps running)">
+              {paused ? "▶ resume figures" : "⏸ hold figure"}
+            </button>
+            <button className="dancer-fs" onClick={() => setShowMatrix((v) => !v)} aria-pressed={showMatrix} title="pairwise distance matrix">
+              ▦ {showMatrix ? "hide matrix" : "matrix"}
+            </button>
             <button
               className="dancer-fs"
               onClick={() => {
@@ -231,7 +252,12 @@ export default function Dancer() {
           />
         )}
 
-        <div className="dancer-matrix" title="pairwise distance matrix — couples are off-diagonal hot pairs">
+        {/* kept mounted (ref stable for the hover cross-link); just hidden + not drawn when off */}
+        <div
+          className="dancer-matrix"
+          style={{ display: showMatrix ? undefined : "none" }}
+          title="pairwise distance matrix — couples are off-diagonal hot pairs"
+        >
           <canvas ref={matrixRef} className="dancer-matrix-canvas" width={96} height={96} />
           <div className="dancer-matrix-cap">distance matrix</div>
         </div>

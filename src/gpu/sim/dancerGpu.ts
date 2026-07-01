@@ -458,6 +458,9 @@ export class DancerGpuSim {
   // render bridge (set up lazily via setMatrixTarget)
   private matrixDimsBuf: (TgpuBuffer<typeof MatrixDims> & UniformFlag) | null = null;
   private matrixBind: GPUBindGroup | null = null;
+  // when set, the caller holds this frame for figure selection (figures paused) while the sim
+  // keeps advancing — so the dance freezes into one figure without stopping the motion.
+  private figuresFrozenAt: number | null = null;
 
   constructor(device: GPUDevice, n: number, seed: number, params: DancerGpuParams) {
     this.device = device;
@@ -504,10 +507,20 @@ export class DancerGpuSim {
     this.writeParams();
   }
 
+  /** Freeze/unfreeze the Ceilidh figure progression (the caller). The sim keeps moving; only
+   *  the called figure is held. */
+  pauseFigures(on: boolean): void {
+    this.figuresFrozenAt = on ? this.frame : null;
+  }
+
+  private figureFrame(): number {
+    return this.figuresFrozenAt ?? this.frame;
+  }
+
   private writeParams(): void {
     const p = this.params;
     const n = this.n;
-    const fa = figureAt(this.frame, p.period, p.callerSeed);
+    const fa = figureAt(this.figureFrame(), p.period, p.callerSeed);
     this.paramsBuf.write({
       n,
       figureCode: FIGURE_CODE[fa.figure],
@@ -599,7 +612,7 @@ export class DancerGpuSim {
 
   /** The Ceilidh figure called at the current frame (for the HUD). */
   currentFigure(): string {
-    return figureAt(this.frame, this.params.period, this.params.callerSeed).figure;
+    return figureAt(this.figureFrame(), this.params.period, this.params.callerSeed).figure;
   }
 
   /** Raw GPUBuffer of current positions — hand to three.js to render from (no readback). */

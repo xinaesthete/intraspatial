@@ -87,11 +87,20 @@ export class DancerSim {
   private body: Float32Array;
   params: DancerParams;
   frame = 0;
+  private figuresFrozenAt: number | null = null;
 
   constructor(n: number, seed = 1, params: Partial<DancerParams> = {}) {
     this.n = n;
     this.body = seedSwarmBody(n, seed);
     this.params = { ...DEFAULT_DANCER_PARAMS, ...params };
+  }
+
+  /** Freeze/unfreeze the figure progression (the sim keeps moving; the figure is held). */
+  pauseFigures(on: boolean): void {
+    this.figuresFrozenAt = on ? this.frame : null;
+  }
+  private figureFrame(): number {
+    return this.figuresFrozenAt ?? this.frame;
   }
 
   reset(seed: number): void {
@@ -105,7 +114,7 @@ export class DancerSim {
     const p = this.params;
     const posBuf = tapBlock(this.body, n, "pos");
     const velBuf = tapBlock(this.body, n, "vel");
-    const { figure, figureIndex } = figureAt(this.frame, p.period, p.callerSeed);
+    const { figure, figureIndex } = figureAt(this.figureFrame(), p.period, p.callerSeed);
     const next = new Float32Array(this.body.length);
     const integ = {
       ...INTEGRATE_DEFAULTS,
@@ -162,7 +171,7 @@ export class DancerSim {
   }
 
   currentFigure(): string {
-    return figureAt(this.frame, this.params.period, this.params.callerSeed).figure;
+    return figureAt(this.figureFrame(), this.params.period, this.params.callerSeed).figure;
   }
 }
 

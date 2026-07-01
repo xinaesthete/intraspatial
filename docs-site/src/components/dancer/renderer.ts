@@ -31,6 +31,8 @@ export interface DancerRenderer {
   /** The raw GPUBuffer backing `instanceMatrix` (materialising it with a render if needed), so
    *  our TypeGPU compute can write model matrices into it. Null if not yet available. */
   gpuInstanceMatrixBuffer(): Promise<GPUBuffer | null>;
+  /** True while the camera is being manipulated (plus a short damping cooldown). */
+  isInteracting(): boolean;
   dispose(): void;
 }
 
@@ -47,6 +49,19 @@ export async function createDancerRenderer(canvas: HTMLCanvasElement, n: number)
   controls.enableDamping = true;
   controls.dampingFactor = 0.08;
   controls.target.set(0, 0, 0);
+
+  // Track active camera interaction so the caller can suspend the (periodic, GPU-syncing)
+  // snapshot readback while dragging — the readback's mapAsync contends with the heavier render
+  // during a drag and shows up as regular pauses. Add a short cooldown so inertial damping
+  // after release also stays readback-free.
+  let interactUntil = 0;
+  const now = (): number => (typeof performance !== "undefined" ? performance.now() : 0);
+  controls.addEventListener("start", () => {
+    interactUntil = Number.POSITIVE_INFINITY;
+  });
+  controls.addEventListener("end", () => {
+    interactUntil = now() + 400;
+  });
 
   scene.add(new THREE.AmbientLight(0x6070a0, 1.2));
   const key = new THREE.DirectionalLight(0xffffff, 2.2);
@@ -212,6 +227,8 @@ export async function createDancerRenderer(canvas: HTMLCanvasElement, n: number)
     gpuMatrix = on;
   };
 
+  const isInteracting = (): boolean => now() < interactUntil;
+
   const gpuInstanceMatrixBuffer = async (): Promise<GPUBuffer | null> => {
     // The attribute's GPUBuffer is created on first render; ensure one has happened.
     const backend = renderer.backend as unknown as { get(o: object): { buffer?: GPUBuffer } | undefined };
@@ -234,5 +251,5 @@ export async function createDancerRenderer(canvas: HTMLCanvasElement, n: number)
     renderer.dispose();
   };
 
-  return { renderer, update, render, resize, pick, setGpuMatrix, gpuInstanceMatrixBuffer, dispose };
+  return { renderer, update, render, resize, pick, setGpuMatrix, gpuInstanceMatrixBuffer, isInteracting, dispose };
 }
