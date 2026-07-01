@@ -93,6 +93,17 @@ const layout = tgpu.bindGroupLayout({
   snapshot: { storage: (n: number) => d.arrayOf(d.vec3f, n), access: "mutable" },
 });
 
+// A separate binding for the render bridge: read pos + angPos, write a per-instance model
+// matrix into `mtx` (three.js's StorageInstancedBufferAttribute buffer) — so three renders the
+// swarm's position AND orientation straight off the GPU, no readback (the camera-drag fix).
+const MatrixDims = d.struct({ n: d.u32, scale: d.f32 });
+const matrixLayout = tgpu.bindGroupLayout({
+  dims: { uniform: MatrixDims },
+  mpos: { storage: (n: number) => d.arrayOf(d.vec3f, n), access: "readonly" },
+  mang: { storage: (n: number) => d.arrayOf(d.vec3f, n), access: "readonly" },
+  mtx: { storage: (n: number) => d.arrayOf(d.mat4x4f, n), access: "mutable" },
+});
+
 // ── device-function helpers (mirror src/gpu/sim/vec3.ts + quat.ts) ────────────────────────
 
 /** normalize with vec3.ts semantics: |v|<eps ⇒ fallback (default zero). */
@@ -205,6 +216,50 @@ const gatherFn = tgpu
     }
   })
   .$name("dancerGather");
+
+/** Compose a column-major model matrix from position `t` and angle-axis orientation `r`
+ *  (Rodrigues rotation), uniformly scaled — matching THREE.Matrix4.compose(pos, quat, scale)
+ *  for the same rotation. `mat4x4f(col0..col3)`, columns are vec4f. */
+const modelMatrix = tgpu.fn([d.vec3f, d.vec3f, d.f32], d.mat4x4f)((t, r, s) => {
+  "use gpu";
+  const theta = std.length(r);
+  const k = std.mul(1 / std.max(theta, 1e-9), r);
+  const c = std.cos(theta);
+  const si = std.sin(theta);
+  const oc = 1 - c;
+  const kx = k.x;
+  const ky = k.y;
+  const kz = k.z;
+  // rotation matrix entries (identity when theta≈0, since k·oc→0 and si→0)
+  const smol = std.select(d.f32(1), d.f32(0), theta < 1e-9); // 1 when rotating, 0 when ~identity
+  const r00 = c + kx * kx * oc * smol;
+  const r01 = (kx * ky * oc - kz * si) * smol;
+  const r02 = (kx * kz * oc + ky * si) * smol;
+  const r10 = (ky * kx * oc + kz * si) * smol;
+  const r11 = c + ky * ky * oc * smol;
+  const r12 = (ky * kz * oc - kx * si) * smol;
+  const r20 = (kz * kx * oc - ky * si) * smol;
+  const r21 = (kz * ky * oc + kx * si) * smol;
+  const r22 = c + kz * kz * oc * smol;
+  return d.mat4x4f(
+    d.vec4f(r00 * s, r10 * s, r20 * s, 0),
+    d.vec4f(r01 * s, r11 * s, r21 * s, 0),
+    d.vec4f(r02 * s, r12 * s, r22 * s, 0),
+    d.vec4f(t.x, t.y, t.z, 1),
+  );
+});
+
+const matrixFn = tgpu
+  .computeFn({ in: { gid: d.builtin.globalInvocationId }, workgroupSize: [WG] })(({ gid }) => {
+    "use gpu";
+    const i = gid.x;
+    if (i < matrixLayout.$.dims.n) {
+      const t = d.vec3f(matrixLayout.$.mpos[i]!);
+      const r = d.vec3f(matrixLayout.$.mang[i]!);
+      matrixLayout.$.mtx[i] = modelMatrix(t, r, matrixLayout.$.dims.scale);
+    }
+  })
+  .$name("dancerMatrix");
 
 const stepFn = tgpu
   .computeFn({ in: { gid: d.builtin.globalInvocationId }, workgroupSize: [WG] })(({ gid }) => {
@@ -328,6 +383,7 @@ interface DancerPipe {
   copyPipeline: GPUComputePipeline;
   stepPipeline: GPUComputePipeline;
   gatherPipeline: GPUComputePipeline;
+  matrixPipeline: GPUComputePipeline;
 }
 
 // One TypeGPU root + compiled pipelines PER device (initFromDevice / pipeline compilation is
@@ -346,7 +402,15 @@ function getDancerPipe(device: GPUDevice): DancerPipe {
   const copyPipeline = device.createComputePipeline({ layout: pipeLayout, compute: { module, entryPoint: "dancerCopy" } });
   const stepPipeline = device.createComputePipeline({ layout: pipeLayout, compute: { module, entryPoint: "dancerStep" } });
   const gatherPipeline = device.createComputePipeline({ layout: pipeLayout, compute: { module, entryPoint: "dancerGather" } });
-  const pipe: DancerPipe = { root, copyPipeline, stepPipeline, gatherPipeline };
+
+  // The render-bridge kernel uses its own bind-group layout (matrixLayout) — resolve it into a
+  // separate module so matrixLayout sits at group 0.
+  const mres = tgpu.resolveWithContext([matrixFn], { names: "strict" });
+  const mmodule = device.createShaderModule({ code: mres.code });
+  const mLayout = device.createPipelineLayout({ bindGroupLayouts: mres.usedBindGroupLayouts.map((l) => root.unwrap(l)) });
+  const matrixPipeline = device.createComputePipeline({ layout: mLayout, compute: { module: mmodule, entryPoint: "dancerMatrix" } });
+
+  const pipe: DancerPipe = { root, copyPipeline, stepPipeline, gatherPipeline, matrixPipeline };
   pipeCache.set(device, pipe);
   return pipe;
 }
@@ -380,6 +444,7 @@ export class DancerGpuSim {
   private copyPipeline!: GPUComputePipeline;
   private stepPipeline!: GPUComputePipeline;
   private gatherPipeline!: GPUComputePipeline;
+  private matrixPipeline!: GPUComputePipeline;
   private paramsBuf!: ParamsBuffer;
   private posSnap!: Vec3Buffer;
   private posBuf!: Vec3Buffer;
@@ -390,6 +455,9 @@ export class DancerGpuSim {
   private snapshotBuf!: Vec3Buffer;
   private bind!: GPUBindGroup;
   private groups = 1;
+  // render bridge (set up lazily via setMatrixTarget)
+  private matrixDimsBuf: (TgpuBuffer<typeof MatrixDims> & UniformFlag) | null = null;
+  private matrixBind: GPUBindGroup | null = null;
 
   constructor(device: GPUDevice, n: number, seed: number, params: DancerGpuParams) {
     this.device = device;
@@ -405,6 +473,7 @@ export class DancerGpuSim {
     this.copyPipeline = pipe.copyPipeline;
     this.stepPipeline = pipe.stepPipeline;
     this.gatherPipeline = pipe.gatherPipeline;
+    this.matrixPipeline = pipe.matrixPipeline;
     const root = this.root;
 
     const body = seedSwarmBody(n, this.seed);
@@ -485,8 +554,47 @@ export class DancerGpuSim {
     s.setBindGroup(0, this.bind);
     s.dispatchWorkgroups(this.groups);
     s.end();
+    // If a render target is bound, refresh its per-instance model matrices in the same submit
+    // (so three renders the new pose with no readback).
+    if (this.matrixBind) {
+      const m = enc.beginComputePass();
+      m.setPipeline(this.matrixPipeline);
+      m.setBindGroup(0, this.matrixBind);
+      m.dispatchWorkgroups(this.groups);
+      m.end();
+    }
     device.queue.submit([enc.finish()]);
     this.frame++;
+  }
+
+  /** Bind a raw mat4 storage buffer (three.js's `StorageInstancedBufferAttribute` for the
+   *  InstancedMesh's `instanceMatrix`) as the render target. After this, every `step()` writes
+   *  the per-instance model matrices (translation from pos, rotation from angPos) straight into
+   *  it — three renders position + orientation off the GPU, no readback. `scale` is the uniform
+   *  instance scale. Call once (buffer identity is stable). */
+  setMatrixTarget(rawMatrixBuffer: GPUBuffer, scale = 1): void {
+    const root = this.root;
+    const n = this.n;
+    this.matrixDimsBuf ??= root.createBuffer(MatrixDims).$usage("uniform");
+    this.matrixDimsBuf.write({ n, scale });
+    const mtx = root.createBuffer(d.arrayOf(d.mat4x4f, n), rawMatrixBuffer).$usage("storage");
+    this.matrixBind = root.unwrap(
+      root.createBindGroup(matrixLayout, { dims: this.matrixDimsBuf, mpos: this.posBuf, mang: this.angPosBuf, mtx }),
+    );
+  }
+
+  /** Dispatch only the render-matrix pass (no sim step) — refresh `instanceMatrix` from the
+   *  current pose. `step()` already does this when a target is bound; use this to refresh once
+   *  without advancing (e.g. right after seeding). */
+  writeMatrices(): void {
+    if (!this.matrixBind) return;
+    const enc = this.device.createCommandEncoder();
+    const m = enc.beginComputePass();
+    m.setPipeline(this.matrixPipeline);
+    m.setBindGroup(0, this.matrixBind);
+    m.dispatchWorkgroups(this.groups);
+    m.end();
+    this.device.queue.submit([enc.finish()]);
   }
 
   /** Raw GPUBuffer of current positions — hand to three.js to render from (no readback). */
