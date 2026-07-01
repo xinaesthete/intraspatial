@@ -11,11 +11,10 @@ import { drawDistanceMatrix, matrixCell } from "./matrix";
 import { BreedingStrip } from "./BreedingStrip";
 
 const AGENTS = 180;
-// WIP: the GPU (TSL compute) sim pipeline works (seed/step/readback verified), but the full
-// force set trips WGSL generation in this three.js build and needs interactive shader-error
-// debugging to finish. Off for now so the artefact runs on the (golden) CPU sim; flip to
-// true (with a real browser console) to continue debugging gpuSim.ts.
-const USE_GPU = false;
+// The swarm runs GPU-resident (three.js TSL compute over storage buffers) — the full force
+// set + caller compile and run cleanly. If GPU init throws, we transparently fall back to the
+// (golden) CPU sim below. Set false to force the CPU path (e.g. for A/B comparison).
+const USE_GPU = true;
 
 export default function Dancer() {
   const stageRef = useRef<HTMLDivElement | null>(null);

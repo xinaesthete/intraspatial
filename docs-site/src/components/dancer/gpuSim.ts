@@ -1,11 +1,3 @@
-// ⚠ WORK IN PROGRESS (parked behind Dancer.tsx `USE_GPU = false`). The compute pipeline is
-// verified end-to-end (seed → snapshot → step → readback; constrain + integrate produce
-// finite, evolving positions). But adding the full force set trips WGSL generation in this
-// three.js build, and the headless preview only surfaces the downstream "invalid pipeline"
-// cascade, not the root shader error — so finishing this needs a real browser's shader-error
-// output. Known-good idioms below (clamped denominators, literal-baked params, all nodes
-// built inside the Fn). Next: bisect with a visible WGSL error to find the offending op.
-//
 // GPU-resident dancer simulation — three.js WebGPU (TSL) compute. The swarm state lives in
 // storage buffers; a compute kernel evaluates the DANCERL force influences + the rigid-body
 // integrator on the GPU (the O(N²) neighbour forces are the reason to be here), so large N
@@ -18,12 +10,16 @@
 // compute uniform's `.value` didn't propagate; literals do). Robust NaN idiom throughout:
 // never divide by a possibly-zero value (clamp the denominator) and gate with multiplicative
 // masks rather than `If` (TSL can lower small `If`s to `select`, which evaluates both arms).
+// Baking-gotcha: an `undefined` param baked via `float(x)` emits `NaN.0`, which is not valid
+// WGSL and fails pipeline compilation — always bake from a typed, defined source (this is a
+// compile-time TS error too; run the typechecker before blaming the shader).
 //
 // Staging: positions/velocities are read back each frame to feed the existing renderer
 // (trails, matrix, hover). A later pass can render straight from the buffers (zero readback).
 import type { WebGPURenderer } from "three/webgpu";
 import { Fn, If, Loop, float, hash, instanceIndex, instancedArray, vec3 } from "three/tsl";
 import { DEFAULT_DANCER_PARAMS, type DancerParams } from "./sim";
+import { INTEGRATE_DEFAULTS } from "../../../../src/gpu/sim/body";
 import { figureAt, type Figure } from "../../../../src/gpu/sim/figures";
 
 const SHELL = 4.5;
@@ -171,17 +167,16 @@ export class GpuDancerSim {
       });
       f.addAssign(center.div(cnt.max(1)).sub(pos).mul(L(p.cohere).mul(0.012)).mul(cnt.min(1)));
 
-      // caller — accelerate toward the called figure's state of motion (WIP, see header)
-      const CALLER_ENABLED = false;
-      if (CALLER_ENABLED) {
+      // caller — accelerate toward the called figure's state of motion
+      if (p.caller > 0) {
         const target = targetVel(pos, i);
-        f.addAssign(target.sub(v).mul(L(p.callerGain).mul(p.caller)));
+        f.addAssign(target.sub(v).mul(L(p.callerGain * p.caller)));
       }
 
       // integrate — jerk-limited accel, damping, speed cap, containment (clamped denoms)
       const df = f.sub(a0);
       const a = a0.add(df.mul(L(p.jerkLimit).div(df.length().max(1e-6)).min(1))).toVar();
-      const tf = L(p.timeFactor * p.dt);
+      const tf = L(p.timeFactor * INTEGRATE_DEFAULTS.dt);
       const vv = v.add(a.mul(tf)).mul(L(p.linDamp)).toVar();
       vv.assign(vv.mul(L(p.speedLimit).div(vv.length().max(1e-6)).min(1)));
       const np = pos.add(vv.mul(tf)).toVar();
