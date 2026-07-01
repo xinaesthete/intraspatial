@@ -81,6 +81,33 @@ export class RingBuffer implements MemoryReporting {
     return dst;
   }
 
+  /** Sample the history at a *fractional* age `k`, using **Catmull-Rom cubic** interpolation
+   *  through the four frames bracketing `k` (a C1-continuous curve that passes through every
+   *  stored frame — smoother than `sample`'s piecewise-linear read for trails/resampling).
+   *  Ends are handled by clamping the neighbour indices. Writes into `out` (allocated if
+   *  omitted) and returns it. */
+  sampleCubic(k: number, out?: Float32Array): Float32Array {
+    if (this.filled < 1) throw new RangeError("RingBuffer.sampleCubic: empty buffer");
+    const dst = out ?? new Float32Array(this.frameLength);
+    const maxK = this.filled - 1;
+    const kk = k < 0 ? 0 : k > maxK ? maxK : k;
+    const lo = Math.floor(kk);
+    const t = kk - lo;
+    const clamp = (j: number): number => (j < 0 ? 0 : j > maxK ? maxK : j);
+    // p1 = frame(lo) (newer knot), p2 = frame(lo+1) (older knot); p0/p3 the outer neighbours.
+    const p0 = this.frame(clamp(lo - 1));
+    const p1 = this.frame(clamp(lo));
+    const p2 = this.frame(clamp(lo + 1));
+    const p3 = this.frame(clamp(lo + 2));
+    const t2 = t * t;
+    const t3 = t2 * t;
+    for (let i = 0; i < this.frameLength; i++) {
+      const a = p0[i] ?? 0, b = p1[i] ?? 0, c = p2[i] ?? 0, d = p3[i] ?? 0;
+      dst[i] = 0.5 * (2 * b + (c - a) * t + (2 * a - 5 * b + 4 * c - d) * t2 + (-a + 3 * b - 3 * c + d) * t3);
+    }
+    return dst;
+  }
+
   reset(): void {
     this.cursor = 0;
     this.filled = 0;
@@ -128,8 +155,13 @@ export class FieldRing implements MemoryReporting {
     return this.wrap(Float32Array.from(this.ring.frame(k)));
   }
 
-  /** The field at a fractional age `k`, interpolated between frames. */
+  /** The field at a fractional age `k`, linearly interpolated between frames. */
   sample(k: number): FieldValue {
     return this.wrap(this.ring.sample(k));
+  }
+
+  /** The field at a fractional age `k`, Catmull-Rom cubic interpolated (C1-smooth). */
+  sampleCubic(k: number): FieldValue {
+    return this.wrap(this.ring.sampleCubic(k));
   }
 }

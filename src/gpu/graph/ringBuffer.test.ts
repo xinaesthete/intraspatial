@@ -36,6 +36,28 @@ describe("RingBuffer", () => {
     expect(() => new RingBuffer(1, 2).sample(0)).toThrow(/empty/);
   });
 
+  it("interpolates cubically through the buffer (sampleCubic)", () => {
+    const r = new RingBuffer(1, 6);
+    // a linear ramp: Catmull-Rom reproduces linear data EXACTLY, so cubic == linear here
+    for (const v of [0, 10, 20, 30, 40]) r.push([v]); // frame(0)=40 .. frame(4)=0
+    expect(r.sampleCubic(0)[0]).toBeCloseTo(40, 6); // passes through knots
+    expect(r.sampleCubic(2)[0]).toBeCloseTo(20, 6);
+    expect(r.sampleCubic(1.5)[0]).toBeCloseTo(25, 6); // interior linear ⇒ exact midpoint
+    expect(r.sampleCubic(2.25)[0]).toBeCloseTo(17.5, 6);
+    expect(r.sampleCubic(9)[0]).toBeCloseTo(0, 6); // clamps to oldest
+
+    // a non-linear sequence: cubic passes through the knots but curves between them
+    const c = new RingBuffer(1, 6);
+    for (const v of [0, 0, 1, 0, 0]) c.push([v]); // an impulse
+    expect(c.sampleCubic(2)[0]).toBeCloseTo(1, 6); // knot exact (frame 2 back = the 1)
+    expect(c.sampleCubic(1)[0]).toBeCloseTo(0, 6);
+    // overshoot between knots is the Catmull-Rom signature (linear would stay within [0,1])
+    const mid = c.sampleCubic(1.5)[0];
+    expect(mid).toBeGreaterThan(0.5);
+    expect(mid).toBeLessThan(0.75);
+    expect(() => new RingBuffer(1, 2).sampleCubic(0)).toThrow(/empty/);
+  });
+
   it("reports its resident byteLength", () => {
     const r = new RingBuffer(6, 10); // 60 floats × 4 bytes
     expect(r.byteLength).toBe(60 * 4);
