@@ -3,25 +3,13 @@
   "autoPort": true,
   "configurations": [
     {
-      "name": "docs-site",
-      "runtimeExecutable": "volta",
-      "runtimeArgs": ["run", "--node", "22", "pnpm", "--dir", "docs-site", "run", "dev"],
-      "port": 4321
-    },
-    {
       "name": "playground",
-      "runtimeExecutable": "volta",
-      "runtimeArgs": ["run", "--node", "22", "pnpm", "--dir", "playground", "exec", "vite"],
-      "port": 5188
-    },
-    {
-      "name": "playground-direct",
       "runtimeExecutable": "bash",
       "runtimeArgs": ["-lc", "cd playground && volta run --node 22 node node_modules/vite/bin/vite.js --port 5188 --strictPort"],
       "port": 5188
     },
     {
-      "name": "docs-direct",
+      "name": "docs-site",
       "runtimeExecutable": "bash",
       "runtimeArgs": ["-lc", "cd docs-site && volta run --node 22 bash -c 'node scripts/sync-primer.mjs && node node_modules/astro/bin/astro.mjs dev --port 4321 --strictPort'"],
       "port": 4321
