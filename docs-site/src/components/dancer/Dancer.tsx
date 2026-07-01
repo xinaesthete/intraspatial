@@ -1,0 +1,132 @@
+// The standalone dancer artefact — a live 3D Ceilidh of force-fields (three.js WebGPU),
+// with a fullscreen stage, the distance-matrix lens, and the cultural framing. The sim is
+// the direct CPU loop in ./sim (the same math as the composer's building-block ops); the
+// renderer is three.js on its WebGPU backend. `client:only="react"` — everything here is
+// browser-only.
+import { useEffect, useRef, useState } from "react";
+import { DancerSim } from "./sim";
+import { createDancerRenderer, type DancerRenderer } from "./renderer";
+import { drawDistanceMatrix } from "./matrix";
+
+const AGENTS = 180;
+
+export default function Dancer() {
+  const stageRef = useRef<HTMLDivElement | null>(null);
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const matrixRef = useRef<HTMLCanvasElement | null>(null);
+  const [figure, setFigure] = useState("…");
+  const [status, setStatus] = useState<"init" | "running" | "unsupported" | "error">("init");
+  const [showAbout, setShowAbout] = useState(true);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    const stage = stageRef.current;
+    if (!canvas || !stage) return;
+    if (typeof navigator === "undefined" || !("gpu" in navigator)) {
+      setStatus("unsupported");
+      return;
+    }
+
+    let renderer: DancerRenderer | null = null;
+    let raf = 0;
+    let disposed = false;
+    let frame = 0;
+    const sim = new DancerSim(AGENTS, 1);
+
+    const resize = () => {
+      if (!renderer) return;
+      const r = stage.getBoundingClientRect();
+      renderer.resize(Math.max(1, r.width), Math.max(1, r.height));
+    };
+
+    createDancerRenderer(canvas, AGENTS)
+      .then((r) => {
+        if (disposed) {
+          r.dispose();
+          return;
+        }
+        renderer = r;
+        resize();
+        setStatus("running");
+        const loop = () => {
+          if (disposed || !renderer) return;
+          sim.step();
+          renderer.update(sim.positions(), sim.orientations(), sim.speeds());
+          renderer.render();
+          if (frame % 15 === 0) {
+            setFigure(sim.currentFigure());
+            if (matrixRef.current) drawDistanceMatrix(matrixRef.current, sim.positions(), sim.n);
+          }
+          frame++;
+          raf = requestAnimationFrame(loop);
+        };
+        raf = requestAnimationFrame(loop);
+      })
+      .catch((e) => {
+        console.error("dancer renderer failed", e);
+        setStatus("error");
+      });
+
+    const ro = new ResizeObserver(resize);
+    ro.observe(stage);
+
+    return () => {
+      disposed = true;
+      cancelAnimationFrame(raf);
+      ro.disconnect();
+      renderer?.dispose();
+    };
+  }, []);
+
+  const toggleFullscreen = () => {
+    const stage = stageRef.current;
+    if (!stage) return;
+    if (document.fullscreenElement) void document.exitFullscreen();
+    else void stage.requestFullscreen();
+  };
+
+  return (
+    <div className="dancer-root">
+      <div className="dancer-stage" ref={stageRef}>
+        <canvas ref={canvasRef} className="dancer-canvas" />
+
+        <div className="dancer-hud">
+          <div className="dancer-figure">
+            <span className="dancer-figure-label">figure</span> {figure}
+          </div>
+          <button className="dancer-fs" onClick={toggleFullscreen} aria-label="fullscreen">⤢ fullscreen</button>
+        </div>
+
+        <div className="dancer-matrix" title="pairwise distance matrix — couples are off-diagonal hot pairs">
+          <canvas ref={matrixRef} className="dancer-matrix-canvas" width={96} height={96} />
+          <div className="dancer-matrix-cap">distance matrix</div>
+        </div>
+
+        {status === "unsupported" && (
+          <div className="dancer-overlay">This piece needs WebGPU. Try a recent Chrome, Edge, or Safari Technology Preview.</div>
+        )}
+        {status === "error" && <div className="dancer-overlay">The 3D stage failed to start (see console).</div>}
+
+        {showAbout && (
+          <aside className="dancer-about">
+            <button className="dancer-about-close" onClick={() => setShowAbout(false)} aria-label="close">×</button>
+            <h1>A Ceilidh of force-fields</h1>
+            <p>
+              After <em>DANCERL</em> (Andy Lomas, IBM, 1992) — the force-field motion controller for
+              William Latham's SIGGRAPH film, written in the ESME/Mutator language Stephen Todd and
+              Latham built. No dancer follows a keyframe: motion <em>emerges</em> from a superposition
+              of named influences, and at each call the dancers scramble not to a position but to a
+              shared <em>state of motion</em> — couples swinging, then advancing through partners.
+            </p>
+            <p className="dancer-about-note">
+              A 2026 reconstruction of the algorithm, not the surface. Drag to orbit · ⤢ for fullscreen.
+            </p>
+          </aside>
+        )}
+        {!showAbout && (
+          <button className="dancer-about-open" onClick={() => setShowAbout(true)}>about</button>
+        )}
+      </div>
+    </div>
+  );
+}
