@@ -21,7 +21,6 @@ import { fuzzyAdjacencyAdaptiveOp } from "./fuzzyAdjacencyAdaptive";
 import { membershipToDistanceOp } from "./membershipToDistance";
 import { vietorisRipsOp } from "./vietorisRips";
 import { reactionDiffusionStepOp } from "./reactionDiffusion";
-import { danceFieldOp } from "./danceField";
 import { feedbackOp } from "./feedback";
 
 let registered = false;
@@ -44,7 +43,6 @@ export function registerBuiltinOps(): void {
   reg(vietorisRipsOp);
   // simulation front
   reg(reactionDiffusionStepOp);
-  reg(danceFieldOp);
   reg(feedbackOp);
 }
 
@@ -120,6 +118,5 @@ export {
   membershipToDistanceOp,
   vietorisRipsOp,
   reactionDiffusionStepOp,
-  danceFieldOp,
   feedbackOp,
 };

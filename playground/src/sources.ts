@@ -6,7 +6,7 @@ import { Graph } from "../../src/gpu/graph";
 import type { GpuField, ShapeKind } from "../../src/gpu/graph";
 import type { ParamSpec, Params } from "../../src/gpu/graph";
 import { seedGrayScott } from "../../src/gpu/sim/reactionDiffusion";
-import { packSwarm, seedSwarm } from "../../src/gpu/sim/danceField";
+import { BODY_BLOCK_COUNT, seedSwarmBody } from "../../src/gpu/sim/body";
 
 export interface SourceSpec {
   name: string;
@@ -204,34 +204,33 @@ const grayScottSeedComplex: SourceSpec = {
   },
 };
 
-// A swarm seed for the dance field: N agents on a jittered spherical shell, carried as
-// one vec3 `points` field of 2N rows — rows [0,N) positions, [N,2N) velocities (zero at
-// birth) — the packing danceField reads (see src/gpu/sim/danceField.ts). One feedback
-// node then carries the whole pos+vel state around the loop.
-const danceSwarmSeed: SourceSpec = {
-  name: "danceSwarmSeed",
-  label: "Dance swarm seed",
-  describe: "A cloud of agents (pos ‖ vel) to seed the dance field.",
-  outputs: [{ name: "state", kind: "points" }],
+// A swarm seed for the dance field: N rigid-body agents on a jittered spherical shell,
+// carried as one vec3 `points` field of 5N rows — blocks [pos|vel|accel|angPos|angVel]
+// (see src/gpu/sim/body.ts). One feedback node carries the whole body around the loop.
+const swarmSeed: SourceSpec = {
+  name: "swarmSeed",
+  label: "Swarm seed (body)",
+  describe: "A cloud of rigid-body agents to seed the dance force-graph.",
+  outputs: [{ name: "body", kind: "points" }],
   params: [
     { name: "n", type: "int", default: 220, min: 8, max: 800, describe: "agent count" },
     { name: "seed", type: "int", default: 1, min: 1, max: 9999 },
+    { name: "shell", type: "number", default: 4.5, min: 1, max: 15, step: 0.5, describe: "seed shell radius" },
   ],
   make(g, params) {
-    const n = params.n as number, seed = params.seed as number;
-    const swarm = seedSwarm(n, seed);
+    const n = params.n as number, seed = params.seed as number, shell = params.shell as number;
     return {
-      state: g.source({
-        shape: { kind: "points", n: n * 2 },
+      body: g.source({
+        shape: { kind: "points", n: n * BODY_BLOCK_COUNT },
         dtype: "f32",
         element: { kind: "vec", n: 3 },
-        data: packSwarm(swarm),
-      }, "danceSwarmSeed"),
+        data: seedSwarmBody(n, seed, shell),
+      }, "swarmSeed"),
     };
   },
 };
 
-export const SOURCES: SourceSpec[] = [ringPoints, blobPoints, grayScottSeed, grayScottSeedComplex, noiseGrid, waveGrid, danceSwarmSeed];
+export const SOURCES: SourceSpec[] = [ringPoints, blobPoints, grayScottSeed, grayScottSeedComplex, noiseGrid, waveGrid, swarmSeed];
 
 const byName = new Map(SOURCES.map((s) => [s.name, s]));
 export function getSource(name: string): SourceSpec | undefined {

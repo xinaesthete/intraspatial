@@ -49,25 +49,48 @@ export function reactionDiffusionExample(): Example {
   return { label: "Reaction–diffusion (complex)", nodes, edges, sink: { node: "rd", port: "state" } };
 }
 
-// Dance field — a reinterpretation of Andy Lomas's 1992 DANCERL controller for William
-// Latham's films (written in the IBM ESME/Mutator language Stephen Todd & Latham built).
-// A swarm seed feeds a delay node whose pos+vel state drives one danceField step, fed
-// back to run over time (Play). Motion emerges from the superposition of force
-// influences (containment, orbit, vortex, solenoid, swim, cohesion, separation) — the
-// same params the Mutator (src/evo) breeds. Preview the `swarm` output (a top-down
-// scatter); the dedicated 3D view comes in the Studio.
-export function danceFieldExample(): Example {
+// Ceilidh dancer — the DANCERL force field *composed from building blocks* rather than
+// one monolithic op. A swarm body (rigid-body agents) feeds a delay node; bodyTap exposes
+// pos/vel; several force ops (containment, cohesion, separation, orbit) each emit a
+// per-agent acceleration; those are summed (addFields) and fed to the rigid-body
+// integrator, whose next body closes the loop. Each force node's params are breedable
+// traits (src/evo). Preview the integrator's `swarm` output (a top-down scatter); the
+// dedicated 3D view + the Ceilidh caller (figures, partner progression) come in the app.
+export function ceilidhExample(): Example {
   const nodes: Node[] = [
-    node("seed", "danceSwarmSeed", 20, 200),
-    node("fb", "feedback", 240, 200),
-    node("dance", "danceField", 460, 200),
+    node("seed", "swarmSeed", 20, 260),
+    node("fb", "feedback", 220, 260),
+    node("tap", "bodyTap", 380, 260),
+    node("constrain", "constrain", 560, 60),
+    node("cohere", "cohere", 560, 180),
+    node("separate", "separate", 560, 300),
+    node("orbit", "orbit", 560, 420),
+    node("sum1", "addFields", 760, 120),
+    node("sum2", "addFields", 760, 250),
+    node("sum3", "addFields", 760, 380),
+    node("integ", "integrate", 960, 260),
   ];
   const edges: Edge[] = [
-    e("e-si", "seed", "state", "fb", "init"),
-    e("e-in", "fb", "state", "dance", "state"),
-    e("e-back", "dance", "state", "fb", "next"),
+    e("e-seed", "seed", "body", "fb", "init"),
+    e("e-tap", "fb", "state", "tap", "body"),
+    e("e-cp", "tap", "pos", "constrain", "pos"),
+    e("e-hp", "tap", "pos", "cohere", "pos"),
+    e("e-sp", "tap", "pos", "separate", "pos"),
+    e("e-op", "tap", "pos", "orbit", "pos"),
+    e("e-ov", "tap", "vel", "orbit", "vel"),
+    // sum the forces: ((constrain + cohere) + separate) + orbit
+    e("e-s1a", "constrain", "force", "sum1", "a"),
+    e("e-s1b", "cohere", "force", "sum1", "b"),
+    e("e-s2a", "sum1", "out", "sum2", "a"),
+    e("e-s2b", "separate", "force", "sum2", "b"),
+    e("e-s3a", "sum2", "out", "sum3", "a"),
+    e("e-s3b", "orbit", "force", "sum3", "b"),
+    // integrate + close the loop
+    e("e-ib", "fb", "state", "integ", "body"),
+    e("e-if", "sum3", "out", "integ", "force"),
+    e("e-back", "integ", "body", "fb", "next"),
   ];
-  return { label: "Dance field (DANCERL)", nodes, edges, sink: { node: "dance", port: "swarm" } };
+  return { label: "Ceilidh dancer (DANCERL)", nodes, edges, sink: { node: "integ", port: "swarm" } };
 }
 
 // A reusable "Hotspots" subgraph (points → KDE density → Getis-Ord Gi*), instantiated
@@ -166,4 +189,4 @@ export function waveletDenoiseExample(): Example {
   return { label: "Wavelet denoise", nodes, edges, sink: { node: "inv", port: "out" } };
 }
 
-export const EXAMPLES: Example[] = [danceFieldExample(), reactionDiffusionExample(), reusableSubgraphExample(), waveletDenoiseExample()];
+export const EXAMPLES: Example[] = [ceilidhExample(), reactionDiffusionExample(), reusableSubgraphExample(), waveletDenoiseExample()];
