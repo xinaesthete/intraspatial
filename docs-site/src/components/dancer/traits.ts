@@ -22,7 +22,7 @@ export const DANCER_TRAIT_SPECS: ParamSpec[] = [
   { name: "partner", type: "number", default: 0.5, min: 0, max: 1 },
   { name: "caller", type: "number", default: 1, min: 0, max: 2 },
   { name: "callerSpeed", type: "number", default: 0.6, min: 0.1, max: 1.5 },
-  { name: "period", type: "int", default: 200, min: 60, max: 400 },
+  { name: "period", type: "int", default: 480, min: 180, max: 900 },
   { name: "speedLimit", type: "number", default: 1.2, min: 0.4, max: 2.5 },
   { name: "face", type: "number", default: 0.5, min: 0, max: 1.5 },
 ];

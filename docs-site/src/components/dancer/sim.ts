@@ -68,7 +68,7 @@ export const DEFAULT_DANCER_PARAMS: DancerParams = {
   partner: 0.5,
   partnerOffset: 1,
   caller: 1,
-  period: 200,
+  period: 480, // frames per figure (~8s at 60fps) — a slower, more deliberate progression
   callerSeed: 0,
   callerGain: 0.09,
   callerSpeed: 0.6,

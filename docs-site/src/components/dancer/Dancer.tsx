@@ -6,7 +6,7 @@
 import { useEffect, useRef, useState } from "react";
 import { DancerSim, type DancerParams } from "./sim";
 import { createDancerRenderer, type DancerRenderer } from "./renderer";
-import { drawDistanceMatrix } from "./matrix";
+import { drawDistanceMatrix, matrixCell } from "./matrix";
 import { BreedingStrip } from "./BreedingStrip";
 
 const AGENTS = 180;
@@ -20,6 +20,9 @@ export default function Dancer() {
   const [showAbout, setShowAbout] = useState(true);
   const [showBreed, setShowBreed] = useState(false);
   const simRef = useRef<DancerSim | null>(null);
+  // cross-link state, read by the render loop each frame (refs → no re-render on hover)
+  const hoverAgentRef = useRef<number | null>(null); // hovered dancer (3D) → matrix row
+  const hoverCellRef = useRef<[number, number] | null>(null); // hovered matrix cell → 3D pair
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -43,6 +46,8 @@ export default function Dancer() {
       renderer.resize(Math.max(1, r.width), Math.max(1, r.height));
     };
 
+    const cleanups: Array<() => void> = [];
+
     createDancerRenderer(canvas, AGENTS)
       .then((r) => {
         if (disposed) {
@@ -52,15 +57,55 @@ export default function Dancer() {
         renderer = r;
         resize();
         setStatus("running");
+
+        // hover a dancer (3D) → remember it (highlights its matrix row)
+        const onStageMove = (e: PointerEvent) => {
+          if (!renderer) return;
+          const rect = canvas.getBoundingClientRect();
+          const x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+          const y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+          hoverAgentRef.current = renderer.pick(x, y);
+        };
+        const onStageLeave = () => {
+          hoverAgentRef.current = null;
+        };
+        canvas.addEventListener("pointermove", onStageMove);
+        canvas.addEventListener("pointerleave", onStageLeave);
+        cleanups.push(() => {
+          canvas.removeEventListener("pointermove", onStageMove);
+          canvas.removeEventListener("pointerleave", onStageLeave);
+        });
+
+        // hover a matrix cell → remember the pair (highlights it + a line in 3D)
+        const mcanvas = matrixRef.current;
+        if (mcanvas) {
+          const onMatrixMove = (e: PointerEvent) => {
+            hoverCellRef.current = matrixCell(mcanvas, e.clientX, e.clientY, sim.n);
+          };
+          const onMatrixLeave = () => {
+            hoverCellRef.current = null;
+          };
+          mcanvas.addEventListener("pointermove", onMatrixMove);
+          mcanvas.addEventListener("pointerleave", onMatrixLeave);
+          cleanups.push(() => {
+            mcanvas.removeEventListener("pointermove", onMatrixMove);
+            mcanvas.removeEventListener("pointerleave", onMatrixLeave);
+          });
+        }
+
         const loop = () => {
           if (disposed || !renderer) return;
           sim.step();
-          renderer.update(sim.positions(), sim.orientations(), sim.speeds());
+          const ha = hoverAgentRef.current;
+          const hc = hoverCellRef.current;
+          const agents: number[] = [];
+          if (ha !== null) agents.push(ha);
+          if (hc) agents.push(hc[0], hc[1]);
+          const p = sim.positions();
+          renderer.update(p, sim.orientations(), sim.speeds(), { agents, pair: hc });
           renderer.render();
-          if (frame % 15 === 0) {
-            setFigure(sim.currentFigure());
-            if (matrixRef.current) drawDistanceMatrix(matrixRef.current, sim.positions(), sim.n);
-          }
+          if (matrixRef.current) drawDistanceMatrix(matrixRef.current, p, sim.n, { row: ha, pair: hc });
+          if (frame % 15 === 0) setFigure(sim.currentFigure());
           frame++;
           raf = requestAnimationFrame(loop);
         };
@@ -78,6 +123,7 @@ export default function Dancer() {
       disposed = true;
       cancelAnimationFrame(raf);
       ro.disconnect();
+      for (const c of cleanups) c();
       renderer?.dispose();
     };
   }, []);
