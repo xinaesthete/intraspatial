@@ -3,7 +3,7 @@
 // `TrailBuffer` just reads them back as fading line-segment vertices. The exact same
 // RingBuffer records grids, matrices, or any field (see FieldRing) — trails are simply the
 // points case. Checked access, no `!`.
-import { RingBuffer } from "./ringBuffer";
+import { RingBuffer } from "../graph/ringBuffer";
 import { readVec3, scale, writeVec3, type Vec3 } from "./vec3";
 
 export class TrailBuffer {

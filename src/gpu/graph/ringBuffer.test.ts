@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { FieldRing, RingBuffer } from "./ringBuffer";
-import type { FieldValue } from "../graph/handle";
+import type { FieldValue } from "./handle";
 
 describe("RingBuffer", () => {
   it("stores up to capacity and indexes frames newest→oldest", () => {
@@ -21,6 +21,24 @@ describe("RingBuffer", () => {
     r.push([1, 2, 3]);
     r.reset();
     expect(r.frames).toBe(0);
+  });
+
+  it("interpolates continuously through the buffer (sample)", () => {
+    const r = new RingBuffer(1, 4);
+    r.push([0]);
+    r.push([10]);
+    r.push([20]); // frame(0)=20 (newest), frame(1)=10, frame(2)=0 (oldest)
+    expect(r.sample(0)[0]).toBeCloseTo(20, 6); // newest
+    expect(r.sample(2)[0]).toBeCloseTo(0, 6); // oldest
+    expect(r.sample(0.5)[0]).toBeCloseTo(15, 6); // halfway between 20 and 10
+    expect(r.sample(1.25)[0]).toBeCloseTo(7.5, 6); // 1/4 from 10 toward 0
+    expect(r.sample(5)[0]).toBeCloseTo(0, 6); // clamps to oldest
+    expect(() => new RingBuffer(1, 2).sample(0)).toThrow(/empty/);
+  });
+
+  it("reports its resident byteLength", () => {
+    const r = new RingBuffer(6, 10); // 60 floats × 4 bytes
+    expect(r.byteLength).toBe(60 * 4);
   });
 });
 
@@ -45,5 +63,16 @@ describe("FieldRing — history of any field", () => {
     fr.push({ shape: s, dtype: "f32", element: { kind: "vec", n: 3 }, data: new Float32Array([0, 1, 2, 3, 4, 5]) });
     expect(fr.ring.frameLength).toBe(2 * 3); // n · lanes
     expect(Array.from(fr.frame(0).data ?? [])).toEqual([0, 1, 2, 3, 4, 5]);
+  });
+
+  it("samples an interpolated grid field and reports byteLength", () => {
+    const shape = { kind: "grid", width: 2, height: 1 } as const;
+    const fr = new FieldRing(shape, 4);
+    fr.push({ shape, dtype: "f32", data: new Float32Array([0, 0]) });
+    fr.push({ shape, dtype: "f32", data: new Float32Array([4, 8]) });
+    const mid = fr.sample(0.5); // halfway between newest [4,8] and prev [0,0]
+    expect(Array.from(mid.data ?? [])).toEqual([2, 4]);
+    expect(mid.shape).toEqual(shape);
+    expect(fr.byteLength).toBe(2 * 4 * 4); // 2 cells · 4 frames · 4 bytes
   });
 });

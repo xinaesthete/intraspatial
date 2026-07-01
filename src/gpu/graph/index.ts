@@ -7,13 +7,16 @@ export type { Basis, Dtype, ElementType, FieldValue, GpuField, NodeId, Shape, Sh
 export { basisLabel, basisOf, elementLabel, elementLanes, elementOf, elementsEqual, numCells, SCALAR, SPATIAL, shapesEqual } from "./handle";
 export type { ExecCtx, OpHelp, OpType, Params, ParamSpec, ParamType, PortSpec } from "./op";
 export { allFinite, defaultParams, param } from "./op";
-export type { EdgeRef, FeedbackHandle, GraphNode } from "./graph";
+export type { DelayHandle, EdgeRef, FeedbackHandle, GraphNode } from "./graph";
 export { Graph } from "./graph";
 export { getOp, hasOp, listOps, registerOp } from "./registry";
 export type { GpuBackend, Root } from "./backend";
 export { nodeBackend } from "./backend.node";
 export type { AdvanceOptions, PullOptions, SimState } from "./executor";
-export { advance, createSimState, pull, pullData } from "./executor";
+export { advance, createSimState, pull, pullData, simStateBytes } from "./executor";
+export { FieldRing, RingBuffer } from "./ringBuffer";
+export type { MemoryReporting } from "./memory";
+export { dtypeBytes, fieldBytes, fieldValueBytes, formatBytes, memoryBytes } from "./memory";
 export type { GraphMemo } from "./memo";
 export { createMemo } from "./memo";
 export { registerBuiltinOps, registerElementOps, registerWaveletOps } from "./ops/index";

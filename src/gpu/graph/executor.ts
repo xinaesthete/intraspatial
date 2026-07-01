@@ -19,6 +19,7 @@ import { getOp } from "./registry";
 import { nodeBackend } from "./backend.node";
 import type { GraphMemo } from "./memo";
 import { hashSource, hashString, stableJSON } from "./memo";
+import { FieldRing } from "./ringBuffer";
 
 export interface PullOptions {
   /** Which backend to run native ops on. Defaults to the Node (Dawn) backend. */
@@ -33,9 +34,17 @@ export interface PullOptions {
   cache?: GraphMemo;
 }
 
-/** Per-feedback-node state, persisted across ticks. Keyed by each node's stableKey. */
-export type SimState = Map<string, FieldValue>;
+/** Per-node state persisted across ticks, keyed by stableKey: a `feedback` node stores its
+ *  last value (a `FieldValue`); a `delay` node stores a `FieldRing` history. */
+export type SimState = Map<string, FieldValue | FieldRing>;
 export const createSimState = (): SimState => new Map();
+
+/** Total resident bytes held in a sim state (feedback values + delay/history rings). */
+export function simStateBytes(state: SimState): number {
+  let total = 0;
+  for (const v of state.values()) total += v instanceof FieldRing ? v.byteLength : v.data ? v.data.byteLength : 0;
+  return total;
+}
 
 const key = (nodeId: string, port: string) => `${nodeId}:${port}`;
 const storeKey = (node: GraphNode) => node.stableKey ?? node.id;
@@ -52,7 +61,9 @@ function topoOrder(graph: Graph, roots: string[]): GraphNode[] {
     if (s === 0) throw new Error(`executor: cycle through node "${id}" (a cycle must pass through a feedback node)`);
     state.set(id, 0);
     const node = graph.getNode(id);
-    const deps = node.op === "feedback"
+    // feedback (z⁻¹) and delay (z⁻ᵏ) only depend on `init` within a tick — the `next`
+    // back-edge is a deferred write, so the loop is a DAG per tick.
+    const deps = node.op === "feedback" || node.op === "delay"
       ? (node.inputs.init ? [node.inputs.init] : [])
       : Object.values(node.inputs);
     for (const ref of deps) visit(ref.node);
@@ -92,13 +103,14 @@ interface TickOptions {
  *  store for the following tick. Returns every produced value by "nodeId:port". */
 async function runTick(graph: Graph, field: GpuField, o: TickOptions): Promise<Map<string, FieldValue>> {
   const order = topoOrder(graph, [field.producer]);
-  // Content-memo is unsound across ticks for feedback graphs (state changes), so
-  // disable it whenever a feedback node is in play.
-  const memo = order.some((n) => n.op === "feedback") ? undefined : o.memo;
+  // Content-memo is unsound across ticks for stateful graphs (values change each tick),
+  // so disable it whenever a feedback or delay node is in play.
+  const memo = order.some((n) => n.op === "feedback" || n.op === "delay") ? undefined : o.memo;
 
   const pulled = new Map<string, FieldValue>();
   const contentKey = new Map<string, string>();
   const feedbackNodes: GraphNode[] = [];
+  const delayNodes: GraphNode[] = [];
   const emit = (nodeId: string, port: string, v: FieldValue) => {
     pulled.set(key(nodeId, port), v);
     o.onValue?.(key(nodeId, port), v);
@@ -119,7 +131,8 @@ async function runTick(graph: Graph, field: GpuField, o: TickOptions): Promise<M
 
     if (node.op === "feedback") {
       const sk = storeKey(node);
-      let cur = o.store.get(sk);
+      const stored = o.store.get(sk);
+      let cur = stored instanceof FieldRing ? undefined : stored;
       if (cur === undefined) {
         // first tick (or post-reset): seed from `init`.
         const initRef = node.inputs.init;
@@ -130,6 +143,27 @@ async function runTick(graph: Graph, field: GpuField, o: TickOptions): Promise<M
       }
       feedbackNodes.push(node);
       emit(node.id, "state", cur);
+      continue;
+    }
+
+    if (node.op === "delay") {
+      // z⁻ᵏ: emit the value from `depth` ticks ago (a FieldRing of capacity `depth`),
+      // seeded by `init` until enough history has accrued. `next` is pushed at commit.
+      const sk = storeKey(node);
+      const depth = Math.max(1, Math.round(Number(node.params.depth ?? 1)));
+      const initRef = node.inputs.init;
+      if (!initRef) throw new Error(`executor: delay node "${node.id}" has no init`);
+      const initVal = pulled.get(key(initRef.node, initRef.port));
+      if (!initVal) throw new Error(`executor: delay init of "${node.id}" not computed`);
+      const stored = o.store.get(sk);
+      let ring = stored instanceof FieldRing ? stored : undefined;
+      if (!ring) {
+        ring = new FieldRing(initVal.shape, depth, initVal.element, initVal.dtype);
+        o.store.set(sk, ring);
+      }
+      const out = ring.frames >= depth ? ring.frame(depth - 1) : initVal;
+      delayNodes.push(node);
+      emit(node.id, "out", out);
       continue;
     }
 
@@ -173,6 +207,15 @@ async function runTick(graph: Graph, field: GpuField, o: TickOptions): Promise<M
     if (nextRef) {
       const v = pulled.get(key(nextRef.node, nextRef.port));
       if (v) o.store.set(storeKey(node), v);
+    }
+  }
+  // Commit: push each delay node's fed value into its history ring.
+  for (const node of delayNodes) {
+    const nextRef = node.inputs.next;
+    if (nextRef) {
+      const v = pulled.get(key(nextRef.node, nextRef.port));
+      const ring = o.store.get(storeKey(node));
+      if (v && ring instanceof FieldRing) ring.push(v);
     }
   }
 
