@@ -51,7 +51,7 @@ export async function createDancerRenderer(canvas: HTMLCanvasElement, n: number)
   scene.add(rim);
 
   // dancers — oriented cones (tip → +z)
-  const geometry = new THREE.ConeGeometry(0.14, 0.5, 10);
+  const geometry = new THREE.ConeGeometry(0.1, 0.2, 10);
   geometry.rotateX(Math.PI / 2);
   const material = new THREE.MeshStandardMaterial({
     color: 0x9fc4ff,

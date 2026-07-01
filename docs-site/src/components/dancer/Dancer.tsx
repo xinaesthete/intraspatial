@@ -5,11 +5,17 @@
 // browser-only.
 import { useEffect, useRef, useState } from "react";
 import { DancerSim, type DancerParams } from "./sim";
+import { GpuDancerSim } from "./gpuSim";
 import { createDancerRenderer, type DancerRenderer } from "./renderer";
 import { drawDistanceMatrix, matrixCell } from "./matrix";
 import { BreedingStrip } from "./BreedingStrip";
 
 const AGENTS = 180;
+// WIP: the GPU (TSL compute) sim pipeline works (seed/step/readback verified), but the full
+// force set trips WGSL generation in this three.js build and needs interactive shader-error
+// debugging to finish. Off for now so the artefact runs on the (golden) CPU sim; flip to
+// true (with a real browser console) to continue debugging gpuSim.ts.
+const USE_GPU = false;
 
 export default function Dancer() {
   const stageRef = useRef<HTMLDivElement | null>(null);
@@ -19,7 +25,7 @@ export default function Dancer() {
   const [status, setStatus] = useState<"init" | "running" | "unsupported" | "error">("init");
   const [showAbout, setShowAbout] = useState(true);
   const [showBreed, setShowBreed] = useState(false);
-  const simRef = useRef<DancerSim | null>(null);
+  const simRef = useRef<DancerSim | GpuDancerSim | null>(null);
   // cross-link state, read by the render loop each frame (refs → no re-render on hover)
   const hoverAgentRef = useRef<number | null>(null); // hovered dancer (3D) → matrix row
   const hoverCellRef = useRef<[number, number] | null>(null); // hovered matrix cell → 3D pair
@@ -37,7 +43,7 @@ export default function Dancer() {
     let raf = 0;
     let disposed = false;
     let frame = 0;
-    const sim = new DancerSim(AGENTS, 1);
+    let sim: DancerSim | GpuDancerSim = new DancerSim(AGENTS, 1);
     simRef.current = sim;
 
     const resize = () => {
@@ -49,13 +55,25 @@ export default function Dancer() {
     const cleanups: Array<() => void> = [];
 
     createDancerRenderer(canvas, AGENTS)
-      .then((r) => {
+      .then(async (r) => {
         if (disposed) {
           r.dispose();
           return;
         }
         renderer = r;
         resize();
+
+        if (USE_GPU) {
+          try {
+            const g = new GpuDancerSim(r.renderer, AGENTS, 1, sim.params);
+            await g.init();
+            if (disposed) return;
+            sim = g;
+            simRef.current = g;
+          } catch (err) {
+            console.warn("dancer: GPU sim unavailable, using CPU", err);
+          }
+        }
         setStatus("running");
 
         // hover a dancer (3D) → remember it (highlights its matrix row)
@@ -93,9 +111,12 @@ export default function Dancer() {
           });
         }
 
+        // Render synchronously each frame from the latest positions; advance the sim in
+        // the background (a GPU step + readback is async), one step in flight at a time so
+        // the render never blocks on the GPU.
+        let stepping = false;
         const loop = () => {
           if (disposed || !renderer) return;
-          sim.step();
           const ha = hoverAgentRef.current;
           const hc = hoverCellRef.current;
           const agents: number[] = [];
@@ -107,6 +128,12 @@ export default function Dancer() {
           if (matrixRef.current) drawDistanceMatrix(matrixRef.current, p, sim.n, { row: ha, pair: hc });
           if (frame % 15 === 0) setFigure(sim.currentFigure());
           frame++;
+          if (!stepping) {
+            stepping = true;
+            Promise.resolve(sim.step()).finally(() => {
+              stepping = false;
+            });
+          }
           raf = requestAnimationFrame(loop);
         };
         raf = requestAnimationFrame(loop);
