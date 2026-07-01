@@ -40,6 +40,21 @@ import Dancer from "../components/dancer/Dancer.tsx";
       .dancer-about-open { position: absolute; left: 16px; bottom: 16px; background: #0a101fcc; color: #b6c2da; border: 1px solid #223052; border-radius: 8px; padding: 6px 12px; font-size: 12px; cursor: pointer; }
 
       .dancer-overlay { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; text-align: center; padding: 2rem; font-size: 15px; color: #9fb0d0; }
+
+      .dancer-hud-right { display: flex; gap: 8px; pointer-events: auto; }
+
+      .breed-strip { position: absolute; left: 50%; transform: translateX(-50%); bottom: 16px; background: #0a101fe6; border: 1px solid #223052; border-radius: 12px; padding: 12px 14px; backdrop-filter: blur(8px); }
+      .breed-cells { display: flex; gap: 8px; }
+      .breed-cell { padding: 0; border: 1px solid #263149; border-radius: 8px; background: #060a14; cursor: pointer; line-height: 0; transition: border-color 0.12s, box-shadow 0.12s; }
+      .breed-cell:hover { border-color: #3a4a70; }
+      .breed-cell.sel { border-color: #7fb0ff; box-shadow: 0 0 0 2px #7fb0ff55; }
+      .breed-cell canvas { width: 96px; height: 96px; border-radius: 7px; display: block; }
+      .breed-controls { display: flex; align-items: center; gap: 8px; margin-top: 10px; }
+      .breed-controls button { background: #121a2e; color: #cdd6e6; border: 1px solid #2a3550; border-radius: 8px; padding: 5px 11px; font-size: 13px; cursor: pointer; }
+      .breed-controls button:hover:not(:disabled) { background: #1b2540; }
+      .breed-controls button:disabled { opacity: 0.4; cursor: default; }
+      .breed-hint { margin-left: auto; font-size: 12px; color: #7f8ca8; }
+      .breed-hint em { color: #aab6d2; font-style: italic; }
     </style>
   </head>
   <body>

@@ -4,9 +4,10 @@
 // renderer is three.js on its WebGPU backend. `client:only="react"` — everything here is
 // browser-only.
 import { useEffect, useRef, useState } from "react";
-import { DancerSim } from "./sim";
+import { DancerSim, type DancerParams } from "./sim";
 import { createDancerRenderer, type DancerRenderer } from "./renderer";
 import { drawDistanceMatrix } from "./matrix";
+import { BreedingStrip } from "./BreedingStrip";
 
 const AGENTS = 180;
 
@@ -17,6 +18,8 @@ export default function Dancer() {
   const [figure, setFigure] = useState("…");
   const [status, setStatus] = useState<"init" | "running" | "unsupported" | "error">("init");
   const [showAbout, setShowAbout] = useState(true);
+  const [showBreed, setShowBreed] = useState(false);
+  const simRef = useRef<DancerSim | null>(null);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -32,6 +35,7 @@ export default function Dancer() {
     let disposed = false;
     let frame = 0;
     const sim = new DancerSim(AGENTS, 1);
+    simRef.current = sim;
 
     const resize = () => {
       if (!renderer) return;
@@ -94,8 +98,29 @@ export default function Dancer() {
           <div className="dancer-figure">
             <span className="dancer-figure-label">figure</span> {figure}
           </div>
-          <button className="dancer-fs" onClick={toggleFullscreen} aria-label="fullscreen">⤢ fullscreen</button>
+          <div className="dancer-hud-right">
+            <button
+              className="dancer-fs"
+              onClick={() => {
+                const next = !showBreed;
+                setShowBreed(next);
+                if (next) setShowAbout(false);
+              }}
+              aria-pressed={showBreed}
+            >
+              ⚘ {showBreed ? "hide breeder" : "breed"}
+            </button>
+            <button className="dancer-fs" onClick={toggleFullscreen} aria-label="fullscreen">⤢ fullscreen</button>
+          </div>
         </div>
+
+        {showBreed && (
+          <BreedingStrip
+            onAdopt={(p: DancerParams) => {
+              if (simRef.current) simRef.current.params = p;
+            }}
+          />
+        )}
 
         <div className="dancer-matrix" title="pairwise distance matrix — couples are off-diagonal hot pairs">
           <canvas ref={matrixRef} className="dancer-matrix-canvas" width={96} height={96} />
