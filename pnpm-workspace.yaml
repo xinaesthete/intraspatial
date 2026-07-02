@@ -14,3 +14,10 @@ allowBuilds:
   esbuild: true
   sharp: true
   webgpu: true
+# Shared, version-coupled tooling declared once so it can't drift across packages.
+# typegpu ↔ unplugin-typegpu MUST match (the plugin transpiles "use gpu" kernels for that exact
+# typegpu version) — a mismatch silently breaks the GPU sims. Referenced as `catalog:` below.
+catalog:
+  typegpu: ^0.11.9
+  unplugin-typegpu: 0.11.6
+  typescript: ^5.6.0

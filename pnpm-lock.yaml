@@ -4,16 +4,31 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
+catalogs:
+  default:
+    typegpu:
+      specifier: ^0.11.9
+      version: 0.11.9
+    typescript:
+      specifier: ^5.6.0
+      version: 5.9.3
+    unplugin-typegpu:
+      specifier: 0.11.6
+      version: 0.11.6
+
 importers:
 
   .:
     dependencies:
       typegpu:
-        specifier: ^0.11.9
+        specifier: 'catalog:'
         version: 0.11.9
       webgpu:
         specifier: ^0.4.0
         version: 0.4.0
+      wgpu-matrix:
+        specifier: ^3.4.2
+        version: 3.4.2
     devDependencies:
       '@types/node':
         specifier: ^20.14.0
@@ -22,10 +37,10 @@ importers:
         specifier: ^0.1.40
         version: 0.1.71
       typescript:
-        specifier: ^5.6.0
+        specifier: 'catalog:'
         version: 5.9.3
       unplugin-typegpu:
-        specifier: 0.11.6
+        specifier: 'catalog:'
         version: 0.11.6(esbuild@0.28.1)(rolldown@1.1.3)(rollup@4.62.2)(typegpu@0.11.9)(vite@5.4.21(@types/node@20.19.43)(lightningcss@1.32.0))
       vitest:
         specifier: ^2.0.0
@@ -73,10 +88,16 @@ importers:
       three:
         specifier: ^0.185.0
         version: 0.185.0
+      typegpu:
+        specifier: 'catalog:'
+        version: 0.11.9
     devDependencies:
       '@types/three':
         specifier: ^0.185.0
         version: 0.185.0
+      unplugin-typegpu:
+        specifier: 'catalog:'
+        version: 0.11.6(esbuild@0.28.1)(rolldown@1.1.3)(rollup@4.62.2)(typegpu@0.11.9)(vite@8.1.0(@types/node@24.13.2)(esbuild@0.28.1))
 
   playground:
     dependencies:
@@ -108,7 +129,7 @@ importers:
         specifier: ^18.3.1
         version: 18.3.1(react@18.3.1)
       typegpu:
-        specifier: ^0.11.9
+        specifier: 'catalog:'
         version: 0.11.9
     devDependencies:
       '@types/react':
@@ -121,10 +142,10 @@ importers:
         specifier: ^4.3.4
         version: 4.7.0(vite@5.4.21(@types/node@24.13.2)(lightningcss@1.32.0))
       typescript:
-        specifier: ^5.6.0
+        specifier: 'catalog:'
         version: 5.9.3
       unplugin-typegpu:
-        specifier: 0.11.6
+        specifier: 'catalog:'
         version: 0.11.6(esbuild@0.28.1)(rolldown@1.1.3)(rollup@4.62.2)(typegpu@0.11.9)(vite@5.4.21(@types/node@24.13.2)(lightningcss@1.32.0))
       vite:
         specifier: ^5.4.11
@@ -3109,6 +3130,9 @@ packages:
 
   webpack-virtual-modules@0.6.2:
     resolution: {integrity: sha512-66/V2i5hQanC51vBQKPH4aI8NMAcBW59FVBs+rC7eGHupMyfn34q7rZIE+ETlJ+XTevqfUhVVBgSUNSW2flEUQ==}
+
+  wgpu-matrix@3.4.2:
+    resolution: {integrity: sha512-IfZFbG7olEYBD76VCZy2TzqM57GKy3LT++AZh37tMHPPByO6R2h61zXGBZFNPi2IzxNivNi8y5dvze5PjaczjA==}
 
   which-pm-runs@1.1.0:
     resolution: {integrity: sha512-n1brCuqClxfFfq/Rb0ICg9giSZqCS+pLtccdag6C2HyufBrh3fBOiy9nb6ggRMvWOVH5GrdJskj5iGTZNxd7SA==}
@@ -6474,6 +6498,32 @@ snapshots:
       - vite
       - webpack
 
+  unplugin-typegpu@0.11.6(esbuild@0.28.1)(rolldown@1.1.3)(rollup@4.62.2)(typegpu@0.11.9)(vite@8.1.0(@types/node@24.13.2)(esbuild@0.28.1)):
+    dependencies:
+      '@babel/parser': 7.29.7
+      '@babel/traverse': 7.29.7
+      '@babel/types': 7.29.7
+      ast-kit: 2.2.0
+      defu: 6.1.7
+      magic-string: 0.30.21
+      pathe: 2.0.3
+      picomatch: 4.0.4
+      tinyest: 0.3.2
+      tinyest-for-wgsl: 0.3.3
+      typegpu: 0.11.9
+      unplugin: 3.2.0(esbuild@0.28.1)(rolldown@1.1.3)(rollup@4.62.2)(vite@8.1.0(@types/node@24.13.2)(esbuild@0.28.1))
+    transitivePeerDependencies:
+      - '@farmfe/core'
+      - '@rspack/core'
+      - bun-types-no-globals
+      - esbuild
+      - rolldown
+      - rollup
+      - supports-color
+      - unloader
+      - vite
+      - webpack
+
   unplugin@3.2.0(esbuild@0.28.1)(rolldown@1.1.3)(rollup@4.62.2)(vite@5.4.21(@types/node@20.19.43)(lightningcss@1.32.0)):
     dependencies:
       '@jridgewell/remapping': 2.3.5
@@ -6495,6 +6545,17 @@ snapshots:
       rolldown: 1.1.3
       rollup: 4.62.2
       vite: 5.4.21(@types/node@24.13.2)(lightningcss@1.32.0)
+
+  unplugin@3.2.0(esbuild@0.28.1)(rolldown@1.1.3)(rollup@4.62.2)(vite@8.1.0(@types/node@24.13.2)(esbuild@0.28.1)):
+    dependencies:
+      '@jridgewell/remapping': 2.3.5
+      picomatch: 4.0.4
+      webpack-virtual-modules: 0.6.2
+    optionalDependencies:
+      esbuild: 0.28.1
+      rolldown: 1.1.3
+      rollup: 4.62.2
+      vite: 8.1.0(@types/node@24.13.2)(esbuild@0.28.1)
 
   unstorage@1.17.5:
     dependencies:
@@ -6635,6 +6696,8 @@ snapshots:
       - supports-color
 
   webpack-virtual-modules@0.6.2: {}
+
+  wgpu-matrix@3.4.2: {}
 
   which-pm-runs@1.1.0: {}
 
