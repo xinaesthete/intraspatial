@@ -8,10 +8,27 @@ import { DancerGpuSim } from "../../../../src/gpu/sim/dancerGpu";
 import { BreedingStrip } from "./BreedingStrip";
 import { drawDistanceMatrix, matrixCell } from "./matrix";
 import { createDancerRenderer, type DancerRenderer } from "./renderer";
+import { OnePole } from "../../../../src/gpu/graph/onePole";
 import { type DancerParams, DancerSim, DEFAULT_DANCER_PARAMS } from "./sim";
 
 const AGENT_OPTIONS = [180, 600, 1200, 2400, 4800] as const;
 const DEFAULT_AGENTS = 180;
+
+// Genome ↔ vector, for one-pole smoothing of TraitSpace transitions: adopting a specimen eases the
+// whole genome (motion + look) toward the new point instead of snapping. τ in frames (~0.4s @60fps).
+const PARAM_KEYS = Object.keys(DEFAULT_DANCER_PARAMS) as (keyof DancerParams)[];
+const PARAM_TAU = 24;
+const paramsToVec = (p: DancerParams, out: Float32Array): Float32Array => {
+  PARAM_KEYS.forEach((key, k) => {
+    out[k] = p[key];
+  });
+  return out;
+};
+const vecToParams = (vec: Float32Array, into: DancerParams): void => {
+  PARAM_KEYS.forEach((key, k) => {
+    into[key] = vec[k] ?? into[key];
+  });
+};
 // The swarm runs GPU-resident on our own TypeGPU kernel (src/gpu/sim/dancerGpu), adopting
 // three.js's WebGPU device so our compute writes three's instanceMatrix buffer directly — the
 // render reads pose (position + orientation) off the GPU with no per-frame readback (smooth
@@ -148,6 +165,16 @@ export default function Dancer() {
           return out;
         };
 
+        // Smooth TraitSpace transitions: adopting a specimen eases the whole genome (sim forces +
+        // render traits) toward it with a one-pole lag rather than snapping. `liveParams` is the eased
+        // genome; the active sim reads it BY REFERENCE, so easing it morphs the dance, and the
+        // renderer's colour/size mapping tracks the same eased values.
+        const liveParams: DancerParams = { ...paramsRef.current };
+        const smoother = new OnePole(PARAM_KEYS.length, { tau: PARAM_TAU, initial: paramsToVec(paramsRef.current, new Float32Array(PARAM_KEYS.length)) });
+        const targetVec = new Float32Array(PARAM_KEYS.length);
+        sim.params = liveParams;
+        if (gpu) gpu.params = liveParams;
+
         const loop = () => {
           if (disposed || !renderer) return;
           const ha = hoverAgentRef.current;
@@ -155,7 +182,10 @@ export default function Dancer() {
           const highlightAgents: number[] = [];
           if (ha !== null) highlightAgents.push(ha);
           if (hc) highlightAgents.push(hc[0], hc[1]);
-          renderer.setRenderTraits(paramsRef.current); // keep the colour/size mapping on the live genome
+          // ease the genome toward the adopted target, then drive sim + render from the eased values
+          paramsToVec(paramsRef.current, targetVec);
+          vecToParams(smoother.push(targetVec), liveParams);
+          renderer.setRenderTraits(liveParams);
 
           if (gpu) {
             gpu.step(); // advance + write instanceMatrix + append trail ring on the GPU (no readback)
@@ -277,8 +307,7 @@ export default function Dancer() {
           <BreedingStrip
             device={breedDevice}
             onAdopt={(p: DancerParams) => {
-              paramsRef.current = p; // full genome incl. render traits → the stage renderer picks it up
-              if (simRef.current) simRef.current.params = p;
+              paramsRef.current = p; // set the TARGET genome; the loop eases the live sim + render toward it
             }}
           />
         )}
