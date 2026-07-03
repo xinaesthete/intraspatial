@@ -23,9 +23,17 @@ const TRAIL_CAP = 64;
 const TRAIL_HEAD_COL: [number, number, number] = [0.5, 0.72, 1.0]; // newest end
 const TRAIL_TAIL_COL: [number, number, number] = [0.12, 0.16, 0.42]; // oldest end
 
-// Cone colour ramp (okLCH: L, C, hue-radians), interpolated by speed → perceptual, → linear-sRGB.
-const LCH_SLOW: [number, number, number] = [0.52, 0.13, 4.6]; // deep indigo (at rest)
-const LCH_FAST: [number, number, number] = [0.86, 0.15, 3.5]; // bright cyan (moving)
+/** Breedable appearance traits the renderer maps from motion (subset of DancerParams). */
+export interface RenderTraits {
+  hueSlow: number;
+  hueFast: number;
+  chroma: number;
+  lightSlow: number;
+  lightFast: number;
+  speedRef: number;
+  sizeBase: number;
+  sizeSpin: number;
+}
 
 export interface Highlight {
   /** Dancers to emphasise (enlarge + brighten). */
@@ -47,6 +55,9 @@ export interface DancerRenderer {
   /** CPU-fallback: when on, `update()` uploads pos+orientation into the state buffers so the same
    *  shader renders the CPU sim (GPU mode leaves them to the compute). */
   setCpuMode(on: boolean): void;
+  /** Drive the colour/size mapping from the dancer's breedable render traits (call when they change
+   *  — e.g. adopting a bred specimen). */
+  setRenderTraits(t: RenderTraits): void;
   /** True while the camera is being manipulated (plus a short damping cooldown). */
   isInteracting(): boolean;
   /** The raw GPUBuffer backing the trail history ring (materialising it with a render if needed),
@@ -106,7 +117,10 @@ export async function createDancerRenderer(canvas: HTMLCanvasElement, n: number)
   const velNode = storage(velAttr, "vec4", n).toReadOnly();
   const angVelNode = storage(angVelAttr, "vec4", n).toReadOnly();
 
-  // mapping constants — uniforms, tunable without recompiling the shader
+  // mapping uniforms — driven by the dancer's breedable RENDER TRAITS (setRenderTraits), so a bred
+  // specimen changes how it looks. okLCH endpoints are (lightness, chroma, hue-radians).
+  const lchSlow = uniform(new THREE.Vector3(0.52, 0.14, 4.6)); // colour at rest
+  const lchFast = uniform(new THREE.Vector3(0.86, 0.14, 3.5)); // colour when moving
   const speedRef = uniform(1.2); // speed reaching the top of the colour ramp
   const scaleBase = uniform(0.8); // size at rest
   const scaleGain = uniform(0.9); // spin → extra size
@@ -128,7 +142,7 @@ export async function createDancerRenderer(canvas: HTMLCanvasElement, n: number)
   const speedV = varying(length(velNode.element(instanceIndex).xyz)); // → fragment
   const hiV = varying(float(isHi));
   const t = clamp(speedV.div(speedRef), 0, 1);
-  const baseCol = oklchToLinear(mix(vec3(...LCH_SLOW), vec3(...LCH_FAST), t));
+  const baseCol = oklchToLinear(mix(lchSlow, lchFast, t));
   material.colorNode = mix(baseCol, vec3(1, 1, 1), hiV); // highlighted → white
   material.emissiveNode = baseCol.mul(0.3); // gentle self-glow tracking the mapped colour
 
@@ -260,6 +274,14 @@ export async function createDancerRenderer(canvas: HTMLCanvasElement, n: number)
     cpuMode = on;
   };
 
+  const setRenderTraits = (tr: RenderTraits): void => {
+    lchSlow.value.set(tr.lightSlow, tr.chroma, tr.hueSlow);
+    lchFast.value.set(tr.lightFast, tr.chroma, tr.hueFast);
+    speedRef.value = tr.speedRef;
+    scaleBase.value = tr.sizeBase;
+    scaleGain.value = tr.sizeSpin;
+  };
+
   const isInteracting = (): boolean => now() < interactUntil;
 
   const rawBuffer = (attr: object): GPUBuffer | undefined => {
@@ -305,6 +327,7 @@ export async function createDancerRenderer(canvas: HTMLCanvasElement, n: number)
     pick,
     gpuStateBuffers,
     setCpuMode,
+    setRenderTraits,
     isInteracting,
     gpuTrailBuffer,
     trailCapacity,

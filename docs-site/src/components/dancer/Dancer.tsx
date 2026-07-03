@@ -8,7 +8,7 @@ import { DancerGpuSim } from "../../../../src/gpu/sim/dancerGpu";
 import { BreedingStrip } from "./BreedingStrip";
 import { drawDistanceMatrix, matrixCell } from "./matrix";
 import { createDancerRenderer, type DancerRenderer } from "./renderer";
-import { type DancerParams, DancerSim } from "./sim";
+import { type DancerParams, DancerSim, DEFAULT_DANCER_PARAMS } from "./sim";
 
 const AGENT_OPTIONS = [180, 600, 1200, 2400, 4800] as const;
 const DEFAULT_AGENTS = 180;
@@ -31,6 +31,7 @@ export default function Dancer() {
   const [paused, setPaused] = useState(false); // freeze the Ceilidh figure progression
   const [agents, setAgents] = useState<number>(DEFAULT_AGENTS); // whole pipeline rebuilds on change
   const simRef = useRef<DancerSim | DancerGpuSim | null>(null);
+  const paramsRef = useRef<DancerParams>(DEFAULT_DANCER_PARAMS); // full genome incl. render traits (for the stage renderer)
   // cross-link state, read by the render loop each frame (refs → no re-render on hover)
   const hoverAgentRef = useRef<number | null>(null); // hovered dancer (3D) → matrix row
   const hoverCellRef = useRef<[number, number] | null>(null); // hovered matrix cell → 3D pair
@@ -93,6 +94,7 @@ export default function Dancer() {
             r.setCpuMode(true);
           }
         }
+        r.setRenderTraits(paramsRef.current); // seed the colour/size mapping from the current genome
         setStatus("running");
 
         // hover a dancer (3D) → remember it (highlights its matrix row)
@@ -150,6 +152,7 @@ export default function Dancer() {
           const highlightAgents: number[] = [];
           if (ha !== null) highlightAgents.push(ha);
           if (hc) highlightAgents.push(hc[0], hc[1]);
+          renderer.setRenderTraits(paramsRef.current); // keep the colour/size mapping on the live genome
 
           if (gpu) {
             gpu.step(); // advance + write instanceMatrix + append trail ring on the GPU (no readback)
@@ -269,6 +272,7 @@ export default function Dancer() {
         {showBreed && (
           <BreedingStrip
             onAdopt={(p: DancerParams) => {
+              paramsRef.current = p; // full genome incl. render traits → the stage renderer picks it up
               if (simRef.current) simRef.current.params = p;
             }}
           />

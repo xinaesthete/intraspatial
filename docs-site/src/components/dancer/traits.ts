@@ -25,6 +25,15 @@ export const DANCER_TRAIT_SPECS: ParamSpec[] = [
   { name: "period", type: "int", default: 480, min: 180, max: 900 },
   { name: "speedLimit", type: "number", default: 1.2, min: 0.4, max: 2.5 },
   { name: "face", type: "number", default: 0.5, min: 0, max: 1.5 },
+  // render traits — appearance, bred alongside behaviour (okLCH colour ramp + cone size)
+  { name: "hueSlow", type: "number", default: 4.6, min: 0, max: 6.283 },
+  { name: "hueFast", type: "number", default: 3.5, min: 0, max: 6.283 },
+  { name: "chroma", type: "number", default: 0.14, min: 0, max: 0.3 },
+  { name: "lightSlow", type: "number", default: 0.52, min: 0.2, max: 0.9 },
+  { name: "lightFast", type: "number", default: 0.86, min: 0.4, max: 1 },
+  { name: "speedRef", type: "number", default: 1.2, min: 0.4, max: 2.5 },
+  { name: "sizeBase", type: "number", default: 0.8, min: 0.3, max: 1.6 },
+  { name: "sizeSpin", type: "number", default: 0.9, min: 0, max: 3 },
 ];
 
 export const DANCER_TRAIT_SPACE: TraitSpace = traitSpaceFromParams(DANCER_TRAIT_SPECS);

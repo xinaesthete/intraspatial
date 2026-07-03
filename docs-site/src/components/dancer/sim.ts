@@ -53,6 +53,17 @@ export interface DancerParams {
   speedLimit: number;
   face: number;
   maxRadius: number;
+  // render traits — breedable APPEARANCE (how the dancer looks, mapped from its motion). The
+  // colour is an okLCH ramp on speed (perceptual): (lightSlow,chroma,hueSlow) at rest →
+  // (lightFast,chroma,hueFast) at speedRef. Cone size grows from sizeBase with spin (|angVel|).
+  hueSlow: number; // okLCH hue (radians) at rest
+  hueFast: number; // okLCH hue (radians) when moving
+  chroma: number; // okLCH chroma (colour intensity)
+  lightSlow: number; // okLCH lightness at rest
+  lightFast: number; // okLCH lightness when moving
+  speedRef: number; // speed reaching the top of the colour ramp
+  sizeBase: number; // cone size at rest
+  sizeSpin: number; // extra cone size per unit spin
 }
 
 export const DEFAULT_DANCER_PARAMS: DancerParams = {
@@ -79,6 +90,14 @@ export const DEFAULT_DANCER_PARAMS: DancerParams = {
   speedLimit: 1.2,
   face: 0.5,
   maxRadius: 40,
+  hueSlow: 4.6,
+  hueFast: 3.5,
+  chroma: 0.14,
+  lightSlow: 0.52,
+  lightFast: 0.86,
+  speedRef: 1.2,
+  sizeBase: 0.8,
+  sizeSpin: 0.9,
 };
 
 export class DancerSim {
