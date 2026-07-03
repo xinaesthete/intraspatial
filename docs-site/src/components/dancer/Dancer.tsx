@@ -4,11 +4,11 @@
 // renderer is three.js on its WebGPU backend. `client:only="react"` — everything here is
 // browser-only.
 import { useEffect, useRef, useState } from "react";
+import { OnePole } from "../../../../src/gpu/graph/onePole";
 import { DancerGpuSim } from "../../../../src/gpu/sim/dancerGpu";
 import { BreedingStrip } from "./BreedingStrip";
 import { drawDistanceMatrix, matrixCell } from "./matrix";
 import { createDancerRenderer, type DancerRenderer } from "./renderer";
-import { OnePole } from "../../../../src/gpu/graph/onePole";
 import { type DancerParams, DancerSim, DEFAULT_DANCER_PARAMS } from "./sim";
 
 const AGENT_OPTIONS = [180, 600, 1200, 2400, 4800] as const;
@@ -323,23 +323,26 @@ export default function Dancer() {
         </div>
 
         {status === "unsupported" && (
-          <div className="dancer-overlay">This piece needs WebGPU. Try a recent Chrome, Edge, or Safari Technology Preview.</div>
+          <div className="dancer-overlay">This piece needs WebGPU. Try a recent Chrome, Edge, or Safari.</div>
         )}
         {status === "error" && <div className="dancer-overlay">The 3D stage failed to start (see console).</div>}
 
         {showAbout && (
           <aside className="dancer-about">
             <button type="button" className="dancer-about-close" onClick={() => setShowAbout(false)} aria-label="close">×</button>
-            <h1>A Ceilidh of force-fields</h1>
+            <h1>Folk-Algorithm based Dance Simulation</h1>
             <p>
               After <em>DANCERL</em> (Andy Lomas, IBM, 1992) — the force-field motion controller for
-              William Latham's SIGGRAPH film, written in the ESME/Mutator language Stephen Todd and
-              Latham built. No dancer follows a keyframe: motion <em>emerges</em> from a superposition
-              of named influences, and at each call the dancers scramble not to a position but to a
-              shared <em>state of motion</em> — couples swinging, then advancing through partners.
+              William Latham's SIGGRAPH film, written in the ESME language designed by Stephen Todd and colleagues at IBM Winchester.
+              <br />
+              Experiment in vibe-coding based on a knowledge passed down through the generations, and a reflection on the current
+              xeitgeist. I always loved the way my Dad describes how this algorithm behaves; like a very chaotic Ceilidh where no-one knows
+              what they're supposed to be doing, and all frantically try to move on to the correct movement as the caller calls it.
+              <br />
+              As of this writing, the actual simulation isn't yet doing anything I consider very interesting, but hopefully will at some point.
             </p>
             <p className="dancer-about-note">
-              A 2026 reconstruction of the algorithm, not the surface. Drag to orbit · ⤢ for fullscreen.
+              A 2026 reconstruction by Claude Code, directed by Peter Todd. Drag to orbit · ⤢ for fullscreen.
             </p>
           </aside>
         )}
