@@ -14,6 +14,7 @@ export type { GpuBackend, Root } from "./backend";
 export { nodeBackend } from "./backend.node";
 export type { AdvanceOptions, PullOptions, SimState } from "./executor";
 export { advance, createSimState, pull, pullData, simStateBytes } from "./executor";
+export { FieldOnePole, OnePole, type OnePoleOptions } from "./onePole";
 export { FieldRing, RingBuffer } from "./ringBuffer";
 export type { MemoryReporting } from "./memory";
 export { dtypeBytes, fieldBytes, fieldValueBytes, formatBytes, memoryBytes } from "./memory";
