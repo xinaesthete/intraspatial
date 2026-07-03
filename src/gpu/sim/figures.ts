@@ -5,7 +5,7 @@
 // caller) turns these into an acceleration, weighted so the target-change at a figure
 // boundary reads as an urgent-but-smooth scramble (the integrator's jerk limit keeps it
 // C²). Pure + deterministic; the app drives the frame clock (the conductor).
-import { add, cross, normalize, scale, sub, type Vec3 } from "./vec3";
+import { add, cross, normalize, scale, sub, vec3, type Vec3, type Vec3In } from "./vec3";
 
 export type Figure = "swing" | "grandChain" | "gather" | "scatter" | "mill";
 
@@ -37,11 +37,11 @@ export function partnerIndex(i: number, figureIndex: number, n: number): number 
   return (i + step) % n;
 }
 
-const UP: Vec3 = [0, 1, 0];
+const UP: Vec3 = vec3(0, 1, 0);
 
 /** The target velocity for agent `i` under `figure` — the *state of motion* to scramble
  *  toward. `partner` is the position of `i`'s current partner (for `swing`). */
-export function figureTargetVel(figure: Figure, p: Vec3, i: number, partner: Vec3, speed: number): Vec3 {
+export function figureTargetVel(figure: Figure, p: Vec3In, i: number, partner: Vec3In, speed: number): Vec3 {
   switch (figure) {
     case "swing": {
       // orbit the couple midpoint — the pair swings around each other

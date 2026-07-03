@@ -1,9 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { forward, fromAxisAngle, IDENTITY, integrateQuat, mulQuat, normalizeQuat, rotateVec3 } from "./quat";
+import { forward, fromAxisAngle, IDENTITY, integrateQuat, mulQuat, normalizeQuat, rotateVec3, unpackQuat } from "./quat";
 
-const close = (a: ArrayLike<number>, b: ArrayLike<number>, p = 10) => {
+// f32 precision (Quat is now Float32Array, matching WGSL) — ~1e-7 relative error, not f64-exact.
+const close = (a: ArrayLike<number>, b: ArrayLike<number>, p = 6) => {
   expect(a.length).toBe(b.length);
-  for (let i = 0; i < a.length; i++) expect(a[i]).toBeCloseTo(b[i]!, p);
+  for (let i = 0; i < a.length; i++) expect(a[i]).toBeCloseTo(b[i] ?? Number.NaN, p);
 };
 
 describe("quat", () => {
@@ -24,7 +25,7 @@ describe("quat", () => {
   it("stays unit under integration", () => {
     let q = IDENTITY;
     for (let i = 0; i < 100; i++) q = integrateQuat(q, [0.3, 0.1, -0.2], 0.1);
-    expect(Math.hypot(q[0], q[1], q[2], q[3])).toBeCloseTo(1, 9);
+    expect(Math.hypot(...unpackQuat(q))).toBeCloseTo(1, 6);
   });
 
   it("integrateQuat about z by π/2 matches the closed form", () => {
@@ -34,6 +35,7 @@ describe("quat", () => {
 
   it("forward axis of identity is +z", () => {
     close(forward(IDENTITY), [0, 0, 1]);
-    close(normalizeQuat([2, 0, 0, 0]), IDENTITY);
+    // (x,y,z,w) = (0,0,0,2) — only the scalar part set, magnitude 2 ⇒ normalizes to IDENTITY.
+    close(normalizeQuat([0, 0, 0, 2]), IDENTITY);
   });
 });

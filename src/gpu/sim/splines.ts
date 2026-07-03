@@ -4,7 +4,7 @@
 // polynomial spline that threads the *current acceleration* (`LastAcc`) so the motion is
 // C²-continuous — no jerk when a Ceilidh figure is called. The cosine envelopes ramp a
 // goal's influence up to its onset and ease it down after (DANCERL `COSTVUP`/`COSTVDOWN`).
-import type { Vec3 } from "./vec3";
+import { unpack, vec3, type Vec3, type Vec3In } from "./vec3";
 
 /** DANCERL `COSTVUP` — a squared raised-cosine ramp from 0 (at/below `from`) to 1
  *  (at/above `to`). */
@@ -63,37 +63,46 @@ export interface SplineState {
  *  (pos, vel, accel) along the way; the caller applies the returned `accel`. Threading
  *  `w1` (LastAcc) is what gives C² continuity. Degenerate `t2 ≤ 0` ⇒ hold current state.
  *  A quartic in each component: P(t)=a t⁴+b t³+w1 t²+v1 t+p1. */
-export function velSpline(p1: Vec3, v1: Vec3, w1: Vec3, v2: Vec3, t2: number, t: number): SplineState {
-  if (t2 <= 1e-9) return { pos: p1, vel: v1, accel: w1 };
+export function velSpline(p1: Vec3In, v1: Vec3In, w1: Vec3In, v2: Vec3In, t2: number, t: number): SplineState {
+  if (t2 <= 1e-9) return { pos: vec3(...unpack(p1)), vel: vec3(...unpack(v1)), accel: vec3(...unpack(w1)) };
+  const [p1x, p1y, p1z] = unpack(p1);
+  const [v1x, v1y, v1z] = unpack(v1);
+  const [w1x, w1y, w1z] = unpack(w1);
+  const [v2x, v2y, v2z] = unpack(v2);
+  const P1 = [p1x, p1y, p1z] as const;
+  const V1 = [v1x, v1y, v1z] as const;
+  const W1 = [w1x, w1y, w1z] as const;
+  const V2 = [v2x, v2y, v2z] as const;
   const dt2 = t2 * t2;
   const dt3 = dt2 * t2;
   const comp = (k: 0 | 1 | 2) => {
-    const a = (v1[k] - v2[k]) / (2 * dt3) + w1[k] / (2 * dt2);
-    const b = (v2[k] - v1[k]) / dt2 - (4 * w1[k]) / (3 * t2);
-    const pos = (((a * t + b) * t + w1[k]) * t + v1[k]) * t + p1[k];
-    const vel = ((4 * a * t + 3 * b) * t + 2 * w1[k]) * t + v1[k];
-    const accel = (12 * a * t + 6 * b) * t + 2 * w1[k]; // true P''(t)
+    const a = (V1[k] - V2[k]) / (2 * dt3) + W1[k] / (2 * dt2);
+    const b = (V2[k] - V1[k]) / dt2 - (4 * W1[k]) / (3 * t2);
+    const pos = (((a * t + b) * t + W1[k]) * t + V1[k]) * t + P1[k];
+    const vel = ((4 * a * t + 3 * b) * t + 2 * W1[k]) * t + V1[k];
+    const accel = (12 * a * t + 6 * b) * t + 2 * W1[k]; // true P''(t)
     return { pos, vel, accel };
   };
   const cx = comp(0), cy = comp(1), cz = comp(2);
   return {
-    pos: [cx.pos, cy.pos, cz.pos],
-    vel: [cx.vel, cy.vel, cz.vel],
-    accel: [cx.accel, cy.accel, cz.accel],
+    pos: vec3(cx.pos, cy.pos, cz.pos),
+    vel: vec3(cx.vel, cy.vel, cz.vel),
+    accel: vec3(cx.accel, cy.accel, cz.accel),
   };
 }
 
 /** DANCERL `POSVELSPLINE` — reach target pos `p2` AND vel `v2` (with zero acceleration)
  *  at `t2`, from current (`p1`,`v1`,`w1`), evaluated at `t`. A quintic threading
  *  `w1`=LastAcc for C² continuity. Returns true derivatives (the script carried Acc/2). */
-export function posVelSpline(p1: Vec3, v1: Vec3, w1: Vec3, p2: Vec3, v2: Vec3, t2: number, t: number): SplineState {
-  if (t2 <= 1e-9) return { pos: p1, vel: v1, accel: w1 };
+export function posVelSpline(p1: Vec3In, v1: Vec3In, w1: Vec3In, p2: Vec3In, v2: Vec3In, t2: number, t: number): SplineState {
+  if (t2 <= 1e-9) return { pos: vec3(...unpack(p1)), vel: vec3(...unpack(v1)), accel: vec3(...unpack(w1)) };
+  const P1 = unpack(p1), V1 = unpack(v1), W1 = unpack(w1), P2 = unpack(p2), V2 = unpack(v2);
   const dt2 = t2 * t2, dt3 = dt2 * t2, dt4 = dt3 * t2, dt5 = dt4 * t2;
   const comp = (k: 0 | 1 | 2) => {
-    const a = (-3 * v1[k] - 3 * v2[k]) / dt4 + (6 * (p2[k] - p1[k])) / dt5 - w1[k] / dt3;
-    const b = (8 * v1[k] + 7 * v2[k]) / dt3 - (15 * (p2[k] - p1[k])) / dt4 + (3 * w1[k]) / dt2;
-    const c = (10 * (p2[k] - p1[k])) / dt3 - (6 * v1[k] + 4 * v2[k]) / dt2 - (3 * w1[k]) / t2;
-    const d = w1[k], e = v1[k], f = p1[k];
+    const a = (-3 * V1[k] - 3 * V2[k]) / dt4 + (6 * (P2[k] - P1[k])) / dt5 - W1[k] / dt3;
+    const b = (8 * V1[k] + 7 * V2[k]) / dt3 - (15 * (P2[k] - P1[k])) / dt4 + (3 * W1[k]) / dt2;
+    const c = (10 * (P2[k] - P1[k])) / dt3 - (6 * V1[k] + 4 * V2[k]) / dt2 - (3 * W1[k]) / t2;
+    const d = W1[k], e = V1[k], f = P1[k];
     const pos = ((((a * t + b) * t + c) * t + d) * t + e) * t + f;
     const vel = (((5 * a * t + 4 * b) * t + 3 * c) * t + 2 * d) * t + e;
     const accel = ((20 * a * t + 12 * b) * t + 6 * c) * t + 2 * d; // true P''(t)
@@ -101,8 +110,8 @@ export function posVelSpline(p1: Vec3, v1: Vec3, w1: Vec3, p2: Vec3, v2: Vec3, t
   };
   const cx = comp(0), cy = comp(1), cz = comp(2);
   return {
-    pos: [cx.pos, cy.pos, cz.pos],
-    vel: [cx.vel, cy.vel, cz.vel],
-    accel: [cx.accel, cy.accel, cz.accel],
+    pos: vec3(cx.pos, cy.pos, cz.pos),
+    vel: vec3(cx.vel, cy.vel, cz.vel),
+    accel: vec3(cx.accel, cy.accel, cz.accel),
   };
 }

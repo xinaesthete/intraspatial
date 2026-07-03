@@ -12,7 +12,7 @@
 // force is a *target acceleration*, approached through the carried `accel` under a jerk
 // limit (C²-smooth — no snap at a figure onset), then accel → vel → pos. Angular motion
 // optionally turns each dancer to *face* its travel.
-import { addScaled, clampLength, cross, length, normalize, readVec3, scale, sub, writeVec3, ZERO3, type Vec3 } from "./vec3";
+import { addScaled, clampLength, cross, length, normalize, readVec3, scale, sub, unpack, vec3, writeVec3, ZERO3, type Vec3, type Vec3In } from "./vec3";
 import { forward, fromAxisAngle } from "./quat";
 
 /** The five vec3 blocks, in field order. */
@@ -85,10 +85,10 @@ export function seedSwarmBody(n: number, seed: number, shell = 4.5): Float32Arra
     const z = r * s * Math.sin(phi);
     const k = 0.06;
     writeBodyState(data, i, n, {
-      pos: [x, y, z],
-      vel: [-z * k + (rnd() - 0.5) * 0.05, (rnd() - 0.5) * 0.05, x * k + (rnd() - 0.5) * 0.05],
+      pos: vec3(x, y, z),
+      vel: vec3(-z * k + (rnd() - 0.5) * 0.05, (rnd() - 0.5) * 0.05, x * k + (rnd() - 0.5) * 0.05),
       accel: ZERO3,
-      angPos: [(rnd() - 0.5) * 0.2, (rnd() - 0.5) * 0.2, (rnd() - 0.5) * 0.2],
+      angPos: vec3((rnd() - 0.5) * 0.2, (rnd() - 0.5) * 0.2, (rnd() - 0.5) * 0.2),
       angVel: ZERO3,
     });
   }
@@ -123,16 +123,19 @@ export const INTEGRATE_DEFAULTS: IntegrateParams = {
 };
 
 /** Move `cur` toward `target` by at most `maxStep` (the jerk limiter). */
-function approach(cur: Vec3, target: Vec3, maxStep: number): Vec3 {
+function approach(cur: Vec3In, target: Vec3In, maxStep: number): Vec3 {
   const d = sub(target, cur);
   const dist = length(d);
-  if (dist <= maxStep || dist < 1e-9) return target;
+  if (dist <= maxStep || dist < 1e-9) {
+    const [x, y, z] = unpack(target);
+    return vec3(x, y, z);
+  }
   return addScaled(cur, d, maxStep / dist);
 }
 
 /** One rigid-body step for an agent given the summed `force` (target acceleration) and an
  *  optional `torque`. Pure; returns the next state. */
-export function integrateBody(b: BodyState, force: Vec3, torque: Vec3, p: IntegrateParams): BodyState {
+export function integrateBody(b: BodyState, force: Vec3In, torque: Vec3In, p: IntegrateParams): BodyState {
   const tf = p.dt * p.timeFactor;
 
   // Linear: jerk-limited approach to the target accel, then accel → vel → pos.

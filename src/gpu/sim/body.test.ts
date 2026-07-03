@@ -9,19 +9,36 @@ import {
   writeBodyState,
   type BodyState,
 } from "./body";
-import { length, type Vec3 } from "./vec3";
+import { length, unpack, vec3, type Vec3In } from "./vec3";
 
-const ZERO: Vec3 = [0, 0, 0];
-const bodyOf = (pos: Vec3, vel: Vec3): BodyState => ({ pos, vel, accel: ZERO, angPos: ZERO, angVel: ZERO });
+const ZERO = vec3(0, 0, 0);
+const bodyOf = (pos: Vec3In, vel: Vec3In): BodyState => ({
+  pos: vec3(...unpack(pos)),
+  vel: vec3(...unpack(vel)),
+  accel: ZERO,
+  angPos: ZERO,
+  angVel: ZERO,
+});
 
 describe("body field layout", () => {
   it("round-trips a body state through the 5-block field", () => {
     const n = 4;
     const data = new Float32Array(n * 3 * BODY_BLOCK_COUNT);
     // f32-exact values so the Float32 round-trip is bit-equal.
-    const b: BodyState = { pos: [1, 2, 3], vel: [4, 5, 6], accel: [7, 8, 9], angPos: [0.5, 0.25, -0.125], angVel: [-1, -2, -3] };
+    const b: BodyState = {
+      pos: vec3(1, 2, 3),
+      vel: vec3(4, 5, 6),
+      accel: vec3(7, 8, 9),
+      angPos: vec3(0.5, 0.25, -0.125),
+      angVel: vec3(-1, -2, -3),
+    };
     writeBodyState(data, 2, n, b);
-    expect(readBodyState(data, 2, n)).toEqual(b);
+    const got = readBodyState(data, 2, n);
+    expect(Array.from(got.pos)).toEqual(Array.from(b.pos));
+    expect(Array.from(got.vel)).toEqual(Array.from(b.vel));
+    expect(Array.from(got.accel)).toEqual(Array.from(b.accel));
+    expect(Array.from(got.angPos)).toEqual(Array.from(b.angPos));
+    expect(Array.from(got.angVel)).toEqual(Array.from(b.angVel));
   });
 
   it("tapBlock slices the right block (length 3N)", () => {
@@ -47,16 +64,17 @@ describe("seedSwarmBody", () => {
 describe("integrateBody", () => {
   it("is deterministic and pure", () => {
     const b = bodyOf([1, 0, 0], [0, 0.1, 0]);
-    const f: Vec3 = [0.02, 0, 0];
+    const f: Vec3In = [0.02, 0, 0];
     const r1 = integrateBody(b, f, ZERO, INTEGRATE_DEFAULTS);
     const r2 = integrateBody(b, f, ZERO, INTEGRATE_DEFAULTS);
-    expect(r1).toEqual(r2);
-    expect(b.pos).toEqual([1, 0, 0]); // input untouched
+    expect(Array.from(r1.pos)).toEqual(Array.from(r2.pos));
+    expect(Array.from(r1.vel)).toEqual(Array.from(r2.vel));
+    expect(Array.from(b.pos)).toEqual([1, 0, 0]); // input untouched
   });
 
   it("jerk-limits acceleration (cannot jump to the full target in one step)", () => {
     const b = bodyOf([0, 0, 0], [0, 0, 0]);
-    const bigForce: Vec3 = [10, 0, 0];
+    const bigForce: Vec3In = [10, 0, 0];
     const r = integrateBody(b, bigForce, ZERO, INTEGRATE_DEFAULTS);
     expect(length(r.accel)).toBeLessThanOrEqual(INTEGRATE_DEFAULTS.jerkLimit + 1e-9);
   });
