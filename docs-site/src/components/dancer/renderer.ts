@@ -1,15 +1,20 @@
 // The 3D stage — three.js on its WebGPU backend (WebGPURenderer). The swarm is one
-// InstancedMesh of small oriented cones (so facing/spin reads), plus motion trails drawn
-// as additive line segments fed by the TrailBuffer ring-buffer primitive. Supports hover
-// picking (→ which dancer) and highlighting a set of dancers + a connecting line for a
-// hovered pair (the distance-matrix cross-link). Orbit camera, soft lighting, glow.
+// InstancedMesh of small oriented cones (so facing/spin reads), plus motion trails drawn as
+// additive line segments read straight from the GPU history ring the compute writes (a TSL
+// positionNode walks the ring by vertexIndex — no CPU snapshot, no position/colour attributes).
+// Supports hover picking (→ which dancer) and highlighting a set of dancers + a connecting line
+// for a hovered pair (the distance-matrix cross-link). Orbit camera, soft lighting, glow.
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
-import { StorageInstancedBufferAttribute, WebGPURenderer } from "three/webgpu";
-import { TrailBuffer } from "../../../../src/gpu/sim/trails";
+import { float, int, mix, oneMinus, storage, uniform, varying, vec3, vertexIndex } from "three/tsl";
+import { LineBasicNodeMaterial, StorageBufferAttribute, StorageInstancedBufferAttribute, WebGPURenderer } from "three/webgpu";
 
-const TRAIL_LEN = 56;
-const TRAIL_HEAD: [number, number, number] = [0.5, 0.72, 1.0];
+// Trail history depth (frames of position per agent). The GPU sim appends the current position
+// into a per-agent ring in a storage buffer three renders straight from — no CPU snapshot, so the
+// trail carries the sim's full per-step time resolution (not the ~5Hz throttled-readback coarseness).
+const TRAIL_CAP = 64;
+const TRAIL_HEAD_COL: [number, number, number] = [0.5, 0.72, 1.0]; // newest end
+const TRAIL_TAIL_COL: [number, number, number] = [0.12, 0.16, 0.42]; // oldest end
 
 export interface Highlight {
   /** Dancers to emphasise (enlarge + brighten). */
@@ -33,6 +38,15 @@ export interface DancerRenderer {
   gpuInstanceMatrixBuffer(): Promise<GPUBuffer | null>;
   /** True while the camera is being manipulated (plus a short damping cooldown). */
   isInteracting(): boolean;
+  /** The raw GPUBuffer backing the trail history ring (materialising it with a render if needed),
+   *  so our compute can append the current position each step. Layout: agent i owns slots
+   *  [i*cap .. i*cap+cap), vec3f-strided (16 bytes). Null if not yet available. */
+  gpuTrailBuffer(): Promise<GPUBuffer | null>;
+  /** Ring capacity (frames of history per agent). */
+  trailCapacity(): number;
+  /** Point the trail shader at the newest-written slot; it walks back from here to draw oldest→
+   *  newest. Call each frame after the sim step (head = sim.trailHead()). */
+  setTrailHead(head: number): void;
   dispose(): void;
 }
 
@@ -91,18 +105,36 @@ export async function createDancerRenderer(canvas: HTMLCanvasElement, n: number)
   let gpuMatrix = false;
   let lastPositions: Float32Array | null = null;
 
-  // trails — additive line segments from the ring buffer
-  const trail = new TrailBuffer(n, TRAIL_LEN);
-  const maxVerts = n * (TRAIL_LEN - 1) * 2;
+  // trails — GPU-resident. The compute appends each agent's position into a per-agent ring in
+  // `trailHistory`; the render draws n·(cap-1) line segments whose vertex positions are read
+  // straight from that buffer by a TSL positionNode (walking the ring from `trailHead`), with
+  // colour + opacity derived per-vertex from trail age. No CPU snapshot, no position/colour
+  // buffer-attributes — the geometry carries only a dummy `position` to set the draw count.
+  const SEGS = TRAIL_CAP - 1;
+  const PER_AGENT = SEGS * 2; // two vertices per segment (LineSegments)
+  const trailVerts = n * PER_AGENT;
+  const trailHistory = new StorageBufferAttribute(n * TRAIL_CAP, 4); // vec3f, 16-byte stride (pad in .w)
   const trailGeo = new THREE.BufferGeometry();
-  const trailPos = new THREE.BufferAttribute(new Float32Array(maxVerts * 3), 3);
-  const trailCol = new THREE.BufferAttribute(new Float32Array(maxVerts * 3), 3);
-  trailPos.setUsage(THREE.DynamicDrawUsage);
-  trailCol.setUsage(THREE.DynamicDrawUsage);
-  trailGeo.setAttribute("position", trailPos);
-  trailGeo.setAttribute("color", trailCol);
-  trailGeo.setDrawRange(0, 0);
-  const trailMat = new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false });
+  trailGeo.setAttribute("position", new THREE.BufferAttribute(new Float32Array(trailVerts * 3), 3));
+  trailGeo.setDrawRange(0, trailVerts);
+
+  const trailHead = uniform(0, "int"); // newest slot; updated each frame
+  const trailCapU = uniform(TRAIL_CAP, "int");
+  const histNode = storage(trailHistory, "vec4", n * TRAIL_CAP).toReadOnly();
+  // vertexIndex → (agent, age-along-trail) → ring slot → buffer index
+  const vi = int(vertexIndex);
+  const perAgent = int(PER_AGENT);
+  const agent = vi.div(perAgent);
+  const local = vi.mod(perAgent);
+  const age = local.div(int(2)).add(local.mod(int(2))); // segment endpoints → 0,1,1,2,2,…  (0 = newest)
+  const slot = trailHead.sub(age).add(trailCapU).mod(trailCapU); // walk back through the ring
+  const idx = agent.mul(trailCapU).add(slot);
+  const ageFrac = varying(float(age).div(float(TRAIL_CAP - 1))); // 0 newest → 1 oldest, interpolated
+
+  const trailMat = new LineBasicNodeMaterial({ transparent: true, depthWrite: false, blending: THREE.AdditiveBlending });
+  trailMat.positionNode = histNode.element(idx).xyz;
+  trailMat.colorNode = mix(vec3(...TRAIL_HEAD_COL), vec3(...TRAIL_TAIL_COL), ageFrac);
+  trailMat.opacityNode = oneMinus(ageFrac).pow(1.5); // fade toward the tail
   const trails = new THREE.LineSegments(trailGeo, trailMat);
   trails.frustumCulled = false;
   scene.add(trails);
@@ -164,16 +196,8 @@ export async function createDancerRenderer(canvas: HTMLCanvasElement, n: number)
     if (!gpuMatrix) mesh.instanceMatrix.needsUpdate = true;
     if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
 
-    // trails — only record a well-formed frame (a short or non-finite `positions`, e.g. a
-    // transient during a rebuild/readback, would otherwise throw in push/fillSegments and kill
-    // the whole render loop → trails vanish). Skip the frame instead; the trail just holds.
-    if (positions.length >= n * 3 && Number.isFinite(positions[0]) && Number.isFinite(positions[(count - 1) * 3])) {
-      trail.push(positions);
-      const verts = trail.fillSegments(trailPos.array as Float32Array, trailCol.array as Float32Array, TRAIL_HEAD);
-      trailGeo.setDrawRange(0, verts);
-      trailPos.needsUpdate = true;
-      trailCol.needsUpdate = true;
-    }
+    // (trails are GPU-resident now — the compute writes the history ring and the render reads it;
+    // nothing to do here. `setTrailHead` points the shader at the newest slot each frame.)
 
     // pair line
     const pair = highlight?.pair ?? null;
@@ -244,6 +268,23 @@ export async function createDancerRenderer(canvas: HTMLCanvasElement, n: number)
     return data?.buffer ?? null;
   };
 
+  const gpuTrailBuffer = async (): Promise<GPUBuffer | null> => {
+    // Same lazy-materialisation as instanceMatrix: the storage buffer for `trailHistory` is
+    // created when the trail material is first rendered (its positionNode references it).
+    const backend = renderer.backend as unknown as { get(o: object): { buffer?: GPUBuffer } | undefined };
+    let data = backend.get(trailHistory);
+    if (!data?.buffer) {
+      await renderer.renderAsync(scene, camera);
+      data = backend.get(trailHistory);
+    }
+    return data?.buffer ?? null;
+  };
+
+  const trailCapacity = (): number => TRAIL_CAP;
+  const setTrailHead = (head: number): void => {
+    trailHead.value = head;
+  };
+
   const dispose = (): void => {
     controls.dispose();
     geometry.dispose();
@@ -255,5 +296,5 @@ export async function createDancerRenderer(canvas: HTMLCanvasElement, n: number)
     renderer.dispose();
   };
 
-  return { renderer, update, render, resize, pick, setGpuMatrix, gpuInstanceMatrixBuffer, isInteracting, dispose };
+  return { renderer, update, render, resize, pick, setGpuMatrix, gpuInstanceMatrixBuffer, isInteracting, gpuTrailBuffer, trailCapacity, setTrailHead, dispose };
 }
