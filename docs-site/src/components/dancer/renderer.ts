@@ -114,8 +114,10 @@ export async function createDancerRenderer(canvas: HTMLCanvasElement, n: number)
   const PER_AGENT = SEGS * 2; // two vertices per segment (LineSegments)
   const trailVerts = n * PER_AGENT;
   const trailHistory = new StorageBufferAttribute(n * TRAIL_CAP, 4); // vec3f, 16-byte stride (pad in .w)
+  // No per-vertex attributes at all — the positionNode pulls every vertex from the history buffer
+  // by vertexIndex (0..trailVerts-1 for a non-indexed draw), and setDrawRange sets the count (three
+  // caps the draw by drawRange when there's no index/position — getDrawParameters). Zero vertex memory.
   const trailGeo = new THREE.BufferGeometry();
-  trailGeo.setAttribute("position", new THREE.BufferAttribute(new Float32Array(trailVerts * 3), 3));
   trailGeo.setDrawRange(0, trailVerts);
 
   const trailHead = uniform(0, "int"); // newest slot; updated each frame
