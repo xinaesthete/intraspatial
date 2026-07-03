@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { figureAt, figureTargetVel, FIGURE_SEQUENCE, partnerIndex } from "./figures";
-import { dot, length, type Vec3 } from "./vec3";
+import { dot, length, type Vec3In } from "./vec3";
 
 describe("figureAt", () => {
   it("cycles figures every period and advances the index", () => {
@@ -34,7 +34,7 @@ describe("partnerIndex progression", () => {
 });
 
 describe("figureTargetVel", () => {
-  const p: Vec3 = [3, 0, 0];
+  const p: Vec3In = [3, 0, 0];
 
   it("gather points inward, scatter outward", () => {
     expect(dot(figureTargetVel("gather", p, 0, [0, 0, 0], 1), p)).toBeLessThan(0);
@@ -48,7 +48,7 @@ describe("figureTargetVel", () => {
   });
 
   it("swing orbits the couple midpoint (perpendicular to the offset)", () => {
-    const partner: Vec3 = [1, 0, 0];
+    const partner: Vec3In = [1, 0, 0];
     const v = figureTargetVel("swing", p, 0, partner, 1);
     // midpoint (2,0,0); offset (1,0,0); target ⟂ offset
     expect(dot(v, [1, 0, 0])).toBeCloseTo(0, 6);

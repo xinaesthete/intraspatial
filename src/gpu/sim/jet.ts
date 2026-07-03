@@ -43,7 +43,7 @@ export interface SwarmBuffers {
   pos: Float32Array; // 3n
   vel: Float32Array; // 3n
   accel: Float32Array; // 3n
-  orient: Float32Array; // 4n (w,x,y,z)
+  orient: Float32Array; // 4n (x,y,z,w) — wgpu-matrix's quat layout
   angVel: Float32Array; // 3n
 }
 

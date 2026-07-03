@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { calcGoalWeight, costvDown, costvUp, goalTightness, posVelSpline, velSpline } from "./splines";
-import type { Vec3 } from "./vec3";
+import type { Vec3In } from "./vec3";
 
 const close = (a: ArrayLike<number>, b: ArrayLike<number>, p = 6) => {
   for (let i = 0; i < a.length; i++) expect(a[i]).toBeCloseTo(b[i]!, p);
@@ -32,10 +32,10 @@ describe("activity envelopes", () => {
 });
 
 describe("velSpline (reach a target velocity, C²)", () => {
-  const p1: Vec3 = [0, 0, 0];
-  const v1: Vec3 = [1, 0, 0];
-  const w1: Vec3 = [0, 0, 0];
-  const v2: Vec3 = [0, 2, 0];
+  const p1: Vec3In = [0, 0, 0];
+  const v1: Vec3In = [1, 0, 0];
+  const w1: Vec3In = [0, 0, 0];
+  const v2: Vec3In = [0, 2, 0];
   const T = 10;
 
   it("starts at the current state at t=0", () => {
@@ -57,11 +57,11 @@ describe("velSpline (reach a target velocity, C²)", () => {
 });
 
 describe("posVelSpline (reach target pos AND vel, C²)", () => {
-  const p1: Vec3 = [0, 0, 0];
-  const v1: Vec3 = [0, 0, 0];
-  const w1: Vec3 = [0, 0, 0];
-  const p2: Vec3 = [5, 0, 0];
-  const v2: Vec3 = [0, 1, 0];
+  const p1: Vec3In = [0, 0, 0];
+  const v1: Vec3In = [0, 0, 0];
+  const w1: Vec3In = [0, 0, 0];
+  const p2: Vec3In = [5, 0, 0];
+  const v2: Vec3In = [0, 1, 0];
   const T = 8;
 
   it("starts at the current state", () => {

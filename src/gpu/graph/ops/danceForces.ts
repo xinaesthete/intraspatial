@@ -11,7 +11,7 @@
 import type { ElementType, FieldValue, Shape } from "../handle";
 import type { OpType, ParamSpec, Params } from "../op";
 import { hasOp, registerOp } from "../registry";
-import { readVec3, writeVec3, type Vec3 } from "../../sim/vec3";
+import { readVec3, unpack, vec3, writeVec3, type Vec3 } from "../../sim/vec3";
 import {
   BODY_BLOCK_COUNT,
   integrateBody,
@@ -35,7 +35,7 @@ import { figureAt, figureTargetVel, partnerIndex } from "../../sim/figures";
 
 const VEC3: ElementType = { kind: "vec", n: 3 };
 const SCALAR: ElementType = { kind: "scalar" };
-const ZERO: Vec3 = [0, 0, 0];
+const ZERO: Vec3 = vec3(0, 0, 0);
 
 function pointsN(shape: Shape, who: string): number {
   if (shape.kind !== "points") throw new Error(`${who}: expected a points field`);
@@ -299,8 +299,9 @@ function runIntegrate(ins: FieldValue[], params: Params): FieldValue[] {
     const force = readVec3(forceData, i);
     const next = integrateBody(state, force, ZERO, p);
     writeBodyState(nextBody, i, n, next);
-    swarm[i * 2] = next.pos[0];
-    swarm[i * 2 + 1] = next.pos[1];
+    const [nx, ny] = unpack(next.pos);
+    swarm[i * 2] = nx;
+    swarm[i * 2 + 1] = ny;
   }
   return [
     { shape: { kind: "points", n: n * BODY_BLOCK_COUNT }, dtype: "f32", element: VEC3, data: nextBody },
@@ -396,10 +397,12 @@ function callForces(ins: FieldValue[], params: Params): FieldValue[] {
     const v = readVec3(vel, i);
     const partner = readVec3(pos, partnerIndex(i, figureIndex, n));
     const target = figureTargetVel(figure, p, i, partner, speed);
+    const [tx, ty, tz] = unpack(target);
+    const [vx, vy, vz] = unpack(v);
     // accel toward the called state of motion; the figure/partner change at each call
     // makes (target − vel) jump, and the integrator's jerk limit turns that into an
     // urgent-but-smooth scramble.
-    writeVec3(out, i, [(target[0] - v[0]) * k, (target[1] - v[1]) * k, (target[2] - v[2]) * k]);
+    writeVec3(out, i, [(tx - vx) * k, (ty - vy) * k, (tz - vz) * k]);
   }
   return [{ shape: { kind: "points", n }, dtype: "f32", element: VEC3, data: out }];
 }
