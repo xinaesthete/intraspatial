@@ -30,6 +30,7 @@ export default function Dancer() {
   const [showMatrix, setShowMatrix] = useState(false); // hidden by default (more interesting for e.g. protein folding)
   const [paused, setPaused] = useState(false); // freeze the Ceilidh figure progression
   const [agents, setAgents] = useState<number>(DEFAULT_AGENTS); // whole pipeline rebuilds on change
+  const [breedDevice, setBreedDevice] = useState<GPUDevice | null>(null); // shared with the breeding cells
   const simRef = useRef<DancerSim | DancerGpuSim | null>(null);
   const paramsRef = useRef<DancerParams>(DEFAULT_DANCER_PARAMS); // full genome incl. render traits (for the stage renderer)
   // cross-link state, read by the render loop each frame (refs → no re-render on hover)
@@ -70,6 +71,8 @@ export default function Dancer() {
         }
         renderer = r;
         resize();
+        // publish the stage's device so the breeding cells can share it (one device, many canvases)
+        setBreedDevice((r.renderer.backend as unknown as { device?: GPUDevice }).device ?? null);
 
         if (USE_GPU) {
           try {
@@ -204,6 +207,7 @@ export default function Dancer() {
       cancelAnimationFrame(raf);
       ro.disconnect();
       for (const c of cleanups) c();
+      setBreedDevice(null); // the shared device goes away with the renderer
       renderer?.dispose();
     };
   }, [agents]); // rebuild the whole pipeline (renderer + sim + buffers) when the agent count changes
@@ -271,6 +275,7 @@ export default function Dancer() {
 
         {showBreed && (
           <BreedingStrip
+            device={breedDevice}
             onAdopt={(p: DancerParams) => {
               paramsRef.current = p; // full genome incl. render traits → the stage renderer picks it up
               if (simRef.current) simRef.current.params = p;

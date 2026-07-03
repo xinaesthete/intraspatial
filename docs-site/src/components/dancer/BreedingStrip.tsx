@@ -1,11 +1,12 @@
-// The Mutator breeding strip — Todd & Latham aesthetic selection over the dance. Each cell
-// is a *live* mini-simulation (top-down), so you breed by watching how a swarm *behaves*,
-// not how a frame looks. Click a cell to send that dance to the main stage; Breed makes a
-// new generation of mutations of your selection; Cross marries two selections. Lineage and
-// steering could layer on later. Uses src/evo directly (the generic Mutator).
+// The Mutator breeding strip — Todd & Latham aesthetic selection over the dance. Each cell is a
+// *live* 3D mini-simulation (the same GPU renderer as the stage, sharing one device), so you breed
+// by watching how a swarm both *moves* and *looks* — behaviour AND the bred render traits (colour,
+// size). Click a cell to send that dance to the main stage; Breed makes a new generation of
+// mutations of your selection; Cross marries two selections. Uses src/evo (the generic Mutator).
 import { useEffect, useRef, useState } from "react";
 import { breed, marry, mulberry32, paramsToSpecimen, type Specimen } from "../../../../src/evo";
-import { DancerSim, DEFAULT_DANCER_PARAMS, type DancerParams } from "./sim";
+import { createDancerCell, type DancerCell } from "./dancerCell";
+import { DEFAULT_DANCER_PARAMS, type DancerParams } from "./sim";
 import { DANCER_TRAIT_SPACE, specimenToDancerParams } from "./traits";
 
 const COUNT = 6;
@@ -17,45 +18,65 @@ function initialGeneration(seed: number): Specimen[] {
   return breed(DANCER_TRAIT_SPACE, [progenitor], COUNT, { rate: 0.35, rng: mulberry32(seed), keepElite: true });
 }
 
-function drawSwarm2D(canvas: HTMLCanvasElement, positions: Float32Array, n: number): void {
-  const ctx = canvas.getContext("2d");
-  if (!ctx) return;
-  const w = canvas.width, h = canvas.height;
-  ctx.clearRect(0, 0, w, h);
-  const s = Math.min(w, h) / 22; // ~±11 world units in view
-  const cx = w / 2, cy = h / 2;
-  ctx.fillStyle = "#7fb0ff";
-  for (let i = 0; i < n; i++) {
-    const x = positions[i * 3] ?? 0;
-    const y = positions[i * 3 + 1] ?? 0;
-    ctx.fillRect(cx + x * s - 1, cy - y * s - 1, 2, 2);
-  }
-}
-
-export function BreedingStrip({ onAdopt }: { onAdopt: (p: DancerParams) => void }) {
+export function BreedingStrip({ device, onAdopt }: { device: GPUDevice | null; onAdopt: (p: DancerParams) => void }) {
   const seedRef = useRef(1);
   const [generation, setGeneration] = useState<Specimen[]>(() => initialGeneration(seedRef.current++));
   const [selected, setSelected] = useState<number[]>([0]);
   const canvasRefs = useRef<(HTMLCanvasElement | null)[]>([]);
-  const simsRef = useRef<DancerSim[]>([]);
+  const cellsRef = useRef<DancerCell[]>([]);
+  const generationRef = useRef(generation);
+  generationRef.current = generation; // mirror latest generation for the async build/apply
 
-  // (Re)build the mini-sims whenever the generation changes.
+  // Push the current generation's specimens (params + render traits) into the built cells.
+  const applyGeneration = (): void => {
+    const cells = cellsRef.current;
+    const gen = generationRef.current;
+    for (let i = 0; i < cells.length; i++) {
+      const sp = gen[i];
+      if (sp) cells[i].setParams(specimenToDancerParams(sp), i + 1);
+    }
+  };
+
+  // Build the cells ONCE per device (each shares the stage's GPUDevice, its own canvas). Breeding
+  // then only swaps specimens (setParams) — no renderer/canvas teardown.
   useEffect(() => {
-    simsRef.current = generation.map((sp, i) => new DancerSim(MINI_AGENTS, 1 + i, specimenToDancerParams(sp)));
+    if (!device) return;
+    let cancelled = false;
+    const built: DancerCell[] = [];
+    (async () => {
+      for (let i = 0; i < COUNT; i++) {
+        const canvas = canvasRefs.current[i];
+        if (!canvas) continue;
+        const cell = await createDancerCell(canvas, MINI_AGENTS, device).catch(() => null);
+        if (cancelled) {
+          cell?.dispose();
+          return;
+        }
+        if (cell) {
+          built.push(cell);
+          cellsRef.current = built;
+        }
+      }
+      applyGeneration();
+    })();
+    return () => {
+      cancelled = true;
+      for (const c of built) c.dispose();
+      cellsRef.current = [];
+    };
+  }, [device]);
+
+  // Re-seed the cells whenever the generation changes.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: applyGeneration reads refs; keyed on generation.
+  useEffect(() => {
+    applyGeneration();
   }, [generation]);
 
-  // One shared rAF loop steps + draws all cells.
+  // One shared rAF loop steps + draws all ready cells.
   useEffect(() => {
     let raf = 0;
     const loop = () => {
-      const sims = simsRef.current;
-      for (let i = 0; i < sims.length; i++) {
-        const sim = sims[i];
-        const canvas = canvasRefs.current[i];
-        if (!sim) continue;
-        sim.step();
-        if (canvas) drawSwarm2D(canvas, sim.positions(), sim.n);
-      }
+      for (const c of cellsRef.current) c.step();
       raf = requestAnimationFrame(loop);
     };
     raf = requestAnimationFrame(loop);
@@ -111,8 +132,8 @@ export function BreedingStrip({ onAdopt }: { onAdopt: (p: DancerParams) => void 
               ref={(el) => {
                 canvasRefs.current[i] = el;
               }}
-              width={96}
-              height={96}
+              width={104}
+              height={104}
             />
           </button>
         ))}

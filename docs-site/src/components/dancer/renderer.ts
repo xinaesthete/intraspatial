@@ -70,8 +70,17 @@ export interface DancerRenderer {
   dispose(): void;
 }
 
-export async function createDancerRenderer(canvas: HTMLCanvasElement, n: number): Promise<DancerRenderer> {
-  const renderer = new WebGPURenderer({ canvas, antialias: true, alpha: true });
+/** Options for a dancer view. A cell in a grid shares one central GPUDevice (many canvases, one
+ *  device — the webgpu multipleCanvases pattern, via three's WebGPUBackendParameters.device) and is
+ *  non-interactive (auto-rotates instead of OrbitControls). */
+export interface DancerRendererOptions {
+  device?: GPUDevice;
+  interactive?: boolean; // default true
+}
+
+export async function createDancerRenderer(canvas: HTMLCanvasElement, n: number, opts: DancerRendererOptions = {}): Promise<DancerRenderer> {
+  const interactive = opts.interactive ?? true;
+  const renderer = new WebGPURenderer({ canvas, antialias: true, alpha: true, ...(opts.device ? { device: opts.device } : {}) });
   renderer.setPixelRatio(Math.min(2, window.devicePixelRatio || 1));
   await renderer.init();
 
@@ -79,21 +88,26 @@ export async function createDancerRenderer(canvas: HTMLCanvasElement, n: number)
   const camera = new THREE.PerspectiveCamera(50, 1, 0.1, 500);
   camera.position.set(0, 6, 16);
 
-  const controls = new OrbitControls(camera, canvas);
-  controls.enableDamping = true;
-  controls.dampingFactor = 0.08;
-  controls.target.set(0, 0, 0);
+  // Interactive stage: OrbitControls. Non-interactive cell: no controls, a gentle auto-rotate.
+  const controls = interactive ? new OrbitControls(camera, canvas) : null;
+  if (controls) {
+    controls.enableDamping = true;
+    controls.dampingFactor = 0.08;
+    controls.target.set(0, 0, 0);
+  }
 
   // Track active camera interaction so the caller can suspend the (periodic, GPU-syncing) snapshot
   // readback while dragging — the readback's mapAsync contends with the drag render (regular pauses).
   let interactUntil = 0;
   const now = (): number => (typeof performance !== "undefined" ? performance.now() : 0);
-  controls.addEventListener("start", () => {
-    interactUntil = Number.POSITIVE_INFINITY;
-  });
-  controls.addEventListener("end", () => {
-    interactUntil = now() + 400;
-  });
+  if (controls) {
+    controls.addEventListener("start", () => {
+      interactUntil = Number.POSITIVE_INFINITY;
+    });
+    controls.addEventListener("end", () => {
+      interactUntil = now() + 400;
+    });
+  }
 
   scene.add(new THREE.AmbientLight(0x6070a0, 1.2));
   const key = new THREE.DirectionalLight(0xffffff, 2.2);
@@ -239,7 +253,16 @@ export async function createDancerRenderer(canvas: HTMLCanvasElement, n: number)
   };
 
   const render = (): void => {
-    controls.update();
+    if (controls) {
+      controls.update();
+    } else {
+      // gentle auto-rotate around the swarm (non-interactive cell view)
+      const a = 0.0035;
+      const x = camera.position.x, z = camera.position.z;
+      camera.position.x = x * Math.cos(a) - z * Math.sin(a);
+      camera.position.z = x * Math.sin(a) + z * Math.cos(a);
+      camera.lookAt(0, 0, 0);
+    }
     void renderer.renderAsync(scene, camera);
   };
 
@@ -309,7 +332,7 @@ export async function createDancerRenderer(canvas: HTMLCanvasElement, n: number)
   };
 
   const dispose = (): void => {
-    controls.dispose();
+    controls?.dispose();
     geometry.dispose();
     material.dispose();
     mesh.dispose();
