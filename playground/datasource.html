@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Datasource — Decision view</title>
+    <style>
+      :root { color-scheme: dark; }
+      * { box-sizing: border-box; }
+      html, body { margin: 0; height: 100%; background: #0b1020; color: #e2e8f0; font: 13px/1.5 ui-sans-serif, system-ui, sans-serif; }
+      #app { position: fixed; inset: 0; }
+      #stage { width: 100%; height: 100%; display: block; }
+      #panel {
+        position: fixed; top: 12px; left: 12px; width: 260px; padding: 14px 16px;
+        background: rgba(15, 23, 42, 0.82); border: 1px solid #1e293b; border-radius: 10px;
+        backdrop-filter: blur(6px);
+      }
+      #panel h1 { margin: 0 0 2px; font-size: 14px; font-weight: 600; }
+      #panel .sub { margin: 0 0 12px; color: #94a3b8; font-size: 11px; }
+      .row { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 8px 0; }
+      .row label { color: #cbd5e1; }
+      input[type="range"] { width: 130px; }
+      select { background: #0f172a; color: #e2e8f0; border: 1px solid #334155; border-radius: 6px; padding: 3px 6px; }
+      #hud { margin-top: 12px; padding-top: 10px; border-top: 1px solid #1e293b; }
+      #hud .big { font-size: 20px; font-weight: 600; }
+      #hud .muted { color: #94a3b8; font-size: 11px; }
+      #levels { display: flex; flex-wrap: wrap; gap: 4px 8px; margin-top: 8px; }
+      .lv { display: inline-flex; align-items: center; gap: 5px; font-variant-numeric: tabular-nums; }
+      .sw { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
+      #err { color: #fca5a5; margin-top: 8px; white-space: pre-wrap; }
+    </style>
+  </head>
+  <body>
+    <div id="app">
+      <canvas id="stage"></canvas>
+      <div id="panel">
+        <h1>Decision view</h1>
+        <p class="sub">Nyquist chunk selection · orbit / dolly to see the LOD gradient</p>
+        <div class="row">
+          <label for="source">Source</label>
+          <select id="source">
+            <option value="plane">Mandelbrot plane</option>
+            <option value="volume">Mandelbulb volume</option>
+          </select>
+        </div>
+        <div class="row">
+          <label for="q">detail budget q = <span id="qval">1.0</span></label>
+          <input id="q" type="range" min="0.25" max="4" step="0.05" value="1" />
+        </div>
+        <div id="hud">
+          <div><span id="bytes" class="big">–</span> <span class="muted">to fetch</span></div>
+          <div class="muted"><span id="chunks">–</span> chunks selected</div>
+          <div id="levels"></div>
+          <div id="err"></div>
+        </div>
+      </div>
+    </div>
+    <script type="module" src="/src/datasourceMain.ts"></script>
+  </body>
+</html>
