@@ -1,27 +1,30 @@
 // The 3D stage — three.js on its WebGPU backend (WebGPURenderer). The swarm is one InstancedMesh
-// of small oriented cones whose per-instance model transform AND visual traits are built entirely
-// in the shader from the sim's own state buffers — no instanceMatrix, no bridge/channel kernels:
-//   • positionNode reads pos + angPos per instance and composes the transform explicitly (scale the
-//     local cone vertex → Rodrigues-rotate by angPos → translate by pos). We own the transform, so
-//     it's the level the superegg deformation will also work at.
-//   • colour is an okLCH ramp on |vel| (speed); per-instance scale grows with |angVel| (spin).
+// of swept CREATURES — a superegg nose that tapers into a tube tail — built entirely in the shader
+// from the sim's own state buffers, no instanceMatrix, no bridge/channel kernels:
+//   • positionNode synthesises each vertex (ring, θ) attribute-less: the nose extends forward along
+//     the heading from the current position; the body sweeps a tapering tube over the GPU trail ring
+//     (the tube IS the trail now — the old line-segment trails are retired). We own the transform.
+//   • colour is an okLCH ramp on |vel| (speed), fading head→tail like a comet; girth grows with
+//     |angVel| (spin) and thins with speed (fast → thin+long, slow → fat+short).
 // The sim computes its state INTO these three-owned storage buffers (dancerGpu.init render buffers),
-// so the render reads them with zero readback. Trails are the same idea: read the GPU history ring.
+// so the render reads them with zero readback, including the trail history ring the body follows.
 // Hover-highlight rides a few int uniforms. Picking projects the latest CPU position snapshot.
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
-import { clamp, float, instanceIndex, int, length, max, mix, normalize, oneMinus, positionGeometry, smoothstep, storage, uniform, varying, vec3, vertexIndex } from "three/tsl";
-import { LineBasicNodeMaterial, MeshStandardNodeMaterial, StorageBufferAttribute, WebGPURenderer } from "three/webgpu";
+import { clamp, cos, float, floor, instanceIndex, int, length, max, mix, normalize, oneMinus, sin, smoothstep, storage, transformNormalToView, uniform, varying, vec3 } from "three/tsl";
+import { MeshStandardNodeMaterial, StorageBufferAttribute, WebGPURenderer } from "three/webgpu";
 import type { RenderStateBuffers } from "../../../../src/gpu/sim/dancerGpu";
-import { srgbToOklab } from "../../../../src/color/oklab";
-import { oklabToLinear, oklchToLinear } from "../../lib/oklabTsl";
+import { oklchToLinear } from "../../lib/oklabTsl";
+import { CREATURE_HEAD_SEGMENTS, CREATURE_SEGMENTS, CREATURE_VERTEX_COUNT, bodyTaper, creatureCell, noseAxial, noseRadial } from "../../lib/creatureTsl";
 import { orientToForward } from "../../lib/tslTransform";
+
+// biome-ignore lint/suspicious/noExplicitAny: three TSL node types are inconsistent (see oklabTsl);
+// the creature assembly builds a shader graph, so its intermediate nodes are loosely typed.
+type Tsl = any;
 
 // Trail history depth (frames of position per agent). The GPU sim appends the current position into
 // a per-agent ring in a storage buffer three renders straight from — full per-step time resolution.
 const TRAIL_CAP = 64;
-const TRAIL_HEAD_COL: [number, number, number] = [0.5, 0.72, 1.0]; // newest end
-const TRAIL_TAIL_COL: [number, number, number] = [0.12, 0.16, 0.42]; // oldest end
 
 /** Breedable appearance traits the renderer maps from motion (subset of DancerParams). */
 export interface RenderTraits {
@@ -33,6 +36,11 @@ export interface RenderTraits {
   speedRef: number;
   sizeBase: number;
   sizeSpin: number;
+  noseRound: number;
+  tubeRadius: number;
+  tubeTaper: number;
+  thinSpeed: number;
+  noseAspect: number;
 }
 
 export interface Highlight {
@@ -117,9 +125,29 @@ export async function createDancerRenderer(canvas: HTMLCanvasElement, n: number,
   rim.position.set(-8, -4, -6);
   scene.add(rim);
 
-  // dancers — oriented cones (tip → +z), transformed + coloured in-shader from the sim state buffers
-  const geometry = new THREE.ConeGeometry(0.1, 0.2, 10);
-  geometry.rotateX(Math.PI / 2);
+  // dancers — swept CREATURES synthesised ENTIRELY in the shader from vertexIndex: a superegg NOSE
+  // that tapers into a TUBE TAIL swept over the motion trail. The geometry carries no real vertex
+  // data, only a zero position attribute for the vertex count; every vertex's (ring, θ) → a point
+  // on a circular cross-section whose centreline is read live from the GPU trail-history ring (no
+  // readback). The nose sticks forward along the heading; the body follows where the dancer went.
+  const geometry = new THREE.BufferGeometry();
+  // A zero-filled `position` attribute carries NO geometry — the shader synthesises every vertex —
+  // but it gives three the vertex count and satisfies the InstancedMesh setup, which reads
+  // positionLocal to fold in instanceMatrix (identity here) *before* our positionNode overrides it.
+  geometry.setAttribute("position", new THREE.BufferAttribute(new Float32Array(CREATURE_VERTEX_COUNT * 3), 3));
+  const SEG = CREATURE_SEGMENTS; // cross-sections along the body (0 = nose tip … SEG = tail)
+  const HEAD = CREATURE_HEAD_SEGMENTS; // front segments forming the nose; the rest are the tail
+  const BODY = SEG - HEAD; // body segments (follow the trail)
+  const AGE_SPAN = TRAIL_CAP - 1; // frames of trail history the body sweeps over
+
+  // trail-history ring — GPU-resident, shared with the compute (which appends each agent's position
+  // per step at `trailHead`). The creature's body reads its centreline straight from here; the old
+  // line-segment trails are retired (the tube IS the trail now). Buffer/head plumbing stays exposed
+  // so the sim can target it and the loop can advance the head.
+  const trailHistory = new StorageBufferAttribute(n * TRAIL_CAP, 4); // vec3 in vec4 lanes, 16-byte stride
+  const trailHead = uniform(0, "int"); // newest slot; updated each frame
+  const trailCapU = uniform(TRAIL_CAP, "int");
+  const histNode = storage(trailHistory, "vec4", n * TRAIL_CAP).toReadOnly();
 
   // per-instance sim state, three-owned so the sim (writes) and the render (reads) share the buffers
   const posAttr = new StorageBufferAttribute(n, 4);
@@ -134,8 +162,13 @@ export async function createDancerRenderer(canvas: HTMLCanvasElement, n: number,
   const lchSlow = uniform(new THREE.Vector3(0.52, 0.14, 4.6)); // colour at rest
   const lchFast = uniform(new THREE.Vector3(0.86, 0.14, 3.5)); // colour when moving
   const speedRef = uniform(1.2); // speed reaching the top of the colour ramp
-  const scaleBase = uniform(0.8); // size at rest
+  const scaleBase = uniform(0.8); // overall size at rest
   const scaleGain = uniform(0.9); // spin → extra size
+  const noseRound = uniform(0.78); // nose profile exponent (superellipse front lobe; 1 = hemispherical)
+  const tubeRadius = uniform(0.14); // base body girth at unit size
+  const tubeTaper = uniform(1.4); // how sharply the tail thins (higher = pointier)
+  const thinSpeed = uniform(0.5); // speed → thinner body (the thin-fast/fat-slow energy counter-balance)
+  const noseAspect = uniform(1.6); // nose forward reach as a multiple of girth
   const hlA = uniform(-1, "int"); // up to three highlighted instances (hovered dancer + matrix pair)
   const hlB = uniform(-1, "int");
   const hlC = uniform(-1, "int");
@@ -155,57 +188,82 @@ export async function createDancerRenderer(canvas: HTMLCanvasElement, n: number,
   const radialDir = iPos.div(max(length(iPos), 1e-4));
   const forward = normalize(mix(radialDir, velDir, smoothstep(0.008, 0.05, spd)).add(vec3(0, 0, 1e-4)));
 
-  const material = new MeshStandardNodeMaterial({ roughness: 0.4, metalness: 0.1 });
-  // explicit model transform: scale local vertex → orient +z along `forward` → translate by pos
-  material.positionNode = orientToForward(forward, positionGeometry.mul(instScale)).add(iPos);
-  // NOTE: per-instance normal rotation is deferred — feeding the vertex-stage `forward` into the
-  // fragment-stage normalNode tripped a bad render-target allocation in three. Lighting uses the
-  // unrotated geometry normal for now (fine for small cones); revisit for the superegg surfaces.
+  // creature dimensions. rMax (girth) SHRINKS with speed — and because a fast dancer also covers
+  // more ground per trail frame, its tube grows LONGER: the thin-fast / fat-slow energy balance.
+  const rMax = tubeRadius.mul(instScale).div(max(float(1).add(spd.mul(thinSpeed)), 1e-3));
+  const noseLen = rMax.mul(noseAspect); // nose forward reach ∝ girth
+
+  const cell = creatureCell(); // (ring, θ) from vertexIndex — attribute-less
+  const riN = cell.x; // 0 = nose tip … SEG = tail
+  const thetaN = cell.y;
+  const agentIdx = int(instanceIndex);
+
+  // Sample the trail ring at a fractional age (0 = newest ≈ current position), linear interpolation.
+  // Slots walk back from `trailHead`; ages are clamped so k+1 can't wrap past the oldest frame.
+  const sampleTrail = (age: Tsl): Tsl => {
+    const a = age.clamp(0, AGE_SPAN);
+    const k0: Tsl = int(floor(a));
+    const f = a.sub(float(k0));
+    const k1 = k0.add(int(1)).min(int(AGE_SPAN));
+    const slot0 = trailHead.sub(k0).add(trailCapU).mod(trailCapU);
+    const slot1 = trailHead.sub(k1).add(trailCapU).mod(trailCapU);
+    const p0 = histNode.element(agentIdx.mul(trailCapU).add(slot0)).xyz;
+    const p1 = histNode.element(agentIdx.mul(trailCapU).add(slot1)).xyz;
+    return mix(p0, p1, f);
+  };
+
+  // Centreline at ring `ri`: the nose (a superegg front lobe extending forward of the current
+  // position) for the head segments, the trail path for the body. They meet exactly at the shoulder.
+  const centreline = (ri: Tsl): Tsl => {
+    const isHead = ri.lessThanEqual(float(HEAD));
+    const s = ri.div(float(HEAD)).clamp(0, 1); // 0 tip → 1 shoulder
+    const headC = iPos.add(forward.mul(noseAxial(s, noseRound).mul(noseLen)));
+    const age = ri.sub(float(HEAD)).clamp(0, BODY).div(float(BODY)).mul(AGE_SPAN);
+    return isHead.select(headC, sampleTrail(age));
+  };
+  // Radius at ring `ri`: the nose lobe grows 0 → rMax, then the tail tapers rMax → 0.
+  const radiusAt = (ri: Tsl): Tsl => {
+    const isHead = ri.lessThanEqual(float(HEAD));
+    const s = ri.div(float(HEAD)).clamp(0, 1);
+    const x = ri.sub(float(HEAD)).div(float(BODY)).clamp(0, 1);
+    return rMax.mul(isHead.select(noseRadial(s, noseRound), bodyTaper(x, tubeTaper)));
+  };
+
+  // Per-ring frame from the local centreline tangent. The cross-section is a circle, so roll about
+  // the axis is invisible — a world-up reference frame (orientToForward) is enough, no parallel
+  // transport needed. `radial` is the outward direction of this vertex's point on the circle.
+  const cHead = centreline(riN.sub(1)); // toward the tip
+  const cHere = centreline(riN);
+  const cTail = centreline(riN.add(1)); // toward the tail
+  const axisVec = cTail.sub(cHead); // tailward tangent (∝ dC/dring)
+  const axisLen = max(length(axisVec), 1e-4);
+  const tHead = cHead.sub(cTail).div(axisLen); // headward unit tangent → +z of the frame
+  const radial = orientToForward(tHead, vec3(cos(thetaN), sin(thetaN), 0));
+  const R = radiusAt(riN);
+
+  const material = new MeshStandardNodeMaterial({ roughness: 0.45, metalness: 0.1 });
+  material.positionNode = cHere.add(radial.mul(R)); // mesh is untransformed, so this is world space
+  // Twist-immune analytic normal of a surface of revolution with a bent axis:
+  //   N ∝ radial·|C'| − R'·T_u   (pure radial where the radius is constant, tilting to round the
+  // nose and close the tail). Uses only local terms, so the frame's free roll can't corrupt it.
+  const dR = radiusAt(riN.add(1)).sub(radiusAt(riN.sub(1)));
+  const tU = axisVec.div(axisLen);
+  const worldN = normalize(radial.sub(tU.mul(dR.div(axisLen))));
+  material.normalNode = transformNormalToView(varying(worldN)).normalize();
 
   const speedV = varying(spd); // → fragment
+  const uV: Tsl = varying(riN.div(float(SEG))); // 0 head → 1 tail
   const hiV = varying(float(isHi));
   const t = clamp(speedV.div(speedRef), 0, 1);
   const baseCol = oklchToLinear(mix(lchSlow, lchFast, t));
-  material.colorNode = mix(baseCol, vec3(1, 1, 1), hiV); // highlighted → white
-  material.emissiveNode = baseCol.mul(0.3); // gentle self-glow tracking the mapped colour
+  material.colorNode = mix(baseCol.mul(oneMinus(uV.mul(0.7))), vec3(1, 1, 1), hiV); // comet: bright head → dark tail, highlight → white
+  material.emissiveNode = baseCol.mul(oneMinus(uV).mul(0.3)); // self-glow strongest at the head
 
   const mesh = new THREE.InstancedMesh(geometry, material, n); // instanceMatrix stays identity — unused
+  mesh.frustumCulled = false; // attribute-less geometry has no bounding sphere; the shader owns positions
   scene.add(mesh);
   let cpuMode = false;
   let lastPositions: Float32Array | null = null;
-
-  // trails — GPU-resident. The compute appends each agent's position into a per-agent ring in
-  // `trailHistory`; the render draws n·(cap-1) line segments whose vertex positions are read straight
-  // from that buffer by a TSL positionNode (walking the ring from `trailHead`), colour + opacity by
-  // trail age. No CPU snapshot, no vertex attributes — setDrawRange sets the count (zero vertex memory).
-  const SEGS = TRAIL_CAP - 1;
-  const PER_AGENT = SEGS * 2;
-  const trailVerts = n * PER_AGENT;
-  const trailHistory = new StorageBufferAttribute(n * TRAIL_CAP, 4); // vec3f, 16-byte stride
-  const trailGeo = new THREE.BufferGeometry();
-  trailGeo.setDrawRange(0, trailVerts);
-
-  const trailHead = uniform(0, "int"); // newest slot; updated each frame
-  const trailCapU = uniform(TRAIL_CAP, "int");
-  const histNode = storage(trailHistory, "vec4", n * TRAIL_CAP).toReadOnly();
-  const vi = int(vertexIndex);
-  const perAgent = int(PER_AGENT);
-  const agent = vi.div(perAgent);
-  const local = vi.mod(perAgent);
-  const age = local.div(int(2)).add(local.mod(int(2))); // segment endpoints → 0,1,1,2,2,… (0 = newest)
-  const slot = trailHead.sub(age).add(trailCapU).mod(trailCapU); // walk back through the ring
-  const idx = agent.mul(trailCapU).add(slot);
-  const ageFrac = varying(float(age).div(float(TRAIL_CAP - 1))); // 0 newest → 1 oldest, interpolated
-
-  const headLab = srgbToOklab(TRAIL_HEAD_COL); // endpoints pre-converted to okLab on the CPU
-  const tailLab = srgbToOklab(TRAIL_TAIL_COL);
-  const trailMat = new LineBasicNodeMaterial({ transparent: true, depthWrite: false, blending: THREE.AdditiveBlending });
-  trailMat.positionNode = histNode.element(idx).xyz;
-  trailMat.colorNode = oklabToLinear(mix(vec3(...headLab), vec3(...tailLab), ageFrac)); // mix in okLab → linear
-  trailMat.opacityNode = oneMinus(ageFrac).pow(1.5); // fade toward the tail
-  const trails = new THREE.LineSegments(trailGeo, trailMat);
-  trails.frustumCulled = false;
-  scene.add(trails);
 
   // pair-connection line (hovered matrix cell)
   const pairGeo = new THREE.BufferGeometry();
@@ -307,6 +365,11 @@ export async function createDancerRenderer(canvas: HTMLCanvasElement, n: number,
     speedRef.value = tr.speedRef;
     scaleBase.value = tr.sizeBase;
     scaleGain.value = tr.sizeSpin;
+    noseRound.value = tr.noseRound;
+    tubeRadius.value = tr.tubeRadius;
+    tubeTaper.value = tr.tubeTaper;
+    thinSpeed.value = tr.thinSpeed;
+    noseAspect.value = tr.noseAspect;
   };
 
   const isInteracting = (): boolean => now() < interactUntil;
@@ -317,7 +380,7 @@ export async function createDancerRenderer(canvas: HTMLCanvasElement, n: number,
   };
 
   const gpuStateBuffers = async (): Promise<RenderStateBuffers | null> => {
-    // The storage buffers are created when the cone material (whose nodes reference them) first renders.
+    // The storage buffers are created when the creature material (whose nodes reference them) first renders.
     const attrs = [posAttr, velAttr, angVelAttr];
     if (attrs.some((a) => !rawBuffer(a))) await renderer.renderAsync(scene, camera);
     const pos = rawBuffer(posAttr), vel = rawBuffer(velAttr), angVel = rawBuffer(angVelAttr);
@@ -340,8 +403,6 @@ export async function createDancerRenderer(canvas: HTMLCanvasElement, n: number,
     geometry.dispose();
     material.dispose();
     mesh.dispose();
-    trailGeo.dispose();
-    trailMat.dispose();
     pairGeo.dispose();
     renderer.dispose();
   };

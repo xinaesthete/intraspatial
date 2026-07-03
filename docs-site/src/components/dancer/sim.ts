@@ -62,8 +62,14 @@ export interface DancerParams {
   lightSlow: number; // okLCH lightness at rest
   lightFast: number; // okLCH lightness when moving
   speedRef: number; // speed reaching the top of the colour ramp
-  sizeBase: number; // cone size at rest
-  sizeSpin: number; // extra cone size per unit spin
+  sizeBase: number; // overall creature size at rest
+  sizeSpin: number; // extra size per unit spin
+  // creature SHAPE — the swept superegg-nose + tube-tail (see creatureTsl).
+  noseRound: number; // nose profile exponent (1 = hemispherical, →0 boxier)
+  tubeRadius: number; // base body girth at unit size
+  tubeTaper: number; // how sharply the tail thins (higher = pointier)
+  thinSpeed: number; // speed → thinner body (fast=thin+long / slow=fat+short counter-balance)
+  noseAspect: number; // nose forward reach as a multiple of girth
 }
 
 export const DEFAULT_DANCER_PARAMS: DancerParams = {
@@ -98,6 +104,11 @@ export const DEFAULT_DANCER_PARAMS: DancerParams = {
   speedRef: 1.2,
   sizeBase: 0.8,
   sizeSpin: 0.9,
+  noseRound: 0.78,
+  tubeRadius: 0.14,
+  tubeTaper: 1.4,
+  thinSpeed: 0.5,
+  noseAspect: 1.6,
 };
 
 export class DancerSim {

@@ -34,6 +34,12 @@ export const DANCER_TRAIT_SPECS: ParamSpec[] = [
   { name: "speedRef", type: "number", default: 1.2, min: 0.4, max: 2.5 },
   { name: "sizeBase", type: "number", default: 0.8, min: 0.3, max: 1.6 },
   { name: "sizeSpin", type: "number", default: 0.9, min: 0, max: 3 },
+  // creature shape — swept superegg-nose + tapering tube-tail
+  { name: "noseRound", type: "number", default: 0.78, min: 0.2, max: 1.8 },
+  { name: "tubeRadius", type: "number", default: 0.14, min: 0.05, max: 0.4 },
+  { name: "tubeTaper", type: "number", default: 1.4, min: 0.4, max: 3 },
+  { name: "thinSpeed", type: "number", default: 0.5, min: 0, max: 1.5 },
+  { name: "noseAspect", type: "number", default: 1.6, min: 0.5, max: 3.5 },
 ];
 
 export const DANCER_TRAIT_SPACE: TraitSpace = traitSpaceFromParams(DANCER_TRAIT_SPECS);
