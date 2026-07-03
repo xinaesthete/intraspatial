@@ -4,8 +4,8 @@
 // picking (→ which dancer) and highlighting a set of dancers + a connecting line for a
 // hovered pair (the distance-matrix cross-link). Orbit camera, soft lighting, glow.
 import * as THREE from "three";
-import { StorageInstancedBufferAttribute, WebGPURenderer } from "three/webgpu";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
+import { StorageInstancedBufferAttribute, WebGPURenderer } from "three/webgpu";
 import { TrailBuffer } from "../../../../src/gpu/sim/trails";
 
 const TRAIL_LEN = 56;
