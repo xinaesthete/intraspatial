@@ -83,7 +83,7 @@ export const DEFAULT_DANCER_PARAMS: DancerParams = {
   callerSeed: 0,
   callerGain: 0.09,
   callerSpeed: 0.6,
-  timeFactor: 0.2,
+  timeFactor: 0.12, // overall tempo — a slower, more watchable/deliberate dance
   jerkLimit: 0.05,
   linDamp: 0.96,
   angDamp: 0.9,

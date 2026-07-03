@@ -10,12 +10,12 @@
 // Hover-highlight rides a few int uniforms. Picking projects the latest CPU position snapshot.
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
-import { clamp, float, instanceIndex, int, length, mix, oneMinus, positionGeometry, storage, uniform, varying, vec3, vertexIndex } from "three/tsl";
+import { clamp, float, instanceIndex, int, length, max, mix, normalize, oneMinus, positionGeometry, smoothstep, storage, uniform, varying, vec3, vertexIndex } from "three/tsl";
 import { LineBasicNodeMaterial, MeshStandardNodeMaterial, StorageBufferAttribute, WebGPURenderer } from "three/webgpu";
 import type { RenderStateBuffers } from "../../../../src/gpu/sim/dancerGpu";
 import { srgbToOklab } from "../../../../src/color/oklab";
 import { oklabToLinear, oklchToLinear } from "../../lib/oklabTsl";
-import { rotateByAxisAngle } from "../../lib/tslTransform";
+import { orientToForward } from "../../lib/tslTransform";
 
 // Trail history depth (frames of position per agent). The GPU sim appends the current position into
 // a per-agent ring in a storage buffer three renders straight from — full per-step time resolution.
@@ -123,11 +123,9 @@ export async function createDancerRenderer(canvas: HTMLCanvasElement, n: number,
 
   // per-instance sim state, three-owned so the sim (writes) and the render (reads) share the buffers
   const posAttr = new StorageBufferAttribute(n, 4);
-  const angAttr = new StorageBufferAttribute(n, 4);
   const velAttr = new StorageBufferAttribute(n, 4);
   const angVelAttr = new StorageBufferAttribute(n, 4);
   const posNode = storage(posAttr, "vec4", n).toReadOnly();
-  const angNode = storage(angAttr, "vec4", n).toReadOnly();
   const velNode = storage(velAttr, "vec4", n).toReadOnly();
   const angVelNode = storage(angVelAttr, "vec4", n).toReadOnly();
 
@@ -143,17 +141,28 @@ export async function createDancerRenderer(canvas: HTMLCanvasElement, n: number,
   const hlC = uniform(-1, "int");
 
   const iPos = posNode.element(instanceIndex).xyz; // vertex stage
-  const iAng = angNode.element(instanceIndex).xyz;
+  const iVel = velNode.element(instanceIndex).xyz;
+  const spd = length(iVel);
   const spin = length(angVelNode.element(instanceIndex).xyz);
   const ii = int(instanceIndex);
   const isHi = ii.equal(hlA).or(ii.equal(hlB)).or(ii.equal(hlC));
   const instScale = scaleBase.add(spin.mul(scaleGain)).mul(float(isHi).mul(0.7).add(1)); // highlight ×1.7
 
-  const material = new MeshStandardNodeMaterial({ roughness: 0.4, metalness: 0.1 });
-  // explicit model transform: scale local cone vertex → Rodrigues-rotate by angPos → translate by pos
-  material.positionNode = rotateByAxisAngle(iAng, positionGeometry.mul(instScale)).add(iPos);
+  // facing: point the cone (+z tip) ALONG velocity; at near-zero speed blend to radial (outward) so a
+  // settled swarm keeps varied headings instead of all snapping to one axis. Roll about the axis is
+  // free for now (angular-momentum 'up' is future work). /max keeps the directions NaN-free at 0.
+  const velDir = iVel.div(max(spd, 1e-4));
+  const radialDir = iPos.div(max(length(iPos), 1e-4));
+  const forward = normalize(mix(radialDir, velDir, smoothstep(0.008, 0.05, spd)).add(vec3(0, 0, 1e-4)));
 
-  const speedV = varying(length(velNode.element(instanceIndex).xyz)); // → fragment
+  const material = new MeshStandardNodeMaterial({ roughness: 0.4, metalness: 0.1 });
+  // explicit model transform: scale local vertex → orient +z along `forward` → translate by pos
+  material.positionNode = orientToForward(forward, positionGeometry.mul(instScale)).add(iPos);
+  // NOTE: per-instance normal rotation is deferred — feeding the vertex-stage `forward` into the
+  // fragment-stage normalNode tripped a bad render-target allocation in three. Lighting uses the
+  // unrotated geometry normal for now (fine for small cones); revisit for the superegg surfaces.
+
+  const speedV = varying(spd); // → fragment
   const hiV = varying(float(isHi));
   const t = clamp(speedV.div(speedRef), 0, 1);
   const baseCol = oklchToLinear(mix(lchSlow, lchFast, t));
@@ -208,7 +217,7 @@ export async function createDancerRenderer(canvas: HTMLCanvasElement, n: number,
   pairLine.visible = false;
   scene.add(pairLine);
 
-  const update = (positions: Float32Array, orientations: Float32Array, _speeds: Float32Array, highlight?: Highlight): void => {
+  const update = (positions: Float32Array, _orientations: Float32Array, _speeds: Float32Array, highlight?: Highlight): void => {
     const count = Math.min(n, (positions.length / 3) | 0);
     lastPositions = positions;
 
@@ -220,21 +229,16 @@ export async function createDancerRenderer(canvas: HTMLCanvasElement, n: number,
     hlC.value = ag[2] ?? -1;
 
     // GPU mode: the compute owns the state buffers (pose + traits read straight from them). CPU
-    // fallback: upload pos + orientation so the same shader renders the CPU sim (colour/scale then
-    // use the seeded vel/angVel → base values).
+    // fallback: upload positions so the same shader renders the CPU sim (vel/angVel stay seeded →
+    // base colour/scale and radial facing — a degraded but functional safety net).
     if (cpuMode) {
       const parr = posAttr.array as Float32Array;
-      const aarr = angAttr.array as Float32Array;
       for (let i = 0; i < count; i++) {
         parr[i * 4] = positions[i * 3] ?? 0;
         parr[i * 4 + 1] = positions[i * 3 + 1] ?? 0;
         parr[i * 4 + 2] = positions[i * 3 + 2] ?? 0;
-        aarr[i * 4] = orientations[i * 3] ?? 0;
-        aarr[i * 4 + 1] = orientations[i * 3 + 1] ?? 0;
-        aarr[i * 4 + 2] = orientations[i * 3 + 2] ?? 0;
       }
       posAttr.needsUpdate = true;
-      angAttr.needsUpdate = true;
     }
     mesh.count = count;
 
@@ -314,11 +318,11 @@ export async function createDancerRenderer(canvas: HTMLCanvasElement, n: number,
 
   const gpuStateBuffers = async (): Promise<RenderStateBuffers | null> => {
     // The storage buffers are created when the cone material (whose nodes reference them) first renders.
-    const attrs = [posAttr, angAttr, velAttr, angVelAttr];
+    const attrs = [posAttr, velAttr, angVelAttr];
     if (attrs.some((a) => !rawBuffer(a))) await renderer.renderAsync(scene, camera);
-    const pos = rawBuffer(posAttr), angPos = rawBuffer(angAttr), vel = rawBuffer(velAttr), angVel = rawBuffer(angVelAttr);
-    if (!pos || !angPos || !vel || !angVel) return null;
-    return { pos, angPos, vel, angVel };
+    const pos = rawBuffer(posAttr), vel = rawBuffer(velAttr), angVel = rawBuffer(angVelAttr);
+    if (!pos || !vel || !angVel) return null;
+    return { pos, vel, angVel };
   };
 
   const gpuTrailBuffer = async (): Promise<GPUBuffer | null> => {

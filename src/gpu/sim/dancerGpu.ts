@@ -477,11 +477,11 @@ export interface DancerBlocks {
 
 /** Raw three-owned GPUBuffers (each a vec3f-strided / 16-byte, length-n StorageBufferAttribute) that
  *  the render reads directly. Passed to `init` so the sim computes its state INTO them — the render
- *  maps position/orientation to the model transform and velocity/spin to visual traits in-shader,
- *  no bridge kernels or readback. */
+ *  builds the model transform (facing from `vel`) and maps velocity/spin to visual traits in-shader,
+ *  no bridge kernels or readback. (`angPos` stays sim-internal — the render faces from velocity now;
+ *  angular state returns to the bridge if/when it drives roll.) */
 export interface RenderStateBuffers {
   pos: GPUBuffer;
-  angPos: GPUBuffer;
   vel: GPUBuffer;
   angVel: GPUBuffer;
 }
@@ -563,7 +563,7 @@ export class DancerGpuSim {
     this.posSnap = mk("pos"); // internal read-old buffer, seeded to the initial positions
     this.velBuf = mk("vel", render?.vel);
     this.accelBuf = mk("accel"); // internal (not read by the render)
-    this.angPosBuf = mk("angPos", render?.angPos);
+    this.angPosBuf = mk("angPos"); // internal — the render faces from velocity, not angPos
     this.angVelBuf = mk("angVel", render?.angVel);
     this.snapshotBuf = root.createBuffer(d.arrayOf(d.vec3f, 5 * n)).$usage("storage");
     this.paramsBuf = root.createBuffer(Params).$usage("uniform");
