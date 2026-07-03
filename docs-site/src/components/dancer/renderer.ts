@@ -8,6 +8,8 @@ import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { float, int, mix, oneMinus, storage, uniform, varying, vec3, vertexIndex } from "three/tsl";
 import { LineBasicNodeMaterial, StorageBufferAttribute, StorageInstancedBufferAttribute, WebGPURenderer } from "three/webgpu";
+import { srgbToOklab } from "../../../../src/color/oklab";
+import { oklabToLinear } from "../../lib/oklabTsl";
 
 // Trail history depth (frames of position per agent). The GPU sim appends the current position
 // into a per-agent ring in a storage buffer three renders straight from — no CPU snapshot, so the
@@ -133,9 +135,15 @@ export async function createDancerRenderer(canvas: HTMLCanvasElement, n: number)
   const idx = agent.mul(trailCapU).add(slot);
   const ageFrac = varying(float(age).div(float(TRAIL_CAP - 1))); // 0 newest → 1 oldest, interpolated
 
+  // Colour fades newest→oldest by trail age, interpolated in okLab (perceptual — an even ramp,
+  // no muddy midpoint) then converted to linear-sRGB for three's working space. Endpoints are
+  // authored as sRGB and pre-converted to okLab on the CPU (src/color/oklab), so the shader only
+  // does the perceptual lerp + okLab→linear.
+  const headLab = srgbToOklab(TRAIL_HEAD_COL);
+  const tailLab = srgbToOklab(TRAIL_TAIL_COL);
   const trailMat = new LineBasicNodeMaterial({ transparent: true, depthWrite: false, blending: THREE.AdditiveBlending });
   trailMat.positionNode = histNode.element(idx).xyz;
-  trailMat.colorNode = mix(vec3(...TRAIL_HEAD_COL), vec3(...TRAIL_TAIL_COL), ageFrac);
+  trailMat.colorNode = oklabToLinear(mix(vec3(...headLab), vec3(...tailLab), ageFrac));
   trailMat.opacityNode = oneMinus(ageFrac).pow(1.5); // fade toward the tail
   const trails = new THREE.LineSegments(trailGeo, trailMat);
   trails.frustumCulled = false;
