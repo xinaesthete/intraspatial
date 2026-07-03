@@ -75,22 +75,22 @@ export default function Dancer() {
             const device = (r.renderer.backend as unknown as { device?: GPUDevice }).device;
             if (!device) throw new Error("no WebGPU device on renderer backend");
             const g = new DancerGpuSim(device, agents, 1, sim.params);
-            g.init();
-            // share three's instanceMatrix GPUBuffer so the render reads pose off the GPU
-            const mtxBuf = await r.gpuInstanceMatrixBuffer();
-            if (!mtxBuf) throw new Error("no instanceMatrix buffer");
-            g.setMatrixTarget(mtxBuf, 1);
-            g.writeMatrices(); // seed pose into the matrices before first frame
-            // share three's trail-history GPUBuffer so our compute appends into the ring three
-            // renders the trails from (GPU-resident; no CPU snapshot feeding the trail geometry).
+            // three owns the per-instance state buffers; the sim computes its pos/angPos/vel/angVel
+            // INTO them, so the render builds the model transform + traits straight off the GPU in the
+            // shader (no readback, no matrix/channel bridge kernels).
+            const stateBufs = await r.gpuStateBuffers();
+            if (!stateBufs) throw new Error("no render state buffers");
+            g.init(stateBufs);
+            // share three's trail-history GPUBuffer so our compute appends into the ring three renders
+            // the trails from (GPU-resident; no CPU snapshot feeding the trail geometry).
             const trailBuf = await r.gpuTrailBuffer();
             if (trailBuf) g.setTrailTarget(trailBuf, r.trailCapacity());
-            r.setGpuMatrix(true);
             if (disposed) return;
             gpu = g;
             simRef.current = g;
           } catch (err) {
             console.warn("dancer: GPU sim unavailable, using CPU", err);
+            r.setCpuMode(true);
           }
         }
         setStatus("running");

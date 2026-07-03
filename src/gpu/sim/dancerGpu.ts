@@ -475,6 +475,17 @@ export interface DancerBlocks {
   angVel: Float32Array;
 }
 
+/** Raw three-owned GPUBuffers (each a vec3f-strided / 16-byte, length-n StorageBufferAttribute) that
+ *  the render reads directly. Passed to `init` so the sim computes its state INTO them — the render
+ *  maps position/orientation to the model transform and velocity/spin to visual traits in-shader,
+ *  no bridge kernels or readback. */
+export interface RenderStateBuffers {
+  pos: GPUBuffer;
+  angPos: GPUBuffer;
+  vel: GPUBuffer;
+  angVel: GPUBuffer;
+}
+
 /** The GPU-resident dancer. Construct with ANY GPUDevice (Dawn under Node, or three.js's
  *  `renderer.backend.device` in the browser); state lives in that device's buffers. The
  *  pipeline is cached per device (getDancerPipe); the state buffers are per instance, so a
@@ -521,7 +532,10 @@ export class DancerGpuSim {
     this.params = params;
   }
 
-  init(): void {
+  /** @param render optional three-owned state buffers to compute INTO (browser zero-copy render).
+   *  When given, `pos`/`vel`/`angPos`/`angVel` live in three's storage buffers so the render reads
+   *  them directly; when omitted (headless) the sim allocates its own. */
+  init(render?: RenderStateBuffers): void {
     const { device, n } = this;
     const pipe = getDancerPipe(device);
     this.root = pipe.root;
@@ -534,14 +548,23 @@ export class DancerGpuSim {
     const root = this.root;
 
     const body = seedSwarmBody(n, this.seed);
-    const mk = (block: "pos" | "vel" | "accel" | "angPos" | "angVel"): Vec3Buffer =>
-      root.createBuffer(d.arrayOf(d.vec3f, n), toVec3f(tapBlock(body, n, block), n)).$usage("storage");
-    this.posBuf = mk("pos");
-    this.posSnap = root.createBuffer(d.arrayOf(d.vec3f, n), toVec3f(tapBlock(body, n, "pos"), n)).$usage("storage");
-    this.velBuf = mk("vel");
-    this.accelBuf = mk("accel");
-    this.angPosBuf = mk("angPos");
-    this.angVelBuf = mk("angVel");
+    // Allocate (headless) or wrap-and-seed an external three buffer (browser). A wrapped buffer is
+    // the SAME GPUBuffer three renders from, so the sim's kernels write straight into it.
+    const mk = (block: "pos" | "vel" | "accel" | "angPos" | "angVel", external?: GPUBuffer): Vec3Buffer => {
+      const seed = toVec3f(tapBlock(body, n, block), n);
+      if (external) {
+        const buf = root.createBuffer(d.arrayOf(d.vec3f, n), external).$usage("storage");
+        buf.write(seed);
+        return buf;
+      }
+      return root.createBuffer(d.arrayOf(d.vec3f, n), seed).$usage("storage");
+    };
+    this.posBuf = mk("pos", render?.pos);
+    this.posSnap = mk("pos"); // internal read-old buffer, seeded to the initial positions
+    this.velBuf = mk("vel", render?.vel);
+    this.accelBuf = mk("accel"); // internal (not read by the render)
+    this.angPosBuf = mk("angPos", render?.angPos);
+    this.angVelBuf = mk("angVel", render?.angVel);
     this.snapshotBuf = root.createBuffer(d.arrayOf(d.vec3f, 5 * n)).$usage("storage");
     this.paramsBuf = root.createBuffer(Params).$usage("uniform");
 

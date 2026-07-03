@@ -1,22 +1,31 @@
-// The 3D stage — three.js on its WebGPU backend (WebGPURenderer). The swarm is one
-// InstancedMesh of small oriented cones (so facing/spin reads), plus motion trails drawn as
-// additive line segments read straight from the GPU history ring the compute writes (a TSL
-// positionNode walks the ring by vertexIndex — no CPU snapshot, no position/colour attributes).
-// Supports hover picking (→ which dancer) and highlighting a set of dancers + a connecting line
-// for a hovered pair (the distance-matrix cross-link). Orbit camera, soft lighting, glow.
+// The 3D stage — three.js on its WebGPU backend (WebGPURenderer). The swarm is one InstancedMesh
+// of small oriented cones whose per-instance model transform AND visual traits are built entirely
+// in the shader from the sim's own state buffers — no instanceMatrix, no bridge/channel kernels:
+//   • positionNode reads pos + angPos per instance and composes the transform explicitly (scale the
+//     local cone vertex → Rodrigues-rotate by angPos → translate by pos). We own the transform, so
+//     it's the level the superegg deformation will also work at.
+//   • colour is an okLCH ramp on |vel| (speed); per-instance scale grows with |angVel| (spin).
+// The sim computes its state INTO these three-owned storage buffers (dancerGpu.init render buffers),
+// so the render reads them with zero readback. Trails are the same idea: read the GPU history ring.
+// Hover-highlight rides a few int uniforms. Picking projects the latest CPU position snapshot.
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
-import { float, int, mix, oneMinus, storage, uniform, varying, vec3, vertexIndex } from "three/tsl";
-import { LineBasicNodeMaterial, StorageBufferAttribute, StorageInstancedBufferAttribute, WebGPURenderer } from "three/webgpu";
+import { clamp, float, instanceIndex, int, length, mix, oneMinus, positionGeometry, storage, uniform, varying, vec3, vertexIndex } from "three/tsl";
+import { LineBasicNodeMaterial, MeshStandardNodeMaterial, StorageBufferAttribute, WebGPURenderer } from "three/webgpu";
+import type { RenderStateBuffers } from "../../../../src/gpu/sim/dancerGpu";
 import { srgbToOklab } from "../../../../src/color/oklab";
-import { oklabToLinear } from "../../lib/oklabTsl";
+import { oklabToLinear, oklchToLinear } from "../../lib/oklabTsl";
+import { rotateByAxisAngle } from "../../lib/tslTransform";
 
-// Trail history depth (frames of position per agent). The GPU sim appends the current position
-// into a per-agent ring in a storage buffer three renders straight from — no CPU snapshot, so the
-// trail carries the sim's full per-step time resolution (not the ~5Hz throttled-readback coarseness).
+// Trail history depth (frames of position per agent). The GPU sim appends the current position into
+// a per-agent ring in a storage buffer three renders straight from — full per-step time resolution.
 const TRAIL_CAP = 64;
 const TRAIL_HEAD_COL: [number, number, number] = [0.5, 0.72, 1.0]; // newest end
 const TRAIL_TAIL_COL: [number, number, number] = [0.12, 0.16, 0.42]; // oldest end
+
+// Cone colour ramp (okLCH: L, C, hue-radians), interpolated by speed → perceptual, → linear-sRGB.
+const LCH_SLOW: [number, number, number] = [0.52, 0.13, 4.6]; // deep indigo (at rest)
+const LCH_FAST: [number, number, number] = [0.86, 0.15, 3.5]; // bright cyan (moving)
 
 export interface Highlight {
   /** Dancers to emphasise (enlarge + brighten). */
@@ -32,22 +41,20 @@ export interface DancerRenderer {
   resize(width: number, height: number): void;
   /** Pick the dancer under normalised device coords (x,y ∈ [-1,1]); null if none. */
   pick(ndcX: number, ndcY: number): number | null;
-  /** Turn on GPU-driven instance matrices: the render reads pose from the storage
-   *  `instanceMatrix` buffer (written by our compute) — `update()` stops touching matrices. */
-  setGpuMatrix(on: boolean): void;
-  /** The raw GPUBuffer backing `instanceMatrix` (materialising it with a render if needed), so
-   *  our TypeGPU compute can write model matrices into it. Null if not yet available. */
-  gpuInstanceMatrixBuffer(): Promise<GPUBuffer | null>;
+  /** The three-owned per-instance state buffers (materialising them with a render if needed), for
+   *  the sim to compute its pos/angPos/vel/angVel INTO. Null if not yet available. */
+  gpuStateBuffers(): Promise<RenderStateBuffers | null>;
+  /** CPU-fallback: when on, `update()` uploads pos+orientation into the state buffers so the same
+   *  shader renders the CPU sim (GPU mode leaves them to the compute). */
+  setCpuMode(on: boolean): void;
   /** True while the camera is being manipulated (plus a short damping cooldown). */
   isInteracting(): boolean;
   /** The raw GPUBuffer backing the trail history ring (materialising it with a render if needed),
-   *  so our compute can append the current position each step. Layout: agent i owns slots
-   *  [i*cap .. i*cap+cap), vec3f-strided (16 bytes). Null if not yet available. */
+   *  so our compute can append the current position each step. Null if not yet available. */
   gpuTrailBuffer(): Promise<GPUBuffer | null>;
   /** Ring capacity (frames of history per agent). */
   trailCapacity(): number;
-  /** Point the trail shader at the newest-written slot; it walks back from here to draw oldest→
-   *  newest. Call each frame after the sim step (head = sim.trailHead()). */
+  /** Point the trail shader at the newest-written slot; walks back from here. Call each frame. */
   setTrailHead(head: number): void;
   dispose(): void;
 }
@@ -66,10 +73,8 @@ export async function createDancerRenderer(canvas: HTMLCanvasElement, n: number)
   controls.dampingFactor = 0.08;
   controls.target.set(0, 0, 0);
 
-  // Track active camera interaction so the caller can suspend the (periodic, GPU-syncing)
-  // snapshot readback while dragging — the readback's mapAsync contends with the heavier render
-  // during a drag and shows up as regular pauses. Add a short cooldown so inertial damping
-  // after release also stays readback-free.
+  // Track active camera interaction so the caller can suspend the (periodic, GPU-syncing) snapshot
+  // readback while dragging — the readback's mapAsync contends with the drag render (regular pauses).
   let interactUntil = 0;
   const now = (): number => (typeof performance !== "undefined" ? performance.now() : 0);
   controls.addEventListener("start", () => {
@@ -87,63 +92,79 @@ export async function createDancerRenderer(canvas: HTMLCanvasElement, n: number)
   rim.position.set(-8, -4, -6);
   scene.add(rim);
 
-  // dancers — oriented cones (tip → +z)
+  // dancers — oriented cones (tip → +z), transformed + coloured in-shader from the sim state buffers
   const geometry = new THREE.ConeGeometry(0.1, 0.2, 10);
   geometry.rotateX(Math.PI / 2);
-  const material = new THREE.MeshStandardMaterial({
-    color: 0x9fc4ff,
-    emissive: 0x2a4a8a,
-    emissiveIntensity: 0.6,
-    roughness: 0.4,
-    metalness: 0.1,
-  });
-  const mesh = new THREE.InstancedMesh(geometry, material, n);
-  // A storage instanceMatrix so the render can read pose straight from a GPUBuffer our compute
-  // writes (zero readback). In CPU-fallback mode we still setMatrixAt + needsUpdate (three
-  // uploads the array); in GPU mode we never touch it and never set needsUpdate.
-  mesh.instanceMatrix = new StorageInstancedBufferAttribute(new Float32Array(n * 16), 16);
-  mesh.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(n * 3), 3);
+
+  // per-instance sim state, three-owned so the sim (writes) and the render (reads) share the buffers
+  const posAttr = new StorageBufferAttribute(n, 4);
+  const angAttr = new StorageBufferAttribute(n, 4);
+  const velAttr = new StorageBufferAttribute(n, 4);
+  const angVelAttr = new StorageBufferAttribute(n, 4);
+  const posNode = storage(posAttr, "vec4", n).toReadOnly();
+  const angNode = storage(angAttr, "vec4", n).toReadOnly();
+  const velNode = storage(velAttr, "vec4", n).toReadOnly();
+  const angVelNode = storage(angVelAttr, "vec4", n).toReadOnly();
+
+  // mapping constants — uniforms, tunable without recompiling the shader
+  const speedRef = uniform(1.2); // speed reaching the top of the colour ramp
+  const scaleBase = uniform(0.8); // size at rest
+  const scaleGain = uniform(0.9); // spin → extra size
+  const hlA = uniform(-1, "int"); // up to three highlighted instances (hovered dancer + matrix pair)
+  const hlB = uniform(-1, "int");
+  const hlC = uniform(-1, "int");
+
+  const iPos = posNode.element(instanceIndex).xyz; // vertex stage
+  const iAng = angNode.element(instanceIndex).xyz;
+  const spin = length(angVelNode.element(instanceIndex).xyz);
+  const ii = int(instanceIndex);
+  const isHi = ii.equal(hlA).or(ii.equal(hlB)).or(ii.equal(hlC));
+  const instScale = scaleBase.add(spin.mul(scaleGain)).mul(float(isHi).mul(0.7).add(1)); // highlight ×1.7
+
+  const material = new MeshStandardNodeMaterial({ roughness: 0.4, metalness: 0.1 });
+  // explicit model transform: scale local cone vertex → Rodrigues-rotate by angPos → translate by pos
+  material.positionNode = rotateByAxisAngle(iAng, positionGeometry.mul(instScale)).add(iPos);
+
+  const speedV = varying(length(velNode.element(instanceIndex).xyz)); // → fragment
+  const hiV = varying(float(isHi));
+  const t = clamp(speedV.div(speedRef), 0, 1);
+  const baseCol = oklchToLinear(mix(vec3(...LCH_SLOW), vec3(...LCH_FAST), t));
+  material.colorNode = mix(baseCol, vec3(1, 1, 1), hiV); // highlighted → white
+  material.emissiveNode = baseCol.mul(0.3); // gentle self-glow tracking the mapped colour
+
+  const mesh = new THREE.InstancedMesh(geometry, material, n); // instanceMatrix stays identity — unused
   scene.add(mesh);
-  let gpuMatrix = false;
+  let cpuMode = false;
   let lastPositions: Float32Array | null = null;
 
   // trails — GPU-resident. The compute appends each agent's position into a per-agent ring in
-  // `trailHistory`; the render draws n·(cap-1) line segments whose vertex positions are read
-  // straight from that buffer by a TSL positionNode (walking the ring from `trailHead`), with
-  // colour + opacity derived per-vertex from trail age. No CPU snapshot, no position/colour
-  // buffer-attributes — the geometry carries only a dummy `position` to set the draw count.
+  // `trailHistory`; the render draws n·(cap-1) line segments whose vertex positions are read straight
+  // from that buffer by a TSL positionNode (walking the ring from `trailHead`), colour + opacity by
+  // trail age. No CPU snapshot, no vertex attributes — setDrawRange sets the count (zero vertex memory).
   const SEGS = TRAIL_CAP - 1;
-  const PER_AGENT = SEGS * 2; // two vertices per segment (LineSegments)
+  const PER_AGENT = SEGS * 2;
   const trailVerts = n * PER_AGENT;
-  const trailHistory = new StorageBufferAttribute(n * TRAIL_CAP, 4); // vec3f, 16-byte stride (pad in .w)
-  // No per-vertex attributes at all — the positionNode pulls every vertex from the history buffer
-  // by vertexIndex (0..trailVerts-1 for a non-indexed draw), and setDrawRange sets the count (three
-  // caps the draw by drawRange when there's no index/position — getDrawParameters). Zero vertex memory.
+  const trailHistory = new StorageBufferAttribute(n * TRAIL_CAP, 4); // vec3f, 16-byte stride
   const trailGeo = new THREE.BufferGeometry();
   trailGeo.setDrawRange(0, trailVerts);
 
   const trailHead = uniform(0, "int"); // newest slot; updated each frame
   const trailCapU = uniform(TRAIL_CAP, "int");
   const histNode = storage(trailHistory, "vec4", n * TRAIL_CAP).toReadOnly();
-  // vertexIndex → (agent, age-along-trail) → ring slot → buffer index
   const vi = int(vertexIndex);
   const perAgent = int(PER_AGENT);
   const agent = vi.div(perAgent);
   const local = vi.mod(perAgent);
-  const age = local.div(int(2)).add(local.mod(int(2))); // segment endpoints → 0,1,1,2,2,…  (0 = newest)
+  const age = local.div(int(2)).add(local.mod(int(2))); // segment endpoints → 0,1,1,2,2,… (0 = newest)
   const slot = trailHead.sub(age).add(trailCapU).mod(trailCapU); // walk back through the ring
   const idx = agent.mul(trailCapU).add(slot);
   const ageFrac = varying(float(age).div(float(TRAIL_CAP - 1))); // 0 newest → 1 oldest, interpolated
 
-  // Colour fades newest→oldest by trail age, interpolated in okLab (perceptual — an even ramp,
-  // no muddy midpoint) then converted to linear-sRGB for three's working space. Endpoints are
-  // authored as sRGB and pre-converted to okLab on the CPU (src/color/oklab), so the shader only
-  // does the perceptual lerp + okLab→linear.
-  const headLab = srgbToOklab(TRAIL_HEAD_COL);
+  const headLab = srgbToOklab(TRAIL_HEAD_COL); // endpoints pre-converted to okLab on the CPU
   const tailLab = srgbToOklab(TRAIL_TAIL_COL);
   const trailMat = new LineBasicNodeMaterial({ transparent: true, depthWrite: false, blending: THREE.AdditiveBlending });
   trailMat.positionNode = histNode.element(idx).xyz;
-  trailMat.colorNode = oklabToLinear(mix(vec3(...headLab), vec3(...tailLab), ageFrac));
+  trailMat.colorNode = oklabToLinear(mix(vec3(...headLab), vec3(...tailLab), ageFrac)); // mix in okLab → linear
   trailMat.opacityNode = oneMinus(ageFrac).pow(1.5); // fade toward the tail
   const trails = new THREE.LineSegments(trailGeo, trailMat);
   trails.frustumCulled = false;
@@ -159,55 +180,35 @@ export async function createDancerRenderer(canvas: HTMLCanvasElement, n: number)
   pairLine.visible = false;
   scene.add(pairLine);
 
-  const raycaster = new THREE.Raycaster();
-  const ndc = new THREE.Vector2();
-
-  // scratch objects
-  const m = new THREE.Matrix4();
-  const pos = new THREE.Vector3();
-  const quat = new THREE.Quaternion();
-  const axis = new THREE.Vector3();
-  const scl = new THREE.Vector3(1, 1, 1);
-  const col = new THREE.Color();
-
-  const update = (positions: Float32Array, orientations: Float32Array, speeds: Float32Array, highlight?: Highlight): void => {
+  const update = (positions: Float32Array, orientations: Float32Array, _speeds: Float32Array, highlight?: Highlight): void => {
     const count = Math.min(n, (positions.length / 3) | 0);
     lastPositions = positions;
-    const hi = highlight ? new Set(highlight.agents) : null;
-    for (let i = 0; i < count; i++) {
-      // In GPU mode the compute owns instanceMatrix (rendered straight from its buffer); we
-      // only maintain per-instance colour here. In CPU mode we compose the matrix too.
-      if (!gpuMatrix) {
-        const px = positions[i * 3] ?? 0, py = positions[i * 3 + 1] ?? 0, pz = positions[i * 3 + 2] ?? 0;
-        pos.set(px, py, pz);
-        const ax = orientations[i * 3] ?? 0, ay = orientations[i * 3 + 1] ?? 0, az = orientations[i * 3 + 2] ?? 0;
-        const angle = Math.hypot(ax, ay, az);
-        if (angle > 1e-6) {
-          axis.set(ax / angle, ay / angle, az / angle);
-          quat.setFromAxisAngle(axis, angle);
-        } else {
-          quat.identity();
-        }
-        const on = hi?.has(i) ?? false;
-        scl.setScalar(on ? 2.4 : 1);
-        m.compose(pos, quat, scl);
-        mesh.setMatrixAt(i, m);
+
+    // Highlight rides three int uniforms (hovered dancer + a hovered matrix pair = ≤3), read by the
+    // colour + scale nodes — no per-instance CPU colour upload.
+    const ag = highlight?.agents ?? [];
+    hlA.value = ag[0] ?? -1;
+    hlB.value = ag[1] ?? -1;
+    hlC.value = ag[2] ?? -1;
+
+    // GPU mode: the compute owns the state buffers (pose + traits read straight from them). CPU
+    // fallback: upload pos + orientation so the same shader renders the CPU sim (colour/scale then
+    // use the seeded vel/angVel → base values).
+    if (cpuMode) {
+      const parr = posAttr.array as Float32Array;
+      const aarr = angAttr.array as Float32Array;
+      for (let i = 0; i < count; i++) {
+        parr[i * 4] = positions[i * 3] ?? 0;
+        parr[i * 4 + 1] = positions[i * 3 + 1] ?? 0;
+        parr[i * 4 + 2] = positions[i * 3 + 2] ?? 0;
+        aarr[i * 4] = orientations[i * 3] ?? 0;
+        aarr[i * 4 + 1] = orientations[i * 3 + 1] ?? 0;
+        aarr[i * 4 + 2] = orientations[i * 3 + 2] ?? 0;
       }
-      const on = hi?.has(i) ?? false;
-      if (on) {
-        col.setRGB(1, 1, 1);
-      } else {
-        const t = Math.min(1, (speeds[i] ?? 0) / 1.2);
-        col.setRGB(0.35 + 0.5 * t, 0.55 + 0.35 * t, 0.9 + 0.1 * t);
-      }
-      mesh.setColorAt(i, col);
+      posAttr.needsUpdate = true;
+      angAttr.needsUpdate = true;
     }
     mesh.count = count;
-    if (!gpuMatrix) mesh.instanceMatrix.needsUpdate = true;
-    if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
-
-    // (trails are GPU-resident now — the compute writes the history ring and the render reads it;
-    // nothing to do here. `setTrailHead` points the shader at the newest slot each frame.)
 
     // pair line
     const pair = highlight?.pair ?? null;
@@ -234,60 +235,50 @@ export async function createDancerRenderer(canvas: HTMLCanvasElement, n: number)
     camera.updateProjectionMatrix();
   };
 
+  // Picking: the pose lives in GPU buffers (instanceMatrix is unused, geometry is shader-deformed),
+  // so raycasting can't see it — pick the nearest projected dancer from the latest CPU position snapshot.
   const pickVec = new THREE.Vector3();
   const pick = (ndcX: number, ndcY: number): number | null => {
-    // GPU mode: instanceMatrix.array is stale (compute writes the GPU buffer), so raycasting
-    // won't work — pick the nearest projected dancer from the latest CPU positions instead.
-    if (gpuMatrix && lastPositions) {
-      const count = Math.min(n, (lastPositions.length / 3) | 0);
-      let best: number | null = null;
-      let bestD = 0.03; // NDC radius
-      for (let i = 0; i < count; i++) {
-        pickVec.set(lastPositions[i * 3] ?? 0, lastPositions[i * 3 + 1] ?? 0, lastPositions[i * 3 + 2] ?? 0).project(camera);
-        if (pickVec.z < -1 || pickVec.z > 1) continue;
-        const dx = pickVec.x - ndcX, dy = pickVec.y - ndcY;
-        const dist = Math.hypot(dx, dy);
-        if (dist < bestD) {
-          bestD = dist;
-          best = i;
-        }
+    if (!lastPositions) return null;
+    const count = Math.min(n, (lastPositions.length / 3) | 0);
+    let best: number | null = null;
+    let bestD = 0.03; // NDC radius
+    for (let i = 0; i < count; i++) {
+      pickVec.set(lastPositions[i * 3] ?? 0, lastPositions[i * 3 + 1] ?? 0, lastPositions[i * 3 + 2] ?? 0).project(camera);
+      if (pickVec.z < -1 || pickVec.z > 1) continue;
+      const dx = pickVec.x - ndcX, dy = pickVec.y - ndcY;
+      const dist = Math.hypot(dx, dy);
+      if (dist < bestD) {
+        bestD = dist;
+        best = i;
       }
-      return best;
     }
-    ndc.set(ndcX, ndcY);
-    raycaster.setFromCamera(ndc, camera);
-    const hits = raycaster.intersectObject(mesh);
-    const hit = hits[0];
-    return hit && hit.instanceId !== undefined ? hit.instanceId : null;
+    return best;
   };
 
-  const setGpuMatrix = (on: boolean): void => {
-    gpuMatrix = on;
+  const setCpuMode = (on: boolean): void => {
+    cpuMode = on;
   };
 
   const isInteracting = (): boolean => now() < interactUntil;
 
-  const gpuInstanceMatrixBuffer = async (): Promise<GPUBuffer | null> => {
-    // The attribute's GPUBuffer is created on first render; ensure one has happened.
+  const rawBuffer = (attr: object): GPUBuffer | undefined => {
     const backend = renderer.backend as unknown as { get(o: object): { buffer?: GPUBuffer } | undefined };
-    let data = backend.get(mesh.instanceMatrix);
-    if (!data?.buffer) {
-      await renderer.renderAsync(scene, camera);
-      data = backend.get(mesh.instanceMatrix);
-    }
-    return data?.buffer ?? null;
+    return backend.get(attr)?.buffer;
+  };
+
+  const gpuStateBuffers = async (): Promise<RenderStateBuffers | null> => {
+    // The storage buffers are created when the cone material (whose nodes reference them) first renders.
+    const attrs = [posAttr, angAttr, velAttr, angVelAttr];
+    if (attrs.some((a) => !rawBuffer(a))) await renderer.renderAsync(scene, camera);
+    const pos = rawBuffer(posAttr), angPos = rawBuffer(angAttr), vel = rawBuffer(velAttr), angVel = rawBuffer(angVelAttr);
+    if (!pos || !angPos || !vel || !angVel) return null;
+    return { pos, angPos, vel, angVel };
   };
 
   const gpuTrailBuffer = async (): Promise<GPUBuffer | null> => {
-    // Same lazy-materialisation as instanceMatrix: the storage buffer for `trailHistory` is
-    // created when the trail material is first rendered (its positionNode references it).
-    const backend = renderer.backend as unknown as { get(o: object): { buffer?: GPUBuffer } | undefined };
-    let data = backend.get(trailHistory);
-    if (!data?.buffer) {
-      await renderer.renderAsync(scene, camera);
-      data = backend.get(trailHistory);
-    }
-    return data?.buffer ?? null;
+    if (!rawBuffer(trailHistory)) await renderer.renderAsync(scene, camera);
+    return rawBuffer(trailHistory) ?? null;
   };
 
   const trailCapacity = (): number => TRAIL_CAP;
@@ -306,5 +297,18 @@ export async function createDancerRenderer(canvas: HTMLCanvasElement, n: number)
     renderer.dispose();
   };
 
-  return { renderer, update, render, resize, pick, setGpuMatrix, gpuInstanceMatrixBuffer, isInteracting, gpuTrailBuffer, trailCapacity, setTrailHead, dispose };
+  return {
+    renderer,
+    update,
+    render,
+    resize,
+    pick,
+    gpuStateBuffers,
+    setCpuMode,
+    isInteracting,
+    gpuTrailBuffer,
+    trailCapacity,
+    setTrailHead,
+    dispose,
+  };
 }
