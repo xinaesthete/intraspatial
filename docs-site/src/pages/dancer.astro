@@ -1,0 +1,63 @@
+---
+// A standalone, full-bleed artefact page (outside the Starlight docs chrome): a live 3D
+// Ceilidh of force-fields on three.js's WebGPU backend. See src/components/dancer/*.
+import Dancer from "../components/dancer/Dancer.tsx";
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>A Ceilidh of force-fields — after DANCERL (1992)</title>
+    <meta
+      name="description"
+      content="A live 3D reconstruction of Andy Lomas's 1992 DANCERL force-field motion controller — the algorithm, not the surface."
+    />
+    <style is:global>
+      :root { color-scheme: dark; }
+      html, body { margin: 0; height: 100%; background: #05070d; color: #cdd6e6; overflow: hidden; font-family: ui-sans-serif, system-ui, sans-serif; }
+      .dancer-root, .dancer-stage { position: fixed; inset: 0; }
+      .dancer-stage { background: radial-gradient(120% 120% at 50% 30%, #0b1120 0%, #05070d 70%); }
+      .dancer-canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+
+      .dancer-hud { position: absolute; top: 0; left: 0; right: 0; display: flex; align-items: center; justify-content: space-between; padding: 14px 18px; pointer-events: none; }
+      .dancer-figure { font-size: 15px; letter-spacing: 0.04em; text-transform: capitalize; color: #dbe6ff; text-shadow: 0 1px 6px #000a; }
+      .dancer-figure-label { color: #7d8aa8; text-transform: uppercase; font-size: 11px; letter-spacing: 0.14em; margin-right: 6px; }
+      .dancer-fs { pointer-events: auto; background: #121a2e99; color: #cdd6e6; border: 1px solid #2a3550; border-radius: 8px; padding: 6px 12px; font-size: 13px; cursor: pointer; backdrop-filter: blur(6px); }
+      .dancer-fs:hover { background: #1b2540cc; border-color: #3a4a70; }
+
+      .dancer-matrix { position: absolute; right: 16px; bottom: 16px; text-align: center; opacity: 0.9; }
+      .dancer-matrix-canvas { width: 132px; height: 132px; image-rendering: pixelated; border: 1px solid #263149; border-radius: 6px; background: #0a0f1c; }
+      .dancer-matrix-cap { font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase; color: #6b788f; margin-top: 5px; }
+
+      .dancer-about { position: absolute; left: 16px; bottom: 16px; max-width: 340px; background: #0a101fcc; border: 1px solid #223052; border-radius: 12px; padding: 16px 18px 14px; backdrop-filter: blur(8px); }
+      .dancer-about h1 { font-size: 17px; margin: 0 0 8px; color: #eaf1ff; font-weight: 600; }
+      .dancer-about p { font-size: 13px; line-height: 1.55; margin: 0 0 8px; color: #b6c2da; }
+      .dancer-about em { color: #d7e2ff; font-style: italic; }
+      .dancer-about-note { color: #7f8ca8 !important; font-size: 12px !important; }
+      .dancer-about-close { position: absolute; top: 8px; right: 10px; background: none; border: none; color: #6b788f; font-size: 18px; cursor: pointer; line-height: 1; }
+      .dancer-about-open { position: absolute; left: 16px; bottom: 16px; background: #0a101fcc; color: #b6c2da; border: 1px solid #223052; border-radius: 8px; padding: 6px 12px; font-size: 12px; cursor: pointer; }
+
+      .dancer-overlay { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; text-align: center; padding: 2rem; font-size: 15px; color: #9fb0d0; }
+
+      .dancer-hud-right { display: flex; gap: 8px; pointer-events: auto; }
+
+      .breed-strip { position: absolute; left: 50%; transform: translateX(-50%); bottom: 16px; background: #0a101fe6; border: 1px solid #223052; border-radius: 12px; padding: 12px 14px; backdrop-filter: blur(8px); }
+      .breed-cells { display: flex; gap: 8px; }
+      .breed-cell { padding: 0; border: 1px solid #263149; border-radius: 8px; background: #060a14; cursor: pointer; line-height: 0; transition: border-color 0.12s, box-shadow 0.12s; }
+      .breed-cell:hover { border-color: #3a4a70; }
+      .breed-cell.sel { border-color: #7fb0ff; box-shadow: 0 0 0 2px #7fb0ff55; }
+      .breed-cell canvas { width: 96px; height: 96px; border-radius: 7px; display: block; }
+      .breed-controls { display: flex; align-items: center; gap: 8px; margin-top: 10px; }
+      .breed-controls button { background: #121a2e; color: #cdd6e6; border: 1px solid #2a3550; border-radius: 8px; padding: 5px 11px; font-size: 13px; cursor: pointer; }
+      .breed-controls button:hover:not(:disabled) { background: #1b2540; }
+      .breed-controls button:disabled { opacity: 0.4; cursor: default; }
+      .breed-hint { margin-left: auto; font-size: 12px; color: #7f8ca8; }
+      .breed-hint em { color: #aab6d2; font-style: italic; }
+    </style>
+  </head>
+  <body>
+    <Dancer client:only="react" />
+  </body>
+</html>

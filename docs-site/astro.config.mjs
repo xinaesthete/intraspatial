@@ -4,6 +4,9 @@ import starlight from '@astrojs/starlight';
 import react from '@astrojs/react';
 import remarkMath from 'remark-math';
 import rehypeKatex from 'rehype-katex';
+// Transpiles `"use gpu"` TypeGPU kernels (tgpu.fn / computeFn) to WGSL at build time — the
+// dancer's GPU-resident sim (src/gpu/sim/dancerGpu.ts) needs it, same as vitest.gpu.config.ts.
+import typegpu from 'unplugin-typegpu/vite';
 
 // https://astro.build/config
 export default defineConfig({
@@ -16,7 +19,7 @@ export default defineConfig({
   // Let components import the toolbox's own source (one level up, e.g.
   // `../../../src/spatial/...`) so demos are driven by the real library code
   // rather than re-ported copies.
-  vite: { server: { fs: { allow: ['..'] } } },
+  vite: { server: { fs: { allow: ['..'] } }, plugins: [typegpu()] },
   integrations: [
     react(),
     starlight({

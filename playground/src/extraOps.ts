@@ -27,6 +27,7 @@ import {
   divergenceOp,
   structureOrientationOp,
 } from "../../src/gpu/graph/ops/fieldCalculus";
+import { FORCE_OPS } from "../../src/gpu/graph/ops/danceForces";
 
 /** Idempotently register the element-algebra and wavelet op packs. Guards on the
  *  registry's actual state (`hasOp`) rather than a module-local flag, so it survives
@@ -39,6 +40,7 @@ export function registerExtraOps(): void {
     reactionDiffusionComplexOp,
     fdwtOp, idwtOp, thresholdDetailOp,
     gradientOp, gradientMagnitudeOp, laplacianOp, divergenceOp, structureOrientationOp,
+    ...FORCE_OPS,
   ];
   for (const op of ops) if (!hasOp(op.name)) registerOp(op);
 }

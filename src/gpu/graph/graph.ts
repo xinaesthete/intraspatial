@@ -41,6 +41,13 @@ export interface FeedbackHandle {
   close(next: GpuField): void;
 }
 
+/** Handle returned by `Graph.delay`: the `depth`-ticks-delayed `out` output, plus `close`
+ *  to wire the value pushed into the history each tick. */
+export interface DelayHandle {
+  out: GpuField;
+  close(next: GpuField): void;
+}
+
 let fieldSeq = 0;
 
 export class Graph {
@@ -96,6 +103,30 @@ export class Graph {
     const state = makeField(id, "state", init.shape, init.dtype, init.element ?? SCALAR, init.basis ?? SPATIAL);
     return {
       state,
+      close: (next: GpuField) => {
+        node.inputs.next = { node: next.producer, port: next.outPort };
+      },
+    };
+  }
+
+  /** A `depth`-deep delay (z⁻ᵏ) — generalises `feedback` (which is `depth` 1). Outputs the
+   *  value from `depth` ticks ago (seeded by `init`); `close(next)` wires what is pushed
+   *  into its history ring each tick. Holds `depth` copies of the field resident (see
+   *  `simStateBytes`). `key` is the store key, stable across rebuilds. */
+  delay(init: GpuField, depth: number, key?: string): DelayHandle {
+    const id = this.nextNodeId("delay");
+    const node: GraphNode = {
+      id,
+      op: "delay",
+      params: { depth },
+      inputs: { init: { node: init.producer, port: init.outPort } },
+      stableKey: key ?? id,
+      outBases: [init.basis ?? SPATIAL],
+    };
+    this.nodes.set(id, node);
+    const out = makeField(id, "out", init.shape, init.dtype, init.element ?? SCALAR, init.basis ?? SPATIAL);
+    return {
+      out,
       close: (next: GpuField) => {
         node.inputs.next = { node: next.producer, port: next.outPort };
       },

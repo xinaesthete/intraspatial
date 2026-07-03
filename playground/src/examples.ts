@@ -49,6 +49,68 @@ export function reactionDiffusionExample(): Example {
   return { label: "Reaction–diffusion (complex)", nodes, edges, sink: { node: "rd", port: "state" } };
 }
 
+// Ceilidh dancer — the DANCERL force field *composed from building blocks* rather than
+// one monolithic op. A swarm body (rigid-body agents) feeds a delay node; bodyTap exposes
+// pos/vel; several force ops (containment, cohesion, separation, orbit) each emit a
+// per-agent acceleration; those are summed (addFields) and fed to the rigid-body
+// integrator, whose next body closes the loop. Each force node's params are breedable
+// traits (src/evo). Preview the integrator's `swarm` output (a top-down scatter); the
+// dedicated 3D view + the Ceilidh caller (figures, partner progression) come in the app.
+export function ceilidhExample(): Example {
+  const nodes: Node[] = [
+    node("seed", "swarmSeed", 20, 320),
+    node("fb", "feedback", 200, 320),
+    node("tap", "bodyTap", 360, 320),
+    // the caller's clock (frame counter)
+    node("cstart", "clockStart", 20, 560),
+    node("cfb", "feedback", 200, 560),
+    node("clock", "clock", 360, 560),
+    // forces
+    node("constrain", "constrain", 560, 40),
+    node("cohere", "cohere", 560, 150),
+    node("separate", "separate", 560, 260),
+    node("caller", "caller", 560, 380),
+    node("partner", "partnerOrbit", 560, 520),
+    // sum the forces
+    node("sum1", "addFields", 780, 100),
+    node("sum2", "addFields", 780, 210),
+    node("sum3", "addFields", 780, 330),
+    node("sum4", "addFields", 780, 450),
+    node("integ", "integrate", 1000, 320),
+  ];
+  const edges: Edge[] = [
+    e("e-seed", "seed", "body", "fb", "init"),
+    e("e-tap", "fb", "state", "tap", "body"),
+    // clock loop
+    e("e-cs", "cstart", "t", "cfb", "init"),
+    e("e-ck", "cfb", "state", "clock", "prev"),
+    e("e-ckb", "clock", "t", "cfb", "next"),
+    // force inputs
+    e("e-cp", "tap", "pos", "constrain", "pos"),
+    e("e-hp", "tap", "pos", "cohere", "pos"),
+    e("e-sp", "tap", "pos", "separate", "pos"),
+    e("e-lp", "tap", "pos", "caller", "pos"),
+    e("e-lv", "tap", "vel", "caller", "vel"),
+    e("e-lf", "clock", "t", "caller", "frame"),
+    e("e-pp", "tap", "pos", "partner", "pos"),
+    e("e-pv", "tap", "vel", "partner", "vel"),
+    // sum: (((constrain + cohere) + separate) + caller) + partnerOrbit
+    e("e-s1a", "constrain", "force", "sum1", "a"),
+    e("e-s1b", "cohere", "force", "sum1", "b"),
+    e("e-s2a", "sum1", "out", "sum2", "a"),
+    e("e-s2b", "separate", "force", "sum2", "b"),
+    e("e-s3a", "sum2", "out", "sum3", "a"),
+    e("e-s3b", "caller", "force", "sum3", "b"),
+    e("e-s4a", "sum3", "out", "sum4", "a"),
+    e("e-s4b", "partner", "force", "sum4", "b"),
+    // integrate + close the loop
+    e("e-ib", "fb", "state", "integ", "body"),
+    e("e-if", "sum4", "out", "integ", "force"),
+    e("e-back", "integ", "body", "fb", "next"),
+  ];
+  return { label: "Ceilidh dancer (DANCERL)", nodes, edges, sink: { node: "integ", port: "swarm" } };
+}
+
 // A reusable "Hotspots" subgraph (points → KDE density → Getis-Ord Gi*), instantiated
 // twice over two different blob sources and combined — the same definition reused, so
 // editing it (e.g. the KDE bandwidth) updates both instances at once.
@@ -145,4 +207,4 @@ export function waveletDenoiseExample(): Example {
   return { label: "Wavelet denoise", nodes, edges, sink: { node: "inv", port: "out" } };
 }
 
-export const EXAMPLES: Example[] = [reactionDiffusionExample(), reusableSubgraphExample(), waveletDenoiseExample()];
+export const EXAMPLES: Example[] = [ceilidhExample(), reactionDiffusionExample(), reusableSubgraphExample(), waveletDenoiseExample()];
