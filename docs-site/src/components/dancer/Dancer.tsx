@@ -10,7 +10,8 @@ import { drawDistanceMatrix, matrixCell } from "./matrix";
 import { createDancerRenderer, type DancerRenderer } from "./renderer";
 import { type DancerParams, DancerSim } from "./sim";
 
-const AGENTS = 180;
+const AGENT_OPTIONS = [180, 600, 1200, 2400, 4800] as const;
+const DEFAULT_AGENTS = 180;
 // The swarm runs GPU-resident on our own TypeGPU kernel (src/gpu/sim/dancerGpu), adopting
 // three.js's WebGPU device so our compute writes three's instanceMatrix buffer directly — the
 // render reads pose (position + orientation) off the GPU with no per-frame readback (smooth
@@ -28,6 +29,7 @@ export default function Dancer() {
   const [showBreed, setShowBreed] = useState(false);
   const [showMatrix, setShowMatrix] = useState(false); // hidden by default (more interesting for e.g. protein folding)
   const [paused, setPaused] = useState(false); // freeze the Ceilidh figure progression
+  const [agents, setAgents] = useState<number>(DEFAULT_AGENTS); // whole pipeline rebuilds on change
   const simRef = useRef<DancerSim | DancerGpuSim | null>(null);
   // cross-link state, read by the render loop each frame (refs → no re-render on hover)
   const hoverAgentRef = useRef<number | null>(null); // hovered dancer (3D) → matrix row
@@ -47,7 +49,7 @@ export default function Dancer() {
     let raf = 0;
     let disposed = false;
     let frame = 0;
-    const sim: DancerSim = new DancerSim(AGENTS, 1); // CPU golden (fallback + peripherals)
+    const sim: DancerSim = new DancerSim(agents, 1); // CPU golden (fallback + peripherals)
     let gpu: DancerGpuSim | null = null;
     simRef.current = sim;
 
@@ -59,7 +61,7 @@ export default function Dancer() {
 
     const cleanups: Array<() => void> = [];
 
-    createDancerRenderer(canvas, AGENTS)
+    createDancerRenderer(canvas, agents)
       .then(async (r) => {
         if (disposed) {
           r.dispose();
@@ -72,7 +74,7 @@ export default function Dancer() {
           try {
             const device = (r.renderer.backend as unknown as { device?: GPUDevice }).device;
             if (!device) throw new Error("no WebGPU device on renderer backend");
-            const g = new DancerGpuSim(device, AGENTS, 1, sim.params);
+            const g = new DancerGpuSim(device, agents, 1, sim.params);
             g.init();
             // share three's instanceMatrix GPUBuffer so the render reads pose off the GPU
             const mtxBuf = await r.gpuInstanceMatrixBuffer();
@@ -127,13 +129,13 @@ export default function Dancer() {
         // GPU path: step() enqueues the sim + writes three's instanceMatrix (no readback) —
         // the render reads pose straight off the GPU, so camera motion never stalls. A
         // low-frequency snapshot feeds the CPU-side panels (colour, trails, matrix, pick).
-        const zeros = new Float32Array(AGENTS * 3);
-        let snapPos: Float32Array = new Float32Array(AGENTS * 3);
-        let snapSpeed: Float32Array = new Float32Array(AGENTS);
+        const zeros = new Float32Array(agents * 3);
+        let snapPos: Float32Array = new Float32Array(agents * 3);
+        let snapSpeed: Float32Array = new Float32Array(agents);
         let snapping = false;
         const speedsFrom = (vel: Float32Array): Float32Array => {
-          const out = new Float32Array(AGENTS);
-          for (let i = 0; i < AGENTS; i++) out[i] = Math.hypot(vel[i * 3] ?? 0, vel[i * 3 + 1] ?? 0, vel[i * 3 + 2] ?? 0);
+          const out = new Float32Array(agents);
+          for (let i = 0; i < agents; i++) out[i] = Math.hypot(vel[i * 3] ?? 0, vel[i * 3 + 1] ?? 0, vel[i * 3 + 2] ?? 0);
           return out;
         };
 
@@ -141,9 +143,9 @@ export default function Dancer() {
           if (disposed || !renderer) return;
           const ha = hoverAgentRef.current;
           const hc = hoverCellRef.current;
-          const agents: number[] = [];
-          if (ha !== null) agents.push(ha);
-          if (hc) agents.push(hc[0], hc[1]);
+          const highlightAgents: number[] = [];
+          if (ha !== null) highlightAgents.push(ha);
+          if (hc) highlightAgents.push(hc[0], hc[1]);
 
           if (gpu) {
             gpu.step(); // advance + write instanceMatrix on the GPU (no readback)
@@ -164,14 +166,14 @@ export default function Dancer() {
                   snapping = false;
                 });
             }
-            renderer.update(snapPos, zeros, snapSpeed, { agents, pair: hc });
+            renderer.update(snapPos, zeros, snapSpeed, { agents: highlightAgents, pair: hc });
             renderer.render();
             if (matrixRef.current && showMatrixRef.current) drawDistanceMatrix(matrixRef.current, snapPos, gpu.n, { row: ha, pair: hc });
             if (frame % 15 === 0) setFigure(gpu.currentFigure());
           } else {
             sim.step();
             const p = sim.positions();
-            renderer.update(p, sim.orientations(), sim.speeds(), { agents, pair: hc });
+            renderer.update(p, sim.orientations(), sim.speeds(), { agents: highlightAgents, pair: hc });
             renderer.render();
             if (matrixRef.current && showMatrixRef.current) drawDistanceMatrix(matrixRef.current, p, sim.n, { row: ha, pair: hc });
             if (frame % 15 === 0) setFigure(sim.currentFigure());
@@ -196,7 +198,7 @@ export default function Dancer() {
       for (const c of cleanups) c();
       renderer?.dispose();
     };
-  }, []);
+  }, [agents]); // rebuild the whole pipeline (renderer + sim + buffers) when the agent count changes
 
   useEffect(() => {
     showMatrixRef.current = showMatrix;
@@ -223,6 +225,20 @@ export default function Dancer() {
             <span className="dancer-figure-label">figure</span> {figure}
           </div>
           <div className="dancer-hud-right">
+            <label className="dancer-fs" title="number of dancers — rebuilds the simulation">
+              ⦿{" "}
+              <select
+                value={agents}
+                onChange={(e) => setAgents(Number(e.target.value))}
+                style={{ background: "transparent", border: "none", color: "inherit", font: "inherit", cursor: "pointer" }}
+              >
+                {AGENT_OPTIONS.map((n) => (
+                  <option key={n} value={n}>
+                    {n}
+                  </option>
+                ))}
+              </select>
+            </label>
             <button type="button" className="dancer-fs" onClick={() => setPaused((v) => !v)} aria-pressed={paused} title="hold the current Ceilidh figure (motion keeps running)">
               {paused ? "▶ resume figures" : "⏸ hold figure"}
             </button>

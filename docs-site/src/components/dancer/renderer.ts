@@ -164,12 +164,16 @@ export async function createDancerRenderer(canvas: HTMLCanvasElement, n: number)
     if (!gpuMatrix) mesh.instanceMatrix.needsUpdate = true;
     if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
 
-    // trails
-    trail.push(positions);
-    const verts = trail.fillSegments(trailPos.array as Float32Array, trailCol.array as Float32Array, TRAIL_HEAD);
-    trailGeo.setDrawRange(0, verts);
-    trailPos.needsUpdate = true;
-    trailCol.needsUpdate = true;
+    // trails — only record a well-formed frame (a short or non-finite `positions`, e.g. a
+    // transient during a rebuild/readback, would otherwise throw in push/fillSegments and kill
+    // the whole render loop → trails vanish). Skip the frame instead; the trail just holds.
+    if (positions.length >= n * 3 && Number.isFinite(positions[0]) && Number.isFinite(positions[(count - 1) * 3])) {
+      trail.push(positions);
+      const verts = trail.fillSegments(trailPos.array as Float32Array, trailCol.array as Float32Array, TRAIL_HEAD);
+      trailGeo.setDrawRange(0, verts);
+      trailPos.needsUpdate = true;
+      trailCol.needsUpdate = true;
+    }
 
     // pair line
     const pair = highlight?.pair ?? null;
