@@ -1,0 +1,213 @@
+// Dual view (ADR-0008): the real app on the left, the decision illustration inset on
+// the right — both live, both independently orbitable. The MAIN camera is the app/
+// select camera: it renders the real data (textured plane / raymarched volume) exactly
+// as an app would, and *its* view drives the pure select(). The INSET is a third-person
+// camera watching that select camera's frustum slice through the level-tinted chunk grid.
+// One WebGPURenderer, two scissor viewports, three.js layers to split the content
+// (data = layer 0, seen by both; overlays = layer 1, inset only).
+import * as THREE from "three";
+import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
+import { WebGPURenderer } from "three/webgpu";
+import { cross, dot, frustumCorners, normalize, select, sub, worldAabbOfArrayBox, type Aabb, type Camera, type Loader, type Multiscale, type Selection, type Vec3 } from "../../../src/datasource";
+import { boundsOverlay, chunkOverlays, disposeGroup, frustumOverlay } from "./overlays";
+import { TileRenderer } from "./tileRenderer";
+import { VolumeRenderer } from "./volumeRenderer";
+
+export interface DecisionStats {
+  q: number;
+  chunkCount: number;
+  totalBytes: number;
+  countByLevel: readonly number[];
+}
+
+const OVERLAY_LAYER = 1;
+const INSET_W = 340, INSET_H = 250, INSET_M = 16;
+
+function cameraFromThree(cam: THREE.PerspectiveCamera, viewportHeightPx: number): Camera {
+  const fwd = new THREE.Vector3();
+  cam.getWorldDirection(fwd);
+  return {
+    eye: [cam.position.x, cam.position.y, cam.position.z],
+    forward: [fwd.x, fwd.y, fwd.z],
+    up: [cam.up.x, cam.up.y, cam.up.z],
+    fovY: (cam.fov * Math.PI) / 180,
+    aspect: cam.aspect,
+    near: cam.near,
+    far: cam.far,
+    viewportHeightPx,
+  };
+}
+
+export class DualView {
+  private renderer: WebGPURenderer;
+  private scene = new THREE.Scene();
+  private appCamera: THREE.PerspectiveCamera; // main = select/app camera
+  private decisionCamera: THREE.PerspectiveCamera; // inset overview
+  private appControls: OrbitControls;
+  private decisionControls: OrbitControls;
+  private overlays = new THREE.Group();
+  private ms: Multiscale;
+  private loader: Loader;
+  private bounds: Aabb;
+  private isPlane: boolean;
+  private center: THREE.Vector3;
+  private size: number;
+
+  private tiles: TileRenderer | null = null;
+  private volume: VolumeRenderer | null = null;
+  private q = 1;
+  private showTextures = true;
+  private showWireframe = true;
+  private dirty = true;
+  private disposed = false;
+  private width = 1;
+  private height = 1;
+  private onStats?: (s: DecisionStats) => void;
+
+  constructor(canvas: HTMLCanvasElement, insetEl: HTMLElement, source: { ms: Multiscale; loader: Loader }, onStats?: (s: DecisionStats) => void) {
+    const ms = source.ms;
+    this.ms = ms;
+    this.loader = source.loader;
+    this.onStats = onStats;
+    this.renderer = new WebGPURenderer({ canvas, antialias: true, alpha: true });
+    this.renderer.autoClear = false;
+
+    const b = worldAabbOfArrayBox(ms.worldFromArray, [0, 0, 0], [ms.voxelDims0[0], ms.voxelDims0[1], ms.voxelDims0[2]]);
+    this.bounds = b;
+    this.isPlane = ms.voxelDims0[2] === 1;
+    this.center = new THREE.Vector3((b.min[0] + b.max[0]) / 2, (b.min[1] + b.max[1]) / 2, (b.min[2] + b.max[2]) / 2);
+    this.size = Math.max(b.max[0] - b.min[0], b.max[1] - b.min[1], b.max[2] - b.min[2]) || 1;
+    const s = this.size, c = this.center;
+
+    // App camera: front-on for a plane, outside-diagonal for a volume.
+    this.appCamera = new THREE.PerspectiveCamera(50, 1, s * 0.002, s * 30);
+    if (this.isPlane) {
+      const ax = ms.worldFromArray.axes;
+      const normal = normalize(cross([ax[0][0], ax[0][1], ax[0][2]], [ax[1][0], ax[1][1], ax[1][2]]));
+      this.appCamera.position.set(c.x - normal[0] * s * 1.25 + s * 0.12, c.y + s * 0.18, c.z - normal[2] * s * 1.25 - s * 0.6);
+    } else {
+      this.appCamera.position.set(c.x + s * 0.9, c.y + s * 0.7, c.z - s * 1.6);
+    }
+    this.appControls = new OrbitControls(this.appCamera, canvas);
+    this.appControls.enableDamping = true;
+    this.appControls.dampingFactor = 0.08;
+    this.appControls.target.copy(c);
+    this.appControls.addEventListener("change", () => { this.dirty = true; });
+
+    // Decision (inset) camera: pulled back to see the data AND the app frustum.
+    this.decisionCamera = new THREE.PerspectiveCamera(45, INSET_W / INSET_H, s * 0.01, s * 60);
+    this.decisionCamera.position.set(c.x + s * 1.9, c.y + s * 1.5, c.z - s * 2.8);
+    this.decisionCamera.layers.enable(OVERLAY_LAYER); // sees data (0) + overlays (1)
+    this.decisionControls = new OrbitControls(this.decisionCamera, insetEl);
+    this.decisionControls.enableDamping = true;
+    this.decisionControls.dampingFactor = 0.08;
+    this.decisionControls.target.copy(c);
+
+    const bounds = boundsOverlay(ms);
+    bounds.layers.set(OVERLAY_LAYER);
+    this.scene.add(bounds);
+    if (this.isPlane) {
+      this.tiles = new TileRenderer(ms, this.loader);
+      this.scene.add(this.tiles.group);
+    } else {
+      this.volume = new VolumeRenderer(ms, this.loader);
+      this.scene.add(this.volume.group);
+    }
+    this.scene.add(this.overlays);
+    this.resize(canvas.clientWidth, canvas.clientHeight);
+  }
+
+  setQ(q: number): void { this.q = q; this.dirty = true; }
+  setTextures(on: boolean): void {
+    this.showTextures = on;
+    if (this.tiles) this.tiles.group.visible = on;
+    if (this.volume) this.volume.group.visible = on;
+    this.dirty = true;
+  }
+  setWireframe(on: boolean): void { this.showWireframe = on; this.dirty = true; }
+
+  resize(width: number, height: number): void {
+    this.width = width;
+    this.height = height;
+    this.appCamera.aspect = width / Math.max(1, height);
+    this.appCamera.updateProjectionMatrix();
+    this.renderer.setPixelRatio(Math.min(2, window.devicePixelRatio || 1));
+    this.renderer.setSize(width, height, false);
+    this.dirty = true;
+  }
+
+  private dataCorners(): Vec3[] {
+    const b = this.bounds;
+    const out: Vec3[] = [];
+    for (let i = 0; i < 8; i++) out.push([i & 1 ? b.max[0] : b.min[0], i & 2 ? b.max[1] : b.min[1], i & 4 ? b.max[2] : b.min[2]]);
+    return out;
+  }
+
+  private rebuild(): Selection {
+    const ds = cameraFromThree(this.appCamera, this.height || 600);
+    const sel = select(this.ms, ds, { q: this.q });
+
+    disposeGroup(this.overlays);
+    this.overlays.clear();
+    if (this.showWireframe) this.overlays.add(chunkOverlays(this.ms, sel));
+    // Draw the app camera's frustum, sized to the data slab.
+    let dmin = Infinity, dmax = -Infinity;
+    for (const p of this.dataCorners()) {
+      const d = dot(sub(p, ds.eye), ds.forward);
+      if (d < dmin) dmin = d;
+      if (d > dmax) dmax = d;
+    }
+    const nearViz = Math.max(this.size * 0.02, dmin * 0.6);
+    this.overlays.add(frustumOverlay(frustumCorners(ds, nearViz, Math.max(nearViz + this.size * 0.1, dmax)), ds.eye, ds.forward));
+    this.overlays.traverse((o) => o.layers.set(OVERLAY_LAYER));
+
+    if (this.tiles && this.showTextures) this.tiles.update(sel);
+    if (this.volume && this.showTextures) this.volume.update(sel);
+    return sel;
+  }
+
+  private renderInsetRect(): { x: number; y: number; w: number; h: number } {
+    // WebGPURenderer's viewport/scissor origin is top-left here, so y measures from the top —
+    // matches the #inset div (CSS bottom-right).
+    return { x: this.width - INSET_W - INSET_M, y: this.height - INSET_H - INSET_M, w: INSET_W, h: INSET_H };
+  }
+
+  async start(): Promise<void> {
+    await this.renderer.init();
+    this.renderer.setAnimationLoop(() => {
+      if (this.disposed) return;
+      this.appControls.update();
+      this.decisionControls.update();
+      if (this.dirty) {
+        this.dirty = false;
+        const sel = this.rebuild();
+        this.onStats?.({ q: this.q, chunkCount: sel.chunks.length, totalBytes: sel.totalApproxBytes, countByLevel: sel.countByLevel });
+      }
+      // Main pass: app camera, full canvas, data only (layer 0).
+      this.renderer.setScissorTest(false);
+      this.renderer.setViewport(0, 0, this.width, this.height);
+      this.renderer.setClearColor(0x0b1020, 1);
+      this.renderer.clear();
+      this.renderer.render(this.scene, this.appCamera);
+      // Inset pass: decision camera, its own scissor region, data + overlays (layer 1).
+      const r = this.renderInsetRect();
+      this.renderer.setScissorTest(true);
+      this.renderer.setScissor(r.x, r.y, r.w, r.h);
+      this.renderer.setViewport(r.x, r.y, r.w, r.h);
+      this.renderer.setClearColor(0x0a0f1c, 1);
+      this.renderer.clear();
+      this.renderer.render(this.scene, this.decisionCamera);
+    });
+  }
+
+  dispose(): void {
+    this.disposed = true;
+    this.renderer.setAnimationLoop(null);
+    this.appControls.dispose();
+    this.decisionControls.dispose();
+    disposeGroup(this.overlays);
+    this.tiles?.dispose();
+    this.volume?.dispose();
+    this.renderer.dispose();
+  }
+}

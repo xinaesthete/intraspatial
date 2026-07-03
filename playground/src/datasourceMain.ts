@@ -1,8 +1,8 @@
 // Plain-TS host for the Decision view (no React — the "thin illustrative host shell"
-// of ADR-0008 §8). Wires the HTML controls to a framework-free DecisionView over a
+// of ADR-0008 §8). Wires the HTML controls to a framework-free DualView over a
 // synthetic source, and renders the live fetch-budget HUD.
 import { syntheticPlane, syntheticVolume, type SyntheticSource } from "../../src/datasource";
-import { DecisionView, type DecisionStats } from "./datasource/decisionView";
+import { DualView, type DecisionStats } from "./datasource/dualView";
 import { levelColor } from "./datasource/overlays";
 
 const $ = <T extends HTMLElement>(id: string): T => {
@@ -12,13 +12,11 @@ const $ = <T extends HTMLElement>(id: string): T => {
 };
 
 const canvas = $<HTMLCanvasElement>("stage");
+const inset = $("inset");
 const qSlider = $<HTMLInputElement>("q");
 const qVal = $("qval");
-const distSlider = $<HTMLInputElement>("dist");
-const distVal = $("distval");
-const pitchSlider = $<HTMLInputElement>("pitch");
-const pitchVal = $("pitchval");
-const animChk = $<HTMLInputElement>("anim");
+const pLevels = $<HTMLInputElement>("plevels");
+const pLevelsVal = $("plevelsval");
 const texChk = $<HTMLInputElement>("tex");
 const gridChk = $<HTMLInputElement>("grid");
 const sourceSel = $<HTMLSelectElement>("source");
@@ -52,17 +50,17 @@ function renderStats(s: DecisionStats, levelCount: number): void {
   });
 }
 
-let view: DecisionView | null = null;
+let view: DualView | null = null;
 
 async function mount(kind: string): Promise<void> {
   view?.dispose();
   errEl.textContent = "";
-  const source: SyntheticSource = kind === "volume" ? syntheticVolume() : syntheticPlane();
-  view = new DecisionView(canvas, source, (s) => renderStats(s, source.ms.levelCount));
+  const levelCount = Number(pLevels.value);
+  const source: SyntheticSource = kind === "volume"
+    ? syntheticVolume({ size: 256, chunk: 32, levelCount })
+    : syntheticPlane({ width: 2048, height: 2048, chunk: 64, levelCount });
+  view = new DualView(canvas, inset, source, (s) => renderStats(s, source.ms.levelCount));
   view.setQ(Number(qSlider.value));
-  view.setSelectDistance(Number(distSlider.value));
-  view.setSelectPitch(Number(pitchSlider.value));
-  view.setAnimate(animChk.checked);
   view.setTextures(texChk.checked);
   view.setWireframe(gridChk.checked);
   try {
@@ -83,15 +81,8 @@ qSlider.addEventListener("input", () => {
   qVal.textContent = Number(qSlider.value).toFixed(2);
   view?.setQ(Number(qSlider.value));
 });
-distSlider.addEventListener("input", () => {
-  distVal.textContent = Number(distSlider.value).toFixed(2);
-  view?.setSelectDistance(Number(distSlider.value));
-});
-pitchSlider.addEventListener("input", () => {
-  pitchVal.textContent = String(Math.round(Number(pitchSlider.value)));
-  view?.setSelectPitch(Number(pitchSlider.value));
-});
-animChk.addEventListener("change", () => view?.setAnimate(animChk.checked));
+pLevels.addEventListener("input", () => { pLevelsVal.textContent = pLevels.value; });
+pLevels.addEventListener("change", () => void mount(sourceSel.value)); // re-mount: levelCount is baked into the Multiscale
 texChk.addEventListener("change", () => view?.setTextures(texChk.checked));
 gridChk.addEventListener("change", () => view?.setWireframe(gridChk.checked));
 sourceSel.addEventListener("change", () => void mount(sourceSel.value));

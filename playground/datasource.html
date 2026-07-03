@@ -29,14 +29,25 @@
       .lv { display: inline-flex; align-items: center; gap: 5px; font-variant-numeric: tabular-nums; }
       .sw { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
       #err { color: #fca5a5; margin-top: 8px; white-space: pre-wrap; }
+      #inset {
+        position: fixed; right: 16px; bottom: 16px; width: 340px; height: 250px;
+        border: 1px solid #334155; border-radius: 8px; box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+        cursor: grab;
+      }
+      #inset:active { cursor: grabbing; }
+      #inset .inset-label {
+        position: absolute; top: 6px; left: 8px; font-size: 10px; letter-spacing: 0.08em;
+        text-transform: uppercase; color: #38bdf8; pointer-events: none;
+      }
     </style>
   </head>
   <body>
     <div id="app">
       <canvas id="stage"></canvas>
+      <div id="inset"><span class="inset-label">decision</span></div>
       <div id="panel">
         <h1>Decision view</h1>
-        <p class="sub">The cyan frustum is the <b>select</b> camera; its chunks are tinted by chosen level. Drag to orbit the <b>view</b>.</p>
+        <p class="sub">Left: the real app view — drag to orbit; the data reloads at the LOD your view demands. Inset (bottom-right): the decision illustration — this camera's frustum through the level-tinted chunks. Drag the inset to orbit it independently.</p>
         <div class="row">
           <label for="source">Source</label>
           <select id="source">
@@ -48,18 +59,9 @@
           <label for="q">detail budget q = <span id="qval">1.0</span></label>
           <input id="q" type="range" min="0.25" max="4" step="0.05" value="1" />
         </div>
-        <div class="section">select camera</div>
         <div class="row">
-          <label for="dist">distance = <span id="distval">0.6</span></label>
-          <input id="dist" type="range" min="0.2" max="3" step="0.05" value="0.6" />
-        </div>
-        <div class="row">
-          <label for="pitch">pitch = <span id="pitchval">14</span>°</label>
-          <input id="pitch" type="range" min="4" max="80" step="1" value="14" />
-        </div>
-        <div class="row">
-          <label for="anim">orbit the select camera</label>
-          <input id="anim" type="checkbox" />
+          <label for="plevels">pyramid levels = <span id="plevelsval">6</span></label>
+          <input id="plevels" type="range" min="3" max="9" step="1" value="6" />
         </div>
         <div class="row">
           <label for="tex">show textures</label>
