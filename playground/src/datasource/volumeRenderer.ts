@@ -1,142 +1,257 @@
-// Volume raymarch (ADR-0008 slice 2c): assemble the in-view volume at the level the
-// select camera demands into one 3D texture, and raymarch it in a world-space box with
-// a TSL shader (max-intensity projection — order-independent, so no sorting). The
-// assembled level is capped so it stays interactive; it re-assembles only when the
-// demanded level changes, so orbiting is cheap. Fetches go through the Loader like
-// everything else.
+// Volume raymarch with PER-CHUNK LOD (ADR-0008), via a brick atlas + page table —
+// the standard single-pass GPU volume-LOD technique:
+//   • resident chunk bricks are packed into one 3D texture ATLAS (slots of B³);
+//   • a low-res PAGE TABLE (one texel per finest-level chunk cell) maps a volume
+//     position → the atlas slot + level of the brick covering it;
+//   • one raymarch over the whole volume box: each step does a page-table lookup,
+//     then samples that brick in the atlas. Mixed levels compose in a single pass
+//     (cheap, no overdraw), and depth-write (later) is trivial (one fragment/pixel).
+// Bricks are uploaded into atlas slots with renderer.copyTextureToTexture (partial
+// 3D upload); the page table is tiny and re-uploaded whole per selection change.
 import * as THREE from "three";
-import { cameraPosition, float, Fn, Loop, max, min, mix, normalize, positionWorld, texture3D, uniform, vec3, vec4 } from "three/tsl";
+import { cameraPosition, clamp, exp2, float, Fn, Loop, max, min, mix, normalize, oneMinus, positionWorld, texture3D, uniform, vec3, vec4 } from "three/tsl";
 import { MeshBasicNodeMaterial } from "three/webgpu";
-import { chunkCounts, levelVoxelDims, worldAabbOfArrayBox, type Loader, type Multiscale, type Selection, type Vec3 } from "../../../src/datasource";
+import { chunkArrayBox, chunkCounts, chunkKey, levelVoxelDims, worldAabbOfArrayBox, type Loader, type Multiscale, type Selection, type Tile, type Vec3 } from "../../../src/datasource";
 
-const DIM_CAP = 128; // largest assembled edge; keeps the 3D texture interactive
-const STEPS = 96;
+const STEPS = 128;
 
-interface Volume {
-  tex: THREE.Data3DTexture;
-  boxMin: Vec3;
-  boxSize: Vec3;
-}
-
-async function assembleVolume(ms: Multiscale, loader: Loader, level: number): Promise<Volume> {
-  const [W, H, D] = levelVoxelDims(ms, level);
-  const counts = chunkCounts(ms, level);
-  const data = new Uint8Array(W * H * D);
-  const jobs: Promise<void>[] = [];
-  for (let cz = 0; cz < counts[2]; cz++) {
-    for (let cy = 0; cy < counts[1]; cy++) {
-      for (let cx = 0; cx < counts[0]; cx++) {
-        jobs.push(
-          loader.getChunk({ level, x: cx, y: cy, z: cz }).then((tile) => {
-            const [ex, ey, ez] = tile.dims;
-            const bx = cx * ms.chunkShape[0], by = cy * ms.chunkShape[1], bz = cz * ms.chunkShape[2];
-            let o = 0;
-            for (let k = 0; k < ez; k++) {
-              for (let j = 0; j < ey; j++) {
-                const row = ((bz + k) * H + (by + j)) * W + bx;
-                for (let i = 0; i < ex; i++) data[row + i] = Math.round((tile.data[o++] ?? 0) * 255);
-              }
-            }
-          }),
-        );
-      }
-    }
-  }
-  await Promise.all(jobs);
-
-  const tex = new THREE.Data3DTexture(data, W, H, D);
-  tex.format = THREE.RedFormat;
-  tex.type = THREE.UnsignedByteType;
-  tex.minFilter = THREE.LinearFilter;
-  tex.magFilter = THREE.LinearFilter;
-  tex.wrapR = tex.wrapS = tex.wrapT = THREE.ClampToEdgeWrapping;
-  tex.needsUpdate = true;
-
-  const b = worldAabbOfArrayBox(ms.worldFromArray, [0, 0, 0], [ms.voxelDims0[0], ms.voxelDims0[1], ms.voxelDims0[2]]);
-  return { tex, boxMin: b.min, boxSize: [b.max[0] - b.min[0], b.max[1] - b.min[1], b.max[2] - b.min[2]] };
-}
-
-function volumeMaterial(vol: Volume): THREE.Material {
-  const bMin = uniform(new THREE.Vector3(vol.boxMin[0], vol.boxMin[1], vol.boxMin[2]));
-  const bSize = uniform(new THREE.Vector3(vol.boxSize[0], vol.boxSize[1], vol.boxSize[2]));
-  const mat = new MeshBasicNodeMaterial();
-  mat.transparent = true;
-  mat.depthWrite = false;
-  mat.side = THREE.BackSide;
-  mat.colorNode = Fn(() => {
-    const camW = cameraPosition;
-    const dir = normalize(positionWorld.sub(camW));
-    const invDir = vec3(1.0).div(dir);
-    const t0 = bMin.sub(camW).mul(invDir);
-    const t1 = bMin.add(bSize).sub(camW).mul(invDir);
-    const tmin = min(t0, t1);
-    const tmax = max(t0, t1);
-    const tEnter = max(max(tmin.x, tmin.y), tmin.z).max(0.0);
-    const tExit = min(min(tmax.x, tmax.y), tmax.z);
-    const stepLen = tExit.sub(tEnter).div(float(STEPS));
-    const acc = float(0).toVar();
-    Loop(STEPS, ({ i }) => {
-      const t = tEnter.add(stepLen.mul(float(i).add(0.5)));
-      const p = camW.add(dir.mul(t)).sub(bMin).div(bSize); // → [0,1]
-      acc.assign(max(acc, texture3D(vol.tex, p).r));
-    });
-    const col = mix(vec3(0.06, 0.02, 0.12), vec3(1.0, 0.85, 0.55), acc);
-    return vec4(col, acc);
-  })();
-  return mat;
-}
+interface Resident { slot: [number, number, number]; level: number; brick: THREE.Data3DTexture; use: number; }
 
 export class VolumeRenderer {
   readonly group = new THREE.Group();
-  private floorLevel: number;
-  private currentLevel = -1;
-  private gen = 0;
-  private mesh: THREE.Mesh | null = null;
+  private renderer: WebGPURendererLike;
+  private ms: Multiscale;
+  private loader: Loader;
+  private B: number; // brick edge (chunk voxels)
+  private slotsPerAxis: number;
+  private pageDims: [number, number, number];
+  private atlas: THREE.Data3DTexture;
+  private pageTable: THREE.Data3DTexture;
+  private pageData: Uint8Array;
+  private free: number[] = [];
+  private resident = new Map<string, Resident>();
+  private loading = new Set<string>();
+  private useClock = 0;
+  private desired = new Set<string>();
+  private mesh: THREE.Mesh;
+  private uCmin = uniform(0.15);
+  private uCmax = uniform(1.0);
+  private uGamma = uniform(1.0);
 
-  constructor(private ms: Multiscale, private loader: Loader) {
-    let L = 0;
-    while (L < ms.levelCount - 1 && Math.max(...levelVoxelDims(ms, L)) > DIM_CAP) L++;
-    this.floorLevel = L;
+  constructor(ms: Multiscale, loader: Loader, renderer: WebGPURendererLike) {
+    this.ms = ms;
+    this.loader = loader;
+    this.renderer = renderer;
+    this.B = ms.chunkShape[0];
+    this.pageDims = [
+      Math.ceil(ms.voxelDims0[0] / ms.chunkShape[0]),
+      Math.ceil(ms.voxelDims0[1] / ms.chunkShape[1]),
+      Math.ceil(ms.voxelDims0[2] / ms.chunkShape[2]),
+    ];
+    // Atlas big enough to hold a generous working set of bricks.
+    this.slotsPerAxis = 8; // 8³ = 512 slots
+    const atlasEdge = this.slotsPerAxis * this.B;
+    this.atlas = makeR8Texture(new Uint8Array(atlasEdge * atlasEdge * atlasEdge), atlasEdge, atlasEdge, atlasEdge, THREE.LinearFilter);
+    for (let i = this.slotsPerAxis ** 3 - 1; i >= 0; i--) this.free.push(i);
+
+    const [pw, ph, pd] = this.pageDims;
+    this.pageData = new Uint8Array(pw * ph * pd * 4);
+    this.pageTable = makeRGBA8Texture(this.pageData, pw, ph, pd);
+
+    this.mesh = this.makeMesh();
+    this.group.add(this.mesh);
   }
 
-  /** The level to assemble: the finest the Selection asked for, capped so it stays interactive. */
-  private chooseLevel(sel: Selection): number {
-    let m = this.ms.levelCount - 1;
-    for (const c of sel.chunks) m = Math.min(m, c.id.level);
-    return Math.max(this.floorLevel, m);
+  setTransfer(cmin: number, cmax: number, gamma: number): void {
+    this.uCmin.value = cmin;
+    this.uCmax.value = Math.max(cmin + 1e-3, cmax);
+    this.uGamma.value = gamma;
   }
 
   update(sel: Selection): void {
-    const level = this.chooseLevel(sel);
-    if (level === this.currentLevel) return;
-    this.currentLevel = level;
-    const gen = ++this.gen;
-    void assembleVolume(this.ms, this.loader, level).then((vol) => {
-      if (gen !== this.gen) { vol.tex.dispose(); return; }
-      this.setMesh(vol);
-    });
+    this.desired = new Set(sel.chunks.map((c) => chunkKey(c.id)));
+    for (const c of sel.chunks) {
+      const k = chunkKey(c.id);
+      const r = this.resident.get(k);
+      if (r) { r.use = ++this.useClock; continue; }
+      if (!this.loading.has(k)) { this.loading.add(k); void this.load(k, c.id); }
+    }
+    this.rebuildPageTable();
   }
 
-  private setMesh(vol: Volume): void {
-    this.clearMesh();
-    const geo = new THREE.BoxGeometry(vol.boxSize[0], vol.boxSize[1], vol.boxSize[2]);
-    const mesh = new THREE.Mesh(geo, volumeMaterial(vol));
-    mesh.position.set(vol.boxMin[0] + vol.boxSize[0] / 2, vol.boxMin[1] + vol.boxSize[1] / 2, vol.boxMin[2] + vol.boxSize[2] / 2);
-    mesh.userData.tex = vol.tex;
-    this.mesh = mesh;
-    this.group.add(mesh);
+  private async load(k: string, id: Tile["id"]): Promise<void> {
+    try {
+      const tile = await this.loader.getChunk(id);
+      const slot = this.allocSlot();
+      if (slot === null) return; // atlas full (shouldn't happen at demo scale)
+      const brick = makeR8Texture(this.brickData(tile), this.B, this.B, this.B, THREE.LinearFilter);
+      brick.needsUpdate = true;
+      this.renderer.copyTextureToTexture(
+        brick, this.atlas,
+        new THREE.Box3(new THREE.Vector3(0, 0, 0), new THREE.Vector3(this.B, this.B, this.B)),
+        new THREE.Vector3(slot[0] * this.B, slot[1] * this.B, slot[2] * this.B),
+      );
+      this.resident.set(k, { slot, level: id.level, brick, use: ++this.useClock });
+      if (this.desired.has(k)) this.rebuildPageTable();
+    } finally {
+      this.loading.delete(k);
+    }
   }
 
-  private clearMesh(): void {
-    if (!this.mesh) return;
-    this.group.remove(this.mesh);
-    this.mesh.geometry.dispose();
-    (this.mesh.material as THREE.Material).dispose();
-    (this.mesh.userData.tex as THREE.Data3DTexture | undefined)?.dispose();
-    this.mesh = null;
+  /** Nearest-upsample a tile (dims ≤ B) into a full B³ brick so the page-table UV
+   *  mapping is uniform regardless of the chunk's own resolution. */
+  private brickData(tile: Tile): Uint8Array {
+    const B = this.B;
+    const [ex, ey, ez] = tile.dims;
+    const out = new Uint8Array(B * B * B);
+    for (let z = 0; z < B; z++) {
+      const sz = Math.min(ez - 1, (z * ez / B) | 0);
+      for (let y = 0; y < B; y++) {
+        const sy = Math.min(ey - 1, (y * ey / B) | 0);
+        for (let x = 0; x < B; x++) {
+          const sx = Math.min(ex - 1, (x * ex / B) | 0);
+          out[(z * B + y) * B + x] = Math.round((tile.data[(sz * ey + sy) * ex + sx] ?? 0) * 255);
+        }
+      }
+    }
+    return out;
+  }
+
+  private allocSlot(): [number, number, number] | null {
+    let idx = this.free.pop();
+    if (idx === undefined) {
+      // Evict LRU resident not in the desired set.
+      let lruKey: string | null = null, lruUse = Infinity;
+      for (const [k, r] of this.resident) {
+        if (this.desired.has(k)) continue;
+        if (r.use < lruUse) { lruUse = r.use; lruKey = k; }
+      }
+      if (lruKey === null) return null;
+      const r = this.resident.get(lruKey);
+      if (!r) return null;
+      r.brick.dispose();
+      this.resident.delete(lruKey);
+      idx = (r.slot[2] * this.slotsPerAxis + r.slot[1]) * this.slotsPerAxis + r.slot[0];
+    }
+    const s = this.slotsPerAxis;
+    return [idx % s, ((idx / s) | 0) % s, (idx / (s * s)) | 0];
+  }
+
+  private rebuildPageTable(): void {
+    this.pageData.fill(0);
+    const [pw, ph] = this.pageDims;
+    for (const k of this.desired) {
+      const r = this.resident.get(k);
+      if (!r) continue;
+      const span = 2 ** r.level; // finest cells this brick covers per axis
+      // Parse the chunk coords back from the key: "level:x:y:z".
+      const [, x, y, z] = k.split(":").map(Number);
+      const fx = (x ?? 0) * span, fy = (y ?? 0) * span, fz = (z ?? 0) * span;
+      for (let dz = 0; dz < span; dz++) {
+        for (let dy = 0; dy < span; dy++) {
+          for (let dx = 0; dx < span; dx++) {
+            const cx = fx + dx, cy = fy + dy, cz = fz + dz;
+            if (cx >= pw || cy >= ph || cz >= this.pageDims[2]) continue;
+            const o = ((cz * ph + cy) * pw + cx) * 4;
+            this.pageData[o] = r.slot[0];
+            this.pageData[o + 1] = r.slot[1];
+            this.pageData[o + 2] = r.slot[2];
+            this.pageData[o + 3] = r.level + 1; // 0 = empty
+          }
+        }
+      }
+    }
+    this.pageTable.needsUpdate = true;
+  }
+
+  private makeMesh(): THREE.Mesh {
+    const b = worldAabbOfArrayBox(this.ms.worldFromArray, [0, 0, 0], [this.ms.voxelDims0[0], this.ms.voxelDims0[1], this.ms.voxelDims0[2]]);
+    const size: Vec3 = [b.max[0] - b.min[0], b.max[1] - b.min[1], b.max[2] - b.min[2]];
+    const bMin = uniform(new THREE.Vector3(b.min[0], b.min[1], b.min[2]));
+    const bSize = uniform(new THREE.Vector3(size[0], size[1], size[2]));
+    const pageDimsU = uniform(new THREE.Vector3(this.pageDims[0], this.pageDims[1], this.pageDims[2]));
+    const slots = uniform(this.slotsPerAxis);
+    const invB = uniform(0.5 / this.B);
+    const atlasTex = this.atlas, pageTex = this.pageTable;
+
+    const mat = new MeshBasicNodeMaterial();
+    mat.transparent = true;
+    mat.depthWrite = false;
+    mat.side = THREE.BackSide;
+    mat.colorNode = Fn(() => {
+      const camW = cameraPosition;
+      const dir = normalize(positionWorld.sub(camW));
+      const inv = vec3(1.0).div(dir);
+      const t0 = bMin.sub(camW).mul(inv);
+      const t1 = bMin.add(bSize).sub(camW).mul(inv);
+      const tmin = min(t0, t1), tmax = max(t0, t1);
+      const tEnter = max(max(tmin.x, tmin.y), tmin.z).max(0.0);
+      const tExit = min(min(tmax.x, tmax.y), tmax.z);
+      const stepLen = tExit.sub(tEnter).div(float(STEPS));
+      const col = vec3(0.0).toVar();
+      const alpha = float(0.0).toVar();
+      Loop(STEPS, ({ i }) => {
+        const t = tEnter.add(stepLen.mul(float(i).add(0.5)));
+        const p = camW.add(dir.mul(t)).sub(bMin).div(bSize); // [0,1] volume
+        const pt = texture3D(pageTex, p);
+        const mask = pt.a.mul(255.0).min(1.0); // 1 if occupied, 0 if empty
+        const level = pt.a.mul(255.0).sub(1.0).max(0.0);
+        const cells = exp2(level);
+        const fc = p.mul(pageDimsU).floor();
+        const fo = fc.div(cells).floor().mul(cells);
+        const local = clamp(p.mul(pageDimsU).sub(fo).div(cells), invB, float(1.0).sub(invB));
+        const slot = pt.rgb.mul(255.0).add(0.5).floor();
+        const auv = slot.add(local).div(slots);
+        const d = texture3D(atlasTex, auv).r.mul(mask);
+        // Transfer function: contrast window + gamma → normalised intensity.
+        const dm = clamp(d.sub(this.uCmin).div(this.uCmax.sub(this.uCmin)), 0.0, 1.0).pow(this.uGamma);
+        // Emission-absorption, front-to-back.
+        const a = dm.mul(0.1).mul(oneMinus(alpha));
+        const sc = mix(vec3(0.10, 0.03, 0.18), vec3(1.0, 0.86, 0.55), dm);
+        col.assign(col.add(sc.mul(a)));
+        alpha.assign(alpha.add(a));
+      });
+      return vec4(col, alpha);
+    })();
+
+    const geo = new THREE.BoxGeometry(size[0], size[1], size[2]);
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.position.set(b.min[0] + size[0] / 2, b.min[1] + size[1] / 2, b.min[2] + size[2] / 2);
+    return mesh;
   }
 
   dispose(): void {
-    this.clearMesh();
+    for (const r of this.resident.values()) r.brick.dispose();
+    this.resident.clear();
+    this.atlas.dispose();
+    this.pageTable.dispose();
+    this.mesh.geometry.dispose();
+    (this.mesh.material as THREE.Material).dispose();
   }
+}
+
+interface WebGPURendererLike {
+  copyTextureToTexture(src: THREE.Texture, dst: THREE.Texture, srcRegion: THREE.Box3, dstPosition: THREE.Vector3): void;
+}
+
+function makeR8Texture(data: Uint8Array, w: number, h: number, d: number, filter: THREE.MagnificationTextureFilter): THREE.Data3DTexture {
+  const t = new THREE.Data3DTexture(data, w, h, d);
+  t.format = THREE.RedFormat;
+  t.type = THREE.UnsignedByteType;
+  t.minFilter = filter;
+  t.magFilter = filter;
+  t.wrapR = t.wrapS = t.wrapT = THREE.ClampToEdgeWrapping;
+  t.needsUpdate = true;
+  return t;
+}
+
+function makeRGBA8Texture(data: Uint8Array, w: number, h: number, d: number): THREE.Data3DTexture {
+  const t = new THREE.Data3DTexture(data, w, h, d);
+  t.format = THREE.RGBAFormat;
+  t.type = THREE.UnsignedByteType;
+  t.minFilter = THREE.NearestFilter;
+  t.magFilter = THREE.NearestFilter;
+  t.wrapR = t.wrapS = t.wrapT = THREE.ClampToEdgeWrapping;
+  t.needsUpdate = true;
+  return t;
 }

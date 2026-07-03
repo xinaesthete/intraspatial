@@ -19,7 +19,20 @@ const pLevels = $<HTMLInputElement>("plevels");
 const pLevelsVal = $("plevelsval");
 const texChk = $<HTMLInputElement>("tex");
 const gridChk = $<HTMLInputElement>("grid");
+const cmin = $<HTMLInputElement>("cmin");
+const cmax = $<HTMLInputElement>("cmax");
+const gamma = $<HTMLInputElement>("gamma");
+const cminVal = $("cminval");
+const cmaxVal = $("cmaxval");
+const gammaVal = $("gammaval");
 const sourceSel = $<HTMLSelectElement>("source");
+
+function applyTransfer(): void {
+  cminVal.textContent = Number(cmin.value).toFixed(2);
+  cmaxVal.textContent = Number(cmax.value).toFixed(2);
+  gammaVal.textContent = Number(gamma.value).toFixed(2);
+  view?.setTransfer(Number(cmin.value), Number(cmax.value), Number(gamma.value));
+}
 const bytesEl = $("bytes");
 const chunksEl = $("chunks");
 const levelsEl = $("levels");
@@ -63,6 +76,7 @@ async function mount(kind: string): Promise<void> {
   view.setQ(Number(qSlider.value));
   view.setTextures(texChk.checked);
   view.setWireframe(gridChk.checked);
+  applyTransfer();
   try {
     await view.start();
   } catch (e) {
@@ -83,6 +97,7 @@ qSlider.addEventListener("input", () => {
 });
 pLevels.addEventListener("input", () => { pLevelsVal.textContent = pLevels.value; });
 pLevels.addEventListener("change", () => void mount(sourceSel.value)); // re-mount: levelCount is baked into the Multiscale
+for (const el of [cmin, cmax, gamma]) el.addEventListener("input", applyTransfer);
 texChk.addEventListener("change", () => view?.setTextures(texChk.checked));
 gridChk.addEventListener("change", () => view?.setWireframe(gridChk.checked));
 sourceSel.addEventListener("change", () => void mount(sourceSel.value));

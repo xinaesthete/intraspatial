@@ -110,7 +110,7 @@ export class DualView {
       this.tiles = new TileRenderer(ms, this.loader);
       this.scene.add(this.tiles.group);
     } else {
-      this.volume = new VolumeRenderer(ms, this.loader);
+      this.volume = new VolumeRenderer(ms, this.loader, this.renderer);
       this.scene.add(this.volume.group);
     }
     this.scene.add(this.overlays);
@@ -125,6 +125,7 @@ export class DualView {
     this.dirty = true;
   }
   setWireframe(on: boolean): void { this.showWireframe = on; this.dirty = true; }
+  setTransfer(cmin: number, cmax: number, gamma: number): void { this.volume?.setTransfer(cmin, cmax, gamma); }
 
   resize(width: number, height: number): void {
     this.width = width;

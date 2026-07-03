@@ -71,6 +71,19 @@
           <label for="grid">show chunk grid</label>
           <input id="grid" type="checkbox" checked />
         </div>
+        <div class="section">transfer function (volume)</div>
+        <div class="row">
+          <label for="cmin">contrast min = <span id="cminval">0.15</span></label>
+          <input id="cmin" type="range" min="0" max="1" step="0.01" value="0.15" />
+        </div>
+        <div class="row">
+          <label for="cmax">contrast max = <span id="cmaxval">1.00</span></label>
+          <input id="cmax" type="range" min="0" max="1" step="0.01" value="1" />
+        </div>
+        <div class="row">
+          <label for="gamma">gamma = <span id="gammaval">1.0</span></label>
+          <input id="gamma" type="range" min="0.3" max="3" step="0.05" value="1" />
+        </div>
         <div id="hud">
           <div><span id="bytes" class="big">–</span> <span class="muted">to fetch</span></div>
           <div class="muted"><span id="chunks">–</span> chunks selected</div>
