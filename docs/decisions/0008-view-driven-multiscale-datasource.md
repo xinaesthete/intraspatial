@@ -152,6 +152,11 @@ The `Loader` interface is the load-bearing seam between repositories:
   resolution progression & progressive-over-frames decode; anisotropic LOD; empty-space skipping;
   the deck.gl-layer backend and the I2 hybrid; render-in-graph; global byte-budget solver;
   X-UMAP.
+- **Culling planes & CSG culling volumes (future, noted 2026-07-03):** arbitrary keep/discard
+  regions — a clip plane, or general volumes combined with CSG boolean ops — that further constrain
+  the Selection, so they change *which chunks are loaded*, not just what's drawn. They belong in
+  `Select` as an additional predicate on chunk boxes (a chunk fully outside the kept region is
+  culled exactly like the frustum test). User has example code to bring in when this is built.
 
 ## Consequences
 
