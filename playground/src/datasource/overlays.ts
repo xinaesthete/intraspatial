@@ -3,7 +3,7 @@
 // selected chunks as level-tinted wireframe boxes plus a faint dataset bound — the
 // receding-resolution gradient made visible, driven entirely by the pure `select()`.
 import * as THREE from "three";
-import { chunkWorldAabb, worldAabbOfArrayBox, type Multiscale, type Selection } from "../../../src/datasource";
+import { chunkWorldAabb, worldAabbOfArrayBox, type Multiscale, type Selection, type Vec3 } from "../../../src/datasource";
 
 /** okLCH-ish ramp by level: fine = warm & bright, coarse = cool & dim. */
 export function levelColor(level: number, maxLevel: number): THREE.Color {
@@ -59,6 +59,31 @@ export function boundsOverlay(ms: Multiscale): THREE.LineSegments {
   const geo = new THREE.BufferGeometry();
   geo.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
   return new THREE.LineSegments(geo, new THREE.LineBasicMaterial({ color: 0x334155, transparent: true, opacity: 0.5 }));
+}
+
+/** The select camera's frustum as a wireframe (near quad, far quad, connectors),
+ *  plus a short line down its optical axis so its pose reads at a glance. */
+export function frustumOverlay(corners: readonly Vec3[], eye: Vec3, forward: Vec3): THREE.Group {
+  const group = new THREE.Group();
+  const seg: number[] = [];
+  const line = (a: Vec3, b: Vec3): void => { seg.push(a[0], a[1], a[2], b[0], b[1], b[2]); };
+  const c = (i: number): Vec3 => corners[i] ?? [0, 0, 0];
+  // near quad 0-1-2-3, far quad 4-5-6-7, connectors i↔i+4
+  for (let i = 0; i < 4; i++) {
+    line(c(i), c((i + 1) % 4));
+    line(c(4 + i), c(4 + ((i + 1) % 4)));
+    line(c(i), c(4 + i));
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute("position", new THREE.Float32BufferAttribute(seg, 3));
+  group.add(new THREE.LineSegments(geo, new THREE.LineBasicMaterial({ color: 0x38bdf8, transparent: true, opacity: 0.85 })));
+
+  // A dot at the eye so the apex is obvious.
+  const dotGeo = new THREE.BufferGeometry();
+  dotGeo.setAttribute("position", new THREE.Float32BufferAttribute([eye[0], eye[1], eye[2]], 3));
+  group.add(new THREE.Points(dotGeo, new THREE.PointsMaterial({ color: 0x7dd3fc, size: 8, sizeAttenuation: false })));
+  void forward;
+  return group;
 }
 
 /** Free the geometries/materials of a previously-built overlay group. */

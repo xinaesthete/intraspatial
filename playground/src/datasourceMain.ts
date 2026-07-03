@@ -14,6 +14,11 @@ const $ = <T extends HTMLElement>(id: string): T => {
 const canvas = $<HTMLCanvasElement>("stage");
 const qSlider = $<HTMLInputElement>("q");
 const qVal = $("qval");
+const distSlider = $<HTMLInputElement>("dist");
+const distVal = $("distval");
+const pitchSlider = $<HTMLInputElement>("pitch");
+const pitchVal = $("pitchval");
+const animChk = $<HTMLInputElement>("anim");
 const sourceSel = $<HTMLSelectElement>("source");
 const bytesEl = $("bytes");
 const chunksEl = $("chunks");
@@ -53,6 +58,9 @@ async function mount(kind: string): Promise<void> {
   const source: SyntheticSource = kind === "volume" ? syntheticVolume() : syntheticPlane();
   view = new DecisionView(canvas, source.ms, (s) => renderStats(s, source.ms.levelCount));
   view.setQ(Number(qSlider.value));
+  view.setSelectDistance(Number(distSlider.value));
+  view.setSelectPitch(Number(pitchSlider.value));
+  view.setAnimate(animChk.checked);
   try {
     await view.start();
   } catch (e) {
@@ -71,6 +79,15 @@ qSlider.addEventListener("input", () => {
   qVal.textContent = Number(qSlider.value).toFixed(2);
   view?.setQ(Number(qSlider.value));
 });
+distSlider.addEventListener("input", () => {
+  distVal.textContent = Number(distSlider.value).toFixed(2);
+  view?.setSelectDistance(Number(distSlider.value));
+});
+pitchSlider.addEventListener("input", () => {
+  pitchVal.textContent = String(Math.round(Number(pitchSlider.value)));
+  view?.setSelectPitch(Number(pitchSlider.value));
+});
+animChk.addEventListener("change", () => view?.setAnimate(animChk.checked));
 sourceSel.addEventListener("change", () => void mount(sourceSel.value));
 window.addEventListener("resize", fitCanvas);
 

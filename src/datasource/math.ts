@@ -151,3 +151,18 @@ export function aabbOutsideFrustum(box: Aabb, planes: readonly Plane[]): boolean
 export function worldPerPixel(cam: Camera, depth: number): number {
   return (2 * depth * Math.tan(cam.fovY / 2)) / cam.viewportHeightPx;
 }
+
+/** The 8 world-space corners of `cam`'s frustum between `nearDist` and `farDist`
+ *  (for drawing it as an Overlay). Order: near BL, BR, TR, TL, then far BL, BR, TR, TL. */
+export function frustumCorners(cam: Camera, nearDist: number, farDist: number): Vec3[] {
+  const { fwd, right, up } = cameraBasis(cam);
+  const tanV = Math.tan(cam.fovY / 2);
+  const at = (dist: number, sv: number, sh: number): Vec3 => {
+    const h = tanV * dist, w = h * cam.aspect;
+    return add(add(cam.eye, scale(fwd, dist)), add(scale(up, h * sv), scale(right, w * sh)));
+  };
+  return [
+    at(nearDist, -1, -1), at(nearDist, -1, 1), at(nearDist, 1, 1), at(nearDist, 1, -1),
+    at(farDist, -1, -1), at(farDist, -1, 1), at(farDist, 1, 1), at(farDist, 1, -1),
+  ];
+}
