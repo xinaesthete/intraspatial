@@ -8,7 +8,7 @@
 // tuned for the seed's world scale (a shell of radius ≈ SHELL). The *calm, deliberate*
 // Ceilidh feel comes mostly from the integrator's DANCERL `timeFactor` and damping, not
 // from shrinking these — keep the influence shapes faithful.
-import { add, addScaled, cross, dot, length, normalize, readVec3, scale, sub, ZERO3, type Vec3 } from "./vec3";
+import { add, addScaled, cross, dot, length, normalize, readVec3, scale, sub, type Vec3, ZERO3 } from "./vec3";
 
 /** World scale the seed uses; forces are tuned around it. */
 export const SHELL = 4.5;
@@ -21,7 +21,7 @@ const EPS = 1e-6;
 export function constrainForce(pos: Vec3, strength: number, power = 3): Vec3 {
   const d = length(pos);
   if (d < EPS) return ZERO3;
-  const k = 0.012 * strength * Math.pow(d, power - 1);
+  const k = 0.012 * strength * d ** (power - 1);
   return scale(pos, -k);
 }
 

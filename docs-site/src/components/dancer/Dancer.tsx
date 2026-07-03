@@ -4,11 +4,11 @@
 // renderer is three.js on its WebGPU backend. `client:only="react"` — everything here is
 // browser-only.
 import { useEffect, useRef, useState } from "react";
-import { DancerSim, type DancerParams } from "./sim";
 import { DancerGpuSim } from "../../../../src/gpu/sim/dancerGpu";
-import { createDancerRenderer, type DancerRenderer } from "./renderer";
-import { drawDistanceMatrix, matrixCell } from "./matrix";
 import { BreedingStrip } from "./BreedingStrip";
+import { drawDistanceMatrix, matrixCell } from "./matrix";
+import { createDancerRenderer, type DancerRenderer } from "./renderer";
+import { type DancerParams, DancerSim } from "./sim";
 
 const AGENTS = 180;
 // The swarm runs GPU-resident on our own TypeGPU kernel (src/gpu/sim/dancerGpu), adopting
@@ -223,13 +223,14 @@ export default function Dancer() {
             <span className="dancer-figure-label">figure</span> {figure}
           </div>
           <div className="dancer-hud-right">
-            <button className="dancer-fs" onClick={() => setPaused((v) => !v)} aria-pressed={paused} title="hold the current Ceilidh figure (motion keeps running)">
+            <button type="button" className="dancer-fs" onClick={() => setPaused((v) => !v)} aria-pressed={paused} title="hold the current Ceilidh figure (motion keeps running)">
               {paused ? "▶ resume figures" : "⏸ hold figure"}
             </button>
-            <button className="dancer-fs" onClick={() => setShowMatrix((v) => !v)} aria-pressed={showMatrix} title="pairwise distance matrix">
+            <button type="button" className="dancer-fs" onClick={() => setShowMatrix((v) => !v)} aria-pressed={showMatrix} title="pairwise distance matrix">
               ▦ {showMatrix ? "hide matrix" : "matrix"}
             </button>
             <button
+              type="button"
               className="dancer-fs"
               onClick={() => {
                 const next = !showBreed;
@@ -240,7 +241,7 @@ export default function Dancer() {
             >
               ⚘ {showBreed ? "hide breeder" : "breed"}
             </button>
-            <button className="dancer-fs" onClick={toggleFullscreen} aria-label="fullscreen">⤢ fullscreen</button>
+            <button type="button" className="dancer-fs" onClick={toggleFullscreen} aria-label="fullscreen">⤢ fullscreen</button>
           </div>
         </div>
 
@@ -269,7 +270,7 @@ export default function Dancer() {
 
         {showAbout && (
           <aside className="dancer-about">
-            <button className="dancer-about-close" onClick={() => setShowAbout(false)} aria-label="close">×</button>
+            <button type="button" className="dancer-about-close" onClick={() => setShowAbout(false)} aria-label="close">×</button>
             <h1>A Ceilidh of force-fields</h1>
             <p>
               After <em>DANCERL</em> (Andy Lomas, IBM, 1992) — the force-field motion controller for
@@ -284,7 +285,7 @@ export default function Dancer() {
           </aside>
         )}
         {!showAbout && (
-          <button className="dancer-about-open" onClick={() => setShowAbout(true)}>about</button>
+          <button type="button" className="dancer-about-open" onClick={() => setShowAbout(true)}>about</button>
         )}
       </div>
     </div>
