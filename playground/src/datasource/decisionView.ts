@@ -7,8 +7,9 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { WebGPURenderer } from "three/webgpu";
-import { add, cross, dot, frustumCorners, normalize, scale, select, sub, worldAabbOfArrayBox, type Aabb, type Camera, type Multiscale, type Selection, type Vec3 } from "../../../src/datasource";
+import { add, cross, dot, frustumCorners, normalize, scale, select, sub, worldAabbOfArrayBox, type Aabb, type Camera, type Loader, type Multiscale, type Selection, type Vec3 } from "../../../src/datasource";
 import { boundsOverlay, chunkOverlays, disposeGroup, frustumOverlay } from "./overlays";
+import { TileRenderer } from "./tileRenderer";
 
 export interface DecisionStats {
   q: number;
@@ -28,6 +29,10 @@ export class DecisionView {
   private size: number;
   private bounds: Aabb;
   private isPlane: boolean;
+  private loader: Loader;
+  private tiles: TileRenderer | null = null;
+  private showTextures = true;
+  private showWireframe = true;
 
   private q = 1;
   private selDistMult = 0.6;
@@ -39,8 +44,10 @@ export class DecisionView {
   private disposed = false;
   private onStats?: (s: DecisionStats) => void;
 
-  constructor(canvas: HTMLCanvasElement, ms: Multiscale, onStats?: (s: DecisionStats) => void) {
+  constructor(canvas: HTMLCanvasElement, source: { ms: Multiscale; loader: Loader }, onStats?: (s: DecisionStats) => void) {
+    const ms = source.ms;
     this.ms = ms;
+    this.loader = source.loader;
     this.onStats = onStats;
     this.renderer = new WebGPURenderer({ canvas, antialias: true, alpha: true });
 
@@ -60,11 +67,17 @@ export class DecisionView {
     this.controls.addEventListener("change", () => { this.dirty = true; });
 
     this.scene.add(boundsOverlay(ms));
+    if (this.isPlane) {
+      this.tiles = new TileRenderer(ms, this.loader);
+      this.scene.add(this.tiles.group);
+    }
     this.scene.add(this.overlays);
     this.resize(canvas.clientWidth, canvas.clientHeight);
   }
 
   setQ(q: number): void { this.q = q; this.dirty = true; }
+  setTextures(on: boolean): void { this.showTextures = on; if (this.tiles) this.tiles.group.visible = on; this.dirty = true; }
+  setWireframe(on: boolean): void { this.showWireframe = on; this.dirty = true; }
   setSelectDistance(mult: number): void { this.selDistMult = mult; this.dirty = true; }
   setSelectPitch(deg: number): void { this.selPitchDeg = deg; this.dirty = true; }
   setSelectYaw(deg: number): void { this.selYawDeg = deg; this.dirty = true; }
@@ -139,8 +152,9 @@ export class DecisionView {
     const sel = select(this.ms, ds, { q: this.q });
     disposeGroup(this.overlays);
     this.overlays.clear();
-    this.overlays.add(chunkOverlays(this.ms, sel));
+    if (this.showWireframe) this.overlays.add(chunkOverlays(this.ms, sel));
     this.overlays.add(frustumOverlay(corners, ds.eye, ds.forward));
+    if (this.tiles && this.showTextures) this.tiles.update(sel);
     return sel;
   }
 
@@ -164,6 +178,7 @@ export class DecisionView {
     this.renderer.setAnimationLoop(null);
     this.controls.dispose();
     disposeGroup(this.overlays);
+    this.tiles?.dispose();
     this.renderer.dispose();
   }
 }

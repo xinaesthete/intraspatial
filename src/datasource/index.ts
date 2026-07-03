@@ -5,4 +5,5 @@ export * from "./math";
 export * from "./types";
 export * from "./multiscale";
 export * from "./select";
+export * from "./tileCache";
 export * from "./syntheticLoader";

@@ -19,6 +19,8 @@ const distVal = $("distval");
 const pitchSlider = $<HTMLInputElement>("pitch");
 const pitchVal = $("pitchval");
 const animChk = $<HTMLInputElement>("anim");
+const texChk = $<HTMLInputElement>("tex");
+const gridChk = $<HTMLInputElement>("grid");
 const sourceSel = $<HTMLSelectElement>("source");
 const bytesEl = $("bytes");
 const chunksEl = $("chunks");
@@ -56,11 +58,13 @@ async function mount(kind: string): Promise<void> {
   view?.dispose();
   errEl.textContent = "";
   const source: SyntheticSource = kind === "volume" ? syntheticVolume() : syntheticPlane();
-  view = new DecisionView(canvas, source.ms, (s) => renderStats(s, source.ms.levelCount));
+  view = new DecisionView(canvas, source, (s) => renderStats(s, source.ms.levelCount));
   view.setQ(Number(qSlider.value));
   view.setSelectDistance(Number(distSlider.value));
   view.setSelectPitch(Number(pitchSlider.value));
   view.setAnimate(animChk.checked);
+  view.setTextures(texChk.checked);
+  view.setWireframe(gridChk.checked);
   try {
     await view.start();
   } catch (e) {
@@ -88,6 +92,8 @@ pitchSlider.addEventListener("input", () => {
   view?.setSelectPitch(Number(pitchSlider.value));
 });
 animChk.addEventListener("change", () => view?.setAnimate(animChk.checked));
+texChk.addEventListener("change", () => view?.setTextures(texChk.checked));
+gridChk.addEventListener("change", () => view?.setWireframe(gridChk.checked));
 sourceSel.addEventListener("change", () => void mount(sourceSel.value));
 window.addEventListener("resize", fitCanvas);
 
