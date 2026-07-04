@@ -132,7 +132,8 @@ export class DualView {
   }
   setWireframe(on: boolean): void { this.showWireframe = on; this.dirty = true; }
   setTransfer(cmin: number, cmax: number, gamma: number): void { this.volume?.setTransfer(cmin, cmax, gamma); }
-  setWriteDepth(on: boolean): void { this.volume?.setWriteDepth(on); }
+  setDepthRead(on: boolean): void { this.volume?.setDepthRead(on); }
+  setDepthWrite(on: boolean): void { this.volume?.setDepthWrite(on); }
   setSolid(threshold: number): void { this.volume?.setSolid(threshold); }
 
   /** A movable opaque image quad (mandelbrot) + a translate/rotate gizmo — slide it

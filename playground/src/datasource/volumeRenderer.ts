@@ -38,6 +38,7 @@ export class VolumeRenderer {
   private uCmax = uniform(1.0);
   private uGamma = uniform(1.0);
   private uSolid = uniform(0.55);
+  private uDepthAware = uniform(1); // 1 = respect scene depth (cull), 0 = draw as a flat overlay
   private mat: MeshBasicNodeMaterial | null = null;
 
   constructor(ms: Multiscale, loader: Loader, renderer: WebGPURendererLike) {
@@ -70,9 +71,15 @@ export class VolumeRenderer {
     this.uGamma.value = gamma;
   }
 
-  /** Toggle writing the solid-surface depth to the z-buffer (so the volume occludes
-   *  opaque geometry drawn against it). */
-  setWriteDepth(on: boolean): void {
+  /** Reads scene depth: the ray stops at opaque geometry, so the volume is *occluded by*
+   *  the image plane. Off ⇒ the volume ignores scene depth (flat overlay). */
+  setDepthRead(on: boolean): void {
+    this.uDepthAware.value = on ? 1 : 0;
+  }
+
+  /** Writes the solid-surface depth to the z-buffer, so the volume *occludes* opaque
+   *  geometry drawn against it. */
+  setDepthWrite(on: boolean): void {
     if (this.mat) this.mat.depthWrite = on;
   }
 
@@ -228,7 +235,8 @@ export class VolumeRenderer {
         const t = tEnter.add(stepLen.mul(float(i).add(0.5)));
         const pWorld = camW.add(dir.mul(t));
         const p = pWorld.sub(bMin).div(bSize);
-        const visible = step(sceneViewZ, cameraViewMatrix.mul(vec4(pWorld, 1.0)).z);
+        // Cull samples behind the scene surface — gated by uDepthAware (off ⇒ flat overlay).
+        const visible = mix(float(1.0), step(sceneViewZ, cameraViewMatrix.mul(vec4(pWorld, 1.0)).z), this.uDepthAware);
         const dm = tf(sampleAt(p).mul(visible));
         const a = dm.mul(0.1).mul(oneMinus(alpha));
         const sc = mix(vec3(0.10, 0.03, 0.18), vec3(1.0, 0.86, 0.55), dm);

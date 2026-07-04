@@ -90,8 +90,12 @@
           <input id="solid" type="range" min="0.05" max="0.95" step="0.01" value="0.55" />
         </div>
         <div class="row">
-          <label for="wdepth">volume writes depth</label>
-          <input id="wdepth" type="checkbox" />
+          <label for="dread">volume reads depth (occluded by image)</label>
+          <input id="dread" type="checkbox" checked />
+        </div>
+        <div class="row">
+          <label for="dwrite">volume writes depth (occludes geometry)</label>
+          <input id="dwrite" type="checkbox" checked />
         </div>
         <div id="hud">
           <div><span id="bytes" class="big">–</span> <span class="muted">to fetch</span></div>

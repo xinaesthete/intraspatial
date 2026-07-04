@@ -28,7 +28,8 @@ const cmaxVal = $("cmaxval");
 const gammaVal = $("gammaval");
 const solid = $<HTMLInputElement>("solid");
 const solidVal = $("solidval");
-const wdepth = $<HTMLInputElement>("wdepth");
+const dread = $<HTMLInputElement>("dread");
+const dwrite = $<HTMLInputElement>("dwrite");
 const sourceSel = $<HTMLSelectElement>("source");
 
 function applyTransfer(): void {
@@ -104,7 +105,8 @@ async function mount(kind: string): Promise<void> {
   view.setTextures(texChk.checked);
   view.setWireframe(gridChk.checked);
   view.setSolid(Number(solid.value));
-  view.setWriteDepth(wdepth.checked);
+  view.setDepthRead(dread.checked);
+  view.setDepthWrite(dwrite.checked);
   applyTransfer();
   try {
     await view.start();
@@ -128,7 +130,8 @@ pLevels.addEventListener("input", () => { pLevelsVal.textContent = pLevels.value
 pLevels.addEventListener("change", () => void mount(sourceSel.value)); // re-mount: levelCount is baked into the Multiscale
 for (const el of [cmin, cmax, gamma]) el.addEventListener("input", applyTransfer);
 solid.addEventListener("input", () => { solidVal.textContent = Number(solid.value).toFixed(2); view?.setSolid(Number(solid.value)); });
-wdepth.addEventListener("change", () => view?.setWriteDepth(wdepth.checked));
+dread.addEventListener("change", () => view?.setDepthRead(dread.checked));
+dwrite.addEventListener("change", () => view?.setDepthWrite(dwrite.checked));
 texChk.addEventListener("change", () => view?.setTextures(texChk.checked));
 gridChk.addEventListener("change", () => view?.setWireframe(gridChk.checked));
 sourceSel.addEventListener("change", () => void mount(sourceSel.value));
