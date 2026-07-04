@@ -1,3 +1,12 @@
 {
-  "typescript.tsdk": "node_modules/typescript/lib"
+  "typescript.tsdk": "node_modules/typescript/lib",
+  "workbench.colorCustomizations": {
+    "editor.lineHighlightBackground": "#1073cf2d",
+    "editor.lineHighlightBorder": "#9fced11f",
+    "activityBar.background": "#321977",
+    "titleBar.activeBackground": "#4622A7",
+    "titleBar.activeForeground": "#FBFAFE",
+    "titleBar.inactiveBackground": "#5A0442",
+    "titleBar.inactiveForeground": "#FFFAFE"
+  }
 }

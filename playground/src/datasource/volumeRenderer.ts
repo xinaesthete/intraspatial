@@ -9,11 +9,15 @@
 // Bricks are uploaded into atlas slots with renderer.copyTextureToTexture (partial
 // 3D upload); the page table is tiny and re-uploaded whole per selection change.
 import * as THREE from "three";
-import { cameraFar, cameraNear, cameraPosition, cameraViewMatrix, clamp, exp2, float, Fn, Loop, max, min, mix, normalize, oneMinus, perspectiveDepthToViewZ, positionWorld, step, texture3D, uniform, vec3, vec4, viewportDepthTexture, viewZToPerspectiveDepth } from "three/tsl";
+import { Break, cameraFar, cameraNear, cameraPosition, cameraViewMatrix, clamp, exp2, float, Fn, If, Loop, max, min, mix, normalize, oneMinus, perspectiveDepthToViewZ, positionWorld, step, struct, texture3D, uniform, vec3, vec4, viewportDepthTexture, viewZToPerspectiveDepth } from "three/tsl";
 import { MeshBasicNodeMaterial } from "three/webgpu";
 import { chunkArrayBox, chunkCounts, chunkKey, levelVoxelDims, worldAabbOfArrayBox, type Loader, type Multiscale, type Selection, type Tile, type Vec3 } from "../../../src/datasource";
 
 const STEPS = 128;
+// One raymarch, two outputs: the compositated colour AND the solid-surface clip depth.
+// colorNode + depthNode build into the same fragment function, so sharing one struct-
+// returning node emits the loop ONCE (vs. a full march per output).
+const RayResult = struct({ color: "vec4", depth: "float" });
 
 interface Resident { slot: [number, number, number]; level: number; brick: THREE.Data3DTexture; use: number; }
 
@@ -221,51 +225,48 @@ export class VolumeRenderer {
       return { tEnter, tExit };
     };
 
-    mat.colorNode = Fn(() => {
+    // ONE march feeding both outputs. Emission-absorption compositing accumulates
+    // colour/alpha; the first sample crossing uSolid records the clip depth for z-write.
+    const march = Fn(() => {
       const camW = cameraPosition;
       const dir = normalize(positionWorld.sub(camW));
       const { tEnter, tExit } = enter(camW, dir);
-      const stepLen = tExit.sub(tEnter).div(float(STEPS));
-      // Depth-aware: stop the ray at opaque scene geometry (the movable image plane), so
-      // it occludes the volume behind it. No occluder ⇒ scene depth is far ⇒ no clip.
+      // Occlusion bail (gated by uDepthAware): clamp the exit to the opaque scene surface
+      // along this ray. Solving viewZ(t) = sceneViewZ for t — view-z is affine in t — both
+      // stops the ray at the image plane AND packs all STEPS into the *visible* span,
+      // instead of masking occluded samples one-by-one while still marching them.
       const sceneViewZ = perspectiveDepthToViewZ(viewportDepthTexture(), cameraNear, cameraFar);
+      const a0 = cameraViewMatrix.mul(vec4(camW, 1.0)).z;
+      const ad = cameraViewMatrix.mul(vec4(dir, 0.0)).z;
+      const tSurface = sceneViewZ.sub(a0).div(ad);
+      const tExitEff = mix(tExit, min(tExit, max(tEnter, tSurface)), this.uDepthAware);
+      const stepLen = tExitEff.sub(tEnter).div(float(STEPS));
+
       const col = vec3(0.0).toVar();
       const alpha = float(0.0).toVar();
-      Loop(STEPS, ({ i }) => {
-        const t = tEnter.add(stepLen.mul(float(i).add(0.5)));
-        const pWorld = camW.add(dir.mul(t));
-        const p = pWorld.sub(bMin).div(bSize);
-        // Cull samples behind the scene surface — gated by uDepthAware (off ⇒ flat overlay).
-        const visible = mix(float(1.0), step(sceneViewZ, cameraViewMatrix.mul(vec4(pWorld, 1.0)).z), this.uDepthAware);
-        const dm = tf(sampleAt(p).mul(visible));
-        const a = dm.mul(0.1).mul(oneMinus(alpha));
-        const sc = mix(vec3(0.10, 0.03, 0.18), vec3(1.0, 0.86, 0.55), dm);
-        col.assign(col.add(sc.mul(a)));
-        alpha.assign(alpha.add(a));
-      });
-      return vec4(col, alpha);
-    })();
-
-    // Depth: clip depth of the first sample whose intensity crosses the solid threshold
-    // (far if none) — written to the z-buffer when setWriteDepth(true).
-    mat.depthNode = Fn(() => {
-      const camW = cameraPosition;
-      const dir = normalize(positionWorld.sub(camW));
-      const { tEnter, tExit } = enter(camW, dir);
-      const stepLen = tExit.sub(tEnter).div(float(STEPS));
       const found = float(0.0).toVar();
       const outDepth = float(1.0).toVar();
       Loop(STEPS, ({ i }) => {
         const t = tEnter.add(stepLen.mul(float(i).add(0.5)));
         const pWorld = camW.add(dir.mul(t));
-        const p = pWorld.sub(bMin).div(bSize);
-        const hit = step(this.uSolid, tf(sampleAt(p))).mul(oneMinus(found));
+        const dm = tf(sampleAt(pWorld.sub(bMin).div(bSize)));
+        const a = dm.mul(0.1).mul(oneMinus(alpha));
+        const sc = mix(vec3(0.10, 0.03, 0.18), vec3(1.0, 0.86, 0.55), dm);
+        col.addAssign(sc.mul(a));
+        alpha.addAssign(a);
+        // First solid crossing → clip depth (written to z-buffer when depthWrite is on).
+        const hit = step(this.uSolid, dm).mul(oneMinus(found));
         const clipD = viewZToPerspectiveDepth(cameraViewMatrix.mul(vec4(pWorld, 1.0)).z, cameraNear, cameraFar);
         outDepth.assign(mix(outDepth, clipD, hit));
         found.assign(max(found, hit));
+        // Early-out once the ray is effectively opaque (the solid depth is already fixed).
+        If(alpha.greaterThan(0.995), () => { Break(); });
       });
-      return outDepth;
+      return RayResult(vec4(col, alpha), outDepth);
     })();
+
+    mat.colorNode = march.get("color");
+    mat.depthNode = march.get("depth");
 
     this.mat = mat;
 

@@ -57,6 +57,7 @@ export class DualView {
   private tiles: TileRenderer | null = null;
   private volume: VolumeRenderer | null = null;
   private image: THREE.Mesh | null = null;
+  private probe: THREE.Mesh | null = null;
   private transform: TransformControls | null = null;
   private q = 1;
   private showTextures = true;
@@ -116,8 +117,9 @@ export class DualView {
       this.scene.add(this.tiles.group);
     } else {
       this.volume = new VolumeRenderer(ms, this.loader, this.renderer);
+      this.volume.group.renderOrder = 0;
       this.scene.add(this.volume.group);
-      if (combined) this.addImagePlane(canvas);
+      if (combined) { this.addImagePlane(canvas); this.addProbe(); }
     }
     this.scene.add(this.overlays);
     this.resize(canvas.clientWidth, canvas.clientHeight);
@@ -166,6 +168,27 @@ export class DualView {
     tc.addEventListener("dragging-changed", (e) => { this.appControls.enabled = !(e as unknown as { value: boolean }).value; });
     this.scene.add(tc.getHelper());
     this.transform = tc;
+  }
+
+  /** A bright rod skewering the volume — the depth-WRITE demonstrator. It's drawn AFTER
+   *  the (transparent) volume and depth-tests against it (renderOrder 1 + depthTest),
+   *  so when the volume writes its solid-surface depth the rod is swallowed where it
+   *  passes behind that surface. Toggle "volume writes depth" off ⇒ the whole rod shows
+   *  through. (An opaque object couldn't show this — the opaque pass draws before the
+   *  transparent volume, so the volume's depth write would come too late to occlude it.) */
+  private addProbe(): void {
+    const s = this.size;
+    const geo = new THREE.CylinderGeometry(s * 0.03, s * 0.03, s * 2.4, 20);
+    geo.rotateZ(Math.PI / 2); // lie along the X axis, through the volume
+    const mat = new THREE.MeshBasicMaterial({ color: 0x34f5c8 });
+    mat.transparent = true; // join the transparent pass so it sorts AFTER the volume
+    mat.depthTest = true; // read the volume's written depth → get occluded by it
+    mat.depthWrite = true;
+    const rod = new THREE.Mesh(geo, mat);
+    rod.position.copy(this.center);
+    rod.renderOrder = 1; // after the volume (renderOrder 0)
+    this.probe = rod;
+    this.scene.add(rod);
   }
 
   resize(width: number, height: number): void {
@@ -254,6 +277,10 @@ export class DualView {
     if (this.image) {
       this.image.geometry.dispose();
       (this.image.material as THREE.Material).dispose();
+    }
+    if (this.probe) {
+      this.probe.geometry.dispose();
+      (this.probe.material as THREE.Material).dispose();
     }
     // Deliberately NOT this.renderer.dispose() — the host owns and reuses it.
   }
