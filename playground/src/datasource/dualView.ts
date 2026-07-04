@@ -7,8 +7,9 @@
 // (data = layer 0, seen by both; overlays = layer 1, inset only).
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
+import { TransformControls } from "three/examples/jsm/controls/TransformControls.js";
 import { WebGPURenderer } from "three/webgpu";
-import { cross, dot, frustumCorners, normalize, select, sub, worldAabbOfArrayBox, type Aabb, type Camera, type Loader, type Multiscale, type Selection, type Vec3 } from "../../../src/datasource";
+import { cross, dot, frustumCorners, mandelbrotField, normalize, select, sub, worldAabbOfArrayBox, type Aabb, type Camera, type Loader, type Multiscale, type Selection, type Vec3 } from "../../../src/datasource";
 import { boundsOverlay, chunkOverlays, disposeGroup, frustumOverlay } from "./overlays";
 import { TileRenderer } from "./tileRenderer";
 import { VolumeRenderer } from "./volumeRenderer";
@@ -55,6 +56,8 @@ export class DualView {
 
   private tiles: TileRenderer | null = null;
   private volume: VolumeRenderer | null = null;
+  private image: THREE.Mesh | null = null;
+  private transform: TransformControls | null = null;
   private q = 1;
   private showTextures = true;
   private showWireframe = true;
@@ -64,7 +67,7 @@ export class DualView {
   private height = 1;
   private onStats?: (s: DecisionStats) => void;
 
-  constructor(canvas: HTMLCanvasElement, insetEl: HTMLElement, source: { ms: Multiscale; loader: Loader }, onStats?: (s: DecisionStats) => void) {
+  constructor(canvas: HTMLCanvasElement, insetEl: HTMLElement, source: { ms: Multiscale; loader: Loader }, onStats?: (s: DecisionStats) => void, combined = false) {
     const ms = source.ms;
     this.ms = ms;
     this.loader = source.loader;
@@ -112,6 +115,7 @@ export class DualView {
     } else {
       this.volume = new VolumeRenderer(ms, this.loader, this.renderer);
       this.scene.add(this.volume.group);
+      if (combined) this.addImagePlane(canvas);
     }
     this.scene.add(this.overlays);
     this.resize(canvas.clientWidth, canvas.clientHeight);
@@ -126,6 +130,40 @@ export class DualView {
   }
   setWireframe(on: boolean): void { this.showWireframe = on; this.dirty = true; }
   setTransfer(cmin: number, cmax: number, gamma: number): void { this.volume?.setTransfer(cmin, cmax, gamma); }
+  setWriteDepth(on: boolean): void { this.volume?.setWriteDepth(on); }
+  setSolid(threshold: number): void { this.volume?.setSolid(threshold); }
+
+  /** A movable opaque image quad (mandelbrot) + a translate/rotate gizmo — slide it
+   *  through the volume to see depth-culling. Opaque ⇒ it writes depth before the
+   *  transparent volume, whose depth-aware ray then clips against it. */
+  private addImagePlane(canvas: HTMLElement): void {
+    const N = 256;
+    const data = new Uint8Array(N * N * 4);
+    for (let j = 0; j < N; j++) {
+      for (let i = 0; i < N; i++) {
+        const g = Math.round(mandelbrotField([i / N, j / N, 0]) * 255);
+        const o = (j * N + i) * 4;
+        data[o] = g; data[o + 1] = g * 0.7; data[o + 2] = 40 + g * 0.4; data[o + 3] = 255;
+      }
+    }
+    const tex = new THREE.DataTexture(data, N, N);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.needsUpdate = true;
+    const s = this.size;
+    const mesh = new THREE.Mesh(
+      new THREE.PlaneGeometry(s * 1.15, s * 1.15),
+      new THREE.MeshBasicMaterial({ map: tex, side: THREE.DoubleSide }),
+    );
+    mesh.position.copy(this.center);
+    this.image = mesh;
+    this.scene.add(mesh);
+
+    const tc = new TransformControls(this.appCamera, canvas);
+    tc.attach(mesh);
+    tc.addEventListener("dragging-changed", (e) => { this.appControls.enabled = !(e as unknown as { value: boolean }).value; });
+    this.scene.add(tc.getHelper());
+    this.transform = tc;
+  }
 
   resize(width: number, height: number): void {
     this.width = width;
@@ -209,6 +247,11 @@ export class DualView {
     disposeGroup(this.overlays);
     this.tiles?.dispose();
     this.volume?.dispose();
+    this.transform?.dispose();
+    if (this.image) {
+      this.image.geometry.dispose();
+      (this.image.material as THREE.Material).dispose();
+    }
     this.renderer.dispose();
   }
 }

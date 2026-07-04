@@ -9,7 +9,7 @@
 // Bricks are uploaded into atlas slots with renderer.copyTextureToTexture (partial
 // 3D upload); the page table is tiny and re-uploaded whole per selection change.
 import * as THREE from "three";
-import { cameraPosition, clamp, exp2, float, Fn, Loop, max, min, mix, normalize, oneMinus, positionWorld, texture3D, uniform, vec3, vec4 } from "three/tsl";
+import { cameraFar, cameraNear, cameraPosition, cameraViewMatrix, clamp, exp2, float, Fn, Loop, max, min, mix, normalize, oneMinus, perspectiveDepthToViewZ, positionWorld, step, texture3D, uniform, vec3, vec4, viewportDepthTexture, viewZToPerspectiveDepth } from "three/tsl";
 import { MeshBasicNodeMaterial } from "three/webgpu";
 import { chunkArrayBox, chunkCounts, chunkKey, levelVoxelDims, worldAabbOfArrayBox, type Loader, type Multiscale, type Selection, type Tile, type Vec3 } from "../../../src/datasource";
 
@@ -37,6 +37,8 @@ export class VolumeRenderer {
   private uCmin = uniform(0.15);
   private uCmax = uniform(1.0);
   private uGamma = uniform(1.0);
+  private uSolid = uniform(0.55);
+  private mat: MeshBasicNodeMaterial | null = null;
 
   constructor(ms: Multiscale, loader: Loader, renderer: WebGPURendererLike) {
     this.ms = ms;
@@ -66,6 +68,16 @@ export class VolumeRenderer {
     this.uCmin.value = cmin;
     this.uCmax.value = Math.max(cmin + 1e-3, cmax);
     this.uGamma.value = gamma;
+  }
+
+  /** Toggle writing the solid-surface depth to the z-buffer (so the volume occludes
+   *  opaque geometry drawn against it). */
+  setWriteDepth(on: boolean): void {
+    if (this.mat) this.mat.depthWrite = on;
+  }
+
+  setSolid(threshold: number): void {
+    this.uSolid.value = threshold;
   }
 
   update(sel: Selection): void {
@@ -176,36 +188,48 @@ export class VolumeRenderer {
 
     const mat = new MeshBasicNodeMaterial();
     mat.transparent = true;
-    mat.depthWrite = false;
+    mat.depthWrite = false; // toggled by setWriteDepth
+    mat.depthTest = false; // occlusion is handled inside the ray (depth-aware), not by z-test
     mat.side = THREE.BackSide;
-    mat.colorNode = Fn(() => {
-      const camW = cameraPosition;
-      const dir = normalize(positionWorld.sub(camW));
+
+    // Sample density (0 where empty) at volume-space point p, via page table → atlas.
+    const sampleAt = Fn(([p]) => {
+      const pt = texture3D(pageTex, p);
+      const mask = pt.a.mul(255.0).min(1.0); // 1 if occupied, 0 if empty
+      const level = pt.a.mul(255.0).sub(1.0).max(0.0);
+      const cells = exp2(level);
+      const fo = p.mul(pageDimsU).floor().div(cells).floor().mul(cells);
+      const local = clamp(p.mul(pageDimsU).sub(fo).div(cells), invB, float(1.0).sub(invB));
+      const slot = pt.rgb.mul(255.0).add(0.5).floor();
+      return texture3D(atlasTex, slot.add(local).div(slots)).r.mul(mask);
+    });
+    // Transfer function: contrast window + gamma → normalised intensity.
+    const tf = (d: ReturnType<typeof float>) => clamp(d.sub(this.uCmin).div(this.uCmax.sub(this.uCmin)), 0.0, 1.0).pow(this.uGamma);
+    const enter = (camW: ReturnType<typeof cameraPosition.sub>, dir: ReturnType<typeof normalize>) => {
       const inv = vec3(1.0).div(dir);
-      const t0 = bMin.sub(camW).mul(inv);
-      const t1 = bMin.add(bSize).sub(camW).mul(inv);
+      const t0 = bMin.sub(camW).mul(inv), t1 = bMin.add(bSize).sub(camW).mul(inv);
       const tmin = min(t0, t1), tmax = max(t0, t1);
       const tEnter = max(max(tmin.x, tmin.y), tmin.z).max(0.0);
       const tExit = min(min(tmax.x, tmax.y), tmax.z);
+      return { tEnter, tExit };
+    };
+
+    mat.colorNode = Fn(() => {
+      const camW = cameraPosition;
+      const dir = normalize(positionWorld.sub(camW));
+      const { tEnter, tExit } = enter(camW, dir);
       const stepLen = tExit.sub(tEnter).div(float(STEPS));
+      // Depth-aware: stop the ray at opaque scene geometry (the movable image plane), so
+      // it occludes the volume behind it. No occluder ⇒ scene depth is far ⇒ no clip.
+      const sceneViewZ = perspectiveDepthToViewZ(viewportDepthTexture(), cameraNear, cameraFar);
       const col = vec3(0.0).toVar();
       const alpha = float(0.0).toVar();
       Loop(STEPS, ({ i }) => {
         const t = tEnter.add(stepLen.mul(float(i).add(0.5)));
-        const p = camW.add(dir.mul(t)).sub(bMin).div(bSize); // [0,1] volume
-        const pt = texture3D(pageTex, p);
-        const mask = pt.a.mul(255.0).min(1.0); // 1 if occupied, 0 if empty
-        const level = pt.a.mul(255.0).sub(1.0).max(0.0);
-        const cells = exp2(level);
-        const fc = p.mul(pageDimsU).floor();
-        const fo = fc.div(cells).floor().mul(cells);
-        const local = clamp(p.mul(pageDimsU).sub(fo).div(cells), invB, float(1.0).sub(invB));
-        const slot = pt.rgb.mul(255.0).add(0.5).floor();
-        const auv = slot.add(local).div(slots);
-        const d = texture3D(atlasTex, auv).r.mul(mask);
-        // Transfer function: contrast window + gamma → normalised intensity.
-        const dm = clamp(d.sub(this.uCmin).div(this.uCmax.sub(this.uCmin)), 0.0, 1.0).pow(this.uGamma);
-        // Emission-absorption, front-to-back.
+        const pWorld = camW.add(dir.mul(t));
+        const p = pWorld.sub(bMin).div(bSize);
+        const visible = step(sceneViewZ, cameraViewMatrix.mul(vec4(pWorld, 1.0)).z);
+        const dm = tf(sampleAt(p).mul(visible));
         const a = dm.mul(0.1).mul(oneMinus(alpha));
         const sc = mix(vec3(0.10, 0.03, 0.18), vec3(1.0, 0.86, 0.55), dm);
         col.assign(col.add(sc.mul(a)));
@@ -213,6 +237,29 @@ export class VolumeRenderer {
       });
       return vec4(col, alpha);
     })();
+
+    // Depth: clip depth of the first sample whose intensity crosses the solid threshold
+    // (far if none) — written to the z-buffer when setWriteDepth(true).
+    mat.depthNode = Fn(() => {
+      const camW = cameraPosition;
+      const dir = normalize(positionWorld.sub(camW));
+      const { tEnter, tExit } = enter(camW, dir);
+      const stepLen = tExit.sub(tEnter).div(float(STEPS));
+      const found = float(0.0).toVar();
+      const outDepth = float(1.0).toVar();
+      Loop(STEPS, ({ i }) => {
+        const t = tEnter.add(stepLen.mul(float(i).add(0.5)));
+        const pWorld = camW.add(dir.mul(t));
+        const p = pWorld.sub(bMin).div(bSize);
+        const hit = step(this.uSolid, tf(sampleAt(p))).mul(oneMinus(found));
+        const clipD = viewZToPerspectiveDepth(cameraViewMatrix.mul(vec4(pWorld, 1.0)).z, cameraNear, cameraFar);
+        outDepth.assign(mix(outDepth, clipD, hit));
+        found.assign(max(found, hit));
+      });
+      return outDepth;
+    })();
+
+    this.mat = mat;
 
     const geo = new THREE.BoxGeometry(size[0], size[1], size[2]);
     const mesh = new THREE.Mesh(geo, mat);

@@ -25,6 +25,9 @@ const gamma = $<HTMLInputElement>("gamma");
 const cminVal = $("cminval");
 const cmaxVal = $("cmaxval");
 const gammaVal = $("gammaval");
+const solid = $<HTMLInputElement>("solid");
+const solidVal = $("solidval");
+const wdepth = $<HTMLInputElement>("wdepth");
 const sourceSel = $<HTMLSelectElement>("source");
 
 function applyTransfer(): void {
@@ -69,13 +72,16 @@ async function mount(kind: string): Promise<void> {
   view?.dispose();
   errEl.textContent = "";
   const levelCount = Number(pLevels.value);
-  const source: SyntheticSource = kind === "volume"
+  const combined = kind === "combined";
+  const source: SyntheticSource = kind === "volume" || combined
     ? syntheticVolume({ size: 256, chunk: 32, levelCount })
     : syntheticPlane({ width: 2048, height: 2048, chunk: 64, levelCount });
-  view = new DualView(canvas, inset, source, (s) => renderStats(s, source.ms.levelCount));
+  view = new DualView(canvas, inset, source, (s) => renderStats(s, source.ms.levelCount), combined);
   view.setQ(Number(qSlider.value));
   view.setTextures(texChk.checked);
   view.setWireframe(gridChk.checked);
+  view.setSolid(Number(solid.value));
+  view.setWriteDepth(wdepth.checked);
   applyTransfer();
   try {
     await view.start();
@@ -98,6 +104,8 @@ qSlider.addEventListener("input", () => {
 pLevels.addEventListener("input", () => { pLevelsVal.textContent = pLevels.value; });
 pLevels.addEventListener("change", () => void mount(sourceSel.value)); // re-mount: levelCount is baked into the Multiscale
 for (const el of [cmin, cmax, gamma]) el.addEventListener("input", applyTransfer);
+solid.addEventListener("input", () => { solidVal.textContent = Number(solid.value).toFixed(2); view?.setSolid(Number(solid.value)); });
+wdepth.addEventListener("change", () => view?.setWriteDepth(wdepth.checked));
 texChk.addEventListener("change", () => view?.setTextures(texChk.checked));
 gridChk.addEventListener("change", () => view?.setWireframe(gridChk.checked));
 sourceSel.addEventListener("change", () => void mount(sourceSel.value));
