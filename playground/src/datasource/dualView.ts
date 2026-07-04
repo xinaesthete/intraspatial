@@ -8,7 +8,7 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { TransformControls } from "three/examples/jsm/controls/TransformControls.js";
-import { WebGPURenderer } from "three/webgpu";
+import type { WebGPURenderer } from "three/webgpu";
 import { cross, dot, frustumCorners, mandelbrotField, normalize, select, sub, worldAabbOfArrayBox, type Aabb, type Camera, type Loader, type Multiscale, type Selection, type Vec3 } from "../../../src/datasource";
 import { boundsOverlay, chunkOverlays, disposeGroup, frustumOverlay } from "./overlays";
 import { TileRenderer } from "./tileRenderer";
@@ -67,12 +67,14 @@ export class DualView {
   private height = 1;
   private onStats?: (s: DecisionStats) => void;
 
-  constructor(canvas: HTMLCanvasElement, insetEl: HTMLElement, source: { ms: Multiscale; loader: Loader }, onStats?: (s: DecisionStats) => void, combined = false) {
+  constructor(canvas: HTMLCanvasElement, insetEl: HTMLElement, renderer: WebGPURenderer, source: { ms: Multiscale; loader: Loader }, onStats?: (s: DecisionStats) => void, combined = false) {
     const ms = source.ms;
     this.ms = ms;
     this.loader = source.loader;
     this.onStats = onStats;
-    this.renderer = new WebGPURenderer({ canvas, antialias: true, alpha: true });
+    // Renderer (and its GPU device) is created once by the host and reused across source
+    // switches — re-creating it per switch leaks GPU devices until WebGPU stops working.
+    this.renderer = renderer;
     this.renderer.autoClear = false;
 
     const b = worldAabbOfArrayBox(ms.worldFromArray, [0, 0, 0], [ms.voxelDims0[0], ms.voxelDims0[1], ms.voxelDims0[2]]);
@@ -212,7 +214,6 @@ export class DualView {
   }
 
   async start(): Promise<void> {
-    await this.renderer.init();
     this.renderer.setAnimationLoop(() => {
       if (this.disposed) return;
       this.appControls.update();
@@ -239,6 +240,7 @@ export class DualView {
     });
   }
 
+  /** Tear down this scene's resources + controls, but NOT the shared renderer/device. */
   dispose(): void {
     this.disposed = true;
     this.renderer.setAnimationLoop(null);
@@ -252,6 +254,6 @@ export class DualView {
       this.image.geometry.dispose();
       (this.image.material as THREE.Material).dispose();
     }
-    this.renderer.dispose();
+    // Deliberately NOT this.renderer.dispose() — the host owns and reuses it.
   }
 }

@@ -1,6 +1,7 @@
 // Plain-TS host for the Decision view (no React — the "thin illustrative host shell"
 // of ADR-0008 §8). Wires the HTML controls to a framework-free DualView over a
 // synthetic source, and renders the live fetch-budget HUD.
+import { WebGPURenderer } from "three/webgpu";
 import { syntheticPlane, syntheticVolume, type SyntheticSource } from "../../src/datasource";
 import { DualView, type DecisionStats } from "./datasource/dualView";
 import { levelColor } from "./datasource/overlays";
@@ -67,16 +68,38 @@ function renderStats(s: DecisionStats, levelCount: number): void {
 }
 
 let view: DualView | null = null;
+let renderer: WebGPURenderer | null = null;
+
+// One renderer/device for the whole page — reused across source switches (re-creating it
+// per switch leaks GPU devices until WebGPU stops handing out new ones → black canvas).
+async function getRenderer(): Promise<WebGPURenderer | null> {
+  if (renderer) return renderer;
+  if (!("gpu" in navigator)) {
+    errEl.textContent = "WebGPU is not available in this view. Open http://localhost:5188/datasource.html in Chrome or Edge.";
+    return null;
+  }
+  const r = new WebGPURenderer({ canvas, antialias: true, alpha: true });
+  try {
+    await r.init();
+  } catch (e) {
+    errEl.textContent = `WebGPU failed to start: ${e instanceof Error ? e.message : String(e)}. Try a hard reload, or open in Chrome/Edge.`;
+    return null;
+  }
+  renderer = r;
+  return r;
+}
 
 async function mount(kind: string): Promise<void> {
   view?.dispose();
   errEl.textContent = "";
+  const r = await getRenderer();
+  if (!r) return;
   const levelCount = Number(pLevels.value);
   const combined = kind === "combined";
   const source: SyntheticSource = kind === "volume" || combined
     ? syntheticVolume({ size: 256, chunk: 32, levelCount })
     : syntheticPlane({ width: 2048, height: 2048, chunk: 64, levelCount });
-  view = new DualView(canvas, inset, source, (s) => renderStats(s, source.ms.levelCount), combined);
+  view = new DualView(canvas, inset, r, source, (s) => renderStats(s, source.ms.levelCount), combined);
   view.setQ(Number(qSlider.value));
   view.setTextures(texChk.checked);
   view.setWireframe(gridChk.checked);
