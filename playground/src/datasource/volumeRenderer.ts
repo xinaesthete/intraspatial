@@ -9,7 +9,7 @@
 // Bricks are uploaded into atlas slots with renderer.copyTextureToTexture (partial
 // 3D upload); the page table is tiny and re-uploaded whole per selection change.
 import * as THREE from "three";
-import { Break, cameraFar, cameraNear, cameraPosition, cameraViewMatrix, clamp, exp2, float, Fn, If, Loop, max, min, mix, normalize, oneMinus, perspectiveDepthToViewZ, positionWorld, step, struct, texture3D, uniform, vec3, vec4, viewportDepthTexture, viewZToPerspectiveDepth } from "three/tsl";
+import { Break, cameraFar, cameraNear, cameraPosition, cameraViewMatrix, clamp, Discard, exp2, float, Fn, If, Loop, max, min, mix, normalize, oneMinus, perspectiveDepthToViewZ, positionWorld, step, struct, texture3D, uniform, vec3, vec4, viewportDepthTexture, viewZToPerspectiveDepth } from "three/tsl";
 import { MeshBasicNodeMaterial } from "three/webgpu";
 import { chunkArrayBox, chunkCounts, chunkKey, levelVoxelDims, worldAabbOfArrayBox, type Loader, type Multiscale, type Selection, type Tile, type Vec3 } from "../../../src/datasource";
 
@@ -246,6 +246,8 @@ export class VolumeRenderer {
       const alpha = float(0.0).toVar();
       const found = float(0.0).toVar();
       const outDepth = float(1.0).toVar();
+      const dmPrev = float(0.0).toVar(); // density at the previous step, for iso-interpolation
+      const tPrev = tEnter.toVar();
       Loop(STEPS, ({ i }) => {
         const t = tEnter.add(stepLen.mul(float(i).add(0.5)));
         const pWorld = camW.add(dir.mul(t));
@@ -254,14 +256,25 @@ export class VolumeRenderer {
         const sc = mix(vec3(0.10, 0.03, 0.18), vec3(1.0, 0.86, 0.55), dm);
         col.addAssign(sc.mul(a));
         alpha.addAssign(a);
-        // First solid crossing → clip depth (written to z-buffer when depthWrite is on).
-        const hit = step(this.uSolid, dm).mul(oneMinus(found));
-        const clipD = viewZToPerspectiveDepth(cameraViewMatrix.mul(vec4(pWorld, 1.0)).z, cameraNear, cameraFar);
-        outDepth.assign(mix(outDepth, clipD, hit));
-        found.assign(max(found, hit));
+        // First crossing of uSolid → the surface depth. Interpolate the exact iso-position
+        // between the last two samples instead of snapping to the step centre, so the
+        // written depth is smooth rather than banded to stepLen (which makes anything
+        // depth-tested against it — the probe rod — stair-step at the occlusion edge).
+        const crossing = step(this.uSolid, dm).mul(oneMinus(found));
+        const frac = clamp(this.uSolid.sub(dmPrev).div(max(dm.sub(dmPrev), float(1e-4))), 0.0, 1.0);
+        const pHit = camW.add(dir.mul(mix(tPrev, t, frac)));
+        const clipD = viewZToPerspectiveDepth(cameraViewMatrix.mul(vec4(pHit, 1.0)).z, cameraNear, cameraFar);
+        outDepth.assign(mix(outDepth, clipD, crossing));
+        found.assign(max(found, crossing));
+        dmPrev.assign(dm);
+        tPrev.assign(t);
         // Early-out once the ray is effectively opaque (the solid depth is already fixed).
         If(alpha.greaterThan(0.995), () => { Break(); });
       });
+      // Empty ray (no visible density AND no solid): discard so we neither tint the pixel
+      // nor stamp far-depth over whatever opaque geometry sits behind the volume box —
+      // depthTest is off, so an unconditional write would clobber the image plane's depth.
+      Discard(alpha.lessThan(0.003).and(found.equal(0.0)));
       return RayResult(vec4(col, alpha), outDepth);
     })();
 

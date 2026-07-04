@@ -184,6 +184,11 @@ export class DualView {
     mat.transparent = true; // join the transparent pass so it sorts AFTER the volume
     mat.depthTest = true; // read the volume's written depth → get occluded by it
     mat.depthWrite = true;
+    // Where the rod is exactly coplanar with the volume's solid surface it would z-fight
+    // (dashed seam). Bias it very slightly away so the surface wins the tie cleanly.
+    mat.polygonOffset = true;
+    mat.polygonOffsetFactor = 1;
+    mat.polygonOffsetUnits = 1;
     const rod = new THREE.Mesh(geo, mat);
     rod.position.copy(this.center);
     rod.renderOrder = 1; // after the volume (renderOrder 0)
