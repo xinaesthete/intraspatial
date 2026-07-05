@@ -3,7 +3,7 @@
 // selected chunks as level-tinted wireframe boxes plus a faint dataset bound — the
 // receding-resolution gradient made visible, driven entirely by the pure `select()`.
 import * as THREE from "three";
-import { chunkWorldAabb, type Multiscale, type Selection, type Vec3, worldAabbOfArrayBox } from "../../../src/datasource";
+import { type Affine3, applyAffine, chunkArrayBox, type Multiscale, type Selection, type Vec3 } from "../../../src/datasource";
 
 /** okLCH-ish ramp by level: fine = warm & bright, coarse = cool & dim. */
 export function levelColor(level: number, maxLevel: number): THREE.Color {
@@ -28,22 +28,35 @@ const BOX_EDGES: ReadonlyArray<readonly [number, number]> = [
   [3, 7], // verticals
 ];
 
-function pushBoxEdges(out: number[], min: THREE.Vector3Like, max: THREE.Vector3Like): void {
-  const corners: number[][] = [
-    [min.x, min.y, min.z],
-    [max.x, min.y, min.z],
-    [max.x, max.y, min.z],
-    [min.x, max.y, min.z],
-    [min.x, min.y, max.z],
-    [max.x, min.y, max.z],
-    [max.x, max.y, max.z],
-    [min.x, max.y, max.z],
-  ];
+// Which (lo|hi) each of the 8 corners takes per axis. Order matches BOX_EDGES:
+// bottom face 0-1-2-3, top face 4-5-6-7.
+const CORNER_SIGN: ReadonlyArray<readonly [0 | 1, 0 | 1, 0 | 1]> = [
+  [0, 0, 0],
+  [1, 0, 0],
+  [1, 1, 0],
+  [0, 1, 0],
+  [0, 0, 1],
+  [1, 0, 1],
+  [1, 1, 1],
+  [0, 1, 1],
+];
+
+/** The 8 world-space corners of an array-space box [lo,hi] under the affine. An oblique
+ *  `worldFromArray` yields a genuinely oriented (rotated/sheared) box, not an AABB — the
+ *  same per-corner `applyAffine` the tile renderer uses to place data. */
+function orientedCorners(a: Affine3, lo: Vec3, hi: Vec3): Vec3[] {
+  const x: [number, number] = [lo[0], hi[0]];
+  const y: [number, number] = [lo[1], hi[1]];
+  const z: [number, number] = [lo[2], hi[2]];
+  return CORNER_SIGN.map(([ix, iy, iz]) => applyAffine(a, [x[ix], y[iy], z[iz]]));
+}
+
+function pushBoxEdges(out: number[], corners: readonly Vec3[]): void {
   for (const [a, b] of BOX_EDGES) {
     const ca = corners[a],
       cb = corners[b];
     if (!ca || !cb) continue;
-    out.push(ca[0] ?? 0, ca[1] ?? 0, ca[2] ?? 0, cb[0] ?? 0, cb[1] ?? 0, cb[2] ?? 0);
+    out.push(ca[0], ca[1], ca[2], cb[0], cb[1], cb[2]);
   }
 }
 
@@ -53,9 +66,9 @@ export function chunkOverlays(ms: Multiscale, sel: Selection): THREE.Group {
   const maxLevel = ms.levelCount - 1;
   const byLevel = new Map<number, number[]>();
   for (const c of sel.chunks) {
-    const box = chunkWorldAabb(ms, c.id);
+    const [lo, hi] = chunkArrayBox(ms, c.id);
     const arr = byLevel.get(c.id.level) ?? [];
-    pushBoxEdges(arr, { x: box.min[0], y: box.min[1], z: box.min[2] }, { x: box.max[0], y: box.max[1], z: box.max[2] });
+    pushBoxEdges(arr, orientedCorners(ms.worldFromArray, lo, hi));
     byLevel.set(c.id.level, arr);
   }
   for (const [level, positions] of byLevel) {
@@ -69,9 +82,8 @@ export function chunkOverlays(ms: Multiscale, sel: Selection): THREE.Group {
 
 /** A faint outline of the whole dataset extent, for context. */
 export function boundsOverlay(ms: Multiscale): THREE.LineSegments {
-  const box = worldAabbOfArrayBox(ms.worldFromArray, [0, 0, 0], [ms.voxelDims0[0], ms.voxelDims0[1], ms.voxelDims0[2]]);
   const positions: number[] = [];
-  pushBoxEdges(positions, { x: box.min[0], y: box.min[1], z: box.min[2] }, { x: box.max[0], y: box.max[1], z: box.max[2] });
+  pushBoxEdges(positions, orientedCorners(ms.worldFromArray, [0, 0, 0], [ms.voxelDims0[0], ms.voxelDims0[1], ms.voxelDims0[2]]));
   const geo = new THREE.BufferGeometry();
   geo.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
   return new THREE.LineSegments(geo, new THREE.LineBasicMaterial({ color: 0x334155, transparent: true, opacity: 0.5 }));
