@@ -236,10 +236,30 @@ export class VolumeRenderer {
   }
 
   private makeMesh(): THREE.Mesh {
-    const b = worldAabbOfArrayBox(this.ms.worldFromArray, [0, 0, 0], [this.ms.voxelDims0[0], this.ms.voxelDims0[1], this.ms.voxelDims0[2]]);
+    const wfa = this.ms.worldFromArray;
+    const dims = this.ms.voxelDims0;
+    const b = worldAabbOfArrayBox(wfa, [0, 0, 0], [dims[0], dims[1], dims[2]]);
     const size: Vec3 = [b.max[0] - b.min[0], b.max[1] - b.min[1], b.max[2] - b.min[2]];
-    const bMin = uniform(new THREE.Vector3(b.min[0], b.min[1], b.min[2]));
-    const bSize = uniform(new THREE.Vector3(size[0], size[1], size[2]));
+
+    // Model matrix M: array (level-0 voxel) coords → world. Columns are the array axes,
+    // translation is the origin — i.e. the full Affine3, INCLUDING any rotation/shear/
+    // anisotropy it carries (the volume need not be axis-aligned in world).
+    // makeBasis sets the three columns (the array axes); setPosition adds the origin — same
+    // 4×4 as a hand-written .set(), but the columns read as the axes and Biome leaves it alone.
+    const [ax0, ax1, ax2] = wfa.axes;
+    const M = new THREE.Matrix4()
+      .makeBasis(
+        new THREE.Vector3(ax0[0], ax0[1], ax0[2]),
+        new THREE.Vector3(ax1[0], ax1[1], ax1[2]),
+        new THREE.Vector3(ax2[0], ax2[1], ax2[2]),
+      )
+      .setPosition(wfa.origin[0], wfa.origin[1], wfa.origin[2]);
+    // world → NORMALISED array coords [0,1]³ = diag(1/dims) · M⁻¹. Marching AND sampling in
+    // this space is what makes the raymarch correct for an arbitrary placement: the volume is
+    // the axis-aligned unit box here, however M rotates/shears it in world. For a diagonal M
+    // this collapses to the old (pWorld−min)/size mapping, so axis-aligned data is unchanged.
+    const worldToNorm = new THREE.Matrix4().makeScale(1 / dims[0], 1 / dims[1], 1 / dims[2]).multiply(M.clone().invert());
+    const uWorldToNorm = uniform(worldToNorm);
     const pageDimsU = uniform(new THREE.Vector3(this.pageDims[0], this.pageDims[1], this.pageDims[2]));
     const slots = uniform(this.slotsPerAxis);
     const invB = uniform(0.5 / this.B);
@@ -248,47 +268,36 @@ export class VolumeRenderer {
 
     const mat = new MeshBasicNodeMaterial();
     mat.transparent = true;
-    mat.depthWrite = false; // toggled by setWriteDepth
+    mat.depthWrite = false; // toggled by setDepthWrite
     mat.depthTest = false; // occlusion is handled inside the ray (depth-aware), not by z-test
     mat.side = THREE.BackSide;
 
-    // Sample density (0 where empty) at volume-space point p, via page table → atlas.
-    const sampleAt = Fn(([p]) => {
-      const pt = texture3D(pageTex, p);
-      const mask = pt.a.mul(255.0).min(1.0); // 1 if occupied, 0 if empty
-      const level = pt.a.mul(255.0).sub(1.0).max(0.0);
-      const cells = exp2(level);
-      const fo = p.mul(pageDimsU).floor().div(cells).floor().mul(cells);
-      const local = clamp(p.mul(pageDimsU).sub(fo).div(cells), invB, float(1.0).sub(invB));
-      const slot = pt.rgb.mul(255.0).add(0.5).floor();
-      return texture3D(atlasTex, slot.add(local).div(slots)).r.mul(mask);
-    });
-    // Transfer function: contrast window + gamma → normalised intensity.
-    const tf = (d: ReturnType<typeof float>) => clamp(d.sub(this.uCmin).div(this.uCmax.sub(this.uCmin)), 0.0, 1.0).pow(this.uGamma);
-    const enter = (camW: ReturnType<typeof cameraPosition.sub>, dir: ReturnType<typeof normalize>) => {
-      const inv = vec3(1.0).div(dir);
-      const t0 = bMin.sub(camW).mul(inv),
-        t1 = bMin.add(bSize).sub(camW).mul(inv);
-      const tmin = min(t0, t1),
-        tmax = max(t0, t1);
-      const tEnter = max(max(tmin.x, tmin.y), tmin.z).max(0.0);
-      const tExit = min(min(tmax.x, tmax.y), tmax.z);
-      return { tEnter, tExit };
-    };
-
-    // ONE march feeding both outputs. Emission-absorption compositing accumulates
-    // colour/alpha; the first sample crossing uSolid records the clip depth for z-write.
+    // ONE march feeding both outputs (colour + solid-surface clip depth). The ray is set up
+    // in world space (so t is world distance and the depth math stays simple), but intersected
+    // and sampled in the volume's normalised array space, where the box is axis-aligned even
+    // when M rotates/shears it in world.
     const march = Fn(() => {
       const camW = cameraPosition;
-      const dir = normalize(positionWorld.sub(camW));
-      const { tEnter, tExit } = enter(camW, dir);
-      // Occlusion bail (gated by uDepthAware): clamp the exit to the opaque scene surface
-      // along this ray. Solving viewZ(t) = sceneViewZ for t — view-z is affine in t — both
-      // stops the ray at the image plane AND packs all STEPS into the *visible* span,
-      // instead of masking occluded samples one-by-one while still marching them.
-      const sceneViewZ = perspectiveDepthToViewZ(viewportDepthTexture(), cameraNear, cameraFar);
+      const dirW = normalize(positionWorld.sub(camW)); // unit world ray ⇒ t is world distance
+      // Camera + ray direction in normalised array space (direction ⇒ w = 0, no translation).
+      const camN = uWorldToNorm.mul(vec4(camW, 1.0)).xyz;
+      const dirN = uWorldToNorm.mul(vec4(dirW, 0.0)).xyz;
+      // Ray ∩ the unit box [0,1]³ (slab test). worldToNorm is affine, so this shares t with
+      // the world ray — tEnter/tExit come out as world distances, matching the depth math.
+      const invD = vec3(1.0).div(dirN);
+      const tA = vec3(0.0).sub(camN).mul(invD);
+      const tB = vec3(1.0).sub(camN).mul(invD);
+      const tmin = min(tA, tB);
+      const tmax = max(tA, tB);
+      const tEnter = max(max(tmin.x, tmin.y), tmin.z).max(0.0);
+      const tExit = min(min(tmax.x, tmax.y), tmax.z);
+      // Occlusion bail (gated by uDepthAware): clamp the exit to the opaque scene surface along
+      // this ray. view-z is affine in t (rigid view matrix), so solve viewZ(t) = sceneViewZ —
+      // this stops the ray at the image plane AND packs all STEPS into the *visible* span.
+      const existingDepth = viewportDepthTexture(); // perspective depth [0,1] of prior opaque geometry
+      const sceneViewZ = perspectiveDepthToViewZ(existingDepth, cameraNear, cameraFar);
       const a0 = cameraViewMatrix.mul(vec4(camW, 1.0)).z;
-      const ad = cameraViewMatrix.mul(vec4(dir, 0.0)).z;
+      const ad = cameraViewMatrix.mul(vec4(dirW, 0.0)).z;
       const tSurface = sceneViewZ.sub(a0).div(ad);
       const tExitEff = mix(tExit, min(tExit, max(tEnter, tSurface)), this.uDepthAware);
       const stepLen = tExitEff.sub(tEnter).div(float(STEPS));
@@ -299,40 +308,61 @@ export class VolumeRenderer {
       const outDepth = float(1.0).toVar();
       const dmPrev = float(0.0).toVar(); // density at the previous step, for iso-interpolation
       const tPrev = tEnter.toVar();
-      Loop(STEPS, ({ i }) => {
-        const t = tEnter.add(stepLen.mul(float(i).add(0.5)));
-        const pWorld = camW.add(dir.mul(t));
-        const dm = tf(sampleAt(pWorld.sub(bMin).div(bSize)));
-        const a = dm.mul(0.1).mul(oneMinus(alpha));
-        const sc = mix(vec3(0.1, 0.03, 0.18), vec3(1.0, 0.86, 0.55), dm);
-        col.addAssign(sc.mul(a));
-        alpha.addAssign(a);
-        // First crossing of uSolid → the surface depth. Interpolate the exact iso-position
-        // between the last two samples instead of snapping to the step centre, so the
-        // written depth is smooth rather than banded to stepLen (which makes anything
-        // depth-tested against it — the probe rod — stair-step at the occlusion edge).
-        const crossing = step(this.uSolid, dm).mul(oneMinus(found));
-        const frac = clamp(this.uSolid.sub(dmPrev).div(max(dm.sub(dmPrev), float(1e-4))), 0.0, 1.0);
-        const pHit = camW.add(dir.mul(mix(tPrev, t, frac)));
-        const clipD = viewZToPerspectiveDepth(cameraViewMatrix.mul(vec4(pHit, 1.0)).z, cameraNear, cameraFar);
-        outDepth.assign(mix(outDepth, clipD, crossing));
-        found.assign(max(found, crossing));
-        dmPrev.assign(dm);
-        tPrev.assign(t);
-        // Early-out once the ray is effectively opaque (the solid depth is already fixed).
-        If(alpha.greaterThan(0.995), () => {
-          Break();
+      // Skip the whole march when there's no visible span: the ray misses the oriented box, or
+      // (depth-aware) an opaque surface sits in front of where it would enter — fully occluded.
+      // Those fragments fall through to the Discard below untouched, so we don't burn STEPS
+      // samples on hidden rays. `discard` alone wouldn't help — in WGSL it doesn't halt the
+      // shader — but an If around the loop genuinely branches past it.
+      If(tExitEff.greaterThan(tEnter), () => {
+        Loop(STEPS, ({ i }) => {
+          const t = tEnter.add(stepLen.mul(float(i).add(0.5)));
+          const p = camN.add(dirN.mul(t)); // normalised array coords [0,1]³
+          // Sample density at p via page table → atlas brick (0 where empty).
+          const pt = texture3D(pageTex, p);
+          const mask = pt.a.mul(255.0).min(1.0); // 1 if occupied, 0 if empty
+          const level = pt.a.mul(255.0).sub(1.0).max(0.0);
+          const cells = exp2(level);
+          const fo = p.mul(pageDimsU).floor().div(cells).floor().mul(cells);
+          const localP = clamp(p.mul(pageDimsU).sub(fo).div(cells), invB, float(1.0).sub(invB));
+          const slot = pt.rgb.mul(255.0).add(0.5).floor();
+          const density = texture3D(atlasTex, slot.add(localP).div(slots)).r.mul(mask);
+          // Transfer function: contrast window + gamma → normalised intensity.
+          const dm = clamp(density.sub(this.uCmin).div(this.uCmax.sub(this.uCmin)), 0.0, 1.0).pow(this.uGamma);
+          // Emission-absorption compositing.
+          const a = dm.mul(0.1).mul(oneMinus(alpha));
+          const sc = mix(vec3(0.1, 0.03, 0.18), vec3(1.0, 0.86, 0.55), dm);
+          col.addAssign(sc.mul(a));
+          alpha.addAssign(a);
+          // First crossing of uSolid → the surface depth. Interpolate the exact iso-position
+          // between the last two samples instead of snapping to the step centre, so the written
+          // depth is smooth rather than banded to stepLen (which makes anything depth-tested
+          // against it — the probe rod — stair-step at the occlusion edge). pHit is world-space.
+          const crossing = step(this.uSolid, dm).mul(oneMinus(found));
+          const frac = clamp(this.uSolid.sub(dmPrev).div(max(dm.sub(dmPrev), float(1e-4))), 0.0, 1.0);
+          const pHit = camW.add(dirW.mul(mix(tPrev, t, frac)));
+          const clipD = viewZToPerspectiveDepth(cameraViewMatrix.mul(vec4(pHit, 1.0)).z, cameraNear, cameraFar);
+          outDepth.assign(mix(outDepth, clipD, crossing));
+          found.assign(max(found, crossing));
+          dmPrev.assign(dm);
+          tPrev.assign(t);
+          // Early-out once the ray is effectively opaque (the solid depth is already fixed).
+          If(alpha.greaterThan(0.995), () => {
+            Break();
+          });
         });
       });
-      // Empty ray (no visible density AND no solid): discard so we neither tint the pixel
-      // nor stamp far-depth over whatever opaque geometry sits behind the volume box —
-      // depthTest is off, so an unconditional write would clobber the image plane's depth.
+      // Empty ray (no visible density AND no solid): discard so we don't tint the pixel.
+      // (An optimisation — the depth min below is what actually prevents a far-depth clobber.)
       Discard(alpha.lessThan(0.003).and(found.equal(0.0)));
-      return RayResult(vec4(col, alpha), outDepth);
+      // Never write a depth FARTHER than the buffer already holds: emulate a LESS depth test.
+      // We can't switch the hardware one on — depthTest is off because this is a BackSide box
+      // whose fragment depth is the far wall, not the volume content. So the volume only wins
+      // the z-buffer where its solid surface is genuinely nearer than the opaque geometry there.
+      return RayResult(vec4(col, alpha), min(outDepth, existingDepth));
     })();
 
-    mat.colorNode = march.get("color");
-    mat.depthNode = march.get("depth");
+    mat.colorNode = march.get("color") as ReturnType<typeof vec4>;
+    mat.depthNode = march.get("depth") as ReturnType<typeof float>;
 
     this.mat = mat;
 
