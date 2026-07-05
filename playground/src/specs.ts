@@ -29,7 +29,8 @@ const categoryOf = (name: string, own?: string): string => own ?? OP_CATEGORY[na
 
 export function getSpec(name: string): NodeSpec {
   if (isSource(name)) {
-    const s = getSource(name)!;
+    const s = getSource(name);
+    if (!s) throw new Error(`unexpected error getting source '${name}'`);
     return {
       name,
       label: s.label,

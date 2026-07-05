@@ -82,7 +82,7 @@ function groupByCategory(specs: NodeSpec[], filter: string): { category: string;
     const i = CATEGORY_ORDER.indexOf(c);
     return i < 0 ? CATEGORY_ORDER.length : i;
   };
-  return [...byCat.keys()].sort((a, b) => rank(a) - rank(b) || a.localeCompare(b)).map((c) => ({ category: c, specs: byCat.get(c)! }));
+  return [...byCat.keys()].sort((a, b) => rank(a) - rank(b) || a.localeCompare(b)).map((c) => ({ category: c, specs: byCat.get(c) ?? [] }));
 }
 
 // Default example: blob clusters -> KDE density -> Getis-Ord hotspots.
@@ -116,7 +116,8 @@ export default function App() {
 
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [path, setPath] = useState<string[]>([ROOT_SCOPE]);
-  const scope = path[path.length - 1]!;
+  const scope = path[path.length - 1];
+  if (scope === undefined) throw new Error(`Couldn't resolve scope, expected path with at least ['${ROOT_SCOPE}']`);
   // Reusable named subgraph definitions (live-linked: editing one updates all instances).
   const [defs, setDefs] = useState<DefLibrary>({});
   // Palette filtering + the `/` command palette (insert a node at the cursor).
@@ -206,7 +207,10 @@ export default function App() {
   // interior. The governing def is the LAST `def:` segment on the path; nested groups
   // below it still live in that def's container.
   const activeDefName = useMemo(() => {
-    for (let i = path.length - 1; i >= 0; i--) if (isDefScope(path[i]!)) return defNameOfScope(path[i]!);
+    for (let i = path.length - 1; i >= 0; i--) {
+      const seg = path[i];
+      if (seg !== undefined && isDefScope(seg)) return defNameOfScope(seg);
+    }
     return null;
   }, [path]);
   const containerNodes = activeDefName ? (defs[activeDefName]?.nodes ?? []) : nodes;
@@ -393,7 +397,8 @@ export default function App() {
       window.alert(`A reusable subgraph named "${name}" already exists.`);
       return;
     }
-    let result;
+    // nb, this is not the same as SubgraphDef, would be good to be clearer on that.
+    let result: ReturnType<typeof promoteToDef>;
     try {
       result = promoteToDef(workNodes, workEdges, defs, groupId, name, name);
     } catch (e) {
@@ -402,6 +407,7 @@ export default function App() {
     }
     if (activeDefName) {
       // The container is itself a def: write its updated interior AND the new def.
+      // biome-ignore lint/style/noNonNullAssertion: ds[activeDefName] unchecked but should be correct
       setDefs((ds) => ({ ...result.defs, [activeDefName]: { ...ds[activeDefName]!, nodes: result.nodes, edges: result.edges } }));
     } else {
       setNodes(result.nodes);
@@ -429,6 +435,7 @@ export default function App() {
 
   // Rename a definition's shared label (updates every instance's default display).
   const renameDef = useCallback(
+    // biome-ignore lint/style/noNonNullAssertion: ds[name] unchecked but should be safe
     (name: string, label: string) => setDefs((ds) => (ds[name] ? { ...ds, [name]: { ...ds[name]!, label } } : ds)),
     [],
   );
@@ -445,6 +452,7 @@ export default function App() {
   // buildGraph runs): a group/instance node stands in for an internal (node, port).
   // Instances become groups whose port ids are namespaced `instId/portId`.
   const resolveSink = useCallback((): { id: string; port?: string } => {
+    if (!selectedId) throw new Error("Unexpted falsey selectedId");
     const sel = nodes.find((n) => n.id === selectedId);
     if (sel && (isGroupNode(sel) || isInstanceNode(sel))) {
       const exp = expandInstances(nodes, edges, defs);
@@ -457,7 +465,7 @@ export default function App() {
       const r = resolveGroupOutput(exp.nodes, exp.edges, sel.id, portId);
       if (r) return { id: r.node, port: r.port };
     }
-    return { id: selectedId!, port: selectedPort ?? undefined };
+    return { id: selectedId, port: selectedPort ?? undefined };
   }, [nodes, edges, defs, selectedId, selectedPort]);
 
   // Rename a group's label or one of its boundary ports (stored as portLabels).
@@ -585,7 +593,7 @@ export default function App() {
         runRef.current();
       } // run the latest
     }
-  }, [nodes, edges, defs, selectedId, selectedPort, resolveSink]);
+  }, [nodes, edges, defs, selectedId, resolveSink]);
   runRef.current = run;
 
   // Signature of the run-relevant state (params + wiring + selection), excluding
@@ -608,6 +616,7 @@ export default function App() {
   // state, so a slider drag updates continuously in real time. Disabled for feedback
   // graphs, which use the transport (play/step) below instead.
   useEffect(() => {
+    sig; // this is the signal to run the effect
     if (!live || !selectedId || hasFeedback) return;
     runRef.current();
   }, [sig, live, selectedId, hasFeedback]);
@@ -634,7 +643,7 @@ export default function App() {
         setPlaying(false);
       }
     },
-    [nodes, edges, defs, selectedId, selectedPort, resolveSink],
+    [nodes, edges, defs, selectedId, resolveSink],
   );
 
   const resetSim = useCallback(() => {
@@ -691,7 +700,7 @@ export default function App() {
       cancelled = true;
       if (rafRef.current) cancelAnimationFrame(rafRef.current);
     };
-  }, [playing, hasFeedback, selectedId, selectedPort, nodes, edges, defs]);
+  }, [playing, hasFeedback, selectedId, nodes, edges, defs, resolveSink]);
 
   return (
     <PortHoverContext.Provider value={portHover}>
@@ -888,7 +897,7 @@ export default function App() {
               {selectedGroupBoundary.outputs.length > 1 && (
                 <label className="row">
                   <span>preview</span>
-                  <select value={selectedPort ?? selectedGroupBoundary.outputs[0]!.id} onChange={(e) => setSelectedPort(e.target.value)}>
+                  <select value={selectedPort ?? selectedGroupBoundary.outputs[0]?.id} onChange={(e) => setSelectedPort(e.target.value)}>
                     {selectedGroupBoundary.outputs.map((o) => (
                       <option key={o.id} value={o.id}>
                         {o.label}
@@ -956,7 +965,7 @@ export default function App() {
               {selectedGroupBoundary.outputs.length > 1 && (
                 <label className="row">
                   <span>preview</span>
-                  <select value={selectedPort ?? selectedGroupBoundary.outputs[0]!.id} onChange={(e) => setSelectedPort(e.target.value)}>
+                  <select value={selectedPort ?? selectedGroupBoundary.outputs[0]?.id} onChange={(e) => setSelectedPort(e.target.value)}>
                     {selectedGroupBoundary.outputs.map((o) => (
                       <option key={o.id} value={o.id}>
                         {o.label}
@@ -1007,7 +1016,7 @@ export default function App() {
               {selectedSpec.outputs.length > 1 && (
                 <label className="row">
                   <span>output</span>
-                  <select value={selectedPort ?? selectedSpec.outputs[0]!.name} onChange={(e) => setSelectedPort(e.target.value)}>
+                  <select value={selectedPort ?? selectedSpec.outputs[0]?.name} onChange={(e) => setSelectedPort(e.target.value)}>
                     {selectedSpec.outputs.map((o) => (
                       <option key={o.name} value={o.name}>
                         {o.name}

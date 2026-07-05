@@ -21,7 +21,7 @@ describe("pedigree", () => {
 
     expect(before.nodes[specimenId(child)]).toBeUndefined(); // earlier value untouched
     expect(ped.roots).toEqual([specimenId(a), specimenId(b)]);
-    expect(ped.nodes[specimenId(child)]!.parents).toEqual([specimenId(a), specimenId(b)]);
+    expect(ped.nodes[specimenId(child)]?.parents).toEqual([specimenId(a), specimenId(b)]);
   });
 
   it("ancestry walks back to the roots", () => {
@@ -45,6 +45,6 @@ describe("pedigree", () => {
     const round = fromJSON(JSON.parse(JSON.stringify(toJSON(ped))));
     expect(round.roots).toEqual(ped.roots);
     expect(round.selectedPath).toEqual(ped.selectedPath);
-    expect(round.nodes[specimenId(a)]!.specimen.seed).toBe(a.seed);
+    expect(round.nodes[specimenId(a)]?.specimen.seed).toBe(a.seed);
   });
 });

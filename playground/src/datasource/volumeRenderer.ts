@@ -39,18 +39,7 @@ import {
   viewZToPerspectiveDepth,
 } from "three/tsl";
 import { MeshBasicNodeMaterial } from "three/webgpu";
-import {
-  chunkArrayBox,
-  chunkCounts,
-  chunkKey,
-  type Loader,
-  levelVoxelDims,
-  type Multiscale,
-  type Selection,
-  type Tile,
-  type Vec3,
-  worldAabbOfArrayBox,
-} from "../../../src/datasource";
+import { chunkKey, type Loader, type Multiscale, type Selection, type Tile, type Vec3, worldAabbOfArrayBox } from "../../../src/datasource";
 
 const STEPS = 128;
 // One raymarch, two outputs: the compositated colour AND the solid-surface clip depth.

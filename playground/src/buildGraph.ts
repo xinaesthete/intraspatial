@@ -65,7 +65,9 @@ export function buildGraph(inputNodes: Node[], inputEdges: Edge[], defs: DefLibr
     const params = data.params ?? {};
 
     if (isSource(data.opName)) {
-      produced.set(id, getSource(data.opName)!.make(graph, params));
+      const source = getSource(data.opName)?.make(graph, params);
+      if (!source) throw new Error(`Unexpected: failed to produce source '${id}' for op '${data.opName}'`);
+      produced.set(id, source);
       return;
     }
 
@@ -92,7 +94,9 @@ export function buildGraph(inputNodes: Node[], inputEdges: Edge[], defs: DefLibr
     const outs = graph.op(data.opName, inputs, params);
     const map: Record<string, GpuField> = {};
     spec.outputs.forEach((o, i) => {
-      map[o.name] = outs[i]!;
+      const out = outs[i];
+      if (!out) throw new Error(`missing out ${i}`);
+      map[o.name] = out;
     });
     produced.set(id, map);
   };
@@ -161,6 +165,9 @@ function wrapOnValue(
   const g2c = new Map<string, string>();
   for (const [cid, ports] of produced) {
     for (const portName in ports) {
+      // `portName` comes from `for..in ports`, so the entry is always present; `f?.` would
+      // just bake a literal "undefined:undefined" key if the invariant broke, hiding it.
+      // biome-ignore lint/style/noNonNullAssertion: own enumerable key of `ports`, provably present
       const f = ports[portName]!;
       g2c.set(`${f.producer}:${f.outPort}`, `${cid}:${portName}`);
     }

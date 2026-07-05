@@ -161,7 +161,7 @@ const MODE_CODE: Record<FieldMode, number> = { kde: 0, distance: 1, dtm: 2 };
 function looksValid(out: Float32Array): boolean {
   let max = 0;
   for (let i = 0; i < out.length; i++) {
-    const v = out[i]!;
+    const v = out[i];
     if (!Number.isFinite(v)) return false;
     if (v > max) max = v;
   }
@@ -210,8 +210,8 @@ async function doCompute(ctx: Ctx, xs: ArrayLike<number>, ys: ArrayLike<number>,
     }
     const pts = new Float32Array(ptsFloats);
     for (let i = 0; i < n; i++) {
-      pts[2 * i] = xs[i]!;
-      pts[2 * i + 1] = ys[i]!;
+      pts[2 * i] = xs[i];
+      pts[2 * i + 1] = ys[i];
     }
     device.queue.writeBuffer(ptsBuf, 0, pts);
 

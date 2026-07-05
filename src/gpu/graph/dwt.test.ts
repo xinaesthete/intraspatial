@@ -1,3 +1,4 @@
+/** biome-ignore-all lint/style/noNonNullAssertion: test noise */
 // DWT reference math (ADR-0006): round-trip correctness and the packed-Mallat band
 // geometry. CPU-only and fast. Mirrors the reference `selfTest` in docs-site/src/lib/dwt.ts.
 import { describe, expect, it } from "vitest";

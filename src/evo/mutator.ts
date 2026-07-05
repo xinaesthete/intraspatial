@@ -1,4 +1,5 @@
 // The Mutator operators — Todd & Latham's aesthetic-selection primitives made
+/** biome-ignore-all lint/style/noNonNullAssertion: quite a bit of noise for array bound checks */
 // generic over any trait-space. All pure functions of `(specimen, …, rng)`, so a
 // lineage replays exactly.
 //

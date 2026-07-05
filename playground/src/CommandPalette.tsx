@@ -1,3 +1,4 @@
+/** biome-ignore-all lint/a11y/noStaticElementInteractions: we should get back to this for an a11y pass */
 // A `/`-triggered command palette for inserting a node at the cursor. Type to filter,
 // ↑/↓ to move, ↵ to insert the highlighted node, Esc to close. Designed to grow more
 // commands later (the items list is the only node-specific part).
@@ -27,10 +28,6 @@ export function CommandPalette({ items, onPick, onClose }: { items: CmdItem[]; o
       (it) => it.label.toLowerCase().includes(s) || it.name.toLowerCase().includes(s) || it.category.toLowerCase().includes(s),
     );
   }, [q, items]);
-
-  useEffect(() => {
-    setIdx(0);
-  }, [q]);
 
   // Keep the highlighted row in view.
   useEffect(() => {
@@ -63,13 +60,17 @@ export function CommandPalette({ items, onPick, onClose }: { items: CmdItem[]; o
           className="cmd-input"
           placeholder="Insert node…   type to filter · ↑↓ · ↵ · esc"
           value={q}
-          onChange={(e) => setQ(e.target.value)}
+          onChange={(e) => {
+            setQ(e.target.value);
+            setIdx(0);
+          }}
           onKeyDown={onKeyDown}
         />
         <div className="cmd-list" ref={listRef}>
           {filtered.length === 0 && <div className="cmd-empty">No matching nodes</div>}
           {filtered.map((it, i) => (
             <button
+              type="button"
               key={it.name}
               data-i={i}
               className={`cmd-item${i === idx ? " active" : ""}`}

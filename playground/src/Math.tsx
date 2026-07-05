@@ -12,5 +12,6 @@ export function MathTex({ tex, display = true }: { tex: string; display?: boolea
       return tex;
     }
   }, [tex, display]);
+  // biome-ignore lint/security/noDangerouslySetInnerHtml: html from katex should be ok
   return <span className="katex-host" dangerouslySetInnerHTML={{ __html: html }} />;
 }

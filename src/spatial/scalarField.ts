@@ -56,14 +56,14 @@ function resolveBbox(
     maxX = -Infinity,
     maxY = -Infinity;
   for (let i = 0; i < n; i++) {
-    const x = xs[i]!,
-      y = ys[i]!;
+    const x = xs[i] ?? 0,
+      y = ys[i] ?? 0;
     if (x < minX) minX = x;
     if (x > maxX) maxX = x;
     if (y < minY) minY = y;
     if (y > maxY) maxY = y;
   }
-  if (!isFinite(minX)) {
+  if (!Number.isFinite(minX)) {
     minX = 0;
     minY = 0;
     maxX = 1;
@@ -106,9 +106,9 @@ export function gaussianKdeField(xs: ArrayLike<number>, ys: ArrayLike<number>, o
   const data = new Float32Array(w * h);
   // Splat each point into the cells within its square support (the O(N*k) path).
   for (let i = 0; i < n; i++) {
-    const px = xs[i]!,
-      py = ys[i]!;
-    const wi = opts.weights ? opts.weights[i]! : 1;
+    const px = xs[i] ?? 0,
+      py = ys[i] ?? 0;
+    const wi = opts.weights ? (opts.weights[i] ?? 0) : 1;
     // World support box -> cell-index range. col grows with +X, row grows with -Y.
     const cLo = Math.max(0, Math.floor(((px - support - minX) / spanX) * w - 0.5));
     const cHi = Math.min(w - 1, Math.ceil(((px + support - minX) / spanX) * w - 0.5));
@@ -123,7 +123,7 @@ export function gaussianKdeField(xs: ArrayLike<number>, ys: ArrayLike<number>, o
         const d2 = dx * dx + dy * dy;
         if (d2 > support * support) continue;
         const idx = r * w + c;
-        data[idx] = data[idx]! + wi * Math.exp(-d2 * inv2s2);
+        data[idx] = (data[idx] ?? 0) + wi * Math.exp(-d2 * inv2s2);
       }
     }
   }

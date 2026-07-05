@@ -45,8 +45,8 @@ import {
 import { oklchToLinear } from "../../lib/oklabTsl";
 import { orientToForward } from "../../lib/tslTransform";
 
-// biome-ignore lint/suspicious/noExplicitAny: three TSL node types are inconsistent (see oklabTsl);
 // the creature assembly builds a shader graph, so its intermediate nodes are loosely typed.
+// biome-ignore lint/suspicious/noExplicitAny: three TSL node types are inconsistent (see oklabTsl);
 type Tsl = any;
 
 // Trail history depth (frames of position per agent). The GPU sim appends the current position into

@@ -108,12 +108,13 @@ export function specimenToParams(space: TraitSpace, sp: Specimen): Params {
     if (trait.kind === "fixed") {
       out[trait.paramName] = trait.fixedValue;
     } else if (trait.kind === "enable") {
-      out[trait.paramName] = sp.enable[trait.slot]! !== 0;
+      out[trait.paramName] = sp.enable[trait.slot] !== 0;
     } else {
-      const t = clamp01(sp.pos[trait.slot]!);
+      const t = clamp01(sp.pos[trait.slot] ?? 0);
       let v = trait.min + t * (trait.max - trait.min);
       if (trait.enumOptions) {
         const idx = Math.min(trait.enumOptions.length - 1, Math.max(0, Math.round(v)));
+        // biome-ignore lint/style/noNonNullAssertion: bound checked above
         out[trait.paramName] = trait.enumOptions[idx]!;
         continue;
       }

@@ -1,3 +1,4 @@
+/** biome-ignore-all lint/style/noNonNullAssertion: test noise */
 import { describe, expect, it } from "vitest";
 import { distanceField, gaussianKdeField } from "./scalarField";
 import { fieldBettiNumbers, sublevelsetPersistence } from "./sublevelsetPersistence";

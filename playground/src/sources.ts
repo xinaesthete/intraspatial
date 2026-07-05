@@ -3,8 +3,7 @@
 // runtime's `Graph.points`/`Graph.grid` so the produced handles are ordinary graph
 // resources from then on.
 
-import type { GpuField, ParamSpec, Params, ShapeKind } from "../../src/gpu/graph";
-import { Graph } from "../../src/gpu/graph";
+import type { GpuField, Graph, ParamSpec, Params, ShapeKind } from "../../src/gpu/graph";
 import { BODY_BLOCK_COUNT, seedSwarmBody } from "../../src/gpu/sim/body";
 import { seedGrayScott } from "../../src/gpu/sim/reactionDiffusion";
 
@@ -148,10 +147,10 @@ const noiseGrid: SourceSpec = {
             y0 = Math.floor(fy);
           const tx = sm(fx - x0),
             ty = sm(fy - y0);
-          const v00 = lat[y0 * gw + x0]!,
-            v10 = lat[y0 * gw + x0 + 1]!;
-          const v01 = lat[(y0 + 1) * gw + x0]!,
-            v11 = lat[(y0 + 1) * gw + x0 + 1]!;
+          const v00 = lat[y0 * gw + x0] ?? 0,
+            v10 = lat[y0 * gw + x0 + 1] ?? 0;
+          const v01 = lat[(y0 + 1) * gw + x0] ?? 0,
+            v11 = lat[(y0 + 1) * gw + x0 + 1] ?? 0;
           const a = v00 + (v10 - v00) * tx,
             b = v01 + (v11 - v01) * tx;
           data[y * w + x] = (a + (b - a) * ty) * amp;
@@ -214,8 +213,8 @@ const grayScottSeedComplex: SourceSpec = {
     const seed = seedGrayScott(size, size, 0.05);
     const data = new Float32Array(size * size * 2); // interleaved [U, V] = complex (re, im)
     for (let i = 0; i < size * size; i++) {
-      data[i * 2] = seed.u[i]!;
-      data[i * 2 + 1] = seed.v[i]!;
+      data[i * 2] = seed.u[i] ?? 0;
+      data[i * 2 + 1] = seed.v[i] ?? 0;
     }
     return {
       state: g.source({ shape: { kind: "grid", width: size, height: size }, dtype: "f32", element: { kind: "complex" }, data }),

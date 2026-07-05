@@ -112,7 +112,8 @@ export function imageElementToPlane(img: HTMLImageElement, size: number): ImageP
   const c = document.createElement("canvas");
   c.width = size;
   c.height = size;
-  const ctx = c.getContext("2d")!;
+  const ctx = c.getContext("2d");
+  if (!ctx) throw new Error("Couldn't get graphics context");
   ctx.drawImage(img, 0, 0, size, size);
   const px = ctx.getImageData(0, 0, size, size).data;
   const p = makePlane(size, size);

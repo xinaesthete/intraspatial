@@ -7,7 +7,7 @@
   },
   "files": {
     "ignoreUnknown": true,
-    "includes": ["**", "!**/rust", "!**/target", "!**/.astro", "!**/public/dwt-primer", "!**/viz"]
+    "includes": ["**", "!**/rust", "!**/target", "!**/.astro", "!**/public/dwt-primer", "!**/viz", "!**/*.svg"]
   },
   "formatter": {
     "enabled": true,
@@ -17,13 +17,32 @@
   },
   "linter": {
     "enabled": true,
+    "includes": ["**", "!test/**"],
     "rules": {
       "preset": "recommended",
       "style": {
-        "noNonNullAssertion": "warn"
+        "noNonNullAssertion": "warn",
+        "useTemplate": "info"
+      },
+      "a11y": {
+        "useButtonType": "info"
       }
     }
   },
+  "overrides": [
+    {
+      "includes": ["**/*.astro"],
+      "formatter": { "enabled": false },
+      "linter": {
+        "rules": {
+          "correctness": {
+            "noUnusedImports": "off",
+            "noUnusedVariables": "off"
+          }
+        }
+      }
+    }
+  ],
   "javascript": {
     "formatter": {
       "quoteStyle": "double"

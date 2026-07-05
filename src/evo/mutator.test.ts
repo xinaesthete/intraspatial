@@ -1,3 +1,4 @@
+/** biome-ignore-all lint/style/noNonNullAssertion: lots of noise otherwise */
 import { describe, expect, it } from "vitest";
 import type { ParamSpec } from "../gpu/graph/op";
 import { advance, breed, marry, mutate, steer, toward } from "./mutator";
@@ -25,7 +26,10 @@ describe("mutate", () => {
     let sp = randomSpecimen(space, 3);
     const rng = mulberry32(99);
     for (let i = 0; i < 200; i++) sp = mutate(space, sp, 1.5, rng);
-    for (const v of sp.pos) expect(v).toBeGreaterThanOrEqual(0), expect(v).toBeLessThanOrEqual(1);
+    for (const v of sp.pos) {
+      expect(v).toBeGreaterThanOrEqual(0);
+      expect(v).toBeLessThanOrEqual(1);
+    }
   });
 
   it("never moves a locked trait", () => {

@@ -110,7 +110,7 @@ export function disposeGroup(group: THREE.Group): void {
     const any = o as THREE.LineSegments;
     if (any.geometry) any.geometry.dispose();
     const m = any.material;
-    if (Array.isArray(m)) m.forEach((mm) => mm.dispose());
+    if (Array.isArray(m)) for (const mm of m) mm.dispose();
     else if (m) m.dispose();
   });
 }

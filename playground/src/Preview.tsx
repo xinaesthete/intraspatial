@@ -25,7 +25,7 @@ function drawHeatmap(canvas: HTMLCanvasElement, data: ArrayLike<number>, w: numb
   let min = Infinity,
     max = -Infinity;
   for (let i = 0; i < data.length; i++) {
-    const v = data[i]!;
+    const v = data[i] ?? 0;
     if (v < min) min = v;
     if (v > max) max = v;
   }
@@ -33,10 +33,11 @@ function drawHeatmap(canvas: HTMLCanvasElement, data: ArrayLike<number>, w: numb
   const scale = Math.max(1, Math.floor(320 / Math.max(w, h)));
   canvas.width = w * scale;
   canvas.height = h * scale;
-  const ctx = canvas.getContext("2d")!;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) throw new Error();
   const img = ctx.createImageData(w, h);
   for (let i = 0; i < w * h; i++) {
-    const [r, g, b] = hot((data[i]! - min) / span);
+    const [r, g, b] = hot(((data[i] ?? 0) - min) / span);
     img.data[i * 4] = r;
     img.data[i * 4 + 1] = g;
     img.data[i * 4 + 2] = b;
@@ -45,7 +46,7 @@ function drawHeatmap(canvas: HTMLCanvasElement, data: ArrayLike<number>, w: numb
   const tmp = document.createElement("canvas");
   tmp.width = w;
   tmp.height = h;
-  tmp.getContext("2d")!.putImageData(img, 0, 0);
+  tmp.getContext("2d")?.putImageData(img, 0, 0);
   ctx.imageSmoothingEnabled = false;
   ctx.drawImage(tmp, 0, 0, canvas.width, canvas.height);
 }
@@ -59,13 +60,13 @@ function project(data: ArrayLike<number>, cells: number, lanes: number, lane: nu
     for (let i = 0; i < cells; i++) {
       let s = 0;
       for (let c = 0; c < lanes; c++) {
-        const v = data[i * lanes + c]!;
+        const v = data[i * lanes + c] ?? 0;
         s += v * v;
       }
       out[i] = Math.sqrt(s);
     }
   } else {
-    for (let i = 0; i < cells; i++) out[i] = data[i * lanes + lane]!;
+    for (let i = 0; i < cells; i++) out[i] = data[i * lanes + lane] ?? 0;
   }
   return out;
 }
@@ -82,7 +83,8 @@ function drawPersistence(canvas: HTMLCanvasElement, pairs: PersistencePair[]) {
     pad = 28;
   canvas.width = S;
   canvas.height = S;
-  const ctx = canvas.getContext("2d")!;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) throw new Error();
   ctx.fillStyle = "#11131a";
   ctx.fillRect(0, 0, S, S);
   let maxV = 0.001;
@@ -151,6 +153,7 @@ export function Preview({ value, error, stale }: { value: FieldValue | null; err
             <select className="preview-lane" value={lane} onChange={(e) => setLane(Number(e.target.value))}>
               <option value={-1}>magnitude |·|</option>
               {Array.from({ length: lanes }, (_, i) => (
+                // biome-ignore lint/suspicious/noArrayIndexKey: pending
                 <option key={i} value={i}>
                   {laneLabel(value.element, i)}
                 </option>

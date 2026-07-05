@@ -170,27 +170,33 @@ async function runTick(graph: Graph, field: GpuField, o: TickOptions): Promise<M
     let ck: string | undefined;
     if (memo) {
       const inputKeys = op.inputs.map((spec) => {
-        const ref = node.inputs[spec.name]!;
+        const ref = node.inputs[spec.name];
+        if (!ref) throw new Error(`executor (unexpected): No input '${spec.name}' on ${node.id}`);
         return `${contentKey.get(ref.node) ?? ref.node}#${ref.port}`;
       });
       ck = hashString(`${node.op}|${stableJSON(node.params)}|${inputKeys.join(",")}`);
       contentKey.set(node.id, ck);
       const hits = op.outputs.map((out) => memo.get(`${ck}#${out.name}`));
       if (hits.every((h) => h !== undefined)) {
-        op.outputs.forEach((out, i) => emit(node.id, out.name, hits[i]!));
+        op.outputs.forEach((out, i) => {
+          const hit = hits[i];
+          if (hit !== undefined) emit(node.id, out.name, hit);
+        });
         continue;
       }
     }
 
     const inputs = op.inputs.map((spec) => {
-      const ref = node.inputs[spec.name]!;
+      const ref = node.inputs[spec.name];
+      if (!ref) throw new Error(`executor (unexpected): No input '${spec.name}' on ${node.id}`);
       const v = pulled.get(key(ref.node, ref.port));
       if (!v) throw new Error(`executor: input "${spec.name}" of "${node.id}" not computed`);
       return v;
     });
     const outs = await runNode(op, o.ctx, o.mode, inputs, node.params);
     op.outputs.forEach((out, i) => {
-      const v = outs[i]!;
+      const v = outs[i];
+      if (v === undefined) throw new Error(`executor (unexpected): no output for ${i}`);
       // Stamp the build-time-inferred basis (ADR-0006) so it propagates through ops
       // that don't set it themselves (e.g. editing wavelet coefficients then idwt).
       const b = node.outBases?.[i];
@@ -262,7 +268,8 @@ export async function advance(graph: Graph, field: GpuField, opts: AdvanceOption
     if (!last) throw new Error("advance: sink not produced");
     opts.onFrame?.(t, last);
   }
-  return last!;
+  if (last === undefined) throw new Error(`executor (unexpected): no value output for field ${field.id}`);
+  return last;
 }
 
 /** Convenience: pull a numeric field and return its host data. */

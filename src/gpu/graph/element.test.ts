@@ -1,3 +1,4 @@
+/** biome-ignore-all lint/style/noNonNullAssertion: test noise */
 // Element algebra (ADR-0004): the math kernels directly, plus the ops through the
 // executor in CPU mode (no GPU — fast `*.test.ts`, runs under vitest.config.ts).
 import { beforeAll, describe, expect, it } from "vitest";
@@ -61,7 +62,9 @@ describe("elementMath", () => {
 // A vec3 grid source built by hand (the builder's `grid` makes scalar fields).
 function vec3Grid(g: Graph, samples: number[][]): GpuField {
   const data = new Float32Array(samples.length * 3);
-  samples.forEach((s, i) => data.set(s, i * 3));
+  samples.forEach((s, i) => {
+    data.set(s, i * 3);
+  });
   return g.source({ shape: { kind: "grid", width: samples.length, height: 1 }, dtype: "f32", element: VEC3, data });
 }
 

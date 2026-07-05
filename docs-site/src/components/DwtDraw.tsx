@@ -11,8 +11,8 @@
  * The DWT math is the project's own reference port (`../lib/dwt`).
  */
 import { useCallback, useEffect, useRef, useState } from "react";
-import { type Band, type Decomposition, dwt2dForward, dwt2dInverse, type Kernel } from "../lib/dwt";
-import { type ImagePlane, imageElementToPlane, SYNTH_IMAGES } from "../lib/dwtImages";
+import { type Decomposition, dwt2dForward, dwt2dInverse, type ImagePlane, type Kernel } from "../lib/dwt";
+import { imageElementToPlane, SYNTH_IMAGES } from "../lib/dwtImages";
 
 const SIZE = 256; // working resolution
 
@@ -46,7 +46,8 @@ function renderDecomposition(
   const { width, height, bands } = dec;
   canvas.width = width;
   canvas.height = height;
-  const ctx = canvas.getContext("2d")!;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) throw new Error("Couldn't make 2d graphics context");
   const img = ctx.createImageData(width, height);
   const out = img.data;
 
@@ -110,7 +111,8 @@ function renderPlaneGray(canvas: HTMLCanvasElement, plane: ImagePlane) {
   const { width, height, data } = plane;
   canvas.width = width;
   canvas.height = height;
-  const ctx = canvas.getContext("2d")!;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) throw new Error("Couldn't make 2d graphics context");
   const img = ctx.createImageData(width, height);
   for (let i = 0; i < width * height; i++) {
     let g = data[i];
@@ -283,7 +285,8 @@ export default function DwtDraw() {
   }, []);
 
   const eventToCoeff = (ev: React.PointerEvent<HTMLCanvasElement>) => {
-    const cv = decompCanvas.current!;
+    const cv = decompCanvas.current;
+    if (!cv) throw new Error("Expected decompCanvas.current");
     const rect = cv.getBoundingClientRect();
     return {
       x: ((ev.clientX - rect.left) / rect.width) * cv.width,
@@ -293,9 +296,7 @@ export default function DwtDraw() {
 
   const onPointerDown = (ev: React.PointerEvent<HTMLCanvasElement>) => {
     ev.preventDefault();
-    try {
-      decompCanvas.current!.setPointerCapture(ev.pointerId);
-    } catch {}
+    decompCanvas.current?.setPointerCapture(ev.pointerId);
     paintingRef.current = true;
     const p = eventToCoeff(ev);
     lastPtRef.current = p;
@@ -321,7 +322,7 @@ export default function DwtDraw() {
     paintingRef.current = false;
     lastPtRef.current = null;
     try {
-      decompCanvas.current!.releasePointerCapture(ev.pointerId);
+      decompCanvas.current?.releasePointerCapture(ev.pointerId);
     } catch {}
   };
 
@@ -358,7 +359,7 @@ export default function DwtDraw() {
     img.src = url;
   };
 
-  const psnrText = metrics.psnr === Infinity ? "∞ dB (identical)" : metrics.psnr.toFixed(2) + " dB";
+  const psnrText = metrics.psnr === Infinity ? "∞ dB (identical)" : `${metrics.psnr.toFixed(2)} dB`;
 
   return (
     // `not-content` opts the whole subtree out of Starlight's markdown prose
@@ -367,10 +368,10 @@ export default function DwtDraw() {
     <div className="dwtdraw not-content">
       <div className="controls">
         <div className="ctl">
-          <label>Source</label>
+          <span className="ctl-label">Source</span>
           <div className="row">
             {Object.entries(SYNTH_IMAGES).map(([key, info]) => (
-              <button key={key} type="button" className={"chip" + (key === sourceKey ? " active" : "")} onClick={() => setSourceKey(key)}>
+              <button key={key} type="button" className={`chip${key === sourceKey ? " active" : ""}`} onClick={() => setSourceKey(key)}>
                 {info.label}
               </button>
             ))}
@@ -381,28 +382,36 @@ export default function DwtDraw() {
           </div>
         </div>
         <div className="ctl">
-          <label>Kernel</label>
-          <select value={kernel} onChange={(e) => setKernel(e.target.value as Kernel)}>
+          <label htmlFor="kernelSelect">Kernel</label>
+          <select id="kernelSelect" value={kernel} onChange={(e) => setKernel(e.target.value as Kernel)}>
             <option value="9/7">9/7 irreversible (lossy)</option>
             <option value="5/3">5/3 reversible (lossless)</option>
           </select>
         </div>
         <div className="ctl">
-          <label>Levels: {levels}</label>
-          <input type="range" min={1} max={6} step={1} value={levels} onChange={(e) => setLevels(parseInt(e.target.value, 10))} />
+          <label htmlFor="levelsRange">Levels: {levels}</label>
+          <input
+            id="levelsRange"
+            type="range"
+            min={1}
+            max={6}
+            step={1}
+            value={levels}
+            onChange={(e) => setLevels(parseInt(e.target.value, 10))}
+          />
         </div>
       </div>
 
       <div className="controls">
         <div className="ctl">
-          <label>Brush</label>
+          <span className="ctl-label">Brush</span>
           <div className="row" id="brush-modes">
             {BRUSH_MODES.map((m) => (
               <button
                 key={m.id}
                 type="button"
                 title={m.hint}
-                className={"chip" + (m.id === brushMode ? " active" : "")}
+                className={`chip${m.id === brushMode ? " active" : ""}`}
                 onClick={() => setBrushMode(m.id)}
               >
                 {m.label}
@@ -411,8 +420,9 @@ export default function DwtDraw() {
           </div>
         </div>
         <div className="ctl">
-          <label>Brush size: {brushRadius}px</label>
+          <label htmlFor="brushSizeRange">Brush size: {brushRadius}px</label>
           <input
+            id="brushSizeRange"
             type="range"
             min={1}
             max={40}
@@ -422,8 +432,9 @@ export default function DwtDraw() {
           />
         </div>
         <div className="ctl">
-          <label>Inject strength: {brushStrength}</label>
+          <label htmlFor="brushStrengthRange">Inject strength: {brushStrength}</label>
           <input
+            id="brushStrengthRange"
             type="range"
             min={5}
             max={300}
@@ -433,14 +444,18 @@ export default function DwtDraw() {
           />
         </div>
         <div className="ctl">
-          <label>&nbsp;</label>
+          <span className="ctl-label" aria-hidden="true">
+            &nbsp;
+          </span>
           <label className="toggle">
             <input type="checkbox" checked={editLL} onChange={(e) => setEditLL(e.target.checked)} />
             edit LL too
           </label>
         </div>
         <div className="ctl">
-          <label>&nbsp;</label>
+          <span className="ctl-label" aria-hidden="true">
+            &nbsp;
+          </span>
           <div className="row">
             <button type="button" className="btn" onClick={reset}>
               Reset coeffs
@@ -531,7 +546,8 @@ const css = `
 .dwtdraw .controls { display:flex; flex-wrap:wrap; gap:14px 20px; align-items:flex-end; margin-bottom:14px; }
 .dwtdraw .ctl { display:flex; flex-direction:column; gap:5px; }
 .dwtdraw .ctl.inline { flex-direction:row; align-items:center; gap:8px; color:var(--ink-dim); }
-.dwtdraw .ctl > label { font-size:11px; color:var(--ink-dim); text-transform:uppercase; letter-spacing:.04em; }
+.dwtdraw .ctl > label,
+.dwtdraw .ctl > .ctl-label { font-size:11px; color:var(--ink-dim); text-transform:uppercase; letter-spacing:.04em; }
 .dwtdraw .row { display:flex; align-items:center; gap:7px; flex-wrap:wrap; }
 .dwtdraw select {
   background:#0c1322; color:var(--ink); border:1px solid var(--line);

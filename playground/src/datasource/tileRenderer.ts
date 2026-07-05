@@ -104,7 +104,10 @@ export class TileRenderer {
     this.group.remove(mesh);
     mesh.geometry.dispose();
     const m = mesh.material;
-    if (Array.isArray(m)) m.forEach((mm) => mm.dispose());
+    if (Array.isArray(m))
+      m.forEach((mm) => {
+        mm.dispose();
+      });
     else m.dispose();
     this.meshes.delete(k);
   }

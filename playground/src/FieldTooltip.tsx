@@ -19,7 +19,8 @@ function project(data: ArrayLike<number>, cells: number, lanes: number): Float32
   for (let i = 0; i < cells; i++) {
     let s = 0;
     for (let c = 0; c < lanes; c++) {
-      const v = data[i * lanes + c]!;
+      const v = data[i * lanes + c];
+      if (v === undefined) throw new Error("Unexpected");
       s += v * v;
     }
     out[i] = Math.sqrt(s);
@@ -67,7 +68,8 @@ export function FieldTooltip({ title, kind, value, rect }: { title: string; kind
     let min = Infinity,
       max = -Infinity;
     for (let i = 0; i < w * h; i++) {
-      const v = data[i]!;
+      const v = data[i];
+      if (v === undefined) throw new Error("Unexpected");
       if (v < min) min = v;
       if (v > max) max = v;
     }
@@ -75,10 +77,11 @@ export function FieldTooltip({ title, kind, value, rect }: { title: string; kind
     const scale = Math.max(1, Math.floor(96 / Math.max(w, h)));
     c.width = w * scale;
     c.height = h * scale;
-    const ctx = c.getContext("2d")!;
+    const ctx = c.getContext("2d");
+    if (!ctx) throw new Error("Couldn't get canvas context");
     const img = ctx.createImageData(w, h);
     for (let i = 0; i < w * h; i++) {
-      const [r, g, b] = hot((data[i]! - min) / span);
+      const [r, g, b] = hot(((data[i] ?? 0) - min) / span);
       img.data[i * 4] = r;
       img.data[i * 4 + 1] = g;
       img.data[i * 4 + 2] = b;
@@ -87,7 +90,7 @@ export function FieldTooltip({ title, kind, value, rect }: { title: string; kind
     const tmp = document.createElement("canvas");
     tmp.width = w;
     tmp.height = h;
-    tmp.getContext("2d")!.putImageData(img, 0, 0);
+    tmp.getContext("2d")?.putImageData(img, 0, 0);
     ctx.imageSmoothingEnabled = false;
     ctx.drawImage(tmp, 0, 0, c.width, c.height);
   }, [value, s]);

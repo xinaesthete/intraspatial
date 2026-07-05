@@ -72,8 +72,13 @@ export interface Selection {
  *  give-up after degrade-to-fit (ADR-0008 §5). */
 export type Result<T, E = string> = { readonly ok: true; readonly value: T } | { readonly ok: false; readonly error: E };
 
+const DtypeSizes: Record<Dtype, number> = {
+  f32: 4,
+  u32: 4,
+  i32: 4,
+} as const;
 /** Bytes one sample of `(dtype, element)` occupies once decoded. */
 export function bytesPerSample(dtype: Dtype, element: ElementType): number {
   const lanes = element.kind === "complex" ? 2 : element.kind === "vec" ? element.n : element.kind === "quaternion" ? 4 : 1;
-  return 4 * lanes; // f32/i32/u32 are all 4 bytes
+  return DtypeSizes[dtype] * lanes; // f32/i32/u32 are all 4 bytes, but in future we should support others
 }

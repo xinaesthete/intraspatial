@@ -143,7 +143,7 @@ export class DancerSim {
     const { n } = this;
     const p = this.params;
     const posBuf = tapBlock(this.body, n, "pos");
-    const velBuf = tapBlock(this.body, n, "vel");
+    const _velBuf = tapBlock(this.body, n, "vel");
     const { figure, figureIndex } = figureAt(this.figureFrame(), p.period, p.callerSeed);
     const next = new Float32Array(this.body.length);
     const integ = {

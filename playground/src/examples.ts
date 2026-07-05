@@ -198,11 +198,16 @@ export function waveletDenoiseExample(): Example {
     node("shrink", "thresholdDetail", 670, 220),
     node("inv", "idwt", 880, 220),
   ];
+  // `nodes` is the fixed 5-element literal above, so indices 0–4 are statically present.
+  // `?.` here would be a false guard (it short-circuits `.data` but we still assign `.params`,
+  // so it throws just the same if missing) — assert instead, with the invariant stated once.
+  // biome-ignore-start lint/style/noNonNullAssertion: fixed-length literal above; indices 0–4 provably in range
   (nodes[0]!.data as { params: Record<string, unknown> }).params = { width: 96, height: 96, kind: "radial", freq: 5, angle: 0, amp: 1 };
   (nodes[1]!.data as { params: Record<string, unknown> }).params = { width: 96, height: 96, kind: "white", scale: 12, seed: 7, amp: 0.4 };
   (nodes[2]!.data as { params: Record<string, unknown> }).params = { wa: 1, wb: 1 };
   (nodes[3]!.data as { params: Record<string, unknown> }).params = { kernel: "9/7", levels: 3 };
   (nodes[4]!.data as { params: Record<string, unknown> }).params = { thresh: 0.3, soft: true };
+  // biome-ignore-end lint/style/noNonNullAssertion: end fixed-literal block
   const edges: Edge[] = [
     e("e-sm", "signal", "out", "mix", "a"),
     e("e-nm", "noise", "out", "mix", "b"),

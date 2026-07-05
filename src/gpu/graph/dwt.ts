@@ -1,3 +1,4 @@
+/** biome-ignore-all lint/style/noNonNullAssertion: lots of array access noise */
 // dwt.ts — separable 2D Discrete Wavelet Transform for the op graph.
 //
 // A faithful Float32 port of the project's reference implementation

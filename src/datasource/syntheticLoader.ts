@@ -26,8 +26,8 @@ export const mandelbulbField: ScalarField = (u) => {
     const r = Math.hypot(x, y, z);
     if (r > 2) break;
     const rr = r < 1e-9 ? 1e-9 : r;
-    let theta = Math.acos(z / rr) * power;
-    let phi = Math.atan2(y, x) * power;
+    const theta = Math.acos(z / rr) * power;
+    const phi = Math.atan2(y, x) * power;
     const zr = r ** power;
     x = cx + zr * Math.sin(theta) * Math.cos(phi);
     y = cy + zr * Math.sin(theta) * Math.sin(phi);

@@ -1,3 +1,4 @@
+/** biome-ignore-all lint/style/noNonNullAssertion: lots of noise otherwise */
 // Sublevel-set persistence of a 2D scalar field — the "field" counterpart to the
 // point-cloud Vietoris-Rips reducer in `persistence.ts`.
 //
