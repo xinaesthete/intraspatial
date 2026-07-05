@@ -10,7 +10,7 @@
 // trail, a delay, or a resampler can read at sub-frame resolution. Everything reports its
 // resident `byteLength` (MemoryReporting) — a delay keeps k copies of its field, so its
 // footprint matters. Checked access, no `!`.
-import { elementLanes, numCells, SCALAR, type Dtype, type ElementType, type FieldValue, type Shape } from "./handle";
+import { type Dtype, type ElementType, elementLanes, type FieldValue, numCells, SCALAR, type Shape } from "./handle";
 import type { MemoryReporting } from "./memory";
 
 export class RingBuffer implements MemoryReporting {
@@ -102,7 +102,10 @@ export class RingBuffer implements MemoryReporting {
     const t2 = t * t;
     const t3 = t2 * t;
     for (let i = 0; i < this.frameLength; i++) {
-      const a = p0[i] ?? 0, b = p1[i] ?? 0, c = p2[i] ?? 0, d = p3[i] ?? 0;
+      const a = p0[i] ?? 0,
+        b = p1[i] ?? 0,
+        c = p2[i] ?? 0,
+        d = p3[i] ?? 0;
       dst[i] = 0.5 * (2 * b + (c - a) * t + (2 * a - 5 * b + 4 * c - d) * t2 + (-a + 3 * b - 3 * c + d) * t3);
     }
     return dst;

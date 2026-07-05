@@ -2,9 +2,9 @@
 // nearest-point Nyquist level pick, the receding-resolution gradient across an
 // oblique plane, and the degrade-to-fit budget policy. CPU-only (no GPU, no I/O).
 import { describe, expect, it } from "vitest";
+import type { Camera } from "./math";
 import { select, selectWithinBudget } from "./select";
 import { axisAlignedMultiscale } from "./syntheticLoader";
-import type { Camera } from "./math";
 import type { Multiscale, SelectedChunk } from "./types";
 
 // A small viewport height exaggerates the projected pixel pitch so several pyramid
@@ -15,8 +15,7 @@ const volume = (): Multiscale =>
   axisAlignedMultiscale({ voxelDims0: [64, 64, 64], chunkShape: [16, 16, 16], levelCount: 4, voxelSizeWorld: 1 });
 
 const levels = (chunks: readonly SelectedChunk[]): number[] => chunks.map((c) => c.id.level);
-const meanLevel = (chunks: readonly SelectedChunk[]): number =>
-  chunks.reduce((s, c) => s + c.id.level, 0) / Math.max(1, chunks.length);
+const meanLevel = (chunks: readonly SelectedChunk[]): number => chunks.reduce((s, c) => s + c.id.level, 0) / Math.max(1, chunks.length);
 
 describe("select — validity", () => {
   it("names only in-range chunks and reports a consistent budget", () => {

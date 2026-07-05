@@ -8,11 +8,12 @@
 // These are an OPT-IN op pack (`registerWaveletOps()`), NOT eagerly registered — see
 // the Dawn-on-Node teardown lesson in ADR-0004 (eager module-graph growth on the base
 // registry tipped unrelated render-fork GPU tests over).
-import type { Basis, FieldValue, Shape } from "../handle";
-import { SPATIAL, basisOf } from "../handle";
-import type { OpType, Params } from "../op";
-import { dwtBands, fdwt2d, idwt2d, isDetailBand } from "../dwt";
+
 import type { Kernel } from "../dwt";
+import { dwtBands, fdwt2d, idwt2d, isDetailBand } from "../dwt";
+import type { Basis, FieldValue, Shape } from "../handle";
+import { basisOf, SPATIAL } from "../handle";
+import type { OpType, Params } from "../op";
 
 function gridShape(s: Shape): { width: number; height: number } {
   if (s.kind !== "grid") throw new Error("wavelet op: input must be a grid");
@@ -122,7 +123,15 @@ export const thresholdDetailOp: OpType = {
   inputs: [{ name: "coeffs", kind: "grid" }],
   outputs: [{ name: "out", kind: "grid", dtype: "f32" }],
   params: [
-    { name: "thresh", type: "number", default: 0.3, min: 0, max: 8, step: 0.05, describe: "shrinkage threshold (detail coeffs are O(1) for normalised fields)" },
+    {
+      name: "thresh",
+      type: "number",
+      default: 0.3,
+      min: 0,
+      max: 8,
+      step: 0.05,
+      describe: "shrinkage threshold (detail coeffs are O(1) for normalised fields)",
+    },
     { name: "soft", type: "bool", default: true, describe: "soft shrinkage instead of hard zeroing" },
   ],
   inferShapes: (inputs) => {

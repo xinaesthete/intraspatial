@@ -20,7 +20,7 @@ const G = 0.882911075530934; //  gamma  (predict 2)
 const D = 0.443506852043971; //  delta  (update 2)
 const K = 1.230174104914001; //  scaling K (low-pass), 1/K for high-pass
 
-export type Kernel = '5/3' | '9/7';
+export type Kernel = "5/3" | "9/7";
 
 export interface ImagePlane {
   data: Float64Array;
@@ -28,7 +28,7 @@ export interface ImagePlane {
   height: number;
 }
 
-export type BandType = 'LL' | 'HL' | 'LH' | 'HH';
+export type BandType = "LL" | "HL" | "LH" | "HH";
 
 export interface Band {
   level: number;
@@ -61,13 +61,7 @@ export function mirror(i: number, n: number): number {
   return k < n ? k : period - k;
 }
 
-type Lift1D = (
-  buf: Float64Array,
-  base: number,
-  stride: number,
-  n: number,
-  tmp: Float64Array,
-) => void;
+type Lift1D = (buf: Float64Array, base: number, stride: number, n: number, tmp: Float64Array) => void;
 
 function tmpFor(n: number): Float64Array {
   return new Float64Array(n);
@@ -186,16 +180,12 @@ interface KernelOps {
 }
 
 export const KERNELS: Record<Kernel, KernelOps> = {
-  '5/3': { fwd: fwd53_1d, inv: inv53_1d, integer: true },
-  '9/7': { fwd: fwd97_1d, inv: inv97_1d, integer: false },
+  "5/3": { fwd: fwd53_1d, inv: inv53_1d, integer: true },
+  "9/7": { fwd: fwd97_1d, inv: inv97_1d, integer: false },
 };
 
 /* 2D separable multi-level forward DWT (the Mallat pyramid). */
-export function dwt2dForward(
-  plane: ImagePlane,
-  kernel: Kernel,
-  levels: number,
-): Decomposition {
+export function dwt2dForward(plane: ImagePlane, kernel: Kernel, levels: number): Decomposition {
   const { width, height } = plane;
   const k = KERNELS[kernel];
   const data = Float64Array.from(plane.data);
@@ -210,26 +200,20 @@ export function dwt2dForward(
     for (let x = 0; x < curW; x++) k.fwd(data, x, width, curH, tmp);
     const lowW = (curW + 1) >> 1;
     const lowH = (curH + 1) >> 1;
-    bands.push({ level: lvl + 1, type: 'HL', x: lowW, y: 0, w: curW - lowW, h: lowH });
-    bands.push({ level: lvl + 1, type: 'LH', x: 0, y: lowH, w: lowW, h: curH - lowH });
-    bands.push({ level: lvl + 1, type: 'HH', x: lowW, y: lowH, w: curW - lowW, h: curH - lowH });
+    bands.push({ level: lvl + 1, type: "HL", x: lowW, y: 0, w: curW - lowW, h: lowH });
+    bands.push({ level: lvl + 1, type: "LH", x: 0, y: lowH, w: lowW, h: curH - lowH });
+    bands.push({ level: lvl + 1, type: "HH", x: lowW, y: lowH, w: curW - lowW, h: curH - lowH });
     curW = lowW;
     curH = lowH;
   }
-  bands.push({ level: levels, type: 'LL', x: 0, y: 0, w: curW, h: curH });
+  bands.push({ level: levels, type: "LL", x: 0, y: 0, w: curW, h: curH });
 
   return { data, width, height, levels, kernel, bands, llW: curW, llH: curH };
 }
 
 /* 2D inverse DWT: undo the levels in reverse order. Accepts any object that
  * carries `data` + the transform geometry (e.g. an edited coefficient copy). */
-export function dwt2dInverse(dec: {
-  data: Float64Array;
-  width: number;
-  height: number;
-  levels: number;
-  kernel: Kernel;
-}): ImagePlane {
+export function dwt2dInverse(dec: { data: Float64Array; width: number; height: number; levels: number; kernel: Kernel }): ImagePlane {
   const { width, height, levels, kernel } = dec;
   const k = KERNELS[kernel];
   const data = Float64Array.from(dec.data);
@@ -254,7 +238,7 @@ export function dwt2dInverse(dec: {
 /* Round-trip self-test; returns max abs reconstruction error per kernel. */
 export function selfTest(width = 37, height = 53, levels = 4): Record<Kernel, number> {
   const results = {} as Record<Kernel, number>;
-  for (const kernel of ['5/3', '9/7'] as Kernel[]) {
+  for (const kernel of ["5/3", "9/7"] as Kernel[]) {
     const src = new Float64Array(width * height);
     for (let i = 0; i < src.length; i++) src[i] = Math.floor(Math.random() * 256) - 128;
     const dec = dwt2dForward({ data: src, width, height }, kernel, levels);

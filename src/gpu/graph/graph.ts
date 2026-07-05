@@ -80,10 +80,7 @@ export class Graph {
   /** A grid source from a row-major width*height array. */
   grid(data: ArrayLike<number>, width: number, height: number): GpuField {
     if (data.length !== width * height) throw new Error("graph.grid: data length != width*height");
-    return this.source(
-      { shape: { kind: "grid", width, height }, dtype: "f32", data: Float32Array.from(data) },
-      "grid",
-    );
+    return this.source({ shape: { kind: "grid", width, height }, dtype: "f32", data: Float32Array.from(data) }, "grid");
   }
 
   /** A feedback (unit-delay) node: it outputs the *previous* tick's value (seeded
@@ -157,16 +154,12 @@ export class Graph {
     const outShapes = def.inferShapes(inShapes, merged);
     // Element inference is opt-in; ops that don't declare it keep the legacy
     // all-scalar contract (ADR-0004). Rejection of a wrong element happens here.
-    const outElements = def.inferElements
-      ? def.inferElements(inElements, merged)
-      : def.outputs.map(() => SCALAR);
+    const outElements = def.inferElements ? def.inferElements(inElements, merged) : def.outputs.map(() => SCALAR);
     // Basis inference is opt-in; ops that don't declare it pass the first input's basis
     // through to every output (a source ⇒ spatial). Rejection of a wrong basis (e.g.
     // idwt on a spatial field) happens in the op's inferBasis (ADR-0006).
     const passThrough = inBases[0] ?? SPATIAL;
-    const outBases = def.inferBasis
-      ? def.inferBasis(inBases, merged)
-      : def.outputs.map(() => passThrough);
+    const outBases = def.inferBasis ? def.inferBasis(inBases, merged) : def.outputs.map(() => passThrough);
     const id = this.nextNodeId(name);
     this.nodes.set(id, { id, op: name, params: merged, inputs: inputRefs, outBases });
     return def.outputs.map((o, i) =>

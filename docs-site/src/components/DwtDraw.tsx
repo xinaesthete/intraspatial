@@ -10,33 +10,22 @@
  *
  * The DWT math is the project's own reference port (`../lib/dwt`).
  */
-import { useCallback, useEffect, useRef, useState } from 'react';
-import {
-  dwt2dForward,
-  dwt2dInverse,
-  type Band,
-  type Decomposition,
-  type Kernel,
-} from '../lib/dwt';
-import { SYNTH_IMAGES, imageElementToPlane, type ImagePlane } from '../lib/dwtImages';
+import { useCallback, useEffect, useRef, useState } from "react";
+import { type Band, type Decomposition, dwt2dForward, dwt2dInverse, type Kernel } from "../lib/dwt";
+import { type ImagePlane, imageElementToPlane, SYNTH_IMAGES } from "../lib/dwtImages";
 
 const SIZE = 256; // working resolution
 
-type BrushMode = 'erase' | 'add' | 'sub';
+type BrushMode = "erase" | "add" | "sub";
 
 const BRUSH_MODES: { id: BrushMode; label: string; hint: string }[] = [
-  { id: 'erase', label: 'Erase', hint: 'zero coefficients — remove detail' },
-  { id: 'add', label: 'Add +', hint: 'inject positive detail (warm ripples)' },
-  { id: 'sub', label: 'Add −', hint: 'inject negative detail (cool ripples)' },
+  { id: "erase", label: "Erase", hint: "zero coefficients — remove detail" },
+  { id: "add", label: "Add +", hint: "inject positive detail (warm ripples)" },
+  { id: "sub", label: "Add −", hint: "inject negative detail (cool ripples)" },
 ];
 
 /* ---- coefficient → colour, matching the standalone primer ---- */
-function shadeDetail(
-  v: number,
-  detailMax: number,
-  logScale: boolean,
-  gain: number,
-): [number, number, number] {
+function shadeDetail(v: number, detailMax: number, logScale: boolean, gain: number): [number, number, number] {
   const a = Math.abs(v) / detailMax;
   let s = logScale ? Math.log1p(a * 40) / Math.log1p(40) : a;
   s = Math.min(1, s * gain);
@@ -57,13 +46,14 @@ function renderDecomposition(
   const { width, height, bands } = dec;
   canvas.width = width;
   canvas.height = height;
-  const ctx = canvas.getContext('2d')!;
+  const ctx = canvas.getContext("2d")!;
   const img = ctx.createImageData(width, height);
   const out = img.data;
 
   // LL is the last band; auto-range it to a grayscale ramp.
   const ll = bands[bands.length - 1];
-  let mn = Infinity, mx = -Infinity;
+  let mn = Infinity,
+    mx = -Infinity;
   for (let y = 0; y < ll.h; y++)
     for (let x = 0; x < ll.w; x++) {
       const v = coeffs[(ll.y + y) * width + (ll.x + x)];
@@ -81,13 +71,16 @@ function renderDecomposition(
       out[idx + 3] = 255;
     }
   for (const b of bands) {
-    if (b.type === 'LL') continue;
+    if (b.type === "LL") continue;
     for (let y = 0; y < b.h; y++)
       for (let x = 0; x < b.w; x++) {
         const v = coeffs[(b.y + y) * width + (b.x + x)];
         const [r, gg, bb] = shadeDetail(v, detailMax, logScale, gain);
         const idx = ((b.y + y) * width + (b.x + x)) * 4;
-        out[idx] = r; out[idx + 1] = gg; out[idx + 2] = bb; out[idx + 3] = 255;
+        out[idx] = r;
+        out[idx + 1] = gg;
+        out[idx + 2] = bb;
+        out[idx + 3] = 255;
       }
   }
   ctx.putImageData(img, 0, 0);
@@ -95,15 +88,20 @@ function renderDecomposition(
   // subband grid
   ctx.save();
   ctx.lineWidth = 1;
-  let curW = width, curH = height;
+  let curW = width,
+    curH = height;
   for (let lvl = 0; lvl < dec.levels && curW >= 2 && curH >= 2; lvl++) {
-    const lowW = (curW + 1) >> 1, lowH = (curH + 1) >> 1;
-    ctx.strokeStyle = 'rgba(90,200,250,0.55)';
+    const lowW = (curW + 1) >> 1,
+      lowH = (curH + 1) >> 1;
+    ctx.strokeStyle = "rgba(90,200,250,0.55)";
     ctx.beginPath();
-    ctx.moveTo(lowW + 0.5, 0); ctx.lineTo(lowW + 0.5, curH);
-    ctx.moveTo(0, lowH + 0.5); ctx.lineTo(curW, lowH + 0.5);
+    ctx.moveTo(lowW + 0.5, 0);
+    ctx.lineTo(lowW + 0.5, curH);
+    ctx.moveTo(0, lowH + 0.5);
+    ctx.lineTo(curW, lowH + 0.5);
     ctx.stroke();
-    curW = lowW; curH = lowH;
+    curW = lowW;
+    curH = lowH;
   }
   ctx.restore();
 }
@@ -112,7 +110,7 @@ function renderPlaneGray(canvas: HTMLCanvasElement, plane: ImagePlane) {
   const { width, height, data } = plane;
   canvas.width = width;
   canvas.height = height;
-  const ctx = canvas.getContext('2d')!;
+  const ctx = canvas.getContext("2d")!;
   const img = ctx.createImageData(width, height);
   for (let i = 0; i < width * height; i++) {
     let g = data[i];
@@ -124,17 +122,17 @@ function renderPlaneGray(canvas: HTMLCanvasElement, plane: ImagePlane) {
 }
 
 export default function DwtDraw() {
-  const [sourceKey, setSourceKey] = useState('fractal');
-  const [kernel, setKernel] = useState<Kernel>('9/7');
+  const [sourceKey, setSourceKey] = useState("fractal");
+  const [kernel, setKernel] = useState<Kernel>("9/7");
   const [levels, setLevels] = useState(4);
-  const [brushMode, setBrushMode] = useState<BrushMode>('erase');
+  const [brushMode, setBrushMode] = useState<BrushMode>("erase");
   const [brushRadius, setBrushRadius] = useState(8);
   const [brushStrength, setBrushStrength] = useState(60);
   const [editLL, setEditLL] = useState(false);
   const [logScale, setLogScale] = useState(true);
   const [gain, setGain] = useState(1.5);
   const [metrics, setMetrics] = useState({ psnr: Infinity, modified: 0, energyPct: 100 });
-  const [selfTestNote, setSelfTestNote] = useState('');
+  const [selfTestNote, setSelfTestNote] = useState("");
 
   const origCanvas = useRef<HTMLCanvasElement>(null);
   const decompCanvas = useRef<HTMLCanvasElement>(null);
@@ -165,13 +163,14 @@ export default function DwtDraw() {
     if (!dec || !coeffs || !plane) return;
 
     if (decompCanvas.current) {
-      renderDecomposition(
-        decompCanvas.current, dec, coeffs, detailMaxRef.current,
-        liveRef.current.logScale, liveRef.current.gain,
-      );
+      renderDecomposition(decompCanvas.current, dec, coeffs, detailMaxRef.current, liveRef.current.logScale, liveRef.current.gain);
     }
     const rec = dwt2dInverse({
-      data: coeffs, width: dec.width, height: dec.height, levels: dec.levels, kernel: dec.kernel,
+      data: coeffs,
+      width: dec.width,
+      height: dec.height,
+      levels: dec.levels,
+      kernel: dec.kernel,
     });
     if (reconCanvas.current) renderPlaneGray(reconCanvas.current, rec);
 
@@ -185,10 +184,11 @@ export default function DwtDraw() {
     const psnr = mse < 1e-9 ? Infinity : 10 * Math.log10((255 * 255) / mse);
 
     // How much edited detail differs from pristine, + current detail energy.
-    let modified = 0, energy = 0;
+    let modified = 0,
+      energy = 0;
     const base = dec.data;
     for (const b of dec.bands) {
-      if (b.type === 'LL') continue;
+      if (b.type === "LL") continue;
       for (let y = 0; y < b.h; y++)
         for (let x = 0; x < b.w; x++) {
           const idx = (b.y + y) * dec.width + (b.x + x);
@@ -209,9 +209,10 @@ export default function DwtDraw() {
     coeffsRef.current = Float64Array.from(dec.data);
 
     // Stable detail-shading scale + baseline detail energy from pristine coeffs.
-    let detailMax = 1e-6, energy = 1e-6;
+    let detailMax = 1e-6,
+      energy = 1e-6;
     for (const b of dec.bands) {
-      if (b.type === 'LL') continue;
+      if (b.type === "LL") continue;
       for (let y = 0; y < b.h; y++)
         for (let x = 0; x < b.w; x++) {
           const v = dec.data[(b.y + y) * dec.width + (b.x + x)];
@@ -230,19 +231,21 @@ export default function DwtDraw() {
   // re-created on kernel/levels change, so this fires for those too — including
   // for uploaded images, whose plane is already set by the upload handler.
   useEffect(() => {
-    if (sourceKey !== 'upload') planeRef.current = SYNTH_IMAGES[sourceKey].gen(SIZE, SIZE);
+    if (sourceKey !== "upload") planeRef.current = SYNTH_IMAGES[sourceKey].gen(SIZE, SIZE);
     if (planeRef.current) recompute();
   }, [sourceKey, recompute]);
 
   // One-time round-trip sanity badge.
   useEffect(() => {
     let cancelled = false;
-    import('../lib/dwt').then(({ selfTest }) => {
+    import("../lib/dwt").then(({ selfTest }) => {
       if (cancelled) return;
       const r = selfTest();
-      setSelfTestNote(`round-trip ✓  5/3 err=${r['5/3']}  ·  9/7 err≈${r['9/7'].toExponential(1)}`);
+      setSelfTestNote(`round-trip ✓  5/3 err=${r["5/3"]}  ·  9/7 err≈${r["9/7"].toExponential(1)}`);
     });
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   /* ---- brush application ---- */
@@ -260,7 +263,8 @@ export default function DwtDraw() {
     const y1 = Math.min(height - 1, Math.ceil(cy + r));
     for (let y = y0; y <= y1; y++)
       for (let x = x0; x <= x1; x++) {
-        const dx = x - cx, dy = y - cy;
+        const dx = x - cx,
+          dy = y - cy;
         const d2 = dx * dx + dy * dy;
         if (d2 > r2) continue;
         // Skip the LL approximation block unless explicitly enabled.
@@ -268,9 +272,9 @@ export default function DwtDraw() {
         const idx = y * width + x;
         const t = 1 - Math.sqrt(d2) / r; // linear falloff, 1 at centre
         const falloff = t * t * (3 - 2 * t); // smoothstep
-        if (brushMode === 'erase') {
+        if (brushMode === "erase") {
           coeffs[idx] *= 1 - falloff;
-        } else if (brushMode === 'add') {
+        } else if (brushMode === "add") {
           coeffs[idx] += brushStrength * falloff;
         } else {
           coeffs[idx] -= brushStrength * falloff;
@@ -289,7 +293,9 @@ export default function DwtDraw() {
 
   const onPointerDown = (ev: React.PointerEvent<HTMLCanvasElement>) => {
     ev.preventDefault();
-    try { decompCanvas.current!.setPointerCapture(ev.pointerId); } catch {}
+    try {
+      decompCanvas.current!.setPointerCapture(ev.pointerId);
+    } catch {}
     paintingRef.current = true;
     const p = eventToCoeff(ev);
     lastPtRef.current = p;
@@ -314,7 +320,9 @@ export default function DwtDraw() {
   const endStroke = (ev: React.PointerEvent<HTMLCanvasElement>) => {
     paintingRef.current = false;
     lastPtRef.current = null;
-    try { decompCanvas.current!.releasePointerCapture(ev.pointerId); } catch {}
+    try {
+      decompCanvas.current!.releasePointerCapture(ev.pointerId);
+    } catch {}
   };
 
   const reset = useCallback(() => {
@@ -329,9 +337,8 @@ export default function DwtDraw() {
     const coeffs = coeffsRef.current;
     if (!dec || !coeffs) return;
     for (const b of dec.bands) {
-      if (b.type === 'LL') continue;
-      for (let y = 0; y < b.h; y++)
-        for (let x = 0; x < b.w; x++) coeffs[(b.y + y) * dec.width + (b.x + x)] = 0;
+      if (b.type === "LL") continue;
+      for (let y = 0; y < b.h; y++) for (let x = 0; x < b.w; x++) coeffs[(b.y + y) * dec.width + (b.x + x)] = 0;
     }
     resynth();
   }, [resynth]);
@@ -343,7 +350,7 @@ export default function DwtDraw() {
     const img = new Image();
     img.onload = () => {
       planeRef.current = imageElementToPlane(img, SIZE);
-      setSourceKey('upload');
+      setSourceKey("upload");
       // recompute() reads kernel/levels via closure of the effect; call directly.
       recompute();
       URL.revokeObjectURL(url);
@@ -351,8 +358,7 @@ export default function DwtDraw() {
     img.src = url;
   };
 
-  const psnrText =
-    metrics.psnr === Infinity ? '∞ dB (identical)' : metrics.psnr.toFixed(2) + ' dB';
+  const psnrText = metrics.psnr === Infinity ? "∞ dB (identical)" : metrics.psnr.toFixed(2) + " dB";
 
   return (
     // `not-content` opts the whole subtree out of Starlight's markdown prose
@@ -364,25 +370,14 @@ export default function DwtDraw() {
           <label>Source</label>
           <div className="row">
             {Object.entries(SYNTH_IMAGES).map(([key, info]) => (
-              <button
-                key={key}
-                type="button"
-                className={'chip' + (key === sourceKey ? ' active' : '')}
-                onClick={() => setSourceKey(key)}
-              >
+              <button key={key} type="button" className={"chip" + (key === sourceKey ? " active" : "")} onClick={() => setSourceKey(key)}>
                 {info.label}
               </button>
             ))}
             <button type="button" className="chip" onClick={() => uploadInput.current?.click()}>
               Upload…
             </button>
-            <input
-              ref={uploadInput}
-              type="file"
-              accept="image/*"
-              style={{ display: 'none' }}
-              onChange={onUpload}
-            />
+            <input ref={uploadInput} type="file" accept="image/*" style={{ display: "none" }} onChange={onUpload} />
           </div>
         </div>
         <div className="ctl">
@@ -394,10 +389,7 @@ export default function DwtDraw() {
         </div>
         <div className="ctl">
           <label>Levels: {levels}</label>
-          <input
-            type="range" min={1} max={6} step={1} value={levels}
-            onChange={(e) => setLevels(parseInt(e.target.value, 10))}
-          />
+          <input type="range" min={1} max={6} step={1} value={levels} onChange={(e) => setLevels(parseInt(e.target.value, 10))} />
         </div>
       </div>
 
@@ -410,7 +402,7 @@ export default function DwtDraw() {
                 key={m.id}
                 type="button"
                 title={m.hint}
-                className={'chip' + (m.id === brushMode ? ' active' : '')}
+                className={"chip" + (m.id === brushMode ? " active" : "")}
                 onClick={() => setBrushMode(m.id)}
               >
                 {m.label}
@@ -421,14 +413,22 @@ export default function DwtDraw() {
         <div className="ctl">
           <label>Brush size: {brushRadius}px</label>
           <input
-            type="range" min={1} max={40} step={1} value={brushRadius}
+            type="range"
+            min={1}
+            max={40}
+            step={1}
+            value={brushRadius}
             onChange={(e) => setBrushRadius(parseInt(e.target.value, 10))}
           />
         </div>
         <div className="ctl">
           <label>Inject strength: {brushStrength}</label>
           <input
-            type="range" min={5} max={300} step={5} value={brushStrength}
+            type="range"
+            min={5}
+            max={300}
+            step={5}
+            value={brushStrength}
             onChange={(e) => setBrushStrength(parseInt(e.target.value, 10))}
           />
         </div>
@@ -442,22 +442,39 @@ export default function DwtDraw() {
         <div className="ctl">
           <label>&nbsp;</label>
           <div className="row">
-            <button type="button" className="btn" onClick={reset}>Reset coeffs</button>
-            <button type="button" className="btn" onClick={eraseAllDetail}>Erase all detail</button>
+            <button type="button" className="btn" onClick={reset}>
+              Reset coeffs
+            </button>
+            <button type="button" className="btn" onClick={eraseAllDetail}>
+              Erase all detail
+            </button>
           </div>
         </div>
       </div>
 
       <div className="metrics">
-        <div className="metric"><div className="k">Resynthesis PSNR</div><div className="v good">{psnrText}</div></div>
-        <div className="metric"><div className="k">Detail coeffs edited</div><div className="v">{metrics.modified.toLocaleString()}</div></div>
-        <div className="metric"><div className="k">Detail energy vs original</div><div className="v">{metrics.energyPct.toFixed(1)}%</div></div>
+        <div className="metric">
+          <div className="k">Resynthesis PSNR</div>
+          <div className="v good">{psnrText}</div>
+        </div>
+        <div className="metric">
+          <div className="k">Detail coeffs edited</div>
+          <div className="v">{metrics.modified.toLocaleString()}</div>
+        </div>
+        <div className="metric">
+          <div className="k">Detail energy vs original</div>
+          <div className="v">{metrics.energyPct.toFixed(1)}%</div>
+        </div>
       </div>
 
       <div className="grid3">
         <figure>
-          <div className="frame"><canvas ref={origCanvas} /></div>
-          <figcaption><b>Original</b> · 256×256</figcaption>
+          <div className="frame">
+            <canvas ref={origCanvas} />
+          </div>
+          <figcaption>
+            <b>Original</b> · 256×256
+          </figcaption>
         </figure>
         <figure>
           <div className="frame draw">
@@ -467,15 +484,21 @@ export default function DwtDraw() {
               onPointerMove={onPointerMove}
               onPointerUp={endStroke}
               onPointerLeave={endStroke}
-              style={{ touchAction: 'none', cursor: 'crosshair' }}
+              style={{ touchAction: "none", cursor: "crosshair" }}
             />
             <span className="drawbadge">draw here ✎</span>
           </div>
-          <figcaption><b>DWT domain</b> · brush the coefficients</figcaption>
+          <figcaption>
+            <b>DWT domain</b> · brush the coefficients
+          </figcaption>
         </figure>
         <figure>
-          <div className="frame"><canvas ref={reconCanvas} /></div>
-          <figcaption><b>Resynthesis</b> · inverse DWT, live</figcaption>
+          <div className="frame">
+            <canvas ref={reconCanvas} />
+          </div>
+          <figcaption>
+            <b>Resynthesis</b> · inverse DWT, live
+          </figcaption>
         </figure>
       </div>
 
@@ -486,10 +509,7 @@ export default function DwtDraw() {
         </label>
         <label className="ctl inline">
           detail gain {gain.toFixed(1)}×
-          <input
-            type="range" min={0.5} max={6} step={0.5} value={gain}
-            onChange={(e) => setGain(parseFloat(e.target.value))}
-          />
+          <input type="range" min={0.5} max={6} step={0.5} value={gain} onChange={(e) => setGain(parseFloat(e.target.value))} />
         </label>
         {selfTestNote && <span className="selftest">{selfTestNote}</span>}
       </div>

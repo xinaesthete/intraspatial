@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { ParamSpec } from "../gpu/graph/op";
-import { paramsToSpecimen, specimenToParams, traitSpaceFromParams, withLocked } from "./traitSpace";
 import { neutralSpecimen } from "./specimen";
+import { paramsToSpecimen, specimenToParams, traitSpaceFromParams, withLocked } from "./traitSpace";
 
 // A representative schema exercising every ParamType + the unbounded fallback.
 const SPECS: ParamSpec[] = [

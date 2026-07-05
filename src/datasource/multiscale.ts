@@ -2,7 +2,7 @@
 // extents, to a level-0 array box, and to a world AABB — plus the scalar world
 // voxel size that the Nyquist selection compares against the projected pixel pitch.
 
-import { length, worldAabbOfArrayBox, type Aabb, type Vec3 } from "./math";
+import { type Aabb, length, type Vec3, worldAabbOfArrayBox } from "./math";
 import { bytesPerSample, type Multiscale } from "./types";
 
 const ceilDiv = (a: number, b: number): number => Math.ceil(a / b);
@@ -10,11 +10,7 @@ const ceilDiv = (a: number, b: number): number => Math.ceil(a / b);
 /** Voxel dimensions of level L (`ceil(dims0 / 2^L)`, ≥ 1). */
 export function levelVoxelDims(ms: Multiscale, level: number): [number, number, number] {
   const f = 2 ** level;
-  return [
-    Math.max(1, ceilDiv(ms.voxelDims0[0], f)),
-    Math.max(1, ceilDiv(ms.voxelDims0[1], f)),
-    Math.max(1, ceilDiv(ms.voxelDims0[2], f)),
-  ];
+  return [Math.max(1, ceilDiv(ms.voxelDims0[0], f)), Math.max(1, ceilDiv(ms.voxelDims0[1], f)), Math.max(1, ceilDiv(ms.voxelDims0[2], f))];
 }
 
 /** Number of chunks along each axis at level L. */
@@ -38,11 +34,7 @@ export function chunkArrayBox(ms: Multiscale, id: { level: number; x: number; y:
   const c = ms.chunkShape;
   const d0 = ms.voxelDims0;
   const lo: Vec3 = [id.x * c[0] * f, id.y * c[1] * f, id.z * c[2] * f];
-  const hi: Vec3 = [
-    Math.min(d0[0], (id.x + 1) * c[0] * f),
-    Math.min(d0[1], (id.y + 1) * c[1] * f),
-    Math.min(d0[2], (id.z + 1) * c[2] * f),
-  ];
+  const hi: Vec3 = [Math.min(d0[0], (id.x + 1) * c[0] * f), Math.min(d0[1], (id.y + 1) * c[1] * f), Math.min(d0[2], (id.z + 1) * c[2] * f)];
   return [lo, hi];
 }
 

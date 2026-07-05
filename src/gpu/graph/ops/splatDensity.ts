@@ -2,15 +2,17 @@
 // legacy function owns its own pipeline/pool/readback; this adapter only marshals
 // the graph's `FieldValue`s in and out (download/upload at the boundary). A hot
 // path would later promote this to a GPU-resident (Tier-2) op.
+
+import { gaussianKdeField } from "../../../spatial/scalarField";
 import { splatDensityGpu } from "../../spatial/splatDensity";
 import type { FieldValue } from "../handle";
 import type { OpType, Params } from "../op";
 import { param } from "../op";
-import { gaussianKdeField } from "../../../spatial/scalarField";
 
 function unpackXY(v: FieldValue): { xs: number[]; ys: number[] } {
   const d = v.data!;
-  const xs: number[] = [], ys: number[] = [];
+  const xs: number[] = [],
+    ys: number[] = [];
   for (let i = 0; i < d.length; i += 2) {
     xs.push(d[i]!);
     ys.push(d[i + 1]!);
@@ -31,9 +33,13 @@ function bboxParam(params: Params): [number, number, number, number] | undefined
 function resolveBbox(xs: number[], ys: number[], params: Params): [number, number, number, number] {
   const explicit = bboxParam(params);
   if (explicit) return explicit;
-  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  let minX = Infinity,
+    minY = Infinity,
+    maxX = -Infinity,
+    maxY = -Infinity;
   for (let i = 0; i < xs.length; i++) {
-    const x = xs[i]!, y = ys[i]!;
+    const x = xs[i]!,
+      y = ys[i]!;
     if (x < minX) minX = x;
     if (x > maxX) maxX = x;
     if (y < minY) minY = y;
@@ -61,7 +67,8 @@ export const splatDensityOp: OpType = {
   },
   async execute(_ctx, inputs, params) {
     const { xs, ys } = unpackXY(inputs[0]!);
-    const width = params.width as number, height = params.height as number;
+    const width = params.width as number,
+      height = params.height as number;
     const field = await splatDensityGpu(xs, ys, {
       width,
       height,
@@ -73,7 +80,8 @@ export const splatDensityOp: OpType = {
   },
   cpuGolden(inputs, params) {
     const { xs, ys } = unpackXY(inputs[0]!);
-    const width = params.width as number, height = params.height as number;
+    const width = params.width as number,
+      height = params.height as number;
     const field = gaussianKdeField(xs, ys, {
       width,
       height,

@@ -39,7 +39,9 @@ export function drawDistanceMatrix(canvas: HTMLCanvasElement, positions: Float32
   let maxD = 1e-6;
   const d = new Float32Array(m * m);
   for (let i = 0; i < m; i++) {
-    const xi = positions[i * 3] ?? 0, yi = positions[i * 3 + 1] ?? 0, zi = positions[i * 3 + 2] ?? 0;
+    const xi = positions[i * 3] ?? 0,
+      yi = positions[i * 3 + 1] ?? 0,
+      zi = positions[i * 3 + 2] ?? 0;
     for (let j = i + 1; j < m; j++) {
       const dx = xi - (positions[j * 3] ?? 0);
       const dy = yi - (positions[j * 3 + 1] ?? 0);

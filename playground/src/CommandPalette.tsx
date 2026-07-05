@@ -10,15 +10,7 @@ export interface CmdItem {
   describe?: string;
 }
 
-export function CommandPalette({
-  items,
-  onPick,
-  onClose,
-}: {
-  items: CmdItem[];
-  onPick: (name: string) => void;
-  onClose: () => void;
-}) {
+export function CommandPalette({ items, onPick, onClose }: { items: CmdItem[]; onPick: (name: string) => void; onClose: () => void }) {
   const [q, setQ] = useState("");
   const [idx, setIdx] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -32,10 +24,7 @@ export function CommandPalette({
     const s = q.trim().toLowerCase();
     if (!s) return items;
     return items.filter(
-      (it) =>
-        it.label.toLowerCase().includes(s) ||
-        it.name.toLowerCase().includes(s) ||
-        it.category.toLowerCase().includes(s),
+      (it) => it.label.toLowerCase().includes(s) || it.name.toLowerCase().includes(s) || it.category.toLowerCase().includes(s),
     );
   }, [q, items]);
 

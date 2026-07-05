@@ -6,7 +6,7 @@
 import { useEffect, useRef, useState } from "react";
 import { breed, marry, mulberry32, paramsToSpecimen, type Specimen } from "../../../../src/evo";
 import { createDancerCell, type DancerCell } from "./dancerCell";
-import { DEFAULT_DANCER_PARAMS, type DancerParams } from "./sim";
+import { type DancerParams, DEFAULT_DANCER_PARAMS } from "./sim";
 import { DANCER_TRAIT_SPACE, specimenToDancerParams } from "./traits";
 
 const COUNT = 6;
@@ -139,10 +139,18 @@ export function BreedingStrip({ device, onAdopt }: { device: GPUDevice | null; o
         ))}
       </div>
       <div className="breed-controls">
-        <button onClick={doBreed} title="a new generation of mutations of your selection">Breed ⚘</button>
-        <button onClick={doCross} disabled={selected.length < 2} title="marry two selected dances (shift-click to pick two)">Cross ⚭</button>
-        <button onClick={doRandom} title="a fresh random generation">Shuffle ⤳</button>
-        <span className="breed-hint">select on how they <em>move</em></span>
+        <button onClick={doBreed} title="a new generation of mutations of your selection">
+          Breed ⚘
+        </button>
+        <button onClick={doCross} disabled={selected.length < 2} title="marry two selected dances (shift-click to pick two)">
+          Cross ⚭
+        </button>
+        <button onClick={doRandom} title="a fresh random generation">
+          Shuffle ⤳
+        </button>
+        <span className="breed-hint">
+          select on how they <em>move</em>
+        </span>
       </div>
     </div>
   );

@@ -99,9 +99,9 @@ export interface GpuFieldParams {
   height: number;
   bbox: [number, number, number, number];
   mode: FieldMode;
-  sigma?: number;        // KDE bandwidth (world units)
-  radiusSigma?: number;  // KDE support cutoff in sigmas (default 4)
-  k?: number;            // DTM neighbours (default 5)
+  sigma?: number; // KDE bandwidth (world units)
+  radiusSigma?: number; // KDE support cutoff in sigmas (default 4)
+  k?: number; // DTM neighbours (default 5)
 }
 
 interface Ctx {
@@ -114,11 +114,15 @@ let ctxPromise: Promise<Ctx | null> | undefined;
 // Pooled buffers (reused/grown, reset on device loss) — avoids per-call alloc/free,
 // which some backends (notably WebKit/Metal) handle poorly under rapid rebuilds.
 let pBuf: GPUBuffer | undefined;
-let ptsBuf: GPUBuffer | undefined, ptsCap = 0;
-let outBuf: GPUBuffer | undefined, readBuf: GPUBuffer | undefined, cellCap = 0;
+let ptsBuf: GPUBuffer | undefined,
+  ptsCap = 0;
+let outBuf: GPUBuffer | undefined,
+  readBuf: GPUBuffer | undefined,
+  cellCap = 0;
 function resetPool(): void {
   pBuf = ptsBuf = outBuf = readBuf = undefined;
-  ptsCap = 0; cellCap = 0;
+  ptsCap = 0;
+  cellCap = 0;
 }
 
 /** Acquire (once) a browser GPU device + compute pipeline, or null if unavailable. */
@@ -133,7 +137,10 @@ export function getGpuFieldContext(): Promise<Ctx | null> {
       const module = device.createShaderModule({ code: SHADER });
       const pipeline = device.createComputePipeline({ layout: "auto", compute: { module, entryPoint: "main" } });
       // If the device is ever lost, drop the cache + pool so the next call re-probes.
-      device.lost.then(() => { ctxPromise = undefined; resetPool(); });
+      device.lost.then(() => {
+        ctxPromise = undefined;
+        resetPool();
+      });
       return { device, pipeline };
     } catch {
       return null;
@@ -165,12 +172,7 @@ function looksValid(out: Float32Array): boolean {
 // backends. Each call waits for the previous to finish.
 let inFlight: Promise<unknown> = Promise.resolve();
 
-async function doCompute(
-  ctx: Ctx,
-  xs: ArrayLike<number>,
-  ys: ArrayLike<number>,
-  params: GpuFieldParams,
-): Promise<Float32Array | null> {
+async function doCompute(ctx: Ctx, xs: ArrayLike<number>, ys: ArrayLike<number>, params: GpuFieldParams): Promise<Float32Array | null> {
   const { device, pipeline } = ctx;
   const n = xs.length;
   const { width: W, height: H, bbox, mode } = params;
@@ -186,12 +188,18 @@ async function doCompute(
     pBuf ??= device.createBuffer({ size: 48, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
     const pData = new ArrayBuffer(48);
     const dv = new DataView(pData);
-    dv.setUint32(0, W, true); dv.setUint32(4, H, true);
-    dv.setUint32(8, n, true); dv.setUint32(12, MODE_CODE[mode], true);
-    dv.setFloat32(16, bbox[0], true); dv.setFloat32(20, bbox[1], true);
-    dv.setFloat32(24, bbox[2], true); dv.setFloat32(28, bbox[3], true);
-    dv.setFloat32(32, sigma, true); dv.setFloat32(36, support, true);
-    dv.setUint32(40, k, true); dv.setUint32(44, 0, true);
+    dv.setUint32(0, W, true);
+    dv.setUint32(4, H, true);
+    dv.setUint32(8, n, true);
+    dv.setUint32(12, MODE_CODE[mode], true);
+    dv.setFloat32(16, bbox[0], true);
+    dv.setFloat32(20, bbox[1], true);
+    dv.setFloat32(24, bbox[2], true);
+    dv.setFloat32(28, bbox[3], true);
+    dv.setFloat32(32, sigma, true);
+    dv.setFloat32(36, support, true);
+    dv.setUint32(40, k, true);
+    dv.setUint32(44, 0, true);
     device.queue.writeBuffer(pBuf, 0, new Uint8Array(pData));
 
     // Points (x,y interleaved), pooled + grown.
@@ -201,7 +209,10 @@ async function doCompute(
       ptsBuf = device.createBuffer({ size: ptsCap * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
     }
     const pts = new Float32Array(ptsFloats);
-    for (let i = 0; i < n; i++) { pts[2 * i] = xs[i]!; pts[2 * i + 1] = ys[i]!; }
+    for (let i = 0; i < n; i++) {
+      pts[2 * i] = xs[i]!;
+      pts[2 * i + 1] = ys[i]!;
+    }
     device.queue.writeBuffer(ptsBuf, 0, pts);
 
     if (!outBuf || !readBuf || cellCap < cells) {
@@ -242,15 +253,14 @@ async function doCompute(
  * null if WebGPU is unavailable / the result fails validation / anything throws — in
  * every such case the caller should fall back to the CPU library.
  */
-export async function computeFieldGpu(
-  xs: ArrayLike<number>,
-  ys: ArrayLike<number>,
-  params: GpuFieldParams,
-): Promise<Float32Array | null> {
+export async function computeFieldGpu(xs: ArrayLike<number>, ys: ArrayLike<number>, params: GpuFieldParams): Promise<Float32Array | null> {
   const ctx = await getGpuFieldContext();
   if (!ctx) return null;
   // Chain onto the previous call so only one compute/readback is in flight.
-  const run = inFlight.then(() => doCompute(ctx, xs, ys, params), () => doCompute(ctx, xs, ys, params));
+  const run = inFlight.then(
+    () => doCompute(ctx, xs, ys, params),
+    () => doCompute(ctx, xs, ys, params),
+  );
   inFlight = run.catch(() => undefined);
   return run;
 }

@@ -1,6 +1,6 @@
 // Geometry sanity: frustum corners and the AABB frustum test.
 import { describe, expect, it } from "vitest";
-import { aabbOutsideFrustum, frustumCorners, frustumPlanes, length, sub, type Camera } from "./math";
+import { aabbOutsideFrustum, type Camera, frustumCorners, frustumPlanes, length, sub } from "./math";
 
 const cam: Camera = {
   eye: [0, 0, 0],

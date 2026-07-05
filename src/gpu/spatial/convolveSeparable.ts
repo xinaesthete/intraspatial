@@ -103,7 +103,7 @@ export function gaussianKernel(sigma: number, radius?: number): Float32Array {
   const k = new Float32Array(2 * r + 1);
   let sum = 0;
   for (let i = -r; i <= r; i++) {
-    const v = Math.exp(-0.5 * (i * i) / (sigma * sigma));
+    const v = Math.exp((-0.5 * (i * i)) / (sigma * sigma));
     k[i + r] = v;
     sum += v;
   }

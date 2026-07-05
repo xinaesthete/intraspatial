@@ -19,11 +19,7 @@ export type Dtype = "f32" | "i32" | "u32";
  *  deliberately distinct from an *open* tensor axis (e.g. genes), which is bulk data
  *  with no per-element algebra. Stored interleaved: a sample occupies `elementLanes`
  *  contiguous lanes of the field's flat `data`. Absent on a field ⇒ `scalar`. */
-export type ElementType =
-  | { kind: "scalar" }
-  | { kind: "complex" }
-  | { kind: "vec"; n: 2 | 3 | 4 }
-  | { kind: "quaternion" };
+export type ElementType = { kind: "scalar" } | { kind: "complex" } | { kind: "vec"; n: 2 | 3 | 4 } | { kind: "quaternion" };
 
 /** The implicit element of any field that doesn't declare one. */
 export const SCALAR: ElementType = { kind: "scalar" };
@@ -56,9 +52,7 @@ export function elementLabel(e: ElementType): string {
  *  Mallat coefficient pyramid that carries its own decomposition contract (kernel +
  *  levels) so downstream ops (idwt, detail thresholding) read it from the input rather
  *  than re-declaring it as a parameter. Absent on a field ⇒ `spatial`. */
-export type Basis =
-  | { kind: "spatial" }
-  | { kind: "wavelet"; wavelet: "5/3" | "9/7"; levels: number };
+export type Basis = { kind: "spatial" } | { kind: "wavelet"; wavelet: "5/3" | "9/7"; levels: number };
 
 /** The implicit basis of any field that doesn't declare one. */
 export const SPATIAL: Basis = { kind: "spatial" };
@@ -129,7 +123,8 @@ export function basisOf(v: { basis?: Basis }): Basis {
 export function unpackPoints(v: FieldValue): { xs: number[]; ys: number[]; n: number } {
   const data = v.data;
   if (!data) throw new Error("unpackPoints: field has no data");
-  const xs: number[] = [], ys: number[] = [];
+  const xs: number[] = [],
+    ys: number[] = [];
   for (let i = 0; i + 1 < data.length; i += 2) {
     xs.push(data[i]!);
     ys.push(data[i + 1]!);

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { FieldRing, RingBuffer } from "./ringBuffer";
 import type { FieldValue } from "./handle";
+import { FieldRing, RingBuffer } from "./ringBuffer";
 
 describe("RingBuffer", () => {
   it("stores up to capacity and indexes frames newest→oldest", () => {

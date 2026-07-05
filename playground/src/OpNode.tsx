@@ -1,13 +1,14 @@
 // Custom React Flow node: title + one Handle per declared input/output port. Ports
 // are typed by shape kind (shown in the handle tooltip); editing of params happens
 // in the inspector panel, so the node itself stays compact.
-import { useContext } from "react";
-import { Handle, Position } from "@xyflow/react";
+
 import type { NodeProps } from "@xyflow/react";
-import { getSpec } from "./specs";
+import { Handle, Position } from "@xyflow/react";
+import { useContext } from "react";
 import type { NodeData } from "./buildGraph";
-import { kindColor } from "./portKinds";
 import { PortHoverContext } from "./PortHover";
+import { kindColor } from "./portKinds";
+import { getSpec } from "./specs";
 
 function portTop(i: number, count: number): string {
   return `${((i + 1) / (count + 1)) * 100}%`;
@@ -45,8 +46,16 @@ export function OpNode({ id, data, selected }: NodeProps) {
         />
       ))}
       <div className="opnode-ports">
-        <div className="opnode-in">{spec.inputs.map((p) => <span key={p.name}>{p.name}</span>)}</div>
-        <div className="opnode-out">{spec.outputs.map((p) => <span key={p.name}>{p.name}</span>)}</div>
+        <div className="opnode-in">
+          {spec.inputs.map((p) => (
+            <span key={p.name}>{p.name}</span>
+          ))}
+        </div>
+        <div className="opnode-out">
+          {spec.outputs.map((p) => (
+            <span key={p.name}>{p.name}</span>
+          ))}
+        </div>
       </div>
     </div>
   );

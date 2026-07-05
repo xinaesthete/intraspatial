@@ -13,9 +13,15 @@ export type ScalarField = (u: Vec3) => number;
 
 /** Power-8 Mandelbulb escape fraction over the unit cube (0 = escaped fast, 1 = inside). */
 export const mandelbulbField: ScalarField = (u) => {
-  const cx = (u[0] * 2 - 1) * 1.2, cy = (u[1] * 2 - 1) * 1.2, cz = (u[2] * 2 - 1) * 1.2;
-  const power = 8, maxIter = 8;
-  let x = 0, y = 0, z = 0, i = 0;
+  const cx = (u[0] * 2 - 1) * 1.2,
+    cy = (u[1] * 2 - 1) * 1.2,
+    cz = (u[2] * 2 - 1) * 1.2;
+  const power = 8,
+    maxIter = 8;
+  let x = 0,
+    y = 0,
+    z = 0,
+    i = 0;
   for (; i < maxIter; i++) {
     const r = Math.hypot(x, y, z);
     if (r > 2) break;
@@ -32,9 +38,12 @@ export const mandelbulbField: ScalarField = (u) => {
 
 /** Mandelbrot escape fraction over the unit square (u[2] ignored) — the plane signal. */
 export const mandelbrotField: ScalarField = (u) => {
-  const cx = u[0] * 3 - 2.1, cy = u[1] * 2.4 - 1.2;
+  const cx = u[0] * 3 - 2.1,
+    cy = u[1] * 2.4 - 1.2;
   const maxIter = 48;
-  let x = 0, y = 0, i = 0;
+  let x = 0,
+    y = 0,
+    i = 0;
   for (; i < maxIter; i++) {
     const x2 = x * x - y * y + cx;
     y = 2 * x * y + cy;
@@ -60,7 +69,14 @@ export function axisAlignedMultiscale(opts: {
     voxelDims0: d,
     chunkShape: opts.chunkShape,
     levelCount: opts.levelCount,
-    worldFromArray: { origin, axes: [[s, 0, 0], [0, s, 0], [0, 0, s]] },
+    worldFromArray: {
+      origin,
+      axes: [
+        [s, 0, 0],
+        [0, s, 0],
+        [0, 0, s],
+      ],
+    },
     element: { kind: "scalar" },
     dtype: "f32",
   };
@@ -98,12 +114,7 @@ export interface SyntheticSource {
 }
 
 /** A synthetic Mandelbulb **volume** source. */
-export function syntheticVolume(opts?: {
-  size?: number;
-  chunk?: number;
-  levelCount?: number;
-  voxelSizeWorld?: number;
-}): SyntheticSource {
+export function syntheticVolume(opts?: { size?: number; chunk?: number; levelCount?: number; voxelSizeWorld?: number }): SyntheticSource {
   const size = opts?.size ?? 256;
   const chunk = opts?.chunk ?? 32;
   const ms = axisAlignedMultiscale({

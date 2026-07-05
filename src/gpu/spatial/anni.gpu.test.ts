@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, expect, it } from "vitest";
 import { anniGpu } from "./anni";
 
 function mulberry32(seed: number) {
@@ -27,8 +27,13 @@ describe("anniGpu", () => {
     const rnd = mulberry32(0xbeef);
     const n = 150;
     // Three tight blobs inside a large region -> clustered.
-    const centers = [[10, 10], [90, 20], [50, 80]];
-    const xs: number[] = [], ys: number[] = [];
+    const centers = [
+      [10, 10],
+      [90, 20],
+      [50, 80],
+    ];
+    const xs: number[] = [],
+      ys: number[] = [];
     for (let i = 0; i < n; i++) {
       const c = centers[i % 3]!;
       xs.push(c[0]! + (rnd() - 0.5) * 4);
@@ -42,14 +47,15 @@ describe("anniGpu", () => {
 
   it("reads a jittered grid as dispersed (R > 1, z > 0)", async () => {
     const rnd = mulberry32(0xa11ce);
-    const xs: number[] = [], ys: number[] = [];
+    const xs: number[] = [],
+      ys: number[] = [];
     const g = 12; // 12x12 = 144 points
     for (let i = 0; i < g; i++)
       for (let j = 0; j < g; j++) {
         xs.push(i * 8 + (rnd() - 0.5) * 1.5);
         ys.push(j * 8 + (rnd() - 0.5) * 1.5);
       }
-    const r = await anniGpu(xs, ys, { area: (g * 8) * (g * 8) });
+    const r = await anniGpu(xs, ys, { area: g * 8 * (g * 8) });
     expect(r.index).toBeGreaterThan(1.2);
     expect(r.zScore).toBeGreaterThan(1.96);
     expect(r.interpretation).toBe("dispersed");

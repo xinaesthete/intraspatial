@@ -1,7 +1,7 @@
 // DWT reference math (ADR-0006): round-trip correctness and the packed-Mallat band
 // geometry. CPU-only and fast. Mirrors the reference `selfTest` in docs-site/src/lib/dwt.ts.
-import { describe, it, expect } from "vitest";
-import { fdwt2d, idwt2d, dwtBands, mirror } from "./dwt";
+import { describe, expect, it } from "vitest";
+import { dwtBands, fdwt2d, idwt2d, mirror } from "./dwt";
 
 // Deterministic pseudo-random integer fixture (no Math.random → reproducible).
 function intFixture(w: number, h: number): Float32Array {
@@ -24,7 +24,9 @@ describe("dwt", () => {
   });
 
   it("5/3 round-trips exactly on integer data (lossless), non-power-of-two", () => {
-    const w = 37, h = 53, levels = 4;
+    const w = 37,
+      h = 53,
+      levels = 4;
     const src = intFixture(w, h);
     const coeffs = fdwt2d(src, w, h, "5/3", levels);
     const rec = idwt2d(coeffs, w, h, "5/3", levels);
@@ -32,7 +34,9 @@ describe("dwt", () => {
   });
 
   it("9/7 round-trips within float tolerance", () => {
-    const w = 32, h = 32, levels = 3;
+    const w = 32,
+      h = 32,
+      levels = 3;
     const src = intFixture(w, h);
     const coeffs = fdwt2d(src, w, h, "9/7", levels);
     const rec = idwt2d(coeffs, w, h, "9/7", levels);
@@ -40,7 +44,9 @@ describe("dwt", () => {
   });
 
   it("a forward DWT actually moves energy into the LL corner (it is a transform, not a copy)", () => {
-    const w = 16, h = 16, levels = 2;
+    const w = 16,
+      h = 16,
+      levels = 2;
     // Smooth ramp → most energy should concentrate in the LL approximation.
     const src = new Float32Array(w * h);
     for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) src[y * w + x] = x + y;
@@ -49,7 +55,9 @@ describe("dwt", () => {
   });
 
   it("band geometry: LL + 3·levels detail bands, LL at the corner, partitioning the grid", () => {
-    const w = 24, h = 16, levels = 3;
+    const w = 24,
+      h = 16,
+      levels = 3;
     const bands = dwtBands(w, h, levels);
     expect(bands.filter((b) => b.type === "LL")).toHaveLength(1);
     expect(bands.filter((b) => b.type !== "LL")).toHaveLength(3 * levels);

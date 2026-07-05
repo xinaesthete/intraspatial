@@ -3,7 +3,7 @@
 // traced, re-selected, and branched. Here it doubles as provenance (the repo's FAIR
 // ethos, docs-site/concepts/fair.md): a lineage is plain JSON, so a breeding session
 // saves, shares, and replays. Pure data + pure (immutable) updates.
-import { deserializeSpecimen, serializeSpecimen, type Specimen, type SerializedSpecimen } from "./specimen";
+import { deserializeSpecimen, type SerializedSpecimen, type Specimen, serializeSpecimen } from "./specimen";
 
 export type BirthOp = "seed" | "mutate" | "marry" | "steer";
 
@@ -36,13 +36,7 @@ export function specimenId(sp: Specimen): string {
 }
 
 /** Record a birth, immutably. Returns a new pedigree; the input is untouched. */
-export function recordBirth(
-  ped: Pedigree,
-  specimen: Specimen,
-  op: BirthOp,
-  parents: string[],
-  generation: number,
-): Pedigree {
+export function recordBirth(ped: Pedigree, specimen: Specimen, op: BirthOp, parents: string[], generation: number): Pedigree {
   const id = specimenId(specimen);
   if (ped.nodes[id]) return ped; // already recorded
   const node: PedigreeNode = { id, specimen: serializeSpecimen(specimen), parents, op, generation };

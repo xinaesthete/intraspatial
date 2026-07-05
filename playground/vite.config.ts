@@ -1,7 +1,7 @@
-import { defineConfig } from "vite";
+import { fileURLToPath } from "node:url";
 import react from "@vitejs/plugin-react";
 import typegpu from "unplugin-typegpu/vite";
-import { fileURLToPath } from "node:url";
+import { defineConfig } from "vite";
 
 // The composer imports the toolbox's own runtime + ops from ../src. Those modules
 // pull in src/gpu/device.ts, which statically imports the Node-only `webgpu` (Dawn)

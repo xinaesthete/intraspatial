@@ -106,20 +106,20 @@ export interface EmptySpaceResult {
 }
 
 /** Empty-space (F) function: distances from random locations to the nearest point. */
-export async function emptySpaceGpu(
-  xs: ArrayLike<number>,
-  ys: ArrayLike<number>,
-  opts: EmptySpaceOptions = {},
-): Promise<EmptySpaceResult> {
+export async function emptySpaceGpu(xs: ArrayLike<number>, ys: ArrayLike<number>, opts: EmptySpaceOptions = {}): Promise<EmptySpaceResult> {
   const n = xs.length;
   if (n < 1) throw new Error("emptySpace: need at least 1 data point");
   const m = opts.numSamples ?? 1024;
 
   let bbox = opts.bbox;
   if (!bbox) {
-    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    let minX = Infinity,
+      minY = Infinity,
+      maxX = -Infinity,
+      maxY = -Infinity;
     for (let i = 0; i < n; i++) {
-      const x = xs[i]!, y = ys[i]!;
+      const x = xs[i]!,
+        y = ys[i]!;
       if (x < minX) minX = x;
       if (x > maxX) maxX = x;
       if (y < minY) minY = y;

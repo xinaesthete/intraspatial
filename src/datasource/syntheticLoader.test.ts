@@ -1,8 +1,8 @@
 // The SyntheticLoader: deterministic, in-memory, bounded output. Proves getChunk
 // returns correctly-sized, in-range, reproducible tiles (ADR-0008 Milestone 1).
 import { describe, expect, it } from "vitest";
-import { mandelbrotField, mandelbulbField, syntheticPlane, syntheticVolume } from "./syntheticLoader";
 import { chunkCounts, chunkVoxelExtent } from "./multiscale";
+import { mandelbrotField, mandelbulbField, syntheticPlane, syntheticVolume } from "./syntheticLoader";
 
 const inUnit = (data: Float32Array): boolean => data.every((v) => Number.isFinite(v) && v >= 0 && v <= 1);
 

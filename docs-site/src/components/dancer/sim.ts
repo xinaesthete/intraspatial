@@ -13,6 +13,7 @@ import {
   tapBlock,
   writeBodyState,
 } from "../../../../src/gpu/sim/body";
+import { figureAt, figureTargetVel, partnerIndex } from "../../../../src/gpu/sim/figures";
 import {
   cohereForce,
   constrainForce,
@@ -23,8 +24,7 @@ import {
   swimForce,
   vortexForce,
 } from "../../../../src/gpu/sim/forces";
-import { figureAt, figureTargetVel, partnerIndex } from "../../../../src/gpu/sim/figures";
-import { add, readVec3, scale, sub, ZERO3, type Vec3 } from "../../../../src/gpu/sim/vec3";
+import { add, readVec3, scale, sub, type Vec3, ZERO3 } from "../../../../src/gpu/sim/vec3";
 
 export interface DancerParams {
   // force strengths (0 disables)

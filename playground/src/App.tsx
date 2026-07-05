@@ -1,39 +1,45 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import {
-  ReactFlow,
-  Background,
-  Controls,
-  addEdge,
-  useNodesState,
-  useEdgesState,
-} from "@xyflow/react";
 import type { Connection, Edge, Node, NodeTypes } from "@xyflow/react";
+import { addEdge, Background, Controls, ReactFlow, useEdgesState, useNodesState } from "@xyflow/react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import "@xyflow/react/dist/style.css";
 import "./styles.css";
+import type { EdgeChange, NodeChange } from "@xyflow/react";
+import { applyEdgeChanges, applyNodeChanges } from "@xyflow/react";
 import type { FieldValue, GraphMemo, SimState } from "../../src/gpu/graph";
 import { createMemo, createSimState } from "../../src/gpu/graph";
-import { registerExtraOps } from "./extraOps";
-import { applyEdgeChanges, applyNodeChanges } from "@xyflow/react";
-import type { EdgeChange, NodeChange } from "@xyflow/react";
-import { OpNode } from "./OpNode";
-import { GroupNode } from "./GroupNode";
-import { InstanceNode } from "./InstanceNode";
-import { InterfaceNode } from "./InterfaceNode";
-import { advanceNode, graphHasFeedback, runNode } from "./buildGraph";
 import type { NodeData } from "./buildGraph";
+import { advanceNode, graphHasFeedback, runNode } from "./buildGraph";
+import { CommandPalette } from "./CommandPalette";
+import type { Example } from "./examples";
+import { EXAMPLES } from "./examples";
+import { registerExtraOps } from "./extraOps";
+import { FieldTooltip } from "./FieldTooltip";
+import { GroupNode } from "./GroupNode";
+import type { GroupData, IOType } from "./grouping";
 import {
-  ROOT_SCOPE,
   addInterface,
   createGroup,
   deriveDisplay,
   groupPorts,
   isGroupNode,
   isOpNode,
+  ROOT_SCOPE,
   resolveGroupOutput,
   scopeOf,
   ungroup,
 } from "./grouping";
-import type { GroupData, IOType } from "./grouping";
+import { HelpTooltip } from "./HelpTooltip";
+import { InstanceNode } from "./InstanceNode";
+import { InterfaceNode } from "./InterfaceNode";
+import { MathTex } from "./Math";
+import { OpNode } from "./OpNode";
+import { CATEGORY_ORDER } from "./opMeta";
+import { PortHoverContext } from "./PortHover";
+import { Preview } from "./Preview";
+import { kindColor } from "./portKinds";
+import type { NodeSpec } from "./specs";
+import { defaultParamsFor, getSpec, listOpSpecs, listSourceSpecs } from "./specs";
+import type { DefLibrary } from "./subgraphs";
 import {
   defHasFeedback,
   defNameOfScope,
@@ -46,19 +52,6 @@ import {
   isInstanceNode,
   promoteToDef,
 } from "./subgraphs";
-import type { DefLibrary } from "./subgraphs";
-import { kindColor } from "./portKinds";
-import { defaultParamsFor, getSpec, listOpSpecs, listSourceSpecs } from "./specs";
-import type { NodeSpec } from "./specs";
-import { CATEGORY_ORDER } from "./opMeta";
-import { CommandPalette } from "./CommandPalette";
-import { HelpTooltip } from "./HelpTooltip";
-import { FieldTooltip } from "./FieldTooltip";
-import { PortHoverContext } from "./PortHover";
-import { MathTex } from "./Math";
-import { EXAMPLES } from "./examples";
-import type { Example } from "./examples";
-import { Preview } from "./Preview";
 
 // Register the element-algebra + wavelet op packs synchronously, before any render,
 // into the same registry the palette reads (see extraOps.ts for why not the async path).
@@ -89,9 +82,7 @@ function groupByCategory(specs: NodeSpec[], filter: string): { category: string;
     const i = CATEGORY_ORDER.indexOf(c);
     return i < 0 ? CATEGORY_ORDER.length : i;
   };
-  return [...byCat.keys()]
-    .sort((a, b) => rank(a) - rank(b) || a.localeCompare(b))
-    .map((c) => ({ category: c, specs: byCat.get(c)! }));
+  return [...byCat.keys()].sort((a, b) => rank(a) - rank(b) || a.localeCompare(b)).map((c) => ({ category: c, specs: byCat.get(c)! }));
 }
 
 // Default example: blob clusters -> KDE density -> Getis-Ord hotspots.
@@ -196,7 +187,8 @@ export default function App() {
       } catch {
         /* non-op node (instance/interface) — leave kind unknown */
       }
-      const x = e.clientX, y = e.clientY;
+      const x = e.clientX,
+        y = e.clientY;
       const rect = { right: x, left: x, top: y, bottom: y, width: 0, height: 0, x, y } as DOMRect;
       window.clearTimeout(inspectTimer.current);
       setInspect({ title: edge.sourceHandle ?? "out", kind, value: portValues.current.get(`${edge.source}:${edge.sourceHandle}`), rect });
@@ -205,10 +197,7 @@ export default function App() {
   );
   const onEdgeLeave = useCallback(() => setInspect(null), []);
 
-  const hasFeedback = useMemo(
-    () => graphHasFeedback(nodes) || Object.values(defs).some((d) => defHasFeedback(d, defs)),
-    [nodes, defs],
-  );
+  const hasFeedback = useMemo(() => graphHasFeedback(nodes) || Object.values(defs).some((d) => defHasFeedback(d, defs)), [nodes, defs]);
   const inflight = useRef(false);
   const pending = useRef(false);
 
@@ -226,7 +215,10 @@ export default function App() {
   const setContainerNodes = useCallback(
     (updater: (prev: Node[]) => Node[]) => {
       if (activeDefName) {
-        setDefs((ds) => { const d = ds[activeDefName]; return d ? { ...ds, [activeDefName]: { ...d, nodes: updater(d.nodes) } } : ds; });
+        setDefs((ds) => {
+          const d = ds[activeDefName];
+          return d ? { ...ds, [activeDefName]: { ...d, nodes: updater(d.nodes) } } : ds;
+        });
       } else setNodes(updater);
     },
     [activeDefName, setNodes],
@@ -234,7 +226,10 @@ export default function App() {
   const setContainerEdges = useCallback(
     (updater: (prev: Edge[]) => Edge[]) => {
       if (activeDefName) {
-        setDefs((ds) => { const d = ds[activeDefName]; return d ? { ...ds, [activeDefName]: { ...d, edges: updater(d.edges) } } : ds; });
+        setDefs((ds) => {
+          const d = ds[activeDefName];
+          return d ? { ...ds, [activeDefName]: { ...d, edges: updater(d.edges) } } : ds;
+        });
       } else setEdges(updater);
     },
     [activeDefName, setEdges],
@@ -258,7 +253,10 @@ export default function App() {
     const nodes = raw.nodes.map((n) => {
       const sig = JSON.stringify({ p: n.position, t: n.type, s: n.selected ?? false, d: n.data });
       const hit = prev.get(n.id);
-      if (hit && hit.sig === sig) { next.set(n.id, hit); return hit.node; }
+      if (hit && hit.sig === sig) {
+        next.set(n.id, hit);
+        return hit.node;
+      }
       next.set(n.id, { sig, node: n });
       return n;
     });
@@ -308,10 +306,11 @@ export default function App() {
   // Anything that carries a value — ops, one-off groups, and reusable-subgraph
   // instances — can be grouped; only the scope's own boundary interface nodes can't.
   const groupableIds = useMemo(
-    () => selectedIds.filter((id) => {
-      const n = containerNodes.find((x) => x.id === id);
-      return !!n && scopeOf(n) === scope && (isOpNode(n) || isGroupNode(n) || isInstanceNode(n));
-    }),
+    () =>
+      selectedIds.filter((id) => {
+        const n = containerNodes.find((x) => x.id === id);
+        return !!n && scopeOf(n) === scope && (isOpNode(n) || isGroupNode(n) || isInstanceNode(n));
+      }),
     [selectedIds, containerNodes, scope],
   );
   const addIONode = useCallback(
@@ -342,14 +341,17 @@ export default function App() {
   }, []);
 
   // Open a reusable subgraph instance → edit its SHARED definition (live-linked).
-  const enterInstance = useCallback((instId: string) => {
-    const inst = containerNodes.find((n) => n.id === instId);
-    if (!inst || !isInstanceNode(inst)) return;
-    setPath((p) => [...p, defScopeId(instanceDefName(inst))]);
-    setSelectedId(null);
-    setSelectedPort(null);
-    setValue(null);
-  }, [containerNodes]);
+  const enterInstance = useCallback(
+    (instId: string) => {
+      const inst = containerNodes.find((n) => n.id === instId);
+      if (!inst || !isInstanceNode(inst)) return;
+      setPath((p) => [...p, defScopeId(instanceDefName(inst))]);
+      setSelectedId(null);
+      setSelectedPort(null);
+      setValue(null);
+    },
+    [containerNodes],
+  );
 
   const navigateTo = useCallback((index: number) => {
     setPath((p) => p.slice(0, index + 1));
@@ -387,7 +389,10 @@ export default function App() {
     }
     const name = window.prompt("Name this reusable subgraph:", "MySubgraph");
     if (!name) return;
-    if (defs[name]) { window.alert(`A reusable subgraph named "${name}" already exists.`); return; }
+    if (defs[name]) {
+      window.alert(`A reusable subgraph named "${name}" already exists.`);
+      return;
+    }
     let result;
     try {
       result = promoteToDef(workNodes, workEdges, defs, groupId, name, name);
@@ -413,7 +418,10 @@ export default function App() {
   const instantiateDef = useCallback(
     (name: string) => {
       const id = `inst${idSeq.current++}`;
-      const node = instantiate(name, defs[name]?.label ?? name, scope, id, { x: 160 + (containerNodes.length % 5) * 40, y: 220 + (containerNodes.length % 4) * 40 });
+      const node = instantiate(name, defs[name]?.label ?? name, scope, id, {
+        x: 160 + (containerNodes.length % 5) * 40,
+        y: 220 + (containerNodes.length % 4) * 40,
+      });
       setContainerNodes((ns) => ns.concat(node));
     },
     [defs, scope, containerNodes.length, setContainerNodes],
@@ -456,7 +464,9 @@ export default function App() {
   // Rename any node's label (a group, or an interface node — which IS a group port).
   const renameNode = useCallback(
     (id: string, label: string) => {
-      setContainerNodes((ns) => ns.map((n) => (n.id === id ? { ...n, data: { ...(n.data as object), label } as Record<string, unknown> } : n)));
+      setContainerNodes((ns) =>
+        ns.map((n) => (n.id === id ? { ...n, data: { ...(n.data as object), label } as Record<string, unknown> } : n)),
+      );
     },
     [setContainerNodes],
   );
@@ -505,7 +515,7 @@ export default function App() {
       if (seg === ROOT_SCOPE) return "Main";
       if (isDefScope(seg)) return defs[defNameOfScope(seg)]?.label ?? "subgraph";
       const all = [nodes, ...Object.values(defs).map((d) => d.nodes)].flat();
-      return ((all.find((n) => n.id === seg)?.data as unknown as GroupData)?.label) ?? "group";
+      return (all.find((n) => n.id === seg)?.data as unknown as GroupData)?.label ?? "group";
     },
     [nodes, defs],
   );
@@ -518,13 +528,19 @@ export default function App() {
   // Group/instance boundary + member count are derived (not stored on the logical node).
   const selectedGroupBoundary = useMemo(() => {
     if (!selected) return { inputs: [], outputs: [] };
-    if (selectedInstance) { const d = defs[instanceDefName(selected)]; return d ? instancePorts(d, defs) : { inputs: [], outputs: [] }; }
+    if (selectedInstance) {
+      const d = defs[instanceDefName(selected)];
+      return d ? instancePorts(d, defs) : { inputs: [], outputs: [] };
+    }
     if (selectedGroup) return groupPorts(containerNodes, containerEdges, selected.id, defs);
     return { inputs: [], outputs: [] };
   }, [selectedGroup, selectedInstance, selected, containerNodes, containerEdges, defs]);
   const selectedGroupMembers = useMemo(() => {
     if (!selected) return 0;
-    if (selectedInstance) { const d = defs[instanceDefName(selected)]; return d ? d.nodes.filter(isOpNode).length : 0; }
+    if (selectedInstance) {
+      const d = defs[instanceDefName(selected)];
+      return d ? d.nodes.filter(isOpNode).length : 0;
+    }
     return containerNodes.filter((n) => scopeOf(n) === selected.id).length;
   }, [selected, selectedInstance, containerNodes, defs]);
 
@@ -546,7 +562,10 @@ export default function App() {
   const runRef = useRef<() => void>(() => {});
   const run = useCallback(async () => {
     if (!selectedId) return;
-    if (inflight.current) { pending.current = true; return; } // coalesce while busy
+    if (inflight.current) {
+      pending.current = true;
+      return;
+    } // coalesce while busy
     inflight.current = true;
     setRunning(true);
     setError(null);
@@ -561,7 +580,10 @@ export default function App() {
     } finally {
       inflight.current = false;
       setRunning(false);
-      if (pending.current) { pending.current = false; runRef.current(); } // run the latest
+      if (pending.current) {
+        pending.current = false;
+        runRef.current();
+      } // run the latest
     }
   }, [nodes, edges, defs, selectedId, selectedPort, resolveSink]);
   runRef.current = run;
@@ -592,25 +614,28 @@ export default function App() {
 
   // Simulation transport: advance one tick (a graph step; the RD op may batch many
   // Euler steps inside it) and show the result.
-  const step = useCallback(async (reset = false) => {
-    if (!selectedId) return;
-    try {
-      const sink = resolveSink();
-      const out = await advanceNode(nodes, edges, sink.id, sink.port, {
-        steps: 1,
-        state: sim.current,
-        reset,
-        defs,
-        onValue: (k, v) => portValues.current.set(k, v),
-      });
-      setValue(out);
-      setStale(false);
-      setError(null);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-      setPlaying(false);
-    }
-  }, [nodes, edges, defs, selectedId, selectedPort, resolveSink]);
+  const step = useCallback(
+    async (reset = false) => {
+      if (!selectedId) return;
+      try {
+        const sink = resolveSink();
+        const out = await advanceNode(nodes, edges, sink.id, sink.port, {
+          steps: 1,
+          state: sim.current,
+          reset,
+          defs,
+          onValue: (k, v) => portValues.current.set(k, v),
+        });
+        setValue(out);
+        setStale(false);
+        setError(null);
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e));
+        setPlaying(false);
+      }
+    },
+    [nodes, edges, defs, selectedId, selectedPort, resolveSink],
+  );
 
   const resetSim = useCallback(() => {
     setPlaying(false);
@@ -646,7 +671,12 @@ export default function App() {
       if (cancelled) return;
       try {
         const sink = resolveSink();
-        const out = await advanceNode(nodes, edges, sink.id, sink.port, { steps: 1, state: sim.current, defs, onValue: (k, v) => portValues.current.set(k, v) });
+        const out = await advanceNode(nodes, edges, sink.id, sink.port, {
+          steps: 1,
+          state: sim.current,
+          defs,
+          onValue: (k, v) => portValues.current.set(k, v),
+        });
         if (cancelled) return;
         setValue(out);
         setStale(false); // each animated frame is freshly computed, never stale
@@ -665,296 +695,378 @@ export default function App() {
 
   return (
     <PortHoverContext.Provider value={portHover}>
-    <div className="app">
-      <aside className="palette">
-        <h1>GPU graph composer</h1>
-        <p className="muted">Wire ops, select a node, pull its output. Edges only connect matching port types.</p>
-        <h2>Examples</h2>
-        {EXAMPLES.map((ex) => (
-          <button key={ex.label} className="palette-btn" title="Load this graph" onClick={() => loadExample(ex)}>
-            {ex.label}
-          </button>
-        ))}
-        <input
-          className="palette-filter"
-          placeholder="Filter nodes…  (press / to insert)"
-          value={paletteFilter}
-          onChange={(e) => setPaletteFilter(e.target.value)}
-        />
-        {groupByCategory(allSpecs, paletteFilter).map((group) => {
-          // While filtering, force every matching group open.
-          const isCollapsed = collapsed.has(group.category) && !paletteFilter.trim();
-          return (
-            <div key={group.category} className="palette-group">
-              <button className="palette-group-head" onClick={() => toggleCategory(group.category)}>
-                <span className="fold">{isCollapsed ? "▸" : "▾"}</span>
-                <span className="palette-group-name">{group.category}</span>
-                <span className="palette-group-count">{group.specs.length}</span>
-              </button>
-              {!isCollapsed &&
-                group.specs.map((s) => (
-                  <button
-                    key={s.name}
-                    className={`palette-btn${s.isSource ? " source" : ""}`}
-                    draggable
-                    onDragStart={(e) => {
-                      e.dataTransfer.setData("application/op-name", s.name);
-                      e.dataTransfer.effectAllowed = "move";
-                      hideHelp();
-                    }}
-                    onClick={() => addNode(s.name)}
-                    onMouseEnter={(e) => showHelp(s, e.currentTarget)}
-                    onMouseLeave={hideHelp}
-                  >
-                    {s.label}
-                  </button>
-                ))}
-            </div>
-          );
-        })}
-        {Object.keys(defs).length > 0 && (
-          <>
-            <h2>Subgraphs</h2>
-            {Object.values(defs).map((d) => (
-              <button
-                key={d.name}
-                className="palette-btn subgraph"
-                title={d.name === activeDefName ? "Can't place a subgraph inside itself" : `Place an instance of "${d.label}"`}
-                disabled={d.name === activeDefName}
-                onClick={() => instantiateDef(d.name)}
-              >
-                ⬡ {d.label}
-              </button>
-            ))}
-          </>
-        )}
-      </aside>
-
-      <main className="canvas" onMouseMove={(e) => { paneScreenPos.current = { x: e.clientX, y: e.clientY }; }}>
-        <div className="canvas-toolbar">
-          <div className="breadcrumb">
-            {path.map((seg, i) => {
-              const label = segLabel(seg);
-              return (
-                <span key={seg} className="bc-item">
-                  {i > 0 && <span className="bc-sep">›</span>}
-                  <button className={`bc-seg ${isDefScope(seg) ? "def" : ""}`} disabled={i === path.length - 1} onClick={() => navigateTo(i)}>{label}</button>
-                </span>
-              );
-            })}
-          </div>
-          {groupableIds.length >= 2 && (
+      <div className="app">
+        <aside className="palette">
+          <h1>GPU graph composer</h1>
+          <p className="muted">Wire ops, select a node, pull its output. Edges only connect matching port types.</p>
+          <h2>Examples</h2>
+          {EXAMPLES.map((ex) => (
+            <button key={ex.label} className="palette-btn" title="Load this graph" onClick={() => loadExample(ex)}>
+              {ex.label}
+            </button>
+          ))}
+          <input
+            className="palette-filter"
+            placeholder="Filter nodes…  (press / to insert)"
+            value={paletteFilter}
+            onChange={(e) => setPaletteFilter(e.target.value)}
+          />
+          {groupByCategory(allSpecs, paletteFilter).map((group) => {
+            // While filtering, force every matching group open.
+            const isCollapsed = collapsed.has(group.category) && !paletteFilter.trim();
+            return (
+              <div key={group.category} className="palette-group">
+                <button className="palette-group-head" onClick={() => toggleCategory(group.category)}>
+                  <span className="fold">{isCollapsed ? "▸" : "▾"}</span>
+                  <span className="palette-group-name">{group.category}</span>
+                  <span className="palette-group-count">{group.specs.length}</span>
+                </button>
+                {!isCollapsed &&
+                  group.specs.map((s) => (
+                    <button
+                      key={s.name}
+                      className={`palette-btn${s.isSource ? " source" : ""}`}
+                      draggable
+                      onDragStart={(e) => {
+                        e.dataTransfer.setData("application/op-name", s.name);
+                        e.dataTransfer.effectAllowed = "move";
+                        hideHelp();
+                      }}
+                      onClick={() => addNode(s.name)}
+                      onMouseEnter={(e) => showHelp(s, e.currentTarget)}
+                      onMouseLeave={hideHelp}
+                    >
+                      {s.label}
+                    </button>
+                  ))}
+              </div>
+            );
+          })}
+          {Object.keys(defs).length > 0 && (
             <>
-              <button className="tb-primary" onClick={groupSelection}>▦ Group {groupableIds.length} nodes</button>
-              <button className="tb-primary" onClick={promoteToReusable} title="Group these nodes and save as a reusable named subgraph">⬡ Save as subgraph</button>
+              <h2>Subgraphs</h2>
+              {Object.values(defs).map((d) => (
+                <button
+                  key={d.name}
+                  className="palette-btn subgraph"
+                  title={d.name === activeDefName ? "Can't place a subgraph inside itself" : `Place an instance of "${d.label}"`}
+                  disabled={d.name === activeDefName}
+                  onClick={() => instantiateDef(d.name)}
+                >
+                  ⬡ {d.label}
+                </button>
+              ))}
             </>
           )}
-          {scope !== ROOT_SCOPE && (
-            <span className="tb-group">
-              <button onClick={() => addIONode("input")} title="Add an input to this subgraph">＋ Input</button>
-              <button onClick={() => addIONode("output")} title="Add an output to this subgraph">＋ Output</button>
-            </span>
-          )}
-          {activeDefName && (
-            <span className="tb-def-badge" title="You are editing a shared reusable subgraph definition — changes apply to every instance">⬡ editing definition · live-linked</span>
-          )}
-        </div>
-        <ReactFlow
-          nodes={display.nodes}
-          edges={display.edges}
-          nodeTypes={nodeTypes}
-          onNodesChange={onDisplayNodesChange}
-          onEdgesChange={onDisplayEdgesChange}
-          onConnect={onConnect}
-          onSelectionChange={onSelectionChange}
-          onNodeClick={(_, n) => { setSelectedId(n.id); setSelectedPort(null); setValue(null); setStale(false); setError(null); }}
-          onNodeDoubleClick={onNodeDoubleClick}
-          onEdgeMouseEnter={onEdgeEnter}
-          onEdgeMouseLeave={onEdgeLeave}
-          onInit={(inst) => { flowRef.current = inst; }}
-          onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = "move"; }}
-          onDrop={(e) => {
-            e.preventDefault();
-            const name = e.dataTransfer.getData("application/op-name");
-            if (!name) return;
-            const pos = flowRef.current?.screenToFlowPosition({ x: e.clientX, y: e.clientY });
-            addNode(name, pos);
+        </aside>
+
+        <main
+          className="canvas"
+          onMouseMove={(e) => {
+            paneScreenPos.current = { x: e.clientX, y: e.clientY };
           }}
-          fitView
         >
-          <Background />
-          <Controls />
-        </ReactFlow>
-      </main>
-
-      <aside className="inspector">
-        {selected && selectedInterface ? (
-          <>
-            <h2>{selectedInterface.type === "input" ? "▸ Input" : "Output ▸"}</h2>
-            <label className="row">
-              <span>name</span>
-              <input type="text" value={(selectedInterface.data as { label: string }).label} onChange={(e) => renameNode(selected.id, e.target.value)} style={{ width: 130 }} />
-            </label>
-            <p className="muted">A {selectedInterface.type} port of this subgraph. Wire it to a member; the group node gets a matching port.</p>
-          </>
-        ) : selected && selectedInstance ? (
-          <>
-            <h2>⬡ Reusable subgraph</h2>
-            <label className="row">
-              <span>definition</span>
-              <input
-                type="text"
-                value={defs[instanceDefName(selected)]?.label ?? instanceDefName(selected)}
-                onChange={(e) => renameDef(instanceDefName(selected), e.target.value)}
-                style={{ width: 130 }}
-              />
-            </label>
-            <p className="muted">{selectedGroupMembers} nodes · live-linked · edits apply to every instance</p>
-            <div className="transport-row">
-              <button onClick={() => enterInstance(selected.id)}>⬡ Edit definition</button>
+          <div className="canvas-toolbar">
+            <div className="breadcrumb">
+              {path.map((seg, i) => {
+                const label = segLabel(seg);
+                return (
+                  <span key={seg} className="bc-item">
+                    {i > 0 && <span className="bc-sep">›</span>}
+                    <button
+                      className={`bc-seg ${isDefScope(seg) ? "def" : ""}`}
+                      disabled={i === path.length - 1}
+                      onClick={() => navigateTo(i)}
+                    >
+                      {label}
+                    </button>
+                  </span>
+                );
+              })}
             </div>
-            {selectedGroupBoundary.outputs.length > 1 && (
-              <label className="row">
-                <span>preview</span>
-                <select value={selectedPort ?? selectedGroupBoundary.outputs[0]!.id} onChange={(e) => setSelectedPort(e.target.value)}>
-                  {selectedGroupBoundary.outputs.map((o) => <option key={o.id} value={o.id}>{o.label}</option>)}
-                </select>
-              </label>
-            )}
-            {activeDefName ? (
-              <p className="muted">Open an instance in <strong>Main</strong> to run — a definition has no bound inputs.</p>
-            ) : (
+            {groupableIds.length >= 2 && (
               <>
-                <button className="run-btn" onClick={run} disabled={running}>{running ? "Running…" : "▶ Run / pull"}</button>
-                <Preview value={value} error={error} stale={stale} />
-              </>
-            )}
-          </>
-        ) : selected && selectedGroup ? (
-          <>
-            <h2>▦ Group</h2>
-            <label className="row">
-              <span>name</span>
-              <input type="text" value={selectedGroup.label} onChange={(e) => renameNode(selected.id, e.target.value)} style={{ width: 130 }} />
-            </label>
-            <p className="muted">{selectedGroupMembers} nodes · double-click to open</p>
-            <div className="transport-row">
-              <button onClick={() => enterGroup(selected.id)}>▦ Open</button>
-              <button onClick={() => dissolveGroup(selected.id)}>✕ Ungroup</button>
-            </div>
-            <div className="transport-row">
-              <button onClick={promoteToReusable} title="Save this group as a reusable named subgraph (live-linked)">⬡ Save as reusable subgraph</button>
-            </div>
-            {[...selectedGroupBoundary.inputs, ...selectedGroupBoundary.outputs].length > 0 && (
-              <div className="params">
-                <h2>Ports</h2>
-                {selectedGroupBoundary.inputs.map((p) => (
-                  <label className="row" key={p.id}><span>in <em style={{ color: kindColor(p.kind), fontStyle: "normal" }}>{p.kind}</em></span>
-                    <input type="text" value={p.label} onChange={(e) => renameNode(p.id, e.target.value)} style={{ width: 110 }} />
-                  </label>
-                ))}
-                {selectedGroupBoundary.outputs.map((p) => (
-                  <label className="row" key={p.id}><span>out <em style={{ color: kindColor(p.kind), fontStyle: "normal" }}>{p.kind}</em></span>
-                    <input type="text" value={p.label} onChange={(e) => renameNode(p.id, e.target.value)} style={{ width: 110 }} />
-                  </label>
-                ))}
-              </div>
-            )}
-            {selectedGroupBoundary.outputs.length > 1 && (
-              <label className="row">
-                <span>preview</span>
-                <select value={selectedPort ?? selectedGroupBoundary.outputs[0]!.id} onChange={(e) => setSelectedPort(e.target.value)}>
-                  {selectedGroupBoundary.outputs.map((o) => <option key={o.id} value={o.id}>{o.label}</option>)}
-                </select>
-              </label>
-            )}
-            {activeDefName ? (
-              <p className="muted">Open an instance in <strong>Main</strong> to run — a definition has no bound inputs.</p>
-            ) : (
-              <>
-                <button className="run-btn" onClick={run} disabled={running}>{running ? "Running…" : "▶ Run / pull"}</button>
-                <Preview value={value} error={error} stale={stale} />
-              </>
-            )}
-          </>
-        ) : selected && selectedSpec ? (
-          <>
-            <h2>{selectedSpec.label}</h2>
-            {selectedSpec.describe && <p className="muted">{selectedSpec.describe}</p>}
-            {selectedSpec.help && (
-              <div className="op-help">
-                {selectedSpec.help.detail && <p className="op-help-detail">{selectedSpec.help.detail}</p>}
-                {selectedSpec.help.math && (
-                  <div className="op-help-math">
-                    <MathTex tex={selectedSpec.help.math} />
-                  </div>
-                )}
-              </div>
-            )}
-            <div className="params">
-              {selectedSpec.params.map((p) => (
-                <ParamControl
-                  key={p.name}
-                  spec={p}
-                  value={(selected.data as unknown as NodeData).params[p.name]}
-                  onChange={(v) => setParam(p.name, v)}
-                />
-              ))}
-              {selectedSpec.params.length === 0 && <span className="muted">no parameters</span>}
-            </div>
-
-            {selectedSpec.outputs.length > 1 && (
-              <label className="row">
-                <span>output</span>
-                <select value={selectedPort ?? selectedSpec.outputs[0]!.name} onChange={(e) => setSelectedPort(e.target.value)}>
-                  {selectedSpec.outputs.map((o) => <option key={o.name} value={o.name}>{o.name}</option>)}
-                </select>
-              </label>
-            )}
-
-            {activeDefName ? (
-              <p className="muted">Editing the <strong>{segLabel(defScopeId(activeDefName))}</strong> definition. Open an instance in <strong>Main</strong> to run — a definition has no bound inputs.</p>
-            ) : hasFeedback ? (
-              <>
-                <div className="transport">
-                  <button className={`run-btn ${playing ? "live" : ""}`} onClick={() => setPlaying((p) => !p)}>
-                    {playing ? "⏸ Pause" : "▶ Play"}
-                  </button>
-                  <div className="transport-row">
-                    <button onClick={() => step(false)} disabled={playing} title="Advance one tick">⏭ Step</button>
-                    <button onClick={resetSim} title="Reset to the seed">⟲ Reset</button>
-                  </div>
-                  <p className="muted">Feedback loop — runs over time. One tick = one graph step.</p>
-                </div>
-                <Preview value={value} error={error} stale={stale} />
-              </>
-            ) : (
-              <>
-                <label className="row live-row" title="Re-pull automatically when params or wiring change">
-                  <span>Auto-run (live)</span>
-                  <input type="checkbox" checked={live} onChange={(e) => setLive(e.target.checked)} />
-                </label>
-                <button className={`run-btn ${live ? "live" : ""}`} onClick={run} disabled={running}>
-                  {running ? "Running…" : live ? "● Live — re-running on change" : "▶ Run / pull"}
+                <button className="tb-primary" onClick={groupSelection}>
+                  ▦ Group {groupableIds.length} nodes
                 </button>
-                <Preview value={value} error={error} stale={stale} />
+                <button className="tb-primary" onClick={promoteToReusable} title="Group these nodes and save as a reusable named subgraph">
+                  ⬡ Save as subgraph
+                </button>
               </>
             )}
-          </>
-        ) : (
-          <p className="muted">Click a node to edit its parameters and pull its output.</p>
+            {scope !== ROOT_SCOPE && (
+              <span className="tb-group">
+                <button onClick={() => addIONode("input")} title="Add an input to this subgraph">
+                  ＋ Input
+                </button>
+                <button onClick={() => addIONode("output")} title="Add an output to this subgraph">
+                  ＋ Output
+                </button>
+              </span>
+            )}
+            {activeDefName && (
+              <span
+                className="tb-def-badge"
+                title="You are editing a shared reusable subgraph definition — changes apply to every instance"
+              >
+                ⬡ editing definition · live-linked
+              </span>
+            )}
+          </div>
+          <ReactFlow
+            nodes={display.nodes}
+            edges={display.edges}
+            nodeTypes={nodeTypes}
+            onNodesChange={onDisplayNodesChange}
+            onEdgesChange={onDisplayEdgesChange}
+            onConnect={onConnect}
+            onSelectionChange={onSelectionChange}
+            onNodeClick={(_, n) => {
+              setSelectedId(n.id);
+              setSelectedPort(null);
+              setValue(null);
+              setStale(false);
+              setError(null);
+            }}
+            onNodeDoubleClick={onNodeDoubleClick}
+            onEdgeMouseEnter={onEdgeEnter}
+            onEdgeMouseLeave={onEdgeLeave}
+            onInit={(inst) => {
+              flowRef.current = inst;
+            }}
+            onDragOver={(e) => {
+              e.preventDefault();
+              e.dataTransfer.dropEffect = "move";
+            }}
+            onDrop={(e) => {
+              e.preventDefault();
+              const name = e.dataTransfer.getData("application/op-name");
+              if (!name) return;
+              const pos = flowRef.current?.screenToFlowPosition({ x: e.clientX, y: e.clientY });
+              addNode(name, pos);
+            }}
+            fitView
+          >
+            <Background />
+            <Controls />
+          </ReactFlow>
+        </main>
+
+        <aside className="inspector">
+          {selected && selectedInterface ? (
+            <>
+              <h2>{selectedInterface.type === "input" ? "▸ Input" : "Output ▸"}</h2>
+              <label className="row">
+                <span>name</span>
+                <input
+                  type="text"
+                  value={(selectedInterface.data as { label: string }).label}
+                  onChange={(e) => renameNode(selected.id, e.target.value)}
+                  style={{ width: 130 }}
+                />
+              </label>
+              <p className="muted">
+                A {selectedInterface.type} port of this subgraph. Wire it to a member; the group node gets a matching port.
+              </p>
+            </>
+          ) : selected && selectedInstance ? (
+            <>
+              <h2>⬡ Reusable subgraph</h2>
+              <label className="row">
+                <span>definition</span>
+                <input
+                  type="text"
+                  value={defs[instanceDefName(selected)]?.label ?? instanceDefName(selected)}
+                  onChange={(e) => renameDef(instanceDefName(selected), e.target.value)}
+                  style={{ width: 130 }}
+                />
+              </label>
+              <p className="muted">{selectedGroupMembers} nodes · live-linked · edits apply to every instance</p>
+              <div className="transport-row">
+                <button onClick={() => enterInstance(selected.id)}>⬡ Edit definition</button>
+              </div>
+              {selectedGroupBoundary.outputs.length > 1 && (
+                <label className="row">
+                  <span>preview</span>
+                  <select value={selectedPort ?? selectedGroupBoundary.outputs[0]!.id} onChange={(e) => setSelectedPort(e.target.value)}>
+                    {selectedGroupBoundary.outputs.map((o) => (
+                      <option key={o.id} value={o.id}>
+                        {o.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              )}
+              {activeDefName ? (
+                <p className="muted">
+                  Open an instance in <strong>Main</strong> to run — a definition has no bound inputs.
+                </p>
+              ) : (
+                <>
+                  <button className="run-btn" onClick={run} disabled={running}>
+                    {running ? "Running…" : "▶ Run / pull"}
+                  </button>
+                  <Preview value={value} error={error} stale={stale} />
+                </>
+              )}
+            </>
+          ) : selected && selectedGroup ? (
+            <>
+              <h2>▦ Group</h2>
+              <label className="row">
+                <span>name</span>
+                <input
+                  type="text"
+                  value={selectedGroup.label}
+                  onChange={(e) => renameNode(selected.id, e.target.value)}
+                  style={{ width: 130 }}
+                />
+              </label>
+              <p className="muted">{selectedGroupMembers} nodes · double-click to open</p>
+              <div className="transport-row">
+                <button onClick={() => enterGroup(selected.id)}>▦ Open</button>
+                <button onClick={() => dissolveGroup(selected.id)}>✕ Ungroup</button>
+              </div>
+              <div className="transport-row">
+                <button onClick={promoteToReusable} title="Save this group as a reusable named subgraph (live-linked)">
+                  ⬡ Save as reusable subgraph
+                </button>
+              </div>
+              {[...selectedGroupBoundary.inputs, ...selectedGroupBoundary.outputs].length > 0 && (
+                <div className="params">
+                  <h2>Ports</h2>
+                  {selectedGroupBoundary.inputs.map((p) => (
+                    <label className="row" key={p.id}>
+                      <span>
+                        in <em style={{ color: kindColor(p.kind), fontStyle: "normal" }}>{p.kind}</em>
+                      </span>
+                      <input type="text" value={p.label} onChange={(e) => renameNode(p.id, e.target.value)} style={{ width: 110 }} />
+                    </label>
+                  ))}
+                  {selectedGroupBoundary.outputs.map((p) => (
+                    <label className="row" key={p.id}>
+                      <span>
+                        out <em style={{ color: kindColor(p.kind), fontStyle: "normal" }}>{p.kind}</em>
+                      </span>
+                      <input type="text" value={p.label} onChange={(e) => renameNode(p.id, e.target.value)} style={{ width: 110 }} />
+                    </label>
+                  ))}
+                </div>
+              )}
+              {selectedGroupBoundary.outputs.length > 1 && (
+                <label className="row">
+                  <span>preview</span>
+                  <select value={selectedPort ?? selectedGroupBoundary.outputs[0]!.id} onChange={(e) => setSelectedPort(e.target.value)}>
+                    {selectedGroupBoundary.outputs.map((o) => (
+                      <option key={o.id} value={o.id}>
+                        {o.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              )}
+              {activeDefName ? (
+                <p className="muted">
+                  Open an instance in <strong>Main</strong> to run — a definition has no bound inputs.
+                </p>
+              ) : (
+                <>
+                  <button className="run-btn" onClick={run} disabled={running}>
+                    {running ? "Running…" : "▶ Run / pull"}
+                  </button>
+                  <Preview value={value} error={error} stale={stale} />
+                </>
+              )}
+            </>
+          ) : selected && selectedSpec ? (
+            <>
+              <h2>{selectedSpec.label}</h2>
+              {selectedSpec.describe && <p className="muted">{selectedSpec.describe}</p>}
+              {selectedSpec.help && (
+                <div className="op-help">
+                  {selectedSpec.help.detail && <p className="op-help-detail">{selectedSpec.help.detail}</p>}
+                  {selectedSpec.help.math && (
+                    <div className="op-help-math">
+                      <MathTex tex={selectedSpec.help.math} />
+                    </div>
+                  )}
+                </div>
+              )}
+              <div className="params">
+                {selectedSpec.params.map((p) => (
+                  <ParamControl
+                    key={p.name}
+                    spec={p}
+                    value={(selected.data as unknown as NodeData).params[p.name]}
+                    onChange={(v) => setParam(p.name, v)}
+                  />
+                ))}
+                {selectedSpec.params.length === 0 && <span className="muted">no parameters</span>}
+              </div>
+
+              {selectedSpec.outputs.length > 1 && (
+                <label className="row">
+                  <span>output</span>
+                  <select value={selectedPort ?? selectedSpec.outputs[0]!.name} onChange={(e) => setSelectedPort(e.target.value)}>
+                    {selectedSpec.outputs.map((o) => (
+                      <option key={o.name} value={o.name}>
+                        {o.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              )}
+
+              {activeDefName ? (
+                <p className="muted">
+                  Editing the <strong>{segLabel(defScopeId(activeDefName))}</strong> definition. Open an instance in <strong>Main</strong>{" "}
+                  to run — a definition has no bound inputs.
+                </p>
+              ) : hasFeedback ? (
+                <>
+                  <div className="transport">
+                    <button className={`run-btn ${playing ? "live" : ""}`} onClick={() => setPlaying((p) => !p)}>
+                      {playing ? "⏸ Pause" : "▶ Play"}
+                    </button>
+                    <div className="transport-row">
+                      <button onClick={() => step(false)} disabled={playing} title="Advance one tick">
+                        ⏭ Step
+                      </button>
+                      <button onClick={resetSim} title="Reset to the seed">
+                        ⟲ Reset
+                      </button>
+                    </div>
+                    <p className="muted">Feedback loop — runs over time. One tick = one graph step.</p>
+                  </div>
+                  <Preview value={value} error={error} stale={stale} />
+                </>
+              ) : (
+                <>
+                  <label className="row live-row" title="Re-pull automatically when params or wiring change">
+                    <span>Auto-run (live)</span>
+                    <input type="checkbox" checked={live} onChange={(e) => setLive(e.target.checked)} />
+                  </label>
+                  <button className={`run-btn ${live ? "live" : ""}`} onClick={run} disabled={running}>
+                    {running ? "Running…" : live ? "● Live — re-running on change" : "▶ Run / pull"}
+                  </button>
+                  <Preview value={value} error={error} stale={stale} />
+                </>
+              )}
+            </>
+          ) : (
+            <p className="muted">Click a node to edit its parameters and pull its output.</p>
+          )}
+        </aside>
+        {cmdOpen && (
+          <CommandPalette
+            items={allSpecs.map((s) => ({ name: s.name, label: s.label, category: s.category, describe: s.describe }))}
+            onPick={insertFromCommand}
+            onClose={() => setCmdOpen(false)}
+          />
         )}
-      </aside>
-      {cmdOpen && (
-        <CommandPalette
-          items={allSpecs.map((s) => ({ name: s.name, label: s.label, category: s.category, describe: s.describe }))}
-          onPick={insertFromCommand}
-          onClose={() => setCmdOpen(false)}
-        />
-      )}
-      {hoverHelp && <HelpTooltip spec={hoverHelp.spec} rect={hoverHelp.rect} />}
-      {inspect && <FieldTooltip title={inspect.title} kind={inspect.kind} value={inspect.value} rect={inspect.rect} />}
-    </div>
+        {hoverHelp && <HelpTooltip spec={hoverHelp.spec} rect={hoverHelp.rect} />}
+        {inspect && <FieldTooltip title={inspect.title} kind={inspect.kind} value={inspect.value} rect={inspect.rect} />}
+      </div>
     </PortHoverContext.Provider>
   );
 }
@@ -982,7 +1094,11 @@ function ParamControl({
       <label className="row">
         <span title={spec.describe}>{spec.name}</span>
         <select value={String(v)} onChange={(e) => onChange(e.target.value)}>
-          {(spec.options ?? []).map((o) => <option key={o} value={o}>{o}</option>)}
+          {(spec.options ?? []).map((o) => (
+            <option key={o} value={o}>
+              {o}
+            </option>
+          ))}
         </select>
       </label>
     );

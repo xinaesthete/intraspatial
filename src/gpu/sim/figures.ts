@@ -5,7 +5,7 @@
 // caller) turns these into an acceleration, weighted so the target-change at a figure
 // boundary reads as an urgent-but-smooth scramble (the integrator's jerk limit keeps it
 // C²). Pure + deterministic; the app drives the frame clock (the conductor).
-import { add, cross, normalize, scale, sub, vec3, type Vec3, type Vec3In } from "./vec3";
+import { add, cross, normalize, scale, sub, type Vec3, type Vec3In, vec3 } from "./vec3";
 
 export type Figure = "swing" | "grandChain" | "gather" | "scatter" | "mill";
 

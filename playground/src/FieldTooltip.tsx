@@ -18,7 +18,10 @@ function project(data: ArrayLike<number>, cells: number, lanes: number): Float32
   const out = new Float32Array(cells);
   for (let i = 0; i < cells; i++) {
     let s = 0;
-    for (let c = 0; c < lanes; c++) { const v = data[i * lanes + c]!; s += v * v; }
+    for (let c = 0; c < lanes; c++) {
+      const v = data[i * lanes + c]!;
+      s += v * v;
+    }
     out[i] = Math.sqrt(s);
   }
   return out;
@@ -27,11 +30,15 @@ function project(data: ArrayLike<number>, cells: number, lanes: number): Float32
 function typeLine(v: FieldValue): string {
   const s = v.shape;
   const shape =
-    s.kind === "grid" ? `grid ${s.width}×${s.height}`
-    : s.kind === "points" ? `points ×${s.n}`
-    : s.kind === "matrix" ? `matrix ${s.rows}×${s.cols}`
-    : s.kind === "scalar" ? "scalar"
-    : s.name;
+    s.kind === "grid"
+      ? `grid ${s.width}×${s.height}`
+      : s.kind === "points"
+        ? `points ×${s.n}`
+        : s.kind === "matrix"
+          ? `matrix ${s.rows}×${s.cols}`
+          : s.kind === "scalar"
+            ? "scalar"
+            : s.name;
   const el = v.element && v.element.kind !== "scalar" ? ` · ${v.element.kind === "vec" ? `vec${v.element.n}` : v.element.kind}` : "";
   const b = basisOf(v);
   const basis = b.kind !== "spatial" ? ` · ${basisLabel(b)}` : "";
@@ -46,25 +53,40 @@ export function FieldTooltip({ title, kind, value, rect }: { title: string; kind
   useEffect(() => {
     const c = ref.current;
     if (!c || !value?.data || !s) return;
-    let w = 0, h = 0;
-    if (s.kind === "grid") { w = s.width; h = s.height; }
-    else if (s.kind === "matrix") { w = s.cols; h = s.rows; }
-    else return;
+    let w = 0,
+      h = 0;
+    if (s.kind === "grid") {
+      w = s.width;
+      h = s.height;
+    } else if (s.kind === "matrix") {
+      w = s.cols;
+      h = s.rows;
+    } else return;
     const lanes = value.element ? elementLanes(value.element) : 1;
     const data = project(value.data, w * h, lanes);
-    let min = Infinity, max = -Infinity;
-    for (let i = 0; i < w * h; i++) { const v = data[i]!; if (v < min) min = v; if (v > max) max = v; }
+    let min = Infinity,
+      max = -Infinity;
+    for (let i = 0; i < w * h; i++) {
+      const v = data[i]!;
+      if (v < min) min = v;
+      if (v > max) max = v;
+    }
     const span = max - min || 1;
     const scale = Math.max(1, Math.floor(96 / Math.max(w, h)));
-    c.width = w * scale; c.height = h * scale;
+    c.width = w * scale;
+    c.height = h * scale;
     const ctx = c.getContext("2d")!;
     const img = ctx.createImageData(w, h);
     for (let i = 0; i < w * h; i++) {
       const [r, g, b] = hot((data[i]! - min) / span);
-      img.data[i * 4] = r; img.data[i * 4 + 1] = g; img.data[i * 4 + 2] = b; img.data[i * 4 + 3] = 255;
+      img.data[i * 4] = r;
+      img.data[i * 4 + 1] = g;
+      img.data[i * 4 + 2] = b;
+      img.data[i * 4 + 3] = 255;
     }
     const tmp = document.createElement("canvas");
-    tmp.width = w; tmp.height = h;
+    tmp.width = w;
+    tmp.height = h;
     tmp.getContext("2d")!.putImageData(img, 0, 0);
     ctx.imageSmoothingEnabled = false;
     ctx.drawImage(tmp, 0, 0, c.width, c.height);
@@ -86,7 +108,7 @@ export function FieldTooltip({ title, kind, value, rect }: { title: string; kind
       )}
       {drawable && <canvas ref={ref} className="field-tip-canvas" />}
       {value && s?.kind === "scalar" && <div className="field-tip-scalar">{value.data?.[0]?.toFixed(5) ?? "—"}</div>}
-      {value && s?.kind === "points" && <div className="field-tip-note">{(value.data?.length ?? 0) / 2 | 0} points</div>}
+      {value && s?.kind === "points" && <div className="field-tip-note">{((value.data?.length ?? 0) / 2) | 0} points</div>}
     </div>
   );
 }

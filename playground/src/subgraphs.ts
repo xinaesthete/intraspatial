@@ -13,13 +13,13 @@
 // After `expandInstances`, every instance has become an ordinary group + interior, so
 // the existing flatten (buildGraph → resolveSource) needs no change.
 import type { Edge, Node } from "@xyflow/react";
-import { groupPorts, scopeOf } from "./grouping";
 import type { GroupData, Port } from "./grouping";
+import { groupPorts, scopeOf } from "./grouping";
 
 /** A named, reusable subgraph. `nodes`/`edges` are its interior (scope `def:<name>`). */
 export interface SubgraphDef {
-  name: string;   // unique key (the def id)
-  label: string;  // user-facing name (editable; defaults to name)
+  name: string; // unique key (the def id)
+  label: string; // user-facing name (editable; defaults to name)
   nodes: Node[];
   edges: Edge[];
 }
@@ -29,8 +29,8 @@ export type DefLibrary = Record<string, SubgraphDef>;
 
 /** Data carried by an `instance` node in the flat graph. */
 export interface InstanceData {
-  def: string;    // definition name it references
-  group: string;  // the scope this instance lives in
+  def: string; // definition name it references
+  group: string; // the scope this instance lives in
   label?: string;
   // ports are NOT stored — derived from the def via instancePorts()
   [key: string]: unknown;
@@ -90,9 +90,7 @@ export function promoteToDef(
   };
 
   const movedEdgeIds = new Set(defEdges.map((e) => e.id));
-  const nextNodes = nodes
-    .filter((n) => !interiorIds.has(n.id))
-    .map((n) => (n.id === groupId ? instance : n));
+  const nextNodes = nodes.filter((n) => !interiorIds.has(n.id)).map((n) => (n.id === groupId ? instance : n));
   const nextEdges = edges.filter((e) => !movedEdgeIds.has(e.id));
   return { nodes: nextNodes, edges: nextEdges, defs: { ...defs, [name]: def } };
 }
@@ -143,8 +141,7 @@ export function expandInstances(
     const defNodeIds = new Set(def.nodes.map((m) => m.id));
     // A handle that names an interface node (a def node id) refers to a nested
     // group/interface port → namespace it; op port names ("density", "in") pass through.
-    const nsh = (h: string | null | undefined): string | null | undefined =>
-      h != null && defNodeIds.has(h) ? ns(h) : h;
+    const nsh = (h: string | null | undefined): string | null | undefined => (h != null && defNodeIds.has(h) ? ns(h) : h);
 
     // The instance stands in as an ordinary group node (same id → parent edges hold).
     const groupNode: Node = {

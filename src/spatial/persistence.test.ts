@@ -1,16 +1,16 @@
-import { describe, it, expect } from "vitest";
-import { vietorisRipsPersistence, bettiNumbers } from "./persistence";
+import { describe, expect, it } from "vitest";
+import { bettiNumbers, vietorisRipsPersistence } from "./persistence";
 
 function distMatrix(xs: number[], ys: number[]): { d: Float32Array; n: number } {
   const n = xs.length;
   const d = new Float32Array(n * n);
-  for (let i = 0; i < n; i++)
-    for (let j = 0; j < n; j++) d[i * n + j] = Math.hypot(xs[i]! - xs[j]!, ys[i]! - ys[j]!);
+  for (let i = 0; i < n; i++) for (let j = 0; j < n; j++) d[i * n + j] = Math.hypot(xs[i]! - xs[j]!, ys[i]! - ys[j]!);
   return { d, n };
 }
 
 function circle(count: number, r: number, cx = 0, cy = 0) {
-  const xs: number[] = [], ys: number[] = [];
+  const xs: number[] = [],
+    ys: number[] = [];
   for (let i = 0; i < count; i++) {
     const a = (2 * Math.PI * i) / count;
     xs.push(cx + r * Math.cos(a));
@@ -47,7 +47,8 @@ describe("vietorisRipsPersistence", () => {
   it("two well-separated blobs give β0 = 2 and no persistent loop", () => {
     const a = circle(8, 1, 0, 0);
     const b = circle(8, 1, 50, 0);
-    const xs = [...a.xs, ...b.xs], ys = [...a.ys, ...b.ys];
+    const xs = [...a.xs, ...b.xs],
+      ys = [...a.ys, ...b.ys];
     const { d, n } = distMatrix(xs, ys);
     const res = vietorisRipsPersistence(d, n, { maxScale: 5 });
     // two components persist (essential)
@@ -61,7 +62,8 @@ describe("vietorisRipsPersistence", () => {
   it("a figure-eight has two persistent loops (β1 = 2)", () => {
     const a = circle(20, 5, -5, 0);
     const b = circle(20, 5, 5, 0);
-    const xs = [...a.xs, ...b.xs], ys = [...a.ys, ...b.ys];
+    const xs = [...a.xs, ...b.xs],
+      ys = [...a.ys, ...b.ys];
     const { d, n } = distMatrix(xs, ys);
     // above each loop's death radius (~√3·5 ≈ 8.7)
     const res = vietorisRipsPersistence(d, n, { maxScale: 12 });

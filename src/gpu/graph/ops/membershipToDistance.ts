@@ -22,7 +22,10 @@ function convert(mu: ArrayLike<number>, n: number, params: Params): Float32Array
   const out = new Float32Array(n * n);
   for (let i = 0; i < n; i++) {
     for (let j = 0; j < n; j++) {
-      if (i === j) { out[i * n + j] = 0; continue; }
+      if (i === j) {
+        out[i * n + j] = 0;
+        continue;
+      }
       const m = mu[i * n + j]!;
       out[i * n + j] = mode === "negLog" ? -Math.log(Math.max(m, eps)) : 1 - m;
     }

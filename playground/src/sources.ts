@@ -2,11 +2,11 @@
 // playground-side (data comes from params, not an upstream edge); they call the
 // runtime's `Graph.points`/`Graph.grid` so the produced handles are ordinary graph
 // resources from then on.
+
+import type { GpuField, ParamSpec, Params, ShapeKind } from "../../src/gpu/graph";
 import { Graph } from "../../src/gpu/graph";
-import type { GpuField, ShapeKind } from "../../src/gpu/graph";
-import type { ParamSpec, Params } from "../../src/gpu/graph";
-import { seedGrayScott } from "../../src/gpu/sim/reactionDiffusion";
 import { BODY_BLOCK_COUNT, seedSwarmBody } from "../../src/gpu/sim/body";
+import { seedGrayScott } from "../../src/gpu/sim/reactionDiffusion";
 
 export interface SourceSpec {
   name: string;
@@ -52,9 +52,12 @@ const ringPoints: SourceSpec = {
     { name: "jitter", type: "number", default: 0.15, min: 0, max: 2, step: 0.05 },
   ],
   make(g, params) {
-    const n = params.n as number, r = params.radius as number, j = params.jitter as number;
+    const n = params.n as number,
+      r = params.radius as number,
+      j = params.jitter as number;
     const rng = mulberry32(0x9e3779b9);
-    const xs: number[] = [], ys: number[] = [];
+    const xs: number[] = [],
+      ys: number[] = [];
     for (let i = 0; i < n; i++) {
       const a = (i / n) * Math.PI * 2;
       xs.push(Math.cos(a) * r + (rng() - 0.5) * 2 * j);
@@ -75,9 +78,12 @@ const blobPoints: SourceSpec = {
     { name: "spread", type: "number", default: 1.2, min: 0.1, max: 6, step: 0.1, describe: "cluster std dev (world units)" },
   ],
   make(g, params) {
-    const per = params.perCluster as number, k = params.clusters as number, s = params.spread as number;
+    const per = params.perCluster as number,
+      k = params.clusters as number,
+      s = params.spread as number;
     const rng = mulberry32(0x9e3779b9);
-    const xs: number[] = [], ys: number[] = [];
+    const xs: number[] = [],
+      ys: number[] = [];
     for (let c = 0; c < k; c++) {
       const cx = Math.cos((c / k) * Math.PI * 2) * 6 + 8;
       const cy = Math.sin((c / k) * Math.PI * 2) * 6 + 8;
@@ -121,24 +127,33 @@ const noiseGrid: SourceSpec = {
     { name: "amp", type: "number", default: 1, min: 0, max: 8, step: 0.1 },
   ],
   make(g, params) {
-    const w = params.width as number, h = params.height as number;
-    const amp = params.amp as number, seed = params.seed as number;
+    const w = params.width as number,
+      h = params.height as number;
+    const amp = params.amp as number,
+      seed = params.seed as number;
     const data = new Float32Array(w * h);
     if (params.kind === "value") {
       const scale = Math.max(2, params.scale as number);
-      const gw = Math.ceil(w / scale) + 2, gh = Math.ceil(h / scale) + 2;
+      const gw = Math.ceil(w / scale) + 2,
+        gh = Math.ceil(h / scale) + 2;
       const lat = new Float32Array(gw * gh);
       const rng = mulberry32(seed);
       for (let i = 0; i < lat.length; i++) lat[i] = rng() * 2 - 1;
       const sm = (t: number) => t * t * (3 - 2 * t); // smoothstep
       for (let y = 0; y < h; y++) {
         for (let x = 0; x < w; x++) {
-          const fx = x / scale, fy = y / scale;
-          const x0 = Math.floor(fx), y0 = Math.floor(fy);
-          const tx = sm(fx - x0), ty = sm(fy - y0);
-          const v00 = lat[y0 * gw + x0]!, v10 = lat[y0 * gw + x0 + 1]!;
-          const v01 = lat[(y0 + 1) * gw + x0]!, v11 = lat[(y0 + 1) * gw + x0 + 1]!;
-          const a = v00 + (v10 - v00) * tx, b = v01 + (v11 - v01) * tx;
+          const fx = x / scale,
+            fy = y / scale;
+          const x0 = Math.floor(fx),
+            y0 = Math.floor(fy);
+          const tx = sm(fx - x0),
+            ty = sm(fy - y0);
+          const v00 = lat[y0 * gw + x0]!,
+            v10 = lat[y0 * gw + x0 + 1]!;
+          const v01 = lat[(y0 + 1) * gw + x0]!,
+            v11 = lat[(y0 + 1) * gw + x0 + 1]!;
+          const a = v00 + (v10 - v00) * tx,
+            b = v01 + (v11 - v01) * tx;
           data[y * w + x] = (a + (b - a) * ty) * amp;
         }
       }
@@ -164,15 +179,19 @@ const waveGrid: SourceSpec = {
     { name: "amp", type: "number", default: 1, min: 0, max: 8, step: 0.1 },
   ],
   make(g, params) {
-    const w = params.width as number, h = params.height as number;
-    const freq = params.freq as number, amp = params.amp as number;
+    const w = params.width as number,
+      h = params.height as number;
+    const freq = params.freq as number,
+      amp = params.amp as number;
     const ang = ((params.angle as number) * Math.PI) / 180;
-    const ca = Math.cos(ang), sa = Math.sin(ang);
+    const ca = Math.cos(ang),
+      sa = Math.sin(ang);
     const kind = params.kind as string;
     const data = new Float32Array(w * h);
     for (let y = 0; y < h; y++) {
       for (let x = 0; x < w; x++) {
-        const u = x / w - 0.5, v = y / h - 0.5;
+        const u = x / w - 0.5,
+          v = y / h - 0.5;
         let val: number;
         if (kind === "radial") val = Math.cos(2 * Math.PI * freq * Math.hypot(u, v));
         else if (kind === "checker") val = (Math.floor((x / w) * freq) + Math.floor((y / h) * freq)) % 2 === 0 ? 1 : -1;
@@ -218,14 +237,19 @@ const swarmSeed: SourceSpec = {
     { name: "shell", type: "number", default: 4.5, min: 1, max: 15, step: 0.5, describe: "seed shell radius" },
   ],
   make(g, params) {
-    const n = params.n as number, seed = params.seed as number, shell = params.shell as number;
+    const n = params.n as number,
+      seed = params.seed as number,
+      shell = params.shell as number;
     return {
-      body: g.source({
-        shape: { kind: "points", n: n * BODY_BLOCK_COUNT },
-        dtype: "f32",
-        element: { kind: "vec", n: 3 },
-        data: seedSwarmBody(n, seed, shell),
-      }, "swarmSeed"),
+      body: g.source(
+        {
+          shape: { kind: "points", n: n * BODY_BLOCK_COUNT },
+          dtype: "f32",
+          element: { kind: "vec", n: 3 },
+          data: seedSwarmBody(n, seed, shell),
+        },
+        "swarmSeed",
+      ),
     };
   },
 };
@@ -243,7 +267,16 @@ const clockStart: SourceSpec = {
   },
 };
 
-export const SOURCES: SourceSpec[] = [ringPoints, blobPoints, grayScottSeed, grayScottSeedComplex, noiseGrid, waveGrid, swarmSeed, clockStart];
+export const SOURCES: SourceSpec[] = [
+  ringPoints,
+  blobPoints,
+  grayScottSeed,
+  grayScottSeedComplex,
+  noiseGrid,
+  waveGrid,
+  swarmSeed,
+  clockStart,
+];
 
 const byName = new Map(SOURCES.map((s) => [s.name, s]));
 export function getSource(name: string): SourceSpec | undefined {

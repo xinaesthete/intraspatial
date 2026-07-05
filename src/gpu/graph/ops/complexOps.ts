@@ -3,10 +3,11 @@
 // are CPU Tier-1 ops (like `addGrids`) — the work is lane-wise and memory-bound; a
 // GPU pass is a later optimisation, not a correctness concern. Element preconditions
 // are checked in `inferElements`, i.e. at graph-build time.
+
+import { conjugate, extractLane, magnitude, packComplex } from "../elementMath";
 import type { ElementType, Shape } from "../handle";
 import { elementLabel, shapesEqual } from "../handle";
 import type { OpType } from "../op";
-import { conjugate, extractLane, magnitude, packComplex } from "../elementMath";
 
 const COMPLEX: ElementType = { kind: "complex" };
 const SCALAR: ElementType = { kind: "scalar" };

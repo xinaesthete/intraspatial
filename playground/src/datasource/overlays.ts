@@ -3,7 +3,7 @@
 // selected chunks as level-tinted wireframe boxes plus a faint dataset bound — the
 // receding-resolution gradient made visible, driven entirely by the pure `select()`.
 import * as THREE from "three";
-import { chunkWorldAabb, worldAabbOfArrayBox, type Multiscale, type Selection, type Vec3 } from "../../../src/datasource";
+import { chunkWorldAabb, type Multiscale, type Selection, type Vec3, worldAabbOfArrayBox } from "../../../src/datasource";
 
 /** okLCH-ish ramp by level: fine = warm & bright, coarse = cool & dim. */
 export function levelColor(level: number, maxLevel: number): THREE.Color {
@@ -14,18 +14,34 @@ export function levelColor(level: number, maxLevel: number): THREE.Color {
 }
 
 const BOX_EDGES: ReadonlyArray<readonly [number, number]> = [
-  [0, 1], [1, 2], [2, 3], [3, 0], // bottom
-  [4, 5], [5, 6], [6, 7], [7, 4], // top
-  [0, 4], [1, 5], [2, 6], [3, 7], // verticals
+  [0, 1],
+  [1, 2],
+  [2, 3],
+  [3, 0], // bottom
+  [4, 5],
+  [5, 6],
+  [6, 7],
+  [7, 4], // top
+  [0, 4],
+  [1, 5],
+  [2, 6],
+  [3, 7], // verticals
 ];
 
 function pushBoxEdges(out: number[], min: THREE.Vector3Like, max: THREE.Vector3Like): void {
   const corners: number[][] = [
-    [min.x, min.y, min.z], [max.x, min.y, min.z], [max.x, max.y, min.z], [min.x, max.y, min.z],
-    [min.x, min.y, max.z], [max.x, min.y, max.z], [max.x, max.y, max.z], [min.x, max.y, max.z],
+    [min.x, min.y, min.z],
+    [max.x, min.y, min.z],
+    [max.x, max.y, min.z],
+    [min.x, max.y, min.z],
+    [min.x, min.y, max.z],
+    [max.x, min.y, max.z],
+    [max.x, max.y, max.z],
+    [min.x, max.y, max.z],
   ];
   for (const [a, b] of BOX_EDGES) {
-    const ca = corners[a], cb = corners[b];
+    const ca = corners[a],
+      cb = corners[b];
     if (!ca || !cb) continue;
     out.push(ca[0] ?? 0, ca[1] ?? 0, ca[2] ?? 0, cb[0] ?? 0, cb[1] ?? 0, cb[2] ?? 0);
   }
@@ -66,7 +82,9 @@ export function boundsOverlay(ms: Multiscale): THREE.LineSegments {
 export function frustumOverlay(corners: readonly Vec3[], eye: Vec3, forward: Vec3): THREE.Group {
   const group = new THREE.Group();
   const seg: number[] = [];
-  const line = (a: Vec3, b: Vec3): void => { seg.push(a[0], a[1], a[2], b[0], b[1], b[2]); };
+  const line = (a: Vec3, b: Vec3): void => {
+    seg.push(a[0], a[1], a[2], b[0], b[1], b[2]);
+  };
   const c = (i: number): Vec3 => corners[i] ?? [0, 0, 0];
   // near quad 0-1-2-3, far quad 4-5-6-7, connectors i↔i+4
   for (let i = 0; i < 4; i++) {

@@ -8,11 +8,12 @@
 // byte-identical to baseline and the always-eager registry doesn't pull `elementMath`
 // into every GPU test fork — see registerElementOps in ./index and the ADR-0002/0003
 // Dawn-on-Node fragility notes.
-import { grayScottStepCpu, grayScottStepsGpu } from "../../sim/reactionDiffusion";
+
 import type { GrayScottParams, GrayScottState } from "../../sim/reactionDiffusion";
+import { grayScottStepCpu, grayScottStepsGpu } from "../../sim/reactionDiffusion";
+import { extractLane, packComplex } from "../elementMath";
 import type { ElementType, FieldValue, Shape } from "../handle";
 import type { OpType, ParamSpec, Params } from "../op";
-import { extractLane, packComplex } from "../elementMath";
 
 const COMPLEX: ElementType = { kind: "complex" };
 

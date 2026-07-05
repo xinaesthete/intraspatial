@@ -9,8 +9,9 @@
 //
 // (Naming: "specimen" not "genome" — this repo also handles real biological data; see
 // the note in ./traitSpace.)
-import type { TraitSpace } from "./traitSpace";
+
 import { mulberry32, type Rng } from "./rng";
+import type { TraitSpace } from "./traitSpace";
 
 export interface Specimen {
   /** Normalised [0,1] coordinate per NUMBER trait. */

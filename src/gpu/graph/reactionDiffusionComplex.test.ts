@@ -2,16 +2,19 @@
 // equivalent to the legacy two-feedback-node (U,V) loop — same Gray–Scott kernel,
 // one signal instead of two. Run in CPU mode so this stays a fast `*.test.ts` (no
 // Dawn); correctness of the collapse is backend-independent.
-import { describe, it, expect, beforeAll } from "vitest";
-import { Graph, advance, createSimState, registerElementOps } from "./index";
+import { beforeAll, describe, expect, it } from "vitest";
 import { seedGrayScott } from "../sim/reactionDiffusion";
 import { packComplex } from "./elementMath";
+import { advance, createSimState, Graph, registerElementOps } from "./index";
 
 beforeAll(async () => {
   await registerElementOps();
 });
 
-const W = 20, H = 20, PER_TICK = 4, TICKS = 5;
+const W = 20,
+  H = 20,
+  PER_TICK = 4,
+  TICKS = 5;
 
 /** Build the legacy two-node (U,V) loop and return its two sink handles + graph. */
 function twoNodeLoop() {

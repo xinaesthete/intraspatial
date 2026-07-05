@@ -1,12 +1,13 @@
-import { describe, it, expect } from "vitest";
-import { Graph, pull } from "./index";
+import { describe, expect, it } from "vitest";
 import type { PersistenceResult } from "../../spatial/persistence";
+import { Graph, pull } from "./index";
 
 // A clean ring of points — one loop, no clusters. The membership-sweep filtration
 // (adaptive fuzzy adjacency -> 1-μ distance -> Vietoris–Rips) should recover exactly
 // one persistent H1 feature (the loop).
 function ring(n: number, r = 3): { xs: number[]; ys: number[] } {
-  const xs: number[] = [], ys: number[] = [];
+  const xs: number[] = [],
+    ys: number[] = [];
   for (let i = 0; i < n; i++) {
     const a = (i / n) * Math.PI * 2;
     xs.push(Math.cos(a) * r);

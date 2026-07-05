@@ -1,13 +1,11 @@
-import { describe, it, expect } from "vitest";
-import {
-  sublevelsetPersistence,
-  fieldBettiNumbers,
-} from "./sublevelsetPersistence";
-import { gaussianKdeField, distanceField } from "./scalarField";
+import { describe, expect, it } from "vitest";
+import { distanceField, gaussianKdeField } from "./scalarField";
+import { fieldBettiNumbers, sublevelsetPersistence } from "./sublevelsetPersistence";
 
 /** Points evenly spaced on a circle of radius `R` centred at the origin. */
 function ring(nPts: number, R: number): { xs: number[]; ys: number[] } {
-  const xs: number[] = [], ys: number[] = [];
+  const xs: number[] = [],
+    ys: number[] = [];
   for (let i = 0; i < nPts; i++) {
     const a = (2 * Math.PI * i) / nPts;
     xs.push(R * Math.cos(a));
@@ -22,16 +20,17 @@ describe("sublevelsetPersistence — H0 (components)", () => {
     const res = sublevelsetPersistence(f.data, f.width, f.height, { superlevel: true });
     const h0 = res.pairs.filter((p) => p.dim === 0);
     const h1 = res.pairs.filter((p) => p.dim === 1 && Math.abs(p.birth - p.death) > 0.05);
-    expect(h0.length).toBe(1);           // one essential component
-    expect(h1.length).toBe(0);           // no holes
+    expect(h0.length).toBe(1); // one essential component
+    expect(h1.length).toBe(0); // no holes
   });
 
   it("two separated bumps: 2 components at high density, merging to 1", () => {
-    const xs = [-3, 3], ys = [0, 0];
+    const xs = [-3, 3],
+      ys = [0, 0];
     const f = gaussianKdeField(xs, ys, { width: 49, height: 33, sigma: 1.5, bbox: [-6, -4, 6, 4] });
     const res = sublevelsetPersistence(f.data, f.width, f.height, { superlevel: true });
     const h0 = res.pairs.filter((p) => p.dim === 0 && Math.abs(p.birth - p.death) > 0.05);
-    expect(h0.length).toBe(2);           // two peaks (one essential, one dies at the saddle ~0.27)
+    expect(h0.length).toBe(2); // two peaks (one essential, one dies at the saddle ~0.27)
     // Each component is born at a peak cell (high density, near its birth value).
     for (const p of h0) {
       expect(p.birthCell).toBeGreaterThanOrEqual(0);
@@ -47,11 +46,11 @@ describe("sublevelsetPersistence — H0 (components)", () => {
 describe("sublevelsetPersistence — H1 (loops)", () => {
   it("a synthetic ring of high values encloses one hole", () => {
     // 5x5 grid: the 8 vertices at radius 1 are high, the centre and outer ring low.
-    const W = 5, H = 5;
+    const W = 5,
+      H = 5;
     const data = new Float32Array(W * H);
     const high = new Set(["1,1", "2,1", "3,1", "1,2", "3,2", "1,3", "2,3", "3,3"]);
-    for (let r = 0; r < H; r++)
-      for (let c = 0; c < W; c++) data[r * W + c] = high.has(`${c},${r}`) ? 2 : 0;
+    for (let r = 0; r < H; r++) for (let c = 0; c < W; c++) data[r * W + c] = high.has(`${c},${r}`) ? 2 : 0;
     const res = sublevelsetPersistence(data, W, H, { superlevel: true });
     const h1 = res.pairs.filter((p) => p.dim === 1 && Math.abs(p.birth - p.death) > 0.5);
     expect(h1.length).toBe(1);

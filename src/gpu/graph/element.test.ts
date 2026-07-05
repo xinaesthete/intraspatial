@@ -1,22 +1,14 @@
 // Element algebra (ADR-0004): the math kernels directly, plus the ops through the
 // executor in CPU mode (no GPU — fast `*.test.ts`, runs under vitest.config.ts).
-import { describe, it, expect, beforeAll } from "vitest";
-import { Graph, pull, registerElementOps } from "./index";
+import { beforeAll, describe, expect, it } from "vitest";
 import type { ElementType, GpuField } from "./index";
+import { Graph, pull, registerElementOps } from "./index";
 
 beforeAll(async () => {
   await registerElementOps();
 });
-import {
-  addFields,
-  conjugate,
-  crossFields,
-  dotFields,
-  magnitude,
-  mulFields,
-  normalize,
-  packComplex,
-} from "./elementMath";
+
+import { addFields, conjugate, crossFields, dotFields, magnitude, mulFields, normalize, packComplex } from "./elementMath";
 
 const COMPLEX: ElementType = { kind: "complex" };
 const QUAT: ElementType = { kind: "quaternion" };
@@ -93,8 +85,14 @@ describe("element ops through the executor (CPU mode)", () => {
 
   it("vec3 dot through the graph yields a scalar field", async () => {
     const g = new Graph();
-    const a = vec3Grid(g, [[1, 0, 0], [1, 2, 2]]);
-    const b = vec3Grid(g, [[0, 1, 0], [3, 0, 0]]);
+    const a = vec3Grid(g, [
+      [1, 0, 0],
+      [1, 2, 2],
+    ]);
+    const b = vec3Grid(g, [
+      [0, 1, 0],
+      [3, 0, 0],
+    ]);
     const d = g.op1("dotFields", { a, b });
     expect(d.element).toEqual({ kind: "scalar" });
     const out = await pull(g, d, { mode: "cpu" });

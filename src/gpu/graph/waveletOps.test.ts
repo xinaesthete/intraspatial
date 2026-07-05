@@ -1,14 +1,16 @@
 // Wavelet-domain ops through the graph (ADR-0006): the fdwt/idwt pair round-trips,
 // and the headline `fdwt → thresholdDetail → idwt` chain denoises. CPU mode (fast).
-import { describe, it, expect, beforeAll } from "vitest";
-import { Graph, pull, registerWaveletOps, registerElementOps } from "./index";
+import { beforeAll, describe, expect, it } from "vitest";
+import { Graph, pull, registerElementOps, registerWaveletOps } from "./index";
 
 beforeAll(async () => {
   await registerWaveletOps();
   await registerElementOps(); // for the basis-pass-through test (scaleField)
 });
 
-const W = 32, H = 32, LEVELS = 3;
+const W = 32,
+  H = 32,
+  LEVELS = 3;
 
 /** A smooth low-frequency bump — almost all of its energy is in the LL band, so its
  *  detail coefficients are tiny (the regime where wavelet denoising shines). */

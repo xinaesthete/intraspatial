@@ -36,11 +36,7 @@ export interface FieldOptions {
 }
 
 /** World coordinate of the centre of grid cell (col, row). Row 0 = top (maxY). */
-export function cellCenter(
-  field: Pick<ScalarField, "width" | "height" | "bbox">,
-  col: number,
-  row: number,
-): [number, number] {
+export function cellCenter(field: Pick<ScalarField, "width" | "height" | "bbox">, col: number, row: number): [number, number] {
   const [minX, minY, maxX, maxY] = field.bbox;
   const x = minX + ((col + 0.5) / field.width) * (maxX - minX);
   const y = maxY - ((row + 0.5) / field.height) * (maxY - minY);
@@ -55,15 +51,24 @@ function resolveBbox(
   bbox?: [number, number, number, number],
 ): [number, number, number, number] {
   if (bbox) return bbox;
-  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  let minX = Infinity,
+    minY = Infinity,
+    maxX = -Infinity,
+    maxY = -Infinity;
   for (let i = 0; i < n; i++) {
-    const x = xs[i]!, y = ys[i]!;
+    const x = xs[i]!,
+      y = ys[i]!;
     if (x < minX) minX = x;
     if (x > maxX) maxX = x;
     if (y < minY) minY = y;
     if (y > maxY) maxY = y;
   }
-  if (!isFinite(minX)) { minX = 0; minY = 0; maxX = 1; maxY = 1; }
+  if (!isFinite(minX)) {
+    minX = 0;
+    minY = 0;
+    maxX = 1;
+    maxY = 1;
+  }
   return [minX - pad, minY - pad, maxX + pad, maxY + pad];
 }
 
@@ -84,11 +89,7 @@ export interface KdeOptions extends FieldOptions {
  * truncated at `radiusSigma` for speed. Its superlevel sets are the smooth
  * "fuzzy balls" of the kernel filtration.
  */
-export function gaussianKdeField(
-  xs: ArrayLike<number>,
-  ys: ArrayLike<number>,
-  opts: KdeOptions,
-): ScalarField {
+export function gaussianKdeField(xs: ArrayLike<number>, ys: ArrayLike<number>, opts: KdeOptions): ScalarField {
   const n = xs.length;
   if (ys.length !== n) throw new Error("gaussianKdeField: xs/ys length mismatch");
   const { width: w, height: h, sigma } = opts;
@@ -105,7 +106,8 @@ export function gaussianKdeField(
   const data = new Float32Array(w * h);
   // Splat each point into the cells within its square support (the O(N*k) path).
   for (let i = 0; i < n; i++) {
-    const px = xs[i]!, py = ys[i]!;
+    const px = xs[i]!,
+      py = ys[i]!;
     const wi = opts.weights ? opts.weights[i]! : 1;
     // World support box -> cell-index range. col grows with +X, row grows with -Y.
     const cLo = Math.max(0, Math.floor(((px - support - minX) / spanX) * w - 0.5));
@@ -149,11 +151,7 @@ export interface DtmOptions extends FieldOptions {
  * (k = 1 recovers `distanceField`.) Brute force, O(grid * N); for the small N the
  * demos use.
  */
-export function dtmField(
-  xs: ArrayLike<number>,
-  ys: ArrayLike<number>,
-  opts: DtmOptions,
-): ScalarField {
+export function dtmField(xs: ArrayLike<number>, ys: ArrayLike<number>, opts: DtmOptions): ScalarField {
   const n = xs.length;
   if (ys.length !== n) throw new Error("dtmField: xs/ys length mismatch");
   const { width: w, height: h } = opts;
@@ -171,7 +169,8 @@ export function dtmField(
     for (let c = 0; c < w; c++) {
       const cx = minX + ((c + 0.5) / w) * spanX;
       for (let i = 0; i < n; i++) {
-        const dx = cx - xs[i]!, dy = cy - ys[i]!;
+        const dx = cx - xs[i]!,
+          dy = cy - ys[i]!;
         d2[i] = dx * dx + dy * dy;
       }
       // Mean of the k smallest squared distances (partial selection sort — k small).
@@ -179,7 +178,9 @@ export function dtmField(
       for (let s = 0; s < k; s++) {
         let m = s;
         for (let i = s + 1; i < n; i++) if (d2[i]! < d2[m]!) m = i;
-        const tmp = d2[s]!; d2[s] = d2[m]!; d2[m] = tmp;
+        const tmp = d2[s]!;
+        d2[s] = d2[m]!;
+        d2[m] = tmp;
         sum += d2[s]!;
       }
       data[r * w + c] = Math.sqrt(sum / k);
@@ -194,11 +195,7 @@ export function dtmField(
  * Its sublevel set {d <= r} is the union of radius-r balls — the hard-ball
  * (Cech) filtration. The contrast partner of `gaussianKdeField`.
  */
-export function distanceField(
-  xs: ArrayLike<number>,
-  ys: ArrayLike<number>,
-  opts: FieldOptions & { pad?: number },
-): ScalarField {
+export function distanceField(xs: ArrayLike<number>, ys: ArrayLike<number>, opts: FieldOptions & { pad?: number }): ScalarField {
   const n = xs.length;
   if (ys.length !== n) throw new Error("distanceField: xs/ys length mismatch");
   const { width: w, height: h } = opts;
@@ -215,7 +212,8 @@ export function distanceField(
       const cx = minX + ((c + 0.5) / w) * spanX;
       let best = Infinity;
       for (let i = 0; i < n; i++) {
-        const dx = cx - xs[i]!, dy = cy - ys[i]!;
+        const dx = cx - xs[i]!,
+          dy = cy - ys[i]!;
         const d2 = dx * dx + dy * dy;
         if (d2 < best) best = d2;
       }

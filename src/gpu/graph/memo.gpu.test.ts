@@ -1,5 +1,5 @@
-import { describe, it, expect } from "vitest";
-import { Graph, createMemo, pull } from "./index";
+import { describe, expect, it } from "vitest";
+import { createMemo, Graph, pull } from "./index";
 
 // Memoisation: changing one node's param re-runs only that node and its dependents;
 // unchanged upstream outputs are reused (same object reference) across pulls, even
@@ -7,8 +7,16 @@ import { Graph, createMemo, pull } from "./index";
 // test exercises the executor's content-addressed cache without any GPU work.
 function build(topWeight: number) {
   const g = new Graph();
-  const a = g.grid(Float32Array.from({ length: 16 }, (_, i) => i), 4, 4);
-  const b = g.grid(Float32Array.from({ length: 16 }, (_, i) => 16 - i), 4, 4);
+  const a = g.grid(
+    Float32Array.from({ length: 16 }, (_, i) => i),
+    4,
+    4,
+  );
+  const b = g.grid(
+    Float32Array.from({ length: 16 }, (_, i) => 16 - i),
+    4,
+    4,
+  );
   const c = g.op1("addGrids", { a, b }, { wa: 1, wb: 1 }); // shared upstream
   const d = g.op1("addGrids", { a: c, b: a }, { wa: topWeight, wb: 0 }); // param varies
   return { g, c, d };

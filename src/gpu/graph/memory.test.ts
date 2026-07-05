@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
+import type { FieldValue } from "./handle";
 import { dtypeBytes, fieldBytes, fieldValueBytes, formatBytes, memoryBytes } from "./memory";
 import { FieldRing } from "./ringBuffer";
-import type { FieldValue } from "./handle";
 
 describe("memory accounting", () => {
   it("computes a field's resident bytes from shape/element/dtype", () => {

@@ -7,7 +7,11 @@ import type { ElementType, FieldValue } from "../../src/gpu/graph";
 import { basisLabel, basisOf, elementLanes } from "../../src/gpu/graph";
 import { PointsScatter } from "./PointsScatter";
 
-interface PersistencePair { dim: number; birth: number; death: number }
+interface PersistencePair {
+  dim: number;
+  birth: number;
+  death: number;
+}
 
 const clamp01 = (x: number) => (x < 0 ? 0 : x > 1 ? 1 : x);
 
@@ -18,8 +22,13 @@ function hot(t: number): [number, number, number] {
 }
 
 function drawHeatmap(canvas: HTMLCanvasElement, data: ArrayLike<number>, w: number, h: number) {
-  let min = Infinity, max = -Infinity;
-  for (let i = 0; i < data.length; i++) { const v = data[i]!; if (v < min) min = v; if (v > max) max = v; }
+  let min = Infinity,
+    max = -Infinity;
+  for (let i = 0; i < data.length; i++) {
+    const v = data[i]!;
+    if (v < min) min = v;
+    if (v > max) max = v;
+  }
   const span = max - min || 1;
   const scale = Math.max(1, Math.floor(320 / Math.max(w, h)));
   canvas.width = w * scale;
@@ -28,10 +37,14 @@ function drawHeatmap(canvas: HTMLCanvasElement, data: ArrayLike<number>, w: numb
   const img = ctx.createImageData(w, h);
   for (let i = 0; i < w * h; i++) {
     const [r, g, b] = hot((data[i]! - min) / span);
-    img.data[i * 4] = r; img.data[i * 4 + 1] = g; img.data[i * 4 + 2] = b; img.data[i * 4 + 3] = 255;
+    img.data[i * 4] = r;
+    img.data[i * 4 + 1] = g;
+    img.data[i * 4 + 2] = b;
+    img.data[i * 4 + 3] = 255;
   }
   const tmp = document.createElement("canvas");
-  tmp.width = w; tmp.height = h;
+  tmp.width = w;
+  tmp.height = h;
   tmp.getContext("2d")!.putImageData(img, 0, 0);
   ctx.imageSmoothingEnabled = false;
   ctx.drawImage(tmp, 0, 0, canvas.width, canvas.height);
@@ -45,7 +58,10 @@ function project(data: ArrayLike<number>, cells: number, lanes: number, lane: nu
   if (lane < 0) {
     for (let i = 0; i < cells; i++) {
       let s = 0;
-      for (let c = 0; c < lanes; c++) { const v = data[i * lanes + c]!; s += v * v; }
+      for (let c = 0; c < lanes; c++) {
+        const v = data[i * lanes + c]!;
+        s += v * v;
+      }
       out[i] = Math.sqrt(s);
     }
   } else {
@@ -62,23 +78,37 @@ function laneLabel(el: ElementType | undefined, i: number): string {
 }
 
 function drawPersistence(canvas: HTMLCanvasElement, pairs: PersistencePair[]) {
-  const S = 320, pad = 28;
-  canvas.width = S; canvas.height = S;
+  const S = 320,
+    pad = 28;
+  canvas.width = S;
+  canvas.height = S;
   const ctx = canvas.getContext("2d")!;
-  ctx.fillStyle = "#11131a"; ctx.fillRect(0, 0, S, S);
+  ctx.fillStyle = "#11131a";
+  ctx.fillRect(0, 0, S, S);
   let maxV = 0.001;
   for (const p of pairs) maxV = Math.max(maxV, p.birth, Number.isFinite(p.death) ? p.death : 0);
   const map = (v: number) => pad + (v / maxV) * (S - 2 * pad);
-  ctx.strokeStyle = "#333a4a"; ctx.beginPath(); ctx.moveTo(pad, S - pad); ctx.lineTo(S - pad, pad); ctx.stroke();
+  ctx.strokeStyle = "#333a4a";
+  ctx.beginPath();
+  ctx.moveTo(pad, S - pad);
+  ctx.lineTo(S - pad, pad);
+  ctx.stroke();
   for (const p of pairs) {
     const x = map(p.birth);
     const y = S - map(Number.isFinite(p.death) ? p.death : maxV);
     ctx.fillStyle = p.dim === 1 ? "#ff6b8a" : "#6ba8ff";
-    ctx.beginPath(); ctx.arc(x, y, p.dim === 1 ? 5 : 3.5, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath();
+    ctx.arc(x, y, p.dim === 1 ? 5 : 3.5, 0, Math.PI * 2);
+    ctx.fill();
   }
-  ctx.fillStyle = "#8a93a6"; ctx.font = "11px ui-monospace, monospace";
+  ctx.fillStyle = "#8a93a6";
+  ctx.font = "11px ui-monospace, monospace";
   ctx.fillText("birth →", S - 64, S - 8);
-  ctx.save(); ctx.translate(10, 60); ctx.rotate(-Math.PI / 2); ctx.fillText("death →", 0, 0); ctx.restore();
+  ctx.save();
+  ctx.translate(10, 60);
+  ctx.rotate(-Math.PI / 2);
+  ctx.fillText("death →", 0, 0);
+  ctx.restore();
 }
 
 export function Preview({ value, error, stale }: { value: FieldValue | null; error?: string | null; stale?: boolean }) {
@@ -108,7 +138,9 @@ export function Preview({ value, error, stale }: { value: FieldValue | null; err
       {error ? (
         <div className="preview-error">⚠ {error}</div>
       ) : !value || !s ? (
-        <div className="preview-empty">Select a node and press <b>Run</b> to preview its output.</div>
+        <div className="preview-empty">
+          Select a node and press <b>Run</b> to preview its output.
+        </div>
       ) : (
         <>
           <div className="preview-summary">
@@ -119,7 +151,9 @@ export function Preview({ value, error, stale }: { value: FieldValue | null; err
             <select className="preview-lane" value={lane} onChange={(e) => setLane(Number(e.target.value))}>
               <option value={-1}>magnitude |·|</option>
               {Array.from({ length: lanes }, (_, i) => (
-                <option key={i} value={i}>{laneLabel(value.element, i)}</option>
+                <option key={i} value={i}>
+                  {laneLabel(value.element, i)}
+                </option>
               ))}
             </select>
           )}

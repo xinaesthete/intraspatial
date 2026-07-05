@@ -1,6 +1,6 @@
-import { test, expect } from "vitest";
 import tgpu from "typegpu";
 import * as d from "typegpu/data";
+import { expect, test } from "vitest";
 import { getDevice } from "../src/gpu/device";
 
 test("typegpu buffer write/read roundtrip (Node + Dawn)", async () => {
@@ -15,9 +15,7 @@ test("raw-WGSL compute over a typegpu-managed buffer doubles values", async () =
   const device = await getDevice();
   const root = tgpu.initFromDevice({ device });
   const N = 8;
-  const io = root
-    .createBuffer(d.arrayOf(d.u32, N), [0, 1, 2, 3, 4, 5, 6, 7])
-    .$usage("storage");
+  const io = root.createBuffer(d.arrayOf(d.u32, N), [0, 1, 2, 3, 4, 5, 6, 7]).$usage("storage");
   const gpuBuf = root.unwrap(io);
 
   const module = device.createShaderModule({

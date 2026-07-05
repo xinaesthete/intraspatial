@@ -9,9 +9,48 @@
 // Bricks are uploaded into atlas slots with renderer.copyTextureToTexture (partial
 // 3D upload); the page table is tiny and re-uploaded whole per selection change.
 import * as THREE from "three";
-import { Break, cameraFar, cameraNear, cameraPosition, cameraViewMatrix, clamp, Discard, exp2, float, Fn, If, Loop, max, min, mix, normalize, oneMinus, perspectiveDepthToViewZ, positionWorld, step, struct, texture3D, uniform, vec3, vec4, viewportDepthTexture, viewZToPerspectiveDepth } from "three/tsl";
+import {
+  Break,
+  cameraFar,
+  cameraNear,
+  cameraPosition,
+  cameraViewMatrix,
+  clamp,
+  Discard,
+  exp2,
+  Fn,
+  float,
+  If,
+  Loop,
+  max,
+  min,
+  mix,
+  normalize,
+  oneMinus,
+  perspectiveDepthToViewZ,
+  positionWorld,
+  step,
+  struct,
+  texture3D,
+  uniform,
+  vec3,
+  vec4,
+  viewportDepthTexture,
+  viewZToPerspectiveDepth,
+} from "three/tsl";
 import { MeshBasicNodeMaterial } from "three/webgpu";
-import { chunkArrayBox, chunkCounts, chunkKey, levelVoxelDims, worldAabbOfArrayBox, type Loader, type Multiscale, type Selection, type Tile, type Vec3 } from "../../../src/datasource";
+import {
+  chunkArrayBox,
+  chunkCounts,
+  chunkKey,
+  type Loader,
+  levelVoxelDims,
+  type Multiscale,
+  type Selection,
+  type Tile,
+  type Vec3,
+  worldAabbOfArrayBox,
+} from "../../../src/datasource";
 
 const STEPS = 128;
 // One raymarch, two outputs: the compositated colour AND the solid-surface clip depth.
@@ -19,7 +58,12 @@ const STEPS = 128;
 // returning node emits the loop ONCE (vs. a full march per output).
 const RayResult = struct({ color: "vec4", depth: "float" });
 
-interface Resident { slot: [number, number, number]; level: number; brick: THREE.Data3DTexture; use: number; }
+interface Resident {
+  slot: [number, number, number];
+  level: number;
+  brick: THREE.Data3DTexture;
+  use: number;
+}
 
 export class VolumeRenderer {
   readonly group = new THREE.Group();
@@ -96,8 +140,14 @@ export class VolumeRenderer {
     for (const c of sel.chunks) {
       const k = chunkKey(c.id);
       const r = this.resident.get(k);
-      if (r) { r.use = ++this.useClock; continue; }
-      if (!this.loading.has(k)) { this.loading.add(k); void this.load(k, c.id); }
+      if (r) {
+        r.use = ++this.useClock;
+        continue;
+      }
+      if (!this.loading.has(k)) {
+        this.loading.add(k);
+        void this.load(k, c.id);
+      }
     }
     this.rebuildPageTable();
   }
@@ -110,7 +160,8 @@ export class VolumeRenderer {
       const brick = makeR8Texture(this.brickData(tile), this.B, this.B, this.B, THREE.LinearFilter);
       brick.needsUpdate = true;
       this.renderer.copyTextureToTexture(
-        brick, this.atlas,
+        brick,
+        this.atlas,
         new THREE.Box3(new THREE.Vector3(0, 0, 0), new THREE.Vector3(this.B, this.B, this.B)),
         new THREE.Vector3(slot[0] * this.B, slot[1] * this.B, slot[2] * this.B),
       );
@@ -128,11 +179,11 @@ export class VolumeRenderer {
     const [ex, ey, ez] = tile.dims;
     const out = new Uint8Array(B * B * B);
     for (let z = 0; z < B; z++) {
-      const sz = Math.min(ez - 1, (z * ez / B) | 0);
+      const sz = Math.min(ez - 1, ((z * ez) / B) | 0);
       for (let y = 0; y < B; y++) {
-        const sy = Math.min(ey - 1, (y * ey / B) | 0);
+        const sy = Math.min(ey - 1, ((y * ey) / B) | 0);
         for (let x = 0; x < B; x++) {
-          const sx = Math.min(ex - 1, (x * ex / B) | 0);
+          const sx = Math.min(ex - 1, ((x * ex) / B) | 0);
           out[(z * B + y) * B + x] = Math.round((tile.data[(sz * ey + sy) * ex + sx] ?? 0) * 255);
         }
       }
@@ -144,10 +195,14 @@ export class VolumeRenderer {
     let idx = this.free.pop();
     if (idx === undefined) {
       // Evict LRU resident not in the desired set.
-      let lruKey: string | null = null, lruUse = Infinity;
+      let lruKey: string | null = null,
+        lruUse = Infinity;
       for (const [k, r] of this.resident) {
         if (this.desired.has(k)) continue;
-        if (r.use < lruUse) { lruUse = r.use; lruKey = k; }
+        if (r.use < lruUse) {
+          lruUse = r.use;
+          lruKey = k;
+        }
       }
       if (lruKey === null) return null;
       const r = this.resident.get(lruKey);
@@ -169,11 +224,15 @@ export class VolumeRenderer {
       const span = 2 ** r.level; // finest cells this brick covers per axis
       // Parse the chunk coords back from the key: "level:x:y:z".
       const [, x, y, z] = k.split(":").map(Number);
-      const fx = (x ?? 0) * span, fy = (y ?? 0) * span, fz = (z ?? 0) * span;
+      const fx = (x ?? 0) * span,
+        fy = (y ?? 0) * span,
+        fz = (z ?? 0) * span;
       for (let dz = 0; dz < span; dz++) {
         for (let dy = 0; dy < span; dy++) {
           for (let dx = 0; dx < span; dx++) {
-            const cx = fx + dx, cy = fy + dy, cz = fz + dz;
+            const cx = fx + dx,
+              cy = fy + dy,
+              cz = fz + dz;
             if (cx >= pw || cy >= ph || cz >= this.pageDims[2]) continue;
             const o = ((cz * ph + cy) * pw + cx) * 4;
             this.pageData[o] = r.slot[0];
@@ -195,7 +254,8 @@ export class VolumeRenderer {
     const pageDimsU = uniform(new THREE.Vector3(this.pageDims[0], this.pageDims[1], this.pageDims[2]));
     const slots = uniform(this.slotsPerAxis);
     const invB = uniform(0.5 / this.B);
-    const atlasTex = this.atlas, pageTex = this.pageTable;
+    const atlasTex = this.atlas,
+      pageTex = this.pageTable;
 
     const mat = new MeshBasicNodeMaterial();
     mat.transparent = true;
@@ -218,8 +278,10 @@ export class VolumeRenderer {
     const tf = (d: ReturnType<typeof float>) => clamp(d.sub(this.uCmin).div(this.uCmax.sub(this.uCmin)), 0.0, 1.0).pow(this.uGamma);
     const enter = (camW: ReturnType<typeof cameraPosition.sub>, dir: ReturnType<typeof normalize>) => {
       const inv = vec3(1.0).div(dir);
-      const t0 = bMin.sub(camW).mul(inv), t1 = bMin.add(bSize).sub(camW).mul(inv);
-      const tmin = min(t0, t1), tmax = max(t0, t1);
+      const t0 = bMin.sub(camW).mul(inv),
+        t1 = bMin.add(bSize).sub(camW).mul(inv);
+      const tmin = min(t0, t1),
+        tmax = max(t0, t1);
       const tEnter = max(max(tmin.x, tmin.y), tmin.z).max(0.0);
       const tExit = min(min(tmax.x, tmax.y), tmax.z);
       return { tEnter, tExit };
@@ -253,7 +315,7 @@ export class VolumeRenderer {
         const pWorld = camW.add(dir.mul(t));
         const dm = tf(sampleAt(pWorld.sub(bMin).div(bSize)));
         const a = dm.mul(0.1).mul(oneMinus(alpha));
-        const sc = mix(vec3(0.10, 0.03, 0.18), vec3(1.0, 0.86, 0.55), dm);
+        const sc = mix(vec3(0.1, 0.03, 0.18), vec3(1.0, 0.86, 0.55), dm);
         col.addAssign(sc.mul(a));
         alpha.addAssign(a);
         // First crossing of uSolid → the surface depth. Interpolate the exact iso-position
@@ -269,7 +331,9 @@ export class VolumeRenderer {
         dmPrev.assign(dm);
         tPrev.assign(t);
         // Early-out once the ray is effectively opaque (the solid depth is already fixed).
-        If(alpha.greaterThan(0.995), () => { Break(); });
+        If(alpha.greaterThan(0.995), () => {
+          Break();
+        });
       });
       // Empty ray (no visible density AND no solid): discard so we neither tint the pixel
       // nor stamp far-depth over whatever opaque geometry sits behind the volume box —

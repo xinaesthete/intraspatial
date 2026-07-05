@@ -2,14 +2,14 @@
 // or advance a chosen output. The canvas state is the explicit graph; this is the
 // adapter that hands it to the executor.
 import type { Edge, Node } from "@xyflow/react";
-import { Graph, advance, createSimState, pull } from "../../src/gpu/graph";
 import type { FeedbackHandle, FieldValue, GpuField, GraphMemo, SimState } from "../../src/gpu/graph";
-import { getSource, isSource } from "./sources";
-import { getSpec } from "./specs";
+import { advance, createSimState, Graph, pull } from "../../src/gpu/graph";
 import { browserBackend } from "./backend.browser";
 import { isOpNode, resolveSource } from "./grouping";
-import { expandInstances } from "./subgraphs";
+import { getSource, isSource } from "./sources";
+import { getSpec } from "./specs";
 import type { DefLibrary } from "./subgraphs";
+import { expandInstances } from "./subgraphs";
 
 export interface NodeData {
   opName: string;
@@ -44,7 +44,8 @@ export function buildGraph(inputNodes: Node[], inputEdges: Edge[], defs: DefLibr
   for (const e of allEdges) {
     if (!opIds.has(e.target)) continue; // only edges feeding a real op input
     const rs = resolveSource(allNodes, allEdges, e.source, e.sourceHandle ?? "out");
-    if (rs && opIds.has(rs.node)) edges.push({ id: e.id, source: rs.node, sourceHandle: rs.port, target: e.target, targetHandle: e.targetHandle });
+    if (rs && opIds.has(rs.node))
+      edges.push({ id: e.id, source: rs.node, sourceHandle: rs.port, target: e.target, targetHandle: e.targetHandle });
   }
 
   const graph = new Graph();
@@ -90,7 +91,9 @@ export function buildGraph(inputNodes: Node[], inputEdges: Edge[], defs: DefLibr
     }
     const outs = graph.op(data.opName, inputs, params);
     const map: Record<string, GpuField> = {};
-    spec.outputs.forEach((o, i) => { map[o.name] = outs[i]!; });
+    spec.outputs.forEach((o, i) => {
+      map[o.name] = outs[i]!;
+    });
     produced.set(id, map);
   };
 
@@ -184,5 +187,5 @@ export async function advanceNode(
   });
 }
 
-export { createSimState };
 export type { SimState };
+export { createSimState };

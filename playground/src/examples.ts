@@ -2,10 +2,10 @@
 // feedback loop: a Gray–Scott seed feeds two delay nodes whose state drives the RD
 // step, whose outputs feed back into the delays — so it runs over time (Play).
 import type { Edge, Node } from "@xyflow/react";
-import { defaultParamsFor, getSpec } from "./specs";
-import { defScopeId } from "./subgraphs";
-import type { DefLibrary, SubgraphDef } from "./subgraphs";
 import { registerExtraOps } from "./extraOps";
+import { defaultParamsFor, getSpec } from "./specs";
+import type { DefLibrary, SubgraphDef } from "./subgraphs";
+import { defScopeId } from "./subgraphs";
 
 // Some examples reference opt-in pack ops (fdwt/idwt/…). This module builds its example
 // graphs at load via getSpec, which needs those ops registered — and it is imported by
@@ -27,7 +27,13 @@ export interface Example {
   sink: { node: string; port?: string };
 }
 
-const e = (id: string, s: string, sh: string, t: string, th: string): Edge => ({ id, source: s, sourceHandle: sh, target: t, targetHandle: th });
+const e = (id: string, s: string, sh: string, t: string, th: string): Edge => ({
+  id,
+  source: s,
+  sourceHandle: sh,
+  target: t,
+  targetHandle: th,
+});
 
 // Gray–Scott reaction–diffusion as a feedback loop, with the (U,V) state carried as a
 // single complex field (re = U, im = V — ADR-0004). Because it's one field, the loop is

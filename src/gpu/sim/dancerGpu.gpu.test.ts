@@ -1,27 +1,10 @@
-import { describe, it, expect } from "vitest";
+import { describe, expect, it } from "vitest";
 import { getDevice } from "../device";
-import { DancerGpuSim, type DancerGpuParams } from "./dancerGpu";
-import {
-  INTEGRATE_DEFAULTS,
-  readBodyState,
-  seedSwarmBody,
-  tapBlock,
-  writeBodyState,
-  integrateBody,
-  type BodyState,
-} from "./body";
-import {
-  cohereForce,
-  constrainForce,
-  orbitForce,
-  partnerOrbitForce,
-  separateForce,
-  solenoidForce,
-  swimForce,
-  vortexForce,
-} from "./forces";
+import { type BodyState, INTEGRATE_DEFAULTS, integrateBody, readBodyState, seedSwarmBody, tapBlock, writeBodyState } from "./body";
+import { type DancerGpuParams, DancerGpuSim } from "./dancerGpu";
 import { figureAt, figureTargetVel, partnerIndex } from "./figures";
-import { add, readVec3, scale, sub, ZERO3, type Vec3 } from "./vec3";
+import { cohereForce, constrainForce, orbitForce, partnerOrbitForce, separateForce, solenoidForce, swimForce, vortexForce } from "./forces";
+import { add, readVec3, scale, sub, type Vec3, ZERO3 } from "./vec3";
 
 // The CPU golden — the same step as the app's DancerSim, assembled from the shared
 // src/gpu/sim primitives (the app's sim.ts is a docs-site file, not importable here, but it

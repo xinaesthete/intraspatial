@@ -3,7 +3,7 @@
  * Each generator returns an ImagePlane with pixel values in [0, 255], chosen
  * to expose different wavelet behaviours.
  */
-import type { ImagePlane } from './dwt';
+import type { ImagePlane } from "./dwt";
 
 export function makePlane(width: number, height: number): ImagePlane {
   return { data: new Float64Array(width * height), width, height };
@@ -15,7 +15,8 @@ function clamp255(v: number): number {
 
 function genRadial(width: number, height: number): ImagePlane {
   const p = makePlane(width, height);
-  const cx = width / 2, cy = height / 2;
+  const cx = width / 2,
+    cy = height / 2;
   const maxR = Math.hypot(cx, cy);
   for (let y = 0; y < height; y++)
     for (let x = 0; x < width; x++) {
@@ -27,7 +28,8 @@ function genRadial(width: number, height: number): ImagePlane {
 
 function genCircles(width: number, height: number): ImagePlane {
   const p = makePlane(width, height);
-  const cx = width / 2, cy = height / 2;
+  const cx = width / 2,
+    cy = height / 2;
   for (let y = 0; y < height; y++)
     for (let x = 0; x < width; x++) {
       const r = Math.hypot(x - cx, y - cy);
@@ -63,12 +65,17 @@ function genNoise(width: number, height: number): ImagePlane {
 function genFractal(width: number, height: number): ImagePlane {
   const p = makePlane(width, height);
   const maxIter = 80;
-  const x0 = -2.1, x1 = 0.7, y0 = -1.2, y1 = 1.2;
+  const x0 = -2.1,
+    x1 = 0.7,
+    y0 = -1.2,
+    y1 = 1.2;
   for (let py = 0; py < height; py++)
     for (let px = 0; px < width; px++) {
       const cr = x0 + (x1 - x0) * (px / width);
       const ci = y0 + (y1 - y0) * (py / height);
-      let zr = 0, zi = 0, i = 0;
+      let zr = 0,
+        zi = 0,
+        i = 0;
       while (i < maxIter && zr * zr + zi * zi < 4) {
         const t = zr * zr - zi * zi + cr;
         zi = 2 * zr * zi + ci;
@@ -93,19 +100,19 @@ export interface SynthImage {
 }
 
 export const SYNTH_IMAGES: Record<string, SynthImage> = {
-  fractal: { label: 'Mandelbrot slice', gen: genFractal },
-  circles: { label: 'Rings & edges', gen: genCircles },
-  radial: { label: 'Radial gradient', gen: genRadial },
-  grating: { label: 'Sinusoid grating', gen: genGrating },
-  noise: { label: 'Smooth + noise', gen: genNoise },
+  fractal: { label: "Mandelbrot slice", gen: genFractal },
+  circles: { label: "Rings & edges", gen: genCircles },
+  radial: { label: "Radial gradient", gen: genRadial },
+  grating: { label: "Sinusoid grating", gen: genGrating },
+  noise: { label: "Smooth + noise", gen: genNoise },
 };
 
 /* Decode an uploaded <img> to a grayscale ImagePlane, resampled to size×size. */
 export function imageElementToPlane(img: HTMLImageElement, size: number): ImagePlane {
-  const c = document.createElement('canvas');
+  const c = document.createElement("canvas");
   c.width = size;
   c.height = size;
-  const ctx = c.getContext('2d')!;
+  const ctx = c.getContext("2d")!;
   ctx.drawImage(img, 0, 0, size, size);
   const px = ctx.getImageData(0, 0, size, size).data;
   const p = makePlane(size, size);

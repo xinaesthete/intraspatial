@@ -4,7 +4,7 @@
 // polynomial spline that threads the *current acceleration* (`LastAcc`) so the motion is
 // C²-continuous — no jerk when a Ceilidh figure is called. The cosine envelopes ramp a
 // goal's influence up to its onset and ease it down after (DANCERL `COSTVUP`/`COSTVDOWN`).
-import { unpack, vec3, type Vec3, type Vec3In } from "./vec3";
+import { unpack, type Vec3, type Vec3In, vec3 } from "./vec3";
 
 /** DANCERL `COSTVUP` — a squared raised-cosine ramp from 0 (at/below `from`) to 1
  *  (at/above `to`). */
@@ -41,9 +41,7 @@ export interface Goal {
  *  (`startTight` before, `finishAct` after — free motion, goal loose). So the goal's
  *  *tightness* is `1 − calcGoalWeight`, peaking at the figure onset: the scramble. */
 export function calcGoalWeight(goal: Goal, time: number): number {
-  return time <= goal.goalTime
-    ? costvDown(goal.startTight, goal.goalTime, time)
-    : costvUp(goal.goalTime, goal.finishAct, time);
+  return time <= goal.goalTime ? costvDown(goal.startTight, goal.goalTime, time) : costvUp(goal.goalTime, goal.finishAct, time);
 }
 
 /** Goal *tightness* — `1 − calcGoalWeight`, i.e. how strongly the called state of motion
@@ -83,7 +81,9 @@ export function velSpline(p1: Vec3In, v1: Vec3In, w1: Vec3In, v2: Vec3In, t2: nu
     const accel = (12 * a * t + 6 * b) * t + 2 * W1[k]; // true P''(t)
     return { pos, vel, accel };
   };
-  const cx = comp(0), cy = comp(1), cz = comp(2);
+  const cx = comp(0),
+    cy = comp(1),
+    cz = comp(2);
   return {
     pos: vec3(cx.pos, cy.pos, cz.pos),
     vel: vec3(cx.vel, cy.vel, cz.vel),
@@ -96,19 +96,30 @@ export function velSpline(p1: Vec3In, v1: Vec3In, w1: Vec3In, v2: Vec3In, t2: nu
  *  `w1`=LastAcc for C² continuity. Returns true derivatives (the script carried Acc/2). */
 export function posVelSpline(p1: Vec3In, v1: Vec3In, w1: Vec3In, p2: Vec3In, v2: Vec3In, t2: number, t: number): SplineState {
   if (t2 <= 1e-9) return { pos: vec3(...unpack(p1)), vel: vec3(...unpack(v1)), accel: vec3(...unpack(w1)) };
-  const P1 = unpack(p1), V1 = unpack(v1), W1 = unpack(w1), P2 = unpack(p2), V2 = unpack(v2);
-  const dt2 = t2 * t2, dt3 = dt2 * t2, dt4 = dt3 * t2, dt5 = dt4 * t2;
+  const P1 = unpack(p1),
+    V1 = unpack(v1),
+    W1 = unpack(w1),
+    P2 = unpack(p2),
+    V2 = unpack(v2);
+  const dt2 = t2 * t2,
+    dt3 = dt2 * t2,
+    dt4 = dt3 * t2,
+    dt5 = dt4 * t2;
   const comp = (k: 0 | 1 | 2) => {
     const a = (-3 * V1[k] - 3 * V2[k]) / dt4 + (6 * (P2[k] - P1[k])) / dt5 - W1[k] / dt3;
     const b = (8 * V1[k] + 7 * V2[k]) / dt3 - (15 * (P2[k] - P1[k])) / dt4 + (3 * W1[k]) / dt2;
     const c = (10 * (P2[k] - P1[k])) / dt3 - (6 * V1[k] + 4 * V2[k]) / dt2 - (3 * W1[k]) / t2;
-    const d = W1[k], e = V1[k], f = P1[k];
+    const d = W1[k],
+      e = V1[k],
+      f = P1[k];
     const pos = ((((a * t + b) * t + c) * t + d) * t + e) * t + f;
     const vel = (((5 * a * t + 4 * b) * t + 3 * c) * t + 2 * d) * t + e;
     const accel = ((20 * a * t + 12 * b) * t + 6 * c) * t + 2 * d; // true P''(t)
     return { pos, vel, accel };
   };
-  const cx = comp(0), cy = comp(1), cz = comp(2);
+  const cx = comp(0),
+    cy = comp(1),
+    cz = comp(2);
   return {
     pos: vec3(cx.pos, cy.pos, cz.pos),
     vel: vec3(cx.vel, cy.vel, cz.vel),

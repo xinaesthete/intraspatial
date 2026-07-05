@@ -9,7 +9,22 @@ import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { TransformControls } from "three/examples/jsm/controls/TransformControls.js";
 import type { WebGPURenderer } from "three/webgpu";
-import { cross, dot, frustumCorners, mandelbrotField, normalize, select, sub, worldAabbOfArrayBox, type Aabb, type Camera, type Loader, type Multiscale, type Selection, type Vec3 } from "../../../src/datasource";
+import {
+  type Aabb,
+  type Camera,
+  cross,
+  dot,
+  frustumCorners,
+  type Loader,
+  type Multiscale,
+  mandelbrotField,
+  normalize,
+  type Selection,
+  select,
+  sub,
+  type Vec3,
+  worldAabbOfArrayBox,
+} from "../../../src/datasource";
 import { boundsOverlay, chunkOverlays, disposeGroup, frustumOverlay } from "./overlays";
 import { TileRenderer } from "./tileRenderer";
 import { VolumeRenderer } from "./volumeRenderer";
@@ -22,7 +37,9 @@ export interface DecisionStats {
 }
 
 const OVERLAY_LAYER = 1;
-const INSET_W = 340, INSET_H = 250, INSET_M = 16;
+const INSET_W = 340,
+  INSET_H = 250,
+  INSET_M = 16;
 
 function cameraFromThree(cam: THREE.PerspectiveCamera, viewportHeightPx: number): Camera {
   const fwd = new THREE.Vector3();
@@ -68,7 +85,14 @@ export class DualView {
   private height = 1;
   private onStats?: (s: DecisionStats) => void;
 
-  constructor(canvas: HTMLCanvasElement, insetEl: HTMLElement, renderer: WebGPURenderer, source: { ms: Multiscale; loader: Loader }, onStats?: (s: DecisionStats) => void, combined = false) {
+  constructor(
+    canvas: HTMLCanvasElement,
+    insetEl: HTMLElement,
+    renderer: WebGPURenderer,
+    source: { ms: Multiscale; loader: Loader },
+    onStats?: (s: DecisionStats) => void,
+    combined = false,
+  ) {
     const ms = source.ms;
     this.ms = ms;
     this.loader = source.loader;
@@ -83,7 +107,8 @@ export class DualView {
     this.isPlane = ms.voxelDims0[2] === 1;
     this.center = new THREE.Vector3((b.min[0] + b.max[0]) / 2, (b.min[1] + b.max[1]) / 2, (b.min[2] + b.max[2]) / 2);
     this.size = Math.max(b.max[0] - b.min[0], b.max[1] - b.min[1], b.max[2] - b.min[2]) || 1;
-    const s = this.size, c = this.center;
+    const s = this.size,
+      c = this.center;
 
     // App camera: front-on for a plane, outside-diagonal for a volume.
     this.appCamera = new THREE.PerspectiveCamera(50, 1, s * 0.002, s * 30);
@@ -98,7 +123,9 @@ export class DualView {
     this.appControls.enableDamping = true;
     this.appControls.dampingFactor = 0.08;
     this.appControls.target.copy(c);
-    this.appControls.addEventListener("change", () => { this.dirty = true; });
+    this.appControls.addEventListener("change", () => {
+      this.dirty = true;
+    });
 
     // Decision (inset) camera: pulled back to see the data AND the app frustum.
     this.decisionCamera = new THREE.PerspectiveCamera(45, INSET_W / INSET_H, s * 0.01, s * 60);
@@ -119,24 +146,41 @@ export class DualView {
       this.volume = new VolumeRenderer(ms, this.loader, this.renderer);
       this.volume.group.renderOrder = 0;
       this.scene.add(this.volume.group);
-      if (combined) { this.addImagePlane(canvas); this.addProbe(); }
+      if (combined) {
+        this.addImagePlane(canvas);
+        this.addProbe();
+      }
     }
     this.scene.add(this.overlays);
     this.resize(canvas.clientWidth, canvas.clientHeight);
   }
 
-  setQ(q: number): void { this.q = q; this.dirty = true; }
+  setQ(q: number): void {
+    this.q = q;
+    this.dirty = true;
+  }
   setTextures(on: boolean): void {
     this.showTextures = on;
     if (this.tiles) this.tiles.group.visible = on;
     if (this.volume) this.volume.group.visible = on;
     this.dirty = true;
   }
-  setWireframe(on: boolean): void { this.showWireframe = on; this.dirty = true; }
-  setTransfer(cmin: number, cmax: number, gamma: number): void { this.volume?.setTransfer(cmin, cmax, gamma); }
-  setDepthRead(on: boolean): void { this.volume?.setDepthRead(on); }
-  setDepthWrite(on: boolean): void { this.volume?.setDepthWrite(on); }
-  setSolid(threshold: number): void { this.volume?.setSolid(threshold); }
+  setWireframe(on: boolean): void {
+    this.showWireframe = on;
+    this.dirty = true;
+  }
+  setTransfer(cmin: number, cmax: number, gamma: number): void {
+    this.volume?.setTransfer(cmin, cmax, gamma);
+  }
+  setDepthRead(on: boolean): void {
+    this.volume?.setDepthRead(on);
+  }
+  setDepthWrite(on: boolean): void {
+    this.volume?.setDepthWrite(on);
+  }
+  setSolid(threshold: number): void {
+    this.volume?.setSolid(threshold);
+  }
 
   /** A movable opaque image quad (mandelbrot) + a translate/rotate gizmo — slide it
    *  through the volume to see depth-culling. Opaque ⇒ it writes depth before the
@@ -148,7 +192,10 @@ export class DualView {
       for (let i = 0; i < N; i++) {
         const g = Math.round(mandelbrotField([i / N, j / N, 0]) * 255);
         const o = (j * N + i) * 4;
-        data[o] = g; data[o + 1] = g * 0.7; data[o + 2] = 40 + g * 0.4; data[o + 3] = 255;
+        data[o] = g;
+        data[o + 1] = g * 0.7;
+        data[o + 2] = 40 + g * 0.4;
+        data[o + 3] = 255;
       }
     }
     const tex = new THREE.DataTexture(data, N, N);
@@ -165,7 +212,9 @@ export class DualView {
 
     const tc = new TransformControls(this.appCamera, canvas);
     tc.attach(mesh);
-    tc.addEventListener("dragging-changed", (e) => { this.appControls.enabled = !(e as unknown as { value: boolean }).value; });
+    tc.addEventListener("dragging-changed", (e) => {
+      this.appControls.enabled = !(e as unknown as { value: boolean }).value;
+    });
     this.scene.add(tc.getHelper());
     this.transform = tc;
   }
@@ -221,7 +270,8 @@ export class DualView {
     this.overlays.clear();
     if (this.showWireframe) this.overlays.add(chunkOverlays(this.ms, sel));
     // Draw the app camera's frustum, sized to the data slab.
-    let dmin = Infinity, dmax = -Infinity;
+    let dmin = Infinity,
+      dmax = -Infinity;
     for (const p of this.dataCorners()) {
       const d = dot(sub(p, ds.eye), ds.forward);
       if (d < dmin) dmin = d;

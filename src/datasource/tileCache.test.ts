@@ -13,7 +13,15 @@ const fakeTile = (id: ChunkId): Tile => ({ id, dims: [1, 1, 1], element: { kind:
 
 function countingLoader(): { loader: Loader; calls: () => number } {
   let n = 0;
-  return { loader: { getChunk: async (id) => { n++; return fakeTile(id); } }, calls: () => n };
+  return {
+    loader: {
+      getChunk: async (id) => {
+        n++;
+        return fakeTile(id);
+      },
+    },
+    calls: () => n,
+  };
 }
 
 describe("TileCache — LRU under a byte ceiling", () => {

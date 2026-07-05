@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { traitSpaceFromParams } from "./traitSpace";
-import { randomSpecimen } from "./specimen";
+import type { ParamSpec } from "../gpu/graph/op";
 import { marry } from "./mutator";
 import { ancestry, emptyPedigree, fromJSON, recordBirth, select, specimenId, toJSON } from "./pedigree";
 import { mulberry32 } from "./rng";
-import type { ParamSpec } from "../gpu/graph/op";
+import { randomSpecimen } from "./specimen";
+import { traitSpaceFromParams } from "./traitSpace";
 
 const space = traitSpaceFromParams([{ name: "x", type: "number", default: 0.5, min: 0, max: 1 }] as ParamSpec[]);
 

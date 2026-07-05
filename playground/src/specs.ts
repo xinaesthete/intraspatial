@@ -1,9 +1,10 @@
 // Unified node metadata for both source generators and registry ops, so the
 // palette, the custom node, and the inspector treat them the same way.
-import { getOp, listOps } from "../../src/gpu/graph";
+
 import type { OpHelp, ParamSpec } from "../../src/gpu/graph";
-import { SOURCES, getSource, isSource } from "./sources";
+import { getOp, listOps } from "../../src/gpu/graph";
 import { OP_CATEGORY, OP_HELP } from "./opMeta";
+import { getSource, isSource, SOURCES } from "./sources";
 
 export interface PortMeta {
   name: string;
@@ -30,8 +31,15 @@ export function getSpec(name: string): NodeSpec {
   if (isSource(name)) {
     const s = getSource(name)!;
     return {
-      name, label: s.label, describe: s.describe, category: categoryOf(name), help: OP_HELP[name],
-      isSource: true, inputs: [], outputs: s.outputs, params: s.params,
+      name,
+      label: s.label,
+      describe: s.describe,
+      category: categoryOf(name),
+      help: OP_HELP[name],
+      isSource: true,
+      inputs: [],
+      outputs: s.outputs,
+      params: s.params,
     };
   }
   const op = getOp(name);

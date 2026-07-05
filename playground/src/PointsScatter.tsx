@@ -12,15 +12,20 @@ const GRID = "#1f2433";
 const DOT = "#6ba8ff";
 
 export function PointsScatter({ data }: { data: ArrayLike<number> }) {
-  const W = 300, H = 300;
+  const W = 300,
+    H = 300;
   const m = { top: 10, right: 12, bottom: 28, left: 38 };
   const iw = W - m.left - m.right;
   const ih = H - m.top - m.bottom;
 
-  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  let minX = Infinity,
+    minY = Infinity,
+    maxX = -Infinity,
+    maxY = -Infinity;
   const pts: { x: number; y: number }[] = [];
   for (let i = 0; i + 1 < data.length; i += 2) {
-    const x = data[i]!, y = data[i + 1]!;
+    const x = data[i]!,
+      y = data[i + 1]!;
     pts.push({ x, y });
     if (x < minX) minX = x;
     if (x > maxX) maxX = x;

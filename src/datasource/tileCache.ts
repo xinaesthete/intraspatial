@@ -33,9 +33,15 @@ export class TileCache<V> {
     this.onEvict = opts.dispose;
   }
 
-  get bytes(): number { return this.total; }
-  get size(): number { return this.map.size; }
-  has(key: string): boolean { return this.map.has(key); }
+  get bytes(): number {
+    return this.total;
+  }
+  get size(): number {
+    return this.map.size;
+  }
+  has(key: string): boolean {
+    return this.map.has(key);
+  }
 
   /** Fetch, marking the entry most-recently-used. */
   get(key: string): V | undefined {

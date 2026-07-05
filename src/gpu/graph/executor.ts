@@ -10,15 +10,16 @@
 // and the edge wired to its `next` input is a deferred write committed after the
 // tick — this is what cuts the cycle (a unit delay, z⁻¹). `advance(graph, field,
 // {steps, state})` runs that loop; `pull` is one tick from a fresh (init) state.
-import type { FieldValue, GpuField } from "./handle";
-import type { ExecCtx, OpType } from "./op";
-import { allFinite } from "./op";
+
+import { nodeBackend } from "./backend.node";
 import type { GraphNode } from "./graph";
 import { Graph } from "./graph";
-import { getOp } from "./registry";
-import { nodeBackend } from "./backend.node";
+import type { FieldValue, GpuField } from "./handle";
 import type { GraphMemo } from "./memo";
 import { hashSource, hashString, stableJSON } from "./memo";
+import type { ExecCtx, OpType } from "./op";
+import { allFinite } from "./op";
+import { getOp } from "./registry";
 import { FieldRing } from "./ringBuffer";
 
 export interface PullOptions {
@@ -63,9 +64,7 @@ function topoOrder(graph: Graph, roots: string[]): GraphNode[] {
     const node = graph.getNode(id);
     // feedback (z⁻¹) and delay (z⁻ᵏ) only depend on `init` within a tick — the `next`
     // back-edge is a deferred write, so the loop is a DAG per tick.
-    const deps = node.op === "feedback" || node.op === "delay"
-      ? (node.inputs.init ? [node.inputs.init] : [])
-      : Object.values(node.inputs);
+    const deps = node.op === "feedback" || node.op === "delay" ? (node.inputs.init ? [node.inputs.init] : []) : Object.values(node.inputs);
     for (const ref of deps) visit(ref.node);
     state.set(id, 1);
     order.push(node);

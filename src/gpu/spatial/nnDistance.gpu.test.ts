@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, expect, it } from "vitest";
 import { nearestNeighborDistancesGpu } from "./nnDistance";
 
 // CPU golden: brute-force nearest-neighbour distance in f64.

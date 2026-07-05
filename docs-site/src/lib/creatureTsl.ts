@@ -10,7 +10,7 @@
 //
 // Thin transcription adapter — three's TSL node types are inconsistent, so nodes are loosely
 // typed (same rationale as oklabTsl / supereggTsl / tslTransform).
-import { abs, cos, float, Fn, int, pow, sign, sin, vec2, vertexIndex } from "three/tsl";
+import { abs, cos, Fn, float, int, pow, sign, sin, vec2, vertexIndex } from "three/tsl";
 
 // biome-ignore lint/suspicious/noExplicitAny: three TSL node types are inconsistent; adapter layer.
 type Tsl = any;
@@ -38,8 +38,14 @@ export const creatureCell = Fn((): Tsl => {
   const corner = vi.mod(int(6));
   const aroundSeg = quad.mod(int(CREATURE_RADIAL));
   const alongSeg = quad.div(int(CREATURE_RADIAL));
-  const isDu = corner.equal(int(1)).or(corner.equal(int(2))).or(corner.equal(int(4)));
-  const isDv = corner.equal(int(2)).or(corner.equal(int(4))).or(corner.equal(int(5)));
+  const isDu = corner
+    .equal(int(1))
+    .or(corner.equal(int(2)))
+    .or(corner.equal(int(4)));
+  const isDv = corner
+    .equal(int(2))
+    .or(corner.equal(int(4)))
+    .or(corner.equal(int(5)));
   const ai = float(aroundSeg).add(isDu.select(float(1), float(0))); // 0..RADIAL (around corner)
   const ri = float(alongSeg).add(isDv.select(float(1), float(0))); // 0..SEGMENTS (along corner)
   const theta = ai.div(float(CREATURE_RADIAL)).mul(2 * Math.PI);

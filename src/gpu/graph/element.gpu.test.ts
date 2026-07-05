@@ -7,12 +7,12 @@
 // `"use gpu"` module into the registry's module graph destabilised Dawn teardown in
 // unrelated forks, so `mulFields` stays CPU Tier-1 and the kernel is validated in
 // isolation in this dedicated GPU fork instead.
-import { describe, it, expect, beforeAll } from "vitest";
-import { Graph, advance, createSimState, nodeBackend, registerElementOps } from "./index";
-import type { ElementType } from "./index";
-import { mulFields, packComplex } from "./elementMath";
-import { complexMulGpu } from "./ops/complexMulGpu";
+import { beforeAll, describe, expect, it } from "vitest";
 import { seedGrayScott } from "../sim/reactionDiffusion";
+import { mulFields, packComplex } from "./elementMath";
+import type { ElementType } from "./index";
+import { advance, createSimState, Graph, nodeBackend, registerElementOps } from "./index";
+import { complexMulGpu } from "./ops/complexMulGpu";
 
 const COMPLEX: ElementType = { kind: "complex" };
 
@@ -43,7 +43,8 @@ describe("element algebra on the GPU", () => {
   });
 
   it("reaction–diffusion (complex) advances on the GPU, matching the CPU integrator", async () => {
-    const w = 8, h = 8;
+    const w = 8,
+      h = 8;
     const seed = seedGrayScott(w, h, 0.05);
     const make = () => {
       const g = new Graph();
@@ -58,7 +59,8 @@ describe("element algebra on the GPU", () => {
       fb.close(zNext);
       return { g, zNext };
     };
-    const a = make(), b = make();
+    const a = make(),
+      b = make();
     const onGpu = await advance(a.g, a.zNext, { steps: 3, state: createSimState(), mode: "gpu" });
     const onCpu = await advance(b.g, b.zNext, { steps: 3, state: createSimState(), mode: "cpu" });
     expect(maxAbsDiff(onGpu.data!, onCpu.data!)).toBeLessThan(1e-3);

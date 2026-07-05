@@ -65,10 +65,13 @@ interface Cell {
 
 function symmetricDifference(a: number[], b: number[]): number[] {
   const out: number[] = [];
-  let i = 0, j = 0;
+  let i = 0,
+    j = 0;
   while (i < a.length && j < b.length) {
-    if (a[i] === b[j]) { i++; j++; }
-    else if (a[i]! < b[j]!) out.push(a[i++]!);
+    if (a[i] === b[j]) {
+      i++;
+      j++;
+    } else if (a[i]! < b[j]!) out.push(a[i++]!);
     else out.push(b[j++]!);
   }
   while (i < a.length) out.push(a[i++]!);
@@ -86,7 +89,8 @@ export function sublevelsetPersistence(
   height: number,
   opts: SublevelOptions = {},
 ): FieldPersistenceResult {
-  const W = width, H = height;
+  const W = width,
+    H = height;
   if (W <= 0 || H <= 0) throw new Error("sublevelsetPersistence: bad dimensions");
   if (field.length < W * H) throw new Error("sublevelsetPersistence: field too small");
   const sign = opts.superlevel ? -1 : 1;
@@ -94,8 +98,8 @@ export function sublevelsetPersistence(
 
   // ---- Id scheme: vertices | horizontal edges | vertical edges | squares ----
   const V = W * H;
-  const HE = (W - 1) * H;            // horizontal edge (c,r)-(c+1,r)
-  const VE = W * (H - 1);            // vertical edge   (c,r)-(c,r+1)
+  const HE = (W - 1) * H; // horizontal edge (c,r)-(c+1,r)
+  const VE = W * (H - 1); // vertical edge   (c,r)-(c,r+1)
   const vId = (c: number, r: number) => r * W + c;
   const hId = (c: number, r: number) => V + r * (W - 1) + c;
   const vvId = (c: number, r: number) => V + HE + r * W + c;
@@ -103,19 +107,19 @@ export function sublevelsetPersistence(
 
   const cells: Cell[] = [];
   // Vertices.
-  for (let r = 0; r < H; r++)
-    for (let c = 0; c < W; c++)
-      cells.push({ id: vId(c, r), filt: f(c, r), dim: 0, faces: [] });
+  for (let r = 0; r < H; r++) for (let c = 0; c < W; c++) cells.push({ id: vId(c, r), filt: f(c, r), dim: 0, faces: [] });
   // Horizontal edges: lower-star value = max of the two endpoints.
   for (let r = 0; r < H; r++)
     for (let c = 0; c < W - 1; c++) {
-      const a = vId(c, r), b = vId(c + 1, r);
+      const a = vId(c, r),
+        b = vId(c + 1, r);
       cells.push({ id: hId(c, r), filt: Math.max(f(c, r), f(c + 1, r)), dim: 1, faces: a < b ? [a, b] : [b, a] });
     }
   // Vertical edges.
   for (let r = 0; r < H - 1; r++)
     for (let c = 0; c < W; c++) {
-      const a = vId(c, r), b = vId(c, r + 1);
+      const a = vId(c, r),
+        b = vId(c, r + 1);
       cells.push({ id: vvId(c, r), filt: Math.max(f(c, r), f(c, r + 1)), dim: 1, faces: a < b ? [a, b] : [b, a] });
     }
   // Squares: value = max over the 4 corners; boundary = its 4 edges.
@@ -134,18 +138,23 @@ export function sublevelsetPersistence(
   const pos = new Map<number, number>();
   for (let i = 0; i < cells.length; i++) pos.set(cells[i]!.id, i);
 
-  const cols: number[][] = cells.map((cell) =>
-    cell.faces.length ? cell.faces.map((fid) => pos.get(fid)!).sort((a, b) => a - b) : [],
-  );
+  const cols: number[][] = cells.map((cell) => (cell.faces.length ? cell.faces.map((fid) => pos.get(fid)!).sort((a, b) => a - b) : []));
 
   // Map any cell id back to a representative row-major grid cell: a vertex is its own
   // cell; an edge / square reports its lowest-index corner. Lets callers link a
   // persistence pair to a spatial location (e.g. which component / hole it lives in).
   const repCell = (id: number): number => {
     if (id < V) return id;
-    if (id < V + HE) { const k = id - V; return Math.floor(k / (W - 1)) * W + (k % (W - 1)); }
-    if (id < V + HE + VE) { const k = id - V - HE; return Math.floor(k / W) * W + (k % W); }
-    const k = id - V - HE - VE; return Math.floor(k / (W - 1)) * W + (k % (W - 1));
+    if (id < V + HE) {
+      const k = id - V;
+      return Math.floor(k / (W - 1)) * W + (k % (W - 1));
+    }
+    if (id < V + HE + VE) {
+      const k = id - V - HE;
+      return Math.floor(k / W) * W + (k % W);
+    }
+    const k = id - V - HE - VE;
+    return Math.floor(k / (W - 1)) * W + (k % (W - 1));
   };
 
   // ---- Standard GF(2) reduction (as in persistence.ts) ----
@@ -169,8 +178,11 @@ export function sublevelsetPersistence(
       const death = cells[j]!.filt;
       if (death > creator.filt)
         pairs.push({
-          dim: creator.dim, birth: toField(creator.filt), death: toField(death),
-          birthCell: repCell(creator.id), deathCell: repCell(cells[j]!.id),
+          dim: creator.dim,
+          birth: toField(creator.filt),
+          death: toField(death),
+          birthCell: repCell(creator.id),
+          deathCell: repCell(cells[j]!.id),
         });
       pairedCreator.add(l);
     }
@@ -183,7 +195,9 @@ export function sublevelsetPersistence(
   for (let j = 0; j < cols.length; j++)
     if (cols[j]!.length === 0 && !pairedCreator.has(j))
       pairs.push({
-        dim: cells[j]!.dim, birth: toField(cells[j]!.filt), death: essentialDeath,
+        dim: cells[j]!.dim,
+        birth: toField(cells[j]!.filt),
+        death: essentialDeath,
         birthCell: repCell(cells[j]!.id),
       });
 
@@ -196,9 +210,10 @@ export function sublevelsetPersistence(
 export function fieldBettiNumbers(result: FieldPersistenceResult, t: number): number[] {
   const b: number[] = [];
   for (const p of result.pairs) {
-    const alive = p.birth <= p.death
-      ? p.birth <= t && t < p.death   // sublevel
-      : p.death < t && t <= p.birth;  // superlevel
+    const alive =
+      p.birth <= p.death
+        ? p.birth <= t && t < p.death // sublevel
+        : p.death < t && t <= p.birth; // superlevel
     if (alive) b[p.dim] = (b[p.dim] ?? 0) + 1;
   }
   for (let i = 0; i < b.length; i++) if (b[i] === undefined) b[i] = 0;

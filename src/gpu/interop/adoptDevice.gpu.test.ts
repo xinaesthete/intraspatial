@@ -1,7 +1,7 @@
-import { describe, it, expect } from "vitest";
 import tgpu from "typegpu";
 import * as d from "typegpu/data";
 import * as std from "typegpu/std";
+import { describe, expect, it } from "vitest";
 import { getDevice } from "../device";
 import { adoptDevice } from "./adoptDevice";
 

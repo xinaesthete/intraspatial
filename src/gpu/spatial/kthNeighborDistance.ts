@@ -104,11 +104,7 @@ export const KTH_NEIGHBOR_MAX_K = MAX_K;
 
 /** For each point, the distance to its k-th nearest other point (a local density
  *  estimate ρ_i). `k` must be in 1..32 and < N. */
-export async function kthNeighborDistanceGpu(
-  xs: ArrayLike<number>,
-  ys: ArrayLike<number>,
-  k: number,
-): Promise<Float32Array> {
+export async function kthNeighborDistanceGpu(xs: ArrayLike<number>, ys: ArrayLike<number>, k: number): Promise<Float32Array> {
   const n = xs.length;
   if (ys.length !== n) throw new Error("kthNeighborDistance: xs and ys length mismatch");
   if (k < 1 || k > MAX_K) throw new Error(`kthNeighborDistance: k must be in 1..${MAX_K}`);

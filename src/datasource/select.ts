@@ -10,14 +10,14 @@
 
 import {
   aabbOutsideFrustum,
+  type Camera,
   cameraBasis,
   closestPointOnAabb,
   dot,
   frustumPlanes,
+  type Plane,
   sub,
   worldPerPixel,
-  type Camera,
-  type Plane,
 } from "./math";
 import { chunkApproxBytes, chunkCounts, chunkWorldAabb, worldVoxelSize0 } from "./multiscale";
 import type { ChunkId, Multiscale, Result, SelectedChunk, Selection } from "./types";
@@ -84,7 +84,9 @@ export function select(ms: Multiscale, cam: Camera, opts: SelectOptions = {}): S
     for (let dz = 0; dz < 2; dz++) {
       for (let dy = 0; dy < 2; dy++) {
         for (let dx = 0; dx < 2; dx++) {
-          const cx = id.x * 2 + dx, cy = id.y * 2 + dy, cz = id.z * 2 + dz;
+          const cx = id.x * 2 + dx,
+            cy = id.y * 2 + dy,
+            cz = id.z * 2 + dz;
           if (cx < counts[0] && cy < counts[1] && cz < counts[2]) visit({ level: child, x: cx, y: cy, z: cz });
         }
       }
@@ -111,12 +113,7 @@ export function select(ms: Multiscale, cam: Camera, opts: SelectOptions = {}): S
  * up to the coarsest level. Returns `Err('out of memory')` only when even the
  * coarsest selection cannot fit — the honest floor, not a crash.
  */
-export function selectWithinBudget(
-  ms: Multiscale,
-  cam: Camera,
-  ceilingBytes: number,
-  opts: SelectOptions = {},
-): Result<Selection> {
+export function selectWithinBudget(ms: Multiscale, cam: Camera, ceilingBytes: number, opts: SelectOptions = {}): Result<Selection> {
   const maxLevel = ms.levelCount - 1;
   const startFloor = Math.max(0, opts.minLevel ?? 0);
   for (let floor = startFloor; floor <= maxLevel; floor++) {

@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
 import type { ParamSpec } from "../gpu/graph/op";
-import { traitSpaceFromParams, withLocked } from "./traitSpace";
-import { neutralSpecimen, randomSpecimen } from "./specimen";
 import { advance, breed, marry, mutate, steer, toward } from "./mutator";
 import { mulberry32 } from "./rng";
+import { neutralSpecimen, randomSpecimen } from "./specimen";
+import { traitSpaceFromParams, withLocked } from "./traitSpace";
 
 const SPECS: ParamSpec[] = [
   { name: "attract", type: "number", default: 0.5, min: 0, max: 2 },
