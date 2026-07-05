@@ -20,6 +20,9 @@
     "bench:gpu": "BENCH=1 vitest run -c vitest.gpu.config.ts test/bench_idwt.gpu.test.ts",
     "test:rust": "cargo test --manifest-path rust/htj2k-core/Cargo.toml",
     "typecheck": "tsc --noEmit",
+    "lint": "biome check .",
+    "lint:fix": "biome check --write .",
+    "format": "biome format --write .",
     "build:wasm": "wasm-pack build rust/htj2k-core --target web --out-dir pkg --out-name htj2k_core",
     "build:wasm:dev": "wasm-pack build rust/htj2k-core --dev --target web --out-dir pkg --out-name htj2k_core"
   },
@@ -32,6 +35,7 @@
     "openjph-wasm": "file:../openjph-wasm"
   },
   "devDependencies": {
+    "@biomejs/biome": "2.5.2",
     "@types/node": "^20.14.0",
     "@webgpu/types": "^0.1.40",
     "typescript": "catalog:",
