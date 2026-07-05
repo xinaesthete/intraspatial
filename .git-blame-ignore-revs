@@ -1,0 +1,6 @@
+# Revisions to skip in `git blame` — mechanical, whitespace/formatting-only changes.
+# Enable locally with:  git config blame.ignoreRevsFile .git-blame-ignore-revs
+# (GitHub honours this file automatically.)
+
+# style: repo-wide Biome format + organize-imports pass
+2f45088b9a2d60a422ed993849738377b99910d3
