@@ -67,6 +67,61 @@ export function worldAabbOfArrayBox(a: Affine3, min: Vec3, max: Vec3): Aabb {
   return { min: lo, max: hi };
 }
 
+/** Inverse affine (world → array): invert the 3×3 axis matrix (axes as columns) and
+ *  carry the origin through. `applyAffine(invertAffine(a), applyAffine(a, p)) === p`. */
+export function invertAffine(t: Affine3): Affine3 {
+  const [c0, c1, c2] = t.axes;
+  const a = c0[0],
+    d = c0[1],
+    g = c0[2];
+  const b = c1[0],
+    e = c1[1],
+    h = c1[2];
+  const c = c2[0],
+    f = c2[1],
+    i = c2[2];
+  const det = a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g);
+  const s = det === 0 ? 0 : 1 / det;
+  // Columns of M⁻¹.
+  const col0: Vec3 = [(e * i - f * h) * s, (f * g - d * i) * s, (d * h - e * g) * s];
+  const col1: Vec3 = [(c * h - b * i) * s, (a * i - c * g) * s, (b * g - a * h) * s];
+  const col2: Vec3 = [(b * f - c * e) * s, (c * d - a * f) * s, (a * e - b * d) * s];
+  const o = t.origin;
+  const origin: Vec3 = [
+    -(o[0] * col0[0] + o[1] * col1[0] + o[2] * col2[0]),
+    -(o[0] * col0[1] + o[1] * col1[1] + o[2] * col2[1]),
+    -(o[0] * col0[2] + o[1] * col1[2] + o[2] * col2[2]),
+  ];
+  return { origin, axes: [col0, col1, col2] };
+}
+
+/** The 8 world corners of an array-space box [lo,hi] under the affine — a genuinely
+ *  oriented box (not the AABB), so oblique placements are handled exactly. */
+export function orientedBoxCorners(t: Affine3, lo: Vec3, hi: Vec3): Vec3[] {
+  const out: Vec3[] = [];
+  for (let i = 0; i < 8; i++) {
+    out.push(applyAffine(t, [i & 1 ? hi[0] : lo[0], i & 2 ? hi[1] : lo[1], i & 4 ? hi[2] : lo[2]]));
+  }
+  return out;
+}
+
+/** True if the convex box (given by its 8 corners) lies wholly outside the frustum —
+ *  i.e. entirely on the outer side of at least one plane. Conservative (may keep a box
+ *  that grazes a corner), never false-negative. */
+export function boxOutsideFrustum(corners: readonly Vec3[], planes: readonly Plane[]): boolean {
+  for (const pl of planes) {
+    let allOutside = true;
+    for (const p of corners) {
+      if (dot(pl.n, p) + pl.d >= 0) {
+        allOutside = false;
+        break;
+      }
+    }
+    if (allOutside) return true;
+  }
+  return false;
+}
+
 /** A perspective camera. `fovY` is the vertical field of view in radians; the
  *  viewport height in pixels drives the projected pixel pitch. */
 export interface Camera {

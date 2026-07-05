@@ -9,17 +9,20 @@
 // receding-resolution gradient — from one formula.
 
 import {
-  aabbOutsideFrustum,
+  type Affine3,
+  applyAffine,
+  boxOutsideFrustum,
   type Camera,
   cameraBasis,
-  closestPointOnAabb,
   dot,
   frustumPlanes,
-  type Plane,
+  invertAffine,
+  orientedBoxCorners,
   sub,
+  type Vec3,
   worldPerPixel,
 } from "./math";
-import { chunkApproxBytes, chunkCounts, chunkWorldAabb, worldVoxelSize0 } from "./multiscale";
+import { chunkApproxBytes, chunkArrayBox, chunkCounts, worldVoxelSize0 } from "./multiscale";
 import type { ChunkId, Multiscale, Result, SelectedChunk, Selection } from "./types";
 
 export interface SelectOptions {
@@ -40,10 +43,18 @@ function levelForDepth(ms: Multiscale, cam: Camera, depth: number, q: number, mi
   return Math.max(minLevel, Math.min(maxLevel, l));
 }
 
-/** Optical-axis depth of a chunk's nearest point (clamped to the near plane). */
-function nearestDepth(ms: Multiscale, cam: Camera, fwd: Camera["forward"], id: ChunkId): number {
-  const box = chunkWorldAabb(ms, id);
-  const p = closestPointOnAabb(box, cam.eye);
+/** Optical-axis depth of a chunk's nearest point (clamped to the near plane). We find the
+ *  nearest point on the *oriented* chunk box by clamping the eye into the box in array space
+ *  and mapping back — exact for a rotation+uniform-scale placement, a close approximation
+ *  under shear/anisotropy (good enough for the coarse LOD quantisation). */
+function nearestDepth(wfa: Affine3, worldToArray: Affine3, cam: Camera, fwd: Vec3, lo: Vec3, hi: Vec3): number {
+  const e = applyAffine(worldToArray, cam.eye);
+  const clamped: Vec3 = [
+    Math.min(Math.max(e[0], lo[0]), hi[0]),
+    Math.min(Math.max(e[1], lo[1]), hi[1]),
+    Math.min(Math.max(e[2], lo[2]), hi[2]),
+  ];
+  const p = applyAffine(wfa, clamped);
   return Math.max(cam.near, dot(sub(p, cam.eye), fwd));
 }
 
@@ -57,6 +68,8 @@ export function select(ms: Multiscale, cam: Camera, opts: SelectOptions = {}): S
   const maxLevel = ms.levelCount - 1;
   const planes = frustumPlanes(cam);
   const { fwd } = cameraBasis(cam);
+  const wfa = ms.worldFromArray;
+  const worldToArray = invertAffine(wfa); // once — reused for every chunk's nearest-point
 
   const out: SelectedChunk[] = [];
   const countByLevel: number[] = new Array(ms.levelCount).fill(0);
@@ -68,10 +81,10 @@ export function select(ms: Multiscale, cam: Camera, opts: SelectOptions = {}): S
   };
 
   const visit = (id: ChunkId): void => {
-    const box = chunkWorldAabb(ms, id);
-    if (aabbOutsideFrustum(box, planes as Plane[])) return; // frustum cull
+    const [lo, hi] = chunkArrayBox(ms, id);
+    if (boxOutsideFrustum(orientedBoxCorners(wfa, lo, hi), planes)) return; // frustum cull (oriented box)
 
-    const depth = nearestDepth(ms, cam, fwd, id);
+    const depth = nearestDepth(wfa, worldToArray, cam, fwd, lo, hi);
     const desired = levelForDepth(ms, cam, depth, q, minLevel, maxLevel);
 
     if (desired >= id.level || id.level === minLevel) {
