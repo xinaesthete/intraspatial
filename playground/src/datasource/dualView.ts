@@ -25,6 +25,7 @@ import {
   type Vec3,
   worldAabbOfArrayBox,
 } from "../../../src/datasource";
+import { NaiveVolumeRenderer } from "./naiveVolumeRenderer";
 import { boundsOverlay, chunkOverlays, disposeGroup, frustumOverlay } from "./overlays";
 import { TileRenderer } from "./tileRenderer";
 import { VolumeRenderer } from "./volumeRenderer";
@@ -72,7 +73,7 @@ export class DualView {
   private size: number;
 
   private tiles: TileRenderer | null = null;
-  private volume: VolumeRenderer | null = null;
+  private volume: VolumeRenderer | NaiveVolumeRenderer | null = null;
   private image: THREE.Mesh | null = null;
   private probe: THREE.Mesh | null = null;
   private transform: TransformControls | null = null;
@@ -94,6 +95,7 @@ export class DualView {
     source: { ms: Multiscale; loader: Loader },
     onStats?: (s: DecisionStats) => void,
     combined = false,
+    naive = false,
   ) {
     const ms = source.ms;
     this.ms = ms;
@@ -144,15 +146,21 @@ export class DualView {
     if (this.isPlane) {
       this.tiles = new TileRenderer(ms, this.loader);
       this.scene.add(this.tiles.group);
-    } else {
-      this.volume = new VolumeRenderer(ms, this.loader, this.renderer);
+    } else if (naive) {
+      // The pass-per-chunk baseline (no gizmo / depth-culling — a rendering-technique A/B).
+      this.volume = new NaiveVolumeRenderer(ms, this.loader);
       this.volume.group.renderOrder = 0;
       this.scene.add(this.volume.group);
+    } else {
+      const v = new VolumeRenderer(ms, this.loader, this.renderer);
+      this.volume = v;
+      v.group.renderOrder = 0;
+      this.scene.add(v.group);
       if (combined) {
         this.addImagePlane(canvas);
         this.addProbe();
       } else {
-        this.addVolumeGizmo(canvas); // move/rotate the volume; select() + overlays + raymarch track it
+        this.addVolumeGizmo(canvas, v); // move/rotate the volume; select() + overlays + raymarch track it
       }
     }
     this.scene.add(this.overlays);
@@ -252,9 +260,7 @@ export class DualView {
   /** A translate/rotate gizmo on the volume itself. Moving it reorients the whole placement —
    *  the raymarch (via syncTransform), the chunk overlays AND select() all track it live, which
    *  exercises the de-axialised pipeline end to end. Press R for rotate, T for translate. */
-  private addVolumeGizmo(canvas: HTMLElement): void {
-    const vol = this.volume;
-    if (!vol) return;
+  private addVolumeGizmo(canvas: HTMLElement, vol: VolumeRenderer): void {
     const tc = new TransformControls(this.appCamera, canvas);
     tc.attach(vol.transformTarget);
     tc.addEventListener("dragging-changed", (e) => {
@@ -294,7 +300,8 @@ export class DualView {
   private rebuild(): Selection {
     const ds = cameraFromThree(this.appCamera, this.height || 600);
     // Use the volume's live placement (base ∘ gizmo) so select + overlays follow the gizmo.
-    const ms = this.volume ? { ...this.ms, worldFromArray: this.volume.effectiveWorldFromArray() } : this.ms;
+    // (Only the brick-page VolumeRenderer tracks a transform; the naive baseline stays at base.)
+    const ms = this.volume instanceof VolumeRenderer ? { ...this.ms, worldFromArray: this.volume.effectiveWorldFromArray() } : this.ms;
     const sel = select(ms, ds, { q: this.q });
 
     disposeGroup(this.overlays);

@@ -97,11 +97,12 @@ async function mount(kind: string): Promise<void> {
   if (!r) return;
   const levelCount = Number(pLevels.value);
   const combined = kind === "combined";
-  const source: SyntheticSource =
-    kind === "volume" || combined
-      ? syntheticVolume({ size: 256, chunk: 32, levelCount })
-      : syntheticPlane({ width: 2048, height: 2048, chunk: 64, levelCount });
-  view = new DualView(canvas, inset, r, source, (s) => renderStats(s, source.ms.levelCount), combined);
+  const naive = kind === "vol-naive";
+  const isVolume = kind === "volume" || combined || naive;
+  const source: SyntheticSource = isVolume
+    ? syntheticVolume({ size: 256, chunk: 32, levelCount })
+    : syntheticPlane({ width: 2048, height: 2048, chunk: 64, levelCount });
+  view = new DualView(canvas, inset, r, source, (s) => renderStats(s, source.ms.levelCount), combined, naive);
   view.setQ(Number(qSlider.value));
   view.setTextures(texChk.checked);
   view.setWireframe(gridChk.checked);
