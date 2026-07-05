@@ -39,7 +39,7 @@ import {
   viewZToPerspectiveDepth,
 } from "three/tsl";
 import { MeshBasicNodeMaterial } from "three/webgpu";
-import { chunkKey, type Loader, type Multiscale, type Selection, type Tile, type Vec3, worldAabbOfArrayBox } from "../../../src/datasource";
+import { type Affine3, chunkKey, type Loader, type Multiscale, type Selection, type Tile } from "../../../src/datasource";
 
 const STEPS = 128;
 // One raymarch, two outputs: the compositated colour AND the solid-surface clip depth.
@@ -76,6 +76,9 @@ export class VolumeRenderer {
   private uGamma = uniform(1.0);
   private uSolid = uniform(0.55);
   private uDepthAware = uniform(1); // 1 = respect scene depth (cull), 0 = draw as a flat overlay
+  // world → normalised array coords [0,1]³. Recomputed from the mesh's matrix whenever the
+  // volume is moved (gizmo), so the raymarch tracks a live transform.
+  private uWorldToNorm = uniform(new THREE.Matrix4());
   private mat: MeshBasicNodeMaterial | null = null;
 
   constructor(ms: Multiscale, loader: Loader, renderer: WebGPURendererLike) {
@@ -100,6 +103,7 @@ export class VolumeRenderer {
 
     this.mesh = this.makeMesh();
     this.group.add(this.mesh);
+    this.syncTransform(); // initialise uWorldToNorm from the base placement
   }
 
   setTransfer(cmin: number, cmax: number, gamma: number): void {
@@ -236,30 +240,7 @@ export class VolumeRenderer {
   }
 
   private makeMesh(): THREE.Mesh {
-    const wfa = this.ms.worldFromArray;
     const dims = this.ms.voxelDims0;
-    const b = worldAabbOfArrayBox(wfa, [0, 0, 0], [dims[0], dims[1], dims[2]]);
-    const size: Vec3 = [b.max[0] - b.min[0], b.max[1] - b.min[1], b.max[2] - b.min[2]];
-
-    // Model matrix M: array (level-0 voxel) coords → world. Columns are the array axes,
-    // translation is the origin — i.e. the full Affine3, INCLUDING any rotation/shear/
-    // anisotropy it carries (the volume need not be axis-aligned in world).
-    // makeBasis sets the three columns (the array axes); setPosition adds the origin — same
-    // 4×4 as a hand-written .set(), but the columns read as the axes and Biome leaves it alone.
-    const [ax0, ax1, ax2] = wfa.axes;
-    const M = new THREE.Matrix4()
-      .makeBasis(
-        new THREE.Vector3(ax0[0], ax0[1], ax0[2]),
-        new THREE.Vector3(ax1[0], ax1[1], ax1[2]),
-        new THREE.Vector3(ax2[0], ax2[1], ax2[2]),
-      )
-      .setPosition(wfa.origin[0], wfa.origin[1], wfa.origin[2]);
-    // world → NORMALISED array coords [0,1]³ = diag(1/dims) · M⁻¹. Marching AND sampling in
-    // this space is what makes the raymarch correct for an arbitrary placement: the volume is
-    // the axis-aligned unit box here, however M rotates/shears it in world. For a diagonal M
-    // this collapses to the old (pWorld−min)/size mapping, so axis-aligned data is unchanged.
-    const worldToNorm = new THREE.Matrix4().makeScale(1 / dims[0], 1 / dims[1], 1 / dims[2]).multiply(M.clone().invert());
-    const uWorldToNorm = uniform(worldToNorm);
     const pageDimsU = uniform(new THREE.Vector3(this.pageDims[0], this.pageDims[1], this.pageDims[2]));
     const slots = uniform(this.slotsPerAxis);
     const invB = uniform(0.5 / this.B);
@@ -280,8 +261,8 @@ export class VolumeRenderer {
       const camW = cameraPosition;
       const dirW = normalize(positionWorld.sub(camW)); // unit world ray ⇒ t is world distance
       // Camera + ray direction in normalised array space (direction ⇒ w = 0, no translation).
-      const camN = uWorldToNorm.mul(vec4(camW, 1.0)).xyz;
-      const dirN = uWorldToNorm.mul(vec4(dirW, 0.0)).xyz;
+      const camN = this.uWorldToNorm.mul(vec4(camW, 1.0)).xyz;
+      const dirN = this.uWorldToNorm.mul(vec4(dirW, 0.0)).xyz;
       // Ray ∩ the unit box [0,1]³ (slab test). worldToNorm is affine, so this shares t with
       // the world ray — tEnter/tExit come out as world distances, matching the depth math.
       const invD = vec3(1.0).div(dirN);
@@ -366,10 +347,61 @@ export class VolumeRenderer {
 
     this.mat = mat;
 
-    const geo = new THREE.BoxGeometry(size[0], size[1], size[2]);
+    // Proxy geometry: the array box as a CENTRED box in local space (spans ±dims/2). The mesh's
+    // matrix maps it to world with the mesh origin at the volume CENTRE, so a gizmo rotates about
+    // the centre. The local→array half-voxel shift is baked into worldToNorm by syncTransform().
+    const geo = new THREE.BoxGeometry(dims[0], dims[1], dims[2]);
     const mesh = new THREE.Mesh(geo, mat);
-    mesh.position.set(b.min[0] + size[0] / 2, b.min[1] + size[1] / 2, b.min[2] + size[2] / 2);
+    const half = new THREE.Matrix4().makeTranslation(dims[0] / 2, dims[1] / 2, dims[2] / 2);
+    this.baseMatrix().multiply(half).decompose(mesh.position, mesh.quaternion, mesh.scale);
     return mesh;
+  }
+
+  /** The base array→world affine as a Matrix4 (columns = array axes, translation = origin). */
+  private baseMatrix(): THREE.Matrix4 {
+    const { axes, origin } = this.ms.worldFromArray;
+    const [ax0, ax1, ax2] = axes;
+    return new THREE.Matrix4()
+      .makeBasis(
+        new THREE.Vector3(ax0[0], ax0[1], ax0[2]),
+        new THREE.Vector3(ax1[0], ax1[1], ax1[2]),
+        new THREE.Vector3(ax2[0], ax2[1], ax2[2]),
+      )
+      .setPosition(origin[0], origin[1], origin[2]);
+  }
+
+  /** The gizmo target — attach TransformControls here to move/rotate the volume. */
+  get transformTarget(): THREE.Object3D {
+    return this.mesh;
+  }
+
+  /** Recompute world→normalised-array from the mesh's current transform. Call after the gizmo
+   *  moves the mesh so the raymarch tracks it. */
+  syncTransform(): void {
+    this.mesh.updateMatrix();
+    const d = this.ms.voxelDims0;
+    // world → normalised array coords = T(0.5) · diag(1/dims) · meshMatrix⁻¹ (local is centred).
+    this.uWorldToNorm.value = new THREE.Matrix4()
+      .makeTranslation(0.5, 0.5, 0.5)
+      .multiply(new THREE.Matrix4().makeScale(1 / d[0], 1 / d[1], 1 / d[2]))
+      .multiply(this.mesh.matrix.clone().invert());
+  }
+
+  /** The volume's live array→world placement (base ∘ gizmo) — for select()/overlays. */
+  effectiveWorldFromArray(): Affine3 {
+    this.mesh.updateMatrix();
+    const d = this.ms.voxelDims0;
+    // M_eff (array→world) = meshMatrix · T(−dims/2), undoing the centring shift.
+    const m = this.mesh.matrix.clone().multiply(new THREE.Matrix4().makeTranslation(-d[0] / 2, -d[1] / 2, -d[2] / 2));
+    const e = m.elements; // column-major
+    return {
+      origin: [e[12] ?? 0, e[13] ?? 0, e[14] ?? 0],
+      axes: [
+        [e[0] ?? 0, e[1] ?? 0, e[2] ?? 0],
+        [e[4] ?? 0, e[5] ?? 0, e[6] ?? 0],
+        [e[8] ?? 0, e[9] ?? 0, e[10] ?? 0],
+      ],
+    };
   }
 
   dispose(): void {

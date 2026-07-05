@@ -76,6 +76,8 @@ export class DualView {
   private image: THREE.Mesh | null = null;
   private probe: THREE.Mesh | null = null;
   private transform: TransformControls | null = null;
+  private volumeTransform: TransformControls | null = null;
+  private onKey: ((e: KeyboardEvent) => void) | null = null;
   private q = 1;
   private showTextures = true;
   private showWireframe = true;
@@ -149,6 +151,8 @@ export class DualView {
       if (combined) {
         this.addImagePlane(canvas);
         this.addProbe();
+      } else {
+        this.addVolumeGizmo(canvas); // move/rotate the volume; select() + overlays + raymarch track it
       }
     }
     this.scene.add(this.overlays);
@@ -245,6 +249,31 @@ export class DualView {
     this.scene.add(rod);
   }
 
+  /** A translate/rotate gizmo on the volume itself. Moving it reorients the whole placement —
+   *  the raymarch (via syncTransform), the chunk overlays AND select() all track it live, which
+   *  exercises the de-axialised pipeline end to end. Press R for rotate, T for translate. */
+  private addVolumeGizmo(canvas: HTMLElement): void {
+    const vol = this.volume;
+    if (!vol) return;
+    const tc = new TransformControls(this.appCamera, canvas);
+    tc.attach(vol.transformTarget);
+    tc.addEventListener("dragging-changed", (e) => {
+      this.appControls.enabled = !(e as unknown as { value: boolean }).value;
+    });
+    tc.addEventListener("objectChange", () => {
+      vol.syncTransform();
+      this.dirty = true; // re-select + rebuild overlays against the new placement
+    });
+    this.scene.add(tc.getHelper());
+    this.volumeTransform = tc;
+
+    this.onKey = (ev: KeyboardEvent): void => {
+      if (ev.key === "r" || ev.key === "R") tc.setMode("rotate");
+      else if (ev.key === "t" || ev.key === "T") tc.setMode("translate");
+    };
+    window.addEventListener("keydown", this.onKey);
+  }
+
   resize(width: number, height: number): void {
     this.width = width;
     this.height = height;
@@ -264,11 +293,13 @@ export class DualView {
 
   private rebuild(): Selection {
     const ds = cameraFromThree(this.appCamera, this.height || 600);
-    const sel = select(this.ms, ds, { q: this.q });
+    // Use the volume's live placement (base ∘ gizmo) so select + overlays follow the gizmo.
+    const ms = this.volume ? { ...this.ms, worldFromArray: this.volume.effectiveWorldFromArray() } : this.ms;
+    const sel = select(ms, ds, { q: this.q });
 
     disposeGroup(this.overlays);
     this.overlays.clear();
-    if (this.showWireframe) this.overlays.add(chunkOverlays(this.ms, sel));
+    if (this.showWireframe) this.overlays.add(chunkOverlays(ms, sel));
     // Draw the app camera's frustum, sized to the data slab.
     let dmin = Infinity,
       dmax = -Infinity;
@@ -329,6 +360,8 @@ export class DualView {
     this.tiles?.dispose();
     this.volume?.dispose();
     this.transform?.dispose();
+    this.volumeTransform?.dispose();
+    if (this.onKey) window.removeEventListener("keydown", this.onKey);
     if (this.image) {
       this.image.geometry.dispose();
       (this.image.material as THREE.Material).dispose();
