@@ -110,11 +110,23 @@ export class VolumeRenderer {
     // Atlas big enough to hold a generous working set of bricks. 12³ = 1728 slots (a 384³ R8
     // texture, ~54 MB) — headroom for finer base resolutions than 256³ (which alone is 512
     // chunks) and for the LOD-fallback ancestors the page table will lean on (step 3).
+    //
+    // SCALING (very large images) — this is a FIXED working-set ceiling. It's fine as long as the
+    // *visible-frustum* working set fits; a whole-volume view at full res that demands more than
+    // 1728 bricks just thrashes the LRU (the LOD fallback keeps it correct, only blurrier). To
+    // scale to huge images: keep the resident set bounded to the frustum working set (lean on
+    // select()'s degrade-to-fit / resource ceiling, ADR-0008 §5, which the demo doesn't yet drive),
+    // and consider a larger or dynamically-sized atlas.
     this.slotsPerAxis = 12; // 12³ = 1728 slots
     const atlasEdge = this.slotsPerAxis * this.B;
     this.atlas = makeR8Texture(new Uint8Array(atlasEdge * atlasEdge * atlasEdge), atlasEdge, atlasEdge, atlasEdge, THREE.LinearFilter);
     for (let i = this.slotsPerAxis ** 3 - 1; i >= 0; i--) this.free.push(i);
 
+    // The page table is DENSE: one texel per finest-level chunk cell, sized to the whole finest
+    // grid and (see rebuildPageTable) re-uploaded whole each change. SCALING (very large images):
+    // this grows with the finest resolution — 2048³/32³ = 64³ = 1 MB, but 8192³ → 256³ = 67 MB —
+    // and the whole-texture re-upload dominates. A sparse / hierarchical (multi-resolution) page
+    // table addressing only resident regions is the path to very large volumes.
     const [pw, ph, pd] = this.pageDims;
     this.pageData = new Uint8Array(pw * ph * pd * 4);
     this.pageTable = makeRGBA8Texture(this.pageData, pw, ph, pd);
@@ -213,6 +225,9 @@ export class VolumeRenderer {
       new THREE.Vector3(slot[0] * this.B, slot[1] * this.B, slot[2] * this.B),
     );
     this.resident.set(k, { slot, level: id.level, brick, use: ++this.useClock });
+    // SCALING (very large images): a full page-table rebuild per committed brick makes a fresh
+    // stream O(selected²) (each of N commits rebuilds over all N selected cells). Fine at demo
+    // scale; for large N, coalesce commits per frame and/or update only the changed cells.
     this.rebuildPageTable();
   }
 
@@ -261,6 +276,11 @@ export class VolumeRenderer {
     return undefined;
   }
 
+  // Rebuilds the ENTIRE page table from scratch (clear → walk every selected chunk → re-upload the
+  // whole texture). SCALING (very large images): cost is O(selected chunks + page volume) per call
+  // and it runs on every selection change and every brick commit — the main scaling wall alongside
+  // the atlas ceiling. A sparse page table with incremental (dirty-cell) updates would remove both
+  // the whole-texture re-upload and the per-commit full walk. See the notes in the constructor.
   private rebuildPageTable(): void {
     this.pageData.fill(0);
     const [pw, ph, pd] = this.pageDims;

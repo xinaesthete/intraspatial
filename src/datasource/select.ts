@@ -61,6 +61,13 @@ function nearestDepth(wfa: Affine3, worldToArray: Affine3, cam: Camera, fwd: Vec
 /**
  * Select the chunks the Camera needs. Pure. `q` is the detail budget; `minLevel`
  * floors the resolution (used by `selectWithinBudget`).
+ *
+ * SCALING (very large images): the returned Selection is UNBOUNDED — a whole-volume view that
+ * demands the finest level yields one chunk per finest cell in-frustum (tens of thousands at
+ * 2048³+), which then drives every downstream cost (page-table rebuild, atlas residency, overlay
+ * geometry). To scale, bound it with the resource ceiling: raise `minLevel` via `selectWithinBudget`
+ * (degrade-to-fit, ADR-0008 §5) so the working set fits the atlas. The renderer demo doesn't drive
+ * this yet — it relies on the LOD fallback to stay correct (just blurrier) past capacity.
  */
 export function select(ms: Multiscale, cam: Camera, opts: SelectOptions = {}): Selection {
   const q = opts.q ?? 1;
