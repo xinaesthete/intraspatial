@@ -3,7 +3,7 @@
 // selected chunks as level-tinted wireframe boxes plus a faint dataset bound — the
 // receding-resolution gradient made visible, driven entirely by the pure `select()`.
 import * as THREE from "three";
-import { type Affine3, applyAffine, chunkArrayBox, type Multiscale, type Selection, type Vec3 } from "../../../src/datasource";
+import { type Affine3, applyAffine, chunkArrayBox, chunkKey, type Multiscale, type Selection, type Vec3 } from "../../../src/datasource";
 
 /** okLCH-ish ramp by level: fine = warm & bright, coarse = cool & dim. */
 export function levelColor(level: number, maxLevel: number): THREE.Color {
@@ -60,22 +60,48 @@ function pushBoxEdges(out: number[], corners: readonly Vec3[]): void {
   }
 }
 
-/** A group of level-tinted wireframe boxes for a Selection (one LineSegments per level). */
-export function chunkOverlays(ms: Multiscale, sel: Selection): THREE.Group {
+/** Load state of a chunk, for the decision view's colouring (see `chunkOverlays`). */
+export type ChunkVizState = "resident" | "loading" | "pending" | "missing";
+
+// State is orthogonal to level: level stays the HUE (the receding-resolution gradient the
+// decision view exists to show), state is the OPACITY, plus a gentle pulse on loading. So you
+// read both at once — which LOD a chunk is, and where it is in the pending→loading→resident wave.
+const STATE_OPACITY: Record<ChunkVizState, number> = {
+  resident: 0.95,
+  loading: 0.6,
+  pending: 0.22,
+  missing: 0.22,
+};
+
+/** Level-tinted wireframe boxes for a Selection. With `stateOf`, each box's opacity encodes its
+ *  load state and loading boxes pulse (tagged `userData.pulse`); without it, all are solid
+ *  (the pre-loading-UX behaviour). One LineSegments per (level, state) group. */
+export function chunkOverlays(ms: Multiscale, sel: Selection, stateOf?: (key: string) => ChunkVizState): THREE.Group {
   const group = new THREE.Group();
   const maxLevel = ms.levelCount - 1;
-  const byLevel = new Map<number, number[]>();
+  const groups = new Map<string, { level: number; state: ChunkVizState; positions: number[] }>();
   for (const c of sel.chunks) {
+    const state = stateOf ? stateOf(chunkKey(c.id)) : "resident";
+    const gkey = `${c.id.level}:${state}`;
+    let g = groups.get(gkey);
+    if (!g) {
+      g = { level: c.id.level, state, positions: [] };
+      groups.set(gkey, g);
+    }
     const [lo, hi] = chunkArrayBox(ms, c.id);
-    const arr = byLevel.get(c.id.level) ?? [];
-    pushBoxEdges(arr, orientedCorners(ms.worldFromArray, lo, hi));
-    byLevel.set(c.id.level, arr);
+    pushBoxEdges(g.positions, orientedCorners(ms.worldFromArray, lo, hi));
   }
-  for (const [level, positions] of byLevel) {
+  for (const { level, state, positions } of groups.values()) {
     const geo = new THREE.BufferGeometry();
     geo.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
-    const mat = new THREE.LineBasicMaterial({ color: levelColor(level, maxLevel), transparent: true, opacity: 0.9 });
-    group.add(new THREE.LineSegments(geo, mat));
+    const opacity = STATE_OPACITY[state];
+    const mat = new THREE.LineBasicMaterial({ color: levelColor(level, maxLevel), transparent: true, opacity });
+    const ls = new THREE.LineSegments(geo, mat);
+    if (state === "loading") {
+      ls.userData.pulse = true; // dualView animates opacity around this base each frame
+      ls.userData.baseOpacity = opacity;
+    }
+    group.add(ls);
   }
   return group;
 }

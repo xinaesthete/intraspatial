@@ -94,6 +94,8 @@ export class DualView {
   private showTextures = true;
   private showWireframe = true;
   private dirty = true;
+  private lastOverlayRefresh = 0; // throttle decision-view recolour while chunks stream in
+  private wasLoading = false; // to force one final recolour when the queue drains
   private disposed = false;
   private width = 1;
   private height = 1;
@@ -332,7 +334,10 @@ export class DualView {
 
     disposeGroup(this.overlays);
     this.overlays.clear();
-    if (this.showWireframe) this.overlays.add(chunkOverlays(ms, sel));
+    // Colour chunk boxes by load state (brick-page volume only): hue = level, opacity = state.
+    const vol = this.volume instanceof VolumeRenderer ? this.volume : null;
+    const stateOf = vol ? (k: string) => vol.chunkState(k) : undefined;
+    if (this.showWireframe) this.overlays.add(chunkOverlays(ms, sel, stateOf));
     // Draw the app camera's frustum, sized to the data slab.
     let dmin = Infinity,
       dmax = -Infinity;
@@ -348,6 +353,30 @@ export class DualView {
     if (this.tiles && this.showTextures) this.tiles.update(sel);
     if (this.volume && this.showTextures) this.volume.update(sel);
     return sel;
+  }
+
+  /** While the brick-page volume streams chunks in, keep the decision view's colours current
+   *  (throttled full recolour, since arrivals don't set `dirty`) and pulse the loading boxes each
+   *  frame (cheap — opacity only). One final recolour when the queue drains clears the pulse. */
+  private animateLoadingOverlays(): void {
+    const vol = this.volume instanceof VolumeRenderer ? this.volume : null;
+    if (!vol) return;
+    const { pending, loading } = vol.loadCounts();
+    const busy = pending + loading > 0;
+    if (busy) {
+      const now = performance.now();
+      if (now - this.lastOverlayRefresh > 120) {
+        this.lastOverlayRefresh = now;
+        this.dirty = true; // rebuild overlays next frame with fresh per-chunk state
+      }
+      const pulse = 0.3 + 0.35 * (0.5 + 0.5 * Math.sin(now * 0.006));
+      this.overlays.traverse((o) => {
+        if (o instanceof THREE.LineSegments && o.userData.pulse) (o.material as THREE.LineBasicMaterial).opacity = pulse;
+      });
+    } else if (this.wasLoading) {
+      this.dirty = true; // queue drained — recolour once so everything reads as resident
+    }
+    this.wasLoading = busy;
   }
 
   private renderInsetRect(): { x: number; y: number; w: number; h: number } {
@@ -367,6 +396,7 @@ export class DualView {
         const sel = this.rebuild();
         this.onStats?.({ q: this.q, chunkCount: sel.chunks.length, totalBytes: sel.totalApproxBytes, countByLevel: sel.countByLevel });
       }
+      this.animateLoadingOverlays();
       // Main pass: app camera, full canvas, data only (layer 0).
       this.renderer.setScissorTest(false);
       this.renderer.setViewport(0, 0, this.width, this.height);
