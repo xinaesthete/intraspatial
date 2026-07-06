@@ -17,6 +17,8 @@ const $ = <T extends HTMLElement>(id: string): T => {
 
 const canvas = $<HTMLCanvasElement>("stage");
 const inset = $("inset");
+const insetLabel = inset.querySelector<HTMLElement>(".inset-label");
+let decisionCollapsed = false;
 const qSlider = $<HTMLInputElement>("q");
 const qVal = $("qval");
 const pLevels = $<HTMLInputElement>("plevels");
@@ -160,6 +162,7 @@ async function mount(kind: string): Promise<void> {
   view.setDepthWrite(dwrite.checked);
   applyNetwork();
   applyTransfer();
+  view.setDecisionVisible(!decisionCollapsed); // preserve collapse state across re-mounts
   try {
     await view.start();
   } catch (e) {
@@ -185,6 +188,20 @@ pLevels.addEventListener("input", () => {
 pLevels.addEventListener("change", () => void mount(sourceSel.value)); // re-mount: levelCount is baked into the Multiscale
 baseRes.addEventListener("change", () => void mount(sourceSel.value)); // re-mount: base resolution is baked into the Multiscale
 network.addEventListener("change", applyNetwork); // live: mutates the shared latency model, no re-mount
+
+// Click the "decision" legend to collapse the inset into a little button (and back). Collapsing
+// also skips the overlay build + inset render pass — the escape hatch when a large finest
+// resolution makes rebuild() slow. stopPropagation so the click doesn't start an inset orbit-drag.
+if (insetLabel) {
+  const toggleDecision = (e: Event): void => {
+    e.stopPropagation();
+    decisionCollapsed = !decisionCollapsed;
+    inset.classList.toggle("collapsed", decisionCollapsed);
+    view?.setDecisionVisible(!decisionCollapsed);
+  };
+  insetLabel.addEventListener("click", toggleDecision);
+  insetLabel.addEventListener("pointerdown", (e) => e.stopPropagation()); // don't begin an orbit drag
+}
 for (const el of [cmin, cmax, gamma]) el.addEventListener("input", applyTransfer);
 solid.addEventListener("input", () => {
   solidVal.textContent = Number(solid.value).toFixed(2);

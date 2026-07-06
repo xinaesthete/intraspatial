@@ -96,6 +96,7 @@ export class DualView {
   private dirty = true;
   private lastOverlayRefresh = 0; // throttle decision-view recolour while chunks stream in
   private wasLoading = false; // to force one final recolour when the queue drains
+  private decisionVisible = true; // inset shown? when collapsed, skip overlay build + inset pass
   private disposed = false;
   private width = 1;
   private height = 1;
@@ -214,6 +215,14 @@ export class DualView {
   }
   setSolid(threshold: number): void {
     this.volume?.setSolid(threshold);
+  }
+  /** Show/hide the decision inset. When hidden, rebuild() skips the (potentially huge) overlay
+   *  build, the frame loop skips the inset render pass, and the inset's orbit is disabled — so
+   *  collapsing it is also the escape hatch from slow rebuilds at large finest resolutions. */
+  setDecisionVisible(on: boolean): void {
+    this.decisionVisible = on;
+    this.decisionControls.enabled = on;
+    this.dirty = true; // rebuild to add/clear the overlays
   }
   /** Set the simulated network latency (ms) for the volume's brick source: each brick waits
    *  `base + rand·jitter` before generating. Live — mutates the shared model in place. */
@@ -334,21 +343,26 @@ export class DualView {
 
     disposeGroup(this.overlays);
     this.overlays.clear();
-    // Colour chunk boxes by load state (brick-page volume only): hue = level, opacity = state.
-    const vol = this.volume instanceof VolumeRenderer ? this.volume : null;
-    const stateOf = vol ? (k: string) => vol.chunkState(k) : undefined;
-    if (this.showWireframe) this.overlays.add(chunkOverlays(ms, sel, stateOf));
-    // Draw the app camera's frustum, sized to the data slab.
-    let dmin = Infinity,
-      dmax = -Infinity;
-    for (const p of this.dataCorners()) {
-      const d = dot(sub(p, ds.eye), ds.forward);
-      if (d < dmin) dmin = d;
-      if (d > dmax) dmax = d;
+    // Building the level-tinted chunk boxes is O(selected chunks) of geometry — the dominant cost
+    // of rebuild() at large finest resolutions (tens of thousands of boxes). Since overlays are
+    // decision-inset-only (layer 1), skip the whole build when the inset is collapsed.
+    if (this.decisionVisible) {
+      // Colour chunk boxes by load state (brick-page volume only): hue = level, opacity = state.
+      const vol = this.volume instanceof VolumeRenderer ? this.volume : null;
+      const stateOf = vol ? (k: string) => vol.chunkState(k) : undefined;
+      if (this.showWireframe) this.overlays.add(chunkOverlays(ms, sel, stateOf));
+      // Draw the app camera's frustum, sized to the data slab.
+      let dmin = Infinity,
+        dmax = -Infinity;
+      for (const p of this.dataCorners()) {
+        const d = dot(sub(p, ds.eye), ds.forward);
+        if (d < dmin) dmin = d;
+        if (d > dmax) dmax = d;
+      }
+      const nearViz = Math.max(this.size * 0.02, dmin * 0.6);
+      this.overlays.add(frustumOverlay(frustumCorners(ds, nearViz, Math.max(nearViz + this.size * 0.1, dmax)), ds.eye, ds.forward));
+      this.overlays.traverse((o) => o.layers.set(OVERLAY_LAYER));
     }
-    const nearViz = Math.max(this.size * 0.02, dmin * 0.6);
-    this.overlays.add(frustumOverlay(frustumCorners(ds, nearViz, Math.max(nearViz + this.size * 0.1, dmax)), ds.eye, ds.forward));
-    this.overlays.traverse((o) => o.layers.set(OVERLAY_LAYER));
 
     if (this.tiles && this.showTextures) this.tiles.update(sel);
     if (this.volume && this.showTextures) this.volume.update(sel);
@@ -359,6 +373,7 @@ export class DualView {
    *  (throttled full recolour, since arrivals don't set `dirty`) and pulse the loading boxes each
    *  frame (cheap — opacity only). One final recolour when the queue drains clears the pulse. */
   private animateLoadingOverlays(): void {
+    if (!this.decisionVisible) return; // no overlays to recolour/pulse when the inset is collapsed
     const vol = this.volume instanceof VolumeRenderer ? this.volume : null;
     if (!vol) return;
     const { pending, loading } = vol.loadCounts();
@@ -403,14 +418,17 @@ export class DualView {
       this.renderer.setClearColor(0x0b1020, 1);
       this.renderer.clear();
       this.renderer.render(this.scene, this.appCamera);
-      // Inset pass: decision camera, its own scissor region, data + overlays (layer 1).
-      const r = this.renderInsetRect();
-      this.renderer.setScissorTest(true);
-      this.renderer.setScissor(r.x, r.y, r.w, r.h);
-      this.renderer.setViewport(r.x, r.y, r.w, r.h);
-      this.renderer.setClearColor(0x0a0f1c, 1);
-      this.renderer.clear();
-      this.renderer.render(this.scene, this.decisionCamera);
+      // Inset pass: decision camera, its own scissor region, data + overlays (layer 1). Skipped
+      // entirely when the inset is collapsed (nothing to draw there).
+      if (this.decisionVisible) {
+        const r = this.renderInsetRect();
+        this.renderer.setScissorTest(true);
+        this.renderer.setScissor(r.x, r.y, r.w, r.h);
+        this.renderer.setViewport(r.x, r.y, r.w, r.h);
+        this.renderer.setClearColor(0x0a0f1c, 1);
+        this.renderer.clear();
+        this.renderer.render(this.scene, this.decisionCamera);
+      }
       this.frameMonitor?.end();
     });
   }
