@@ -92,8 +92,10 @@ export class VolumeRenderer {
       Math.ceil(ms.voxelDims0[1] / ms.chunkShape[1]),
       Math.ceil(ms.voxelDims0[2] / ms.chunkShape[2]),
     ];
-    // Atlas big enough to hold a generous working set of bricks.
-    this.slotsPerAxis = 8; // 8³ = 512 slots
+    // Atlas big enough to hold a generous working set of bricks. 12³ = 1728 slots (a 384³ R8
+    // texture, ~54 MB) — headroom for finer base resolutions than 256³ (which alone is 512
+    // chunks) and for the LOD-fallback ancestors the page table will lean on (step 3).
+    this.slotsPerAxis = 12; // 12³ = 1728 slots
     const atlasEdge = this.slotsPerAxis * this.B;
     this.atlas = makeR8Texture(new Uint8Array(atlasEdge * atlasEdge * atlasEdge), atlasEdge, atlasEdge, atlasEdge, THREE.LinearFilter);
     for (let i = this.slotsPerAxis ** 3 - 1; i >= 0; i--) this.free.push(i);

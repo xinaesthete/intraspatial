@@ -21,6 +21,7 @@ const qSlider = $<HTMLInputElement>("q");
 const qVal = $("qval");
 const pLevels = $<HTMLInputElement>("plevels");
 const pLevelsVal = $("plevelsval");
+const baseRes = $<HTMLSelectElement>("baseres");
 const texChk = $<HTMLInputElement>("tex");
 const gridChk = $<HTMLInputElement>("grid");
 const cmin = $<HTMLInputElement>("cmin");
@@ -110,6 +111,19 @@ async function getRenderer(): Promise<WebGPURenderer | null> {
   return r;
 }
 
+const VOL_CHUNK = 32;
+const VOL_WORLD_EXTENT = 256; // hold the volume at a constant world size, so a finer base is the
+// SAME object sampled more finely (voxels shrink) rather than a bigger one.
+
+// The finest (level-0) resolution the pyramid samples the analytic Mandelbulb at. Pinning this
+// at 256³ before meant more pyramid *levels* only stacked coarser tiers — you could never resolve
+// finer than 256³. This knob raises the finest level so zooming in reveals genuinely finer
+// structure. Whole-volume views of a finer base demand more chunks than the atlas holds at once
+// (that's what the LOD fallback, step 3, makes graceful); zooming in stays cheap via frustum cull.
+function makeVolumeSource(levelCount: number, baseRes: number): SyntheticSource {
+  return syntheticVolume({ size: baseRes, chunk: VOL_CHUNK, levelCount, voxelSizeWorld: VOL_WORLD_EXTENT / baseRes });
+}
+
 async function mount(kind: string): Promise<void> {
   view?.dispose();
   errEl.textContent = "";
@@ -120,7 +134,7 @@ async function mount(kind: string): Promise<void> {
   const naive = kind === "vol-naive";
   const isVolume = kind === "volume" || combined || naive;
   const source: SyntheticSource = isVolume
-    ? syntheticVolume({ size: 256, chunk: 32, levelCount })
+    ? makeVolumeSource(levelCount, Number(baseRes.value))
     : syntheticPlane({ width: 2048, height: 2048, chunk: 64, levelCount });
   const backendForVolume = isVolume && !naive ? getBackend(r) : undefined;
   view = new DualView(canvas, inset, r, source, (s) => renderStats(s, source.ms.levelCount), combined, naive, stats, backendForVolume);
@@ -154,6 +168,7 @@ pLevels.addEventListener("input", () => {
   pLevelsVal.textContent = pLevels.value;
 });
 pLevels.addEventListener("change", () => void mount(sourceSel.value)); // re-mount: levelCount is baked into the Multiscale
+baseRes.addEventListener("change", () => void mount(sourceSel.value)); // re-mount: base resolution is baked into the Multiscale
 for (const el of [cmin, cmax, gamma]) el.addEventListener("input", applyTransfer);
 solid.addEventListener("input", () => {
   solidVal.textContent = Number(solid.value).toFixed(2);
