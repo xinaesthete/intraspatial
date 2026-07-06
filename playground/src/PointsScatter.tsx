@@ -12,15 +12,20 @@ const GRID = "#1f2433";
 const DOT = "#6ba8ff";
 
 export function PointsScatter({ data }: { data: ArrayLike<number> }) {
-  const W = 300, H = 300;
+  const W = 300,
+    H = 300;
   const m = { top: 10, right: 12, bottom: 28, left: 38 };
   const iw = W - m.left - m.right;
   const ih = H - m.top - m.bottom;
 
-  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  let minX = Infinity,
+    minY = Infinity,
+    maxX = -Infinity,
+    maxY = -Infinity;
   const pts: { x: number; y: number }[] = [];
   for (let i = 0; i + 1 < data.length; i += 2) {
-    const x = data[i]!, y = data[i + 1]!;
+    const x = data[i] ?? 0;
+    const y = data[i + 1] ?? 0;
     pts.push({ x, y });
     if (x < minX) minX = x;
     if (x > maxX) maxX = x;
@@ -49,6 +54,7 @@ export function PointsScatter({ data }: { data: ArrayLike<number> }) {
         <GridRows scale={yScale} width={iw} stroke={GRID} numTicks={5} />
         <GridColumns scale={xScale} height={ih} stroke={GRID} numTicks={5} />
         {pts.map((p, i) => (
+          // biome-ignore lint/suspicious/noArrayIndexKey: pending...
           <circle key={i} cx={xScale(p.x)} cy={yScale(p.y)} r={2.5} fill={DOT} fillOpacity={0.85} />
         ))}
         <AxisLeft scale={yScale} numTicks={5} stroke={AXIS} tickStroke={AXIS} tickLabelProps={tickLabel("end", -2, 3)} />

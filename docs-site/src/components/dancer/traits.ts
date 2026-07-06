@@ -6,9 +6,10 @@
 // We evolve a curated subset of DancerParams (the ones whose variation reads as a
 // different dance); the rest hold at their defaults. A trait near 0 effectively switches
 // its influence off, so the continuous genes already give the hybrid on/off character.
+
+import { type Specimen, specimenToParams, type TraitSpace, traitSpaceFromParams } from "../../../../src/evo";
 import type { ParamSpec } from "../../../../src/gpu/graph/op";
-import { specimenToParams, traitSpaceFromParams, type Specimen, type TraitSpace } from "../../../../src/evo";
-import { DEFAULT_DANCER_PARAMS, type DancerParams } from "./sim";
+import { type DancerParams, DEFAULT_DANCER_PARAMS } from "./sim";
 
 /** The evolvable traits (mirror of DancerParams fields, with breeding bounds). */
 export const DANCER_TRAIT_SPECS: ParamSpec[] = [

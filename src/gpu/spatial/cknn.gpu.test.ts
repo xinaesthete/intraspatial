@@ -1,5 +1,5 @@
-import { describe, it, expect } from "vitest";
-import { cknnRescaledDistanceGpu, cknnGraph, selfTuningWeights } from "./cknn";
+import { describe, expect, it } from "vitest";
+import { cknnGraph, cknnRescaledDistanceGpu, selfTuningWeights } from "./cknn";
 
 function rhoCpu(xs: number[], ys: number[], k: number): Float32Array {
   const n = xs.length;
@@ -31,9 +31,18 @@ describe("cknnRescaledDistanceGpu", () => {
 
   it("normalises density: dense and sparse clusters get comparable internal d̃", async () => {
     // dense cluster (spacing ~1) and sparse cluster (spacing ~6), well separated
-    const xs: number[] = [], ys: number[] = [];
-    for (let i = 0; i < 5; i++) for (let j = 0; j < 5; j++) { xs.push(i); ys.push(j); }       // dense, idx 0..24
-    for (let i = 0; i < 5; i++) for (let j = 0; j < 5; j++) { xs.push(100 + i * 6); ys.push(j * 6); } // sparse, idx 25..49
+    const xs: number[] = [],
+      ys: number[] = [];
+    for (let i = 0; i < 5; i++)
+      for (let j = 0; j < 5; j++) {
+        xs.push(i);
+        ys.push(j);
+      } // dense, idx 0..24
+    for (let i = 0; i < 5; i++)
+      for (let j = 0; j < 5; j++) {
+        xs.push(100 + i * 6);
+        ys.push(j * 6);
+      } // sparse, idx 25..49
     const n = xs.length;
     const { rescaled } = await cknnRescaledDistanceGpu(xs, ys, { k: 4 });
 

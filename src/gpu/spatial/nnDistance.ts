@@ -105,10 +105,7 @@ function ensurePool(root: Root, n: number) {
 /** For each point, the Euclidean distance to its nearest other point.
  *  `xs`/`ys` are parallel coordinate arrays of equal length N (>= 2).
  *  Returns a Float32Array of length N. */
-export async function nearestNeighborDistancesGpu(
-  xs: ArrayLike<number>,
-  ys: ArrayLike<number>,
-): Promise<Float32Array> {
+export async function nearestNeighborDistancesGpu(xs: ArrayLike<number>, ys: ArrayLike<number>): Promise<Float32Array> {
   const n = xs.length;
   if (ys.length !== n) throw new Error("nnDistance: xs and ys length mismatch");
   if (n < 2) throw new Error("nnDistance: need at least 2 points");

@@ -9,11 +9,11 @@ import {
   oklabToLinear,
   oklabToOklch,
   oklchToOklab,
+  oklchToSrgb,
   type Srgb,
   srgbChannelToLinear,
   srgbToOklab,
   srgbToOklch,
-  oklchToSrgb,
 } from "./oklab";
 
 const TAU = Math.PI * 2;
@@ -23,10 +23,22 @@ describe("okLab", () => {
     // Björn Ottosson, "A perceptual color space for image processing" — the published table
     // maps LINEAR sRGB to okLab, isolating the LMS-cbrt matrices from the gamma transfer.
     const cases: Array<[LinearRgb, [number, number, number]]> = [
-      [[1, 1, 1], [1.0, 0.0, 0.0]],
-      [[1, 0, 0], [0.627955, 0.224863, 0.125846]],
-      [[0, 1, 0], [0.86644, -0.233888, 0.179498]],
-      [[0, 0, 1], [0.452014, -0.032457, -0.311528]],
+      [
+        [1, 1, 1],
+        [1.0, 0.0, 0.0],
+      ],
+      [
+        [1, 0, 0],
+        [0.627955, 0.224863, 0.125846],
+      ],
+      [
+        [0, 1, 0],
+        [0.86644, -0.233888, 0.179498],
+      ],
+      [
+        [0, 0, 1],
+        [0.452014, -0.032457, -0.311528],
+      ],
     ];
     for (const [lin, want] of cases) {
       const got = linearToOklab(lin);

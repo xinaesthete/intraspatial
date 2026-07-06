@@ -1,5 +1,5 @@
-import { describe, it, expect } from "vitest";
-import { convolveSeparableGpu, boxKernel, gaussianKernel } from "./convolveSeparable";
+import { describe, expect, it } from "vitest";
+import { boxKernel, convolveSeparableGpu, gaussianKernel } from "./convolveSeparable";
 
 // CPU golden: separable convolution with clamp-to-edge.
 function convCpu(grid: number[], w: number, h: number, kernel: number[]): Float32Array {
@@ -36,7 +36,8 @@ function maxAbsErr(a: ArrayLike<number>, b: ArrayLike<number>) {
 
 describe("convolveSeparableGpu", () => {
   it("box kernel matches CPU (local sum) on a random grid", async () => {
-    const w = 24, h = 20;
+    const w = 24,
+      h = 20;
     const grid = Array.from({ length: w * h }, (_, i) => ((i * 2654435761) % 97) / 97);
     const k = Array.from(boxKernel(2));
     const gpu = await convolveSeparableGpu(grid, w, h, k);
@@ -45,7 +46,8 @@ describe("convolveSeparableGpu", () => {
   });
 
   it("Gaussian kernel matches CPU and preserves total mass (sums to ~1)", async () => {
-    const w = 28, h = 28;
+    const w = 28,
+      h = 28;
     const grid = new Array(w * h).fill(0);
     grid[14 * w + 14] = 1; // unit impulse
     const k = Array.from(gaussianKernel(2));

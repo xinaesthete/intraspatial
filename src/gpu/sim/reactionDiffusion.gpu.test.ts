@@ -1,6 +1,6 @@
-import { describe, it, expect } from "vitest";
-import { grayScottStepCpu, grayScottStepsGpu, seedGrayScott } from "./reactionDiffusion";
+import { describe, expect, it } from "vitest";
 import type { GrayScottState } from "./reactionDiffusion";
+import { grayScottStepCpu, grayScottStepsGpu, seedGrayScott } from "./reactionDiffusion";
 
 const PARAMS = { du: 0.16, dv: 0.08, feed: 0.06, kill: 0.062, dt: 1 };
 
@@ -10,7 +10,8 @@ describe("Gray–Scott reaction–diffusion step", () => {
     const gpu = await grayScottStepsGpu(seed, 1, PARAMS);
     const cpu = grayScottStepCpu(seed, PARAMS);
 
-    let maxU = 0, maxV = 0;
+    let maxU = 0,
+      maxV = 0;
     for (let i = 0; i < gpu.u.length; i++) {
       maxU = Math.max(maxU, Math.abs(gpu.u[i]! - cpu.u[i]!));
       maxV = Math.max(maxV, Math.abs(gpu.v[i]! - cpu.v[i]!));
@@ -20,11 +21,15 @@ describe("Gray–Scott reaction–diffusion step", () => {
   });
 
   it("advances stably and keeps a bounded, evolving pattern", async () => {
-    const w = 24, h = 24;
+    const w = 24,
+      h = 24;
     const seed = seedGrayScott(w, h, 0.05);
 
     const out: GrayScottState = await grayScottStepsGpu(seed, 40, PARAMS);
-    let finite = true, minV = Infinity, maxV = -Infinity, changed = 0;
+    let finite = true,
+      minV = Infinity,
+      maxV = -Infinity,
+      changed = 0;
     for (let i = 0; i < out.v.length; i++) {
       if (!Number.isFinite(out.u[i]!) || !Number.isFinite(out.v[i]!)) finite = false;
       minV = Math.min(minV, out.v[i]!);

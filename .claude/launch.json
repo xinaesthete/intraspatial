@@ -11,7 +11,10 @@
     {
       "name": "docs-site",
       "runtimeExecutable": "bash",
-      "runtimeArgs": ["-lc", "cd docs-site && volta run --node 22 bash -c 'node scripts/sync-primer.mjs && node node_modules/astro/bin/astro.mjs dev --port 4321 --strictPort'"],
+      "runtimeArgs": [
+        "-lc",
+        "cd docs-site && volta run --node 22 bash -c 'node scripts/sync-primer.mjs && node node_modules/astro/bin/astro.mjs dev --port 4321 --strictPort'"
+      ],
       "port": 4321
     }
   ]

@@ -4,9 +4,9 @@
 // bounded. Exercises the real executor path — multi-input ops, vec3 element inference, the
 // 5N-block body field, and the feedback state-carry — without a GPU device (mode "cpu").
 import { beforeAll, describe, expect, it } from "vitest";
-import { advance, createSimState, getOp, Graph, hasOp, registerElementOps, type GpuField } from "../index";
-import { registerForceOps } from "./danceForces";
 import { BODY_BLOCK_COUNT, seedSwarmBody } from "../../sim/body";
+import { advance, createSimState, type GpuField, Graph, getOp, hasOp, registerElementOps } from "../index";
+import { registerForceOps } from "./danceForces";
 
 beforeAll(async () => {
   await registerElementOps(); // addFields

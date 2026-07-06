@@ -1,8 +1,9 @@
 // The group node (shown in its parent scope): a single node standing in for a
 // subgraph, with one handle per boundary port — coloured + tagged by shape kind so
 // the port types are clear. Double-click navigates into it.
-import { Handle, Position } from "@xyflow/react";
+
 import type { NodeProps } from "@xyflow/react";
+import { Handle, Position } from "@xyflow/react";
 import type { GroupData, Port } from "./grouping";
 import { kindColor } from "./portKinds";
 
@@ -16,7 +17,9 @@ function PortRow({ p, side }: { p: Port; side: "in" | "out" }) {
     <span className={`port-row ${side}`}>
       {side === "in" && dot}
       <span className="port-name">{p.label}</span>
-      <span className="kind-tag" style={{ color: kindColor(p.kind) }}>{p.kind}</span>
+      <span className="kind-tag" style={{ color: kindColor(p.kind) }}>
+        {p.kind}
+      </span>
       {side === "out" && dot}
     </span>
   );
@@ -33,14 +36,36 @@ export function GroupNode({ data, selected }: NodeProps) {
       <div className="opnode-title">▦ {d.label}</div>
       <div className="group-sub">{d.members ?? 0} nodes · double-click to open</div>
       {inputs.map((p, i) => (
-        <Handle key={p.id} id={p.id} type="target" position={Position.Left} title={`${p.label}: ${p.kind}`} style={{ top: portTop(i, inputs.length), background: kindColor(p.kind) }} />
+        <Handle
+          key={p.id}
+          id={p.id}
+          type="target"
+          position={Position.Left}
+          title={`${p.label}: ${p.kind}`}
+          style={{ top: portTop(i, inputs.length), background: kindColor(p.kind) }}
+        />
       ))}
       {outputs.map((p, i) => (
-        <Handle key={p.id} id={p.id} type="source" position={Position.Right} title={`${p.label}: ${p.kind}`} style={{ top: portTop(i, outputs.length), background: kindColor(p.kind) }} />
+        <Handle
+          key={p.id}
+          id={p.id}
+          type="source"
+          position={Position.Right}
+          title={`${p.label}: ${p.kind}`}
+          style={{ top: portTop(i, outputs.length), background: kindColor(p.kind) }}
+        />
       ))}
       <div className="opnode-ports">
-        <div className="opnode-in">{inputs.map((p) => <PortRow key={p.id} p={p} side="in" />)}</div>
-        <div className="opnode-out">{outputs.map((p) => <PortRow key={p.id} p={p} side="out" />)}</div>
+        <div className="opnode-in">
+          {inputs.map((p) => (
+            <PortRow key={p.id} p={p} side="in" />
+          ))}
+        </div>
+        <div className="opnode-out">
+          {outputs.map((p) => (
+            <PortRow key={p.id} p={p} side="out" />
+          ))}
+        </div>
       </div>
     </div>
   );

@@ -8,18 +8,9 @@
 //
 // Every op's ParamSpec[] is the breedable trait set (src/evo). CPU Tier-1 for now (the
 // GPU artefact mirrors this math in TSL); validated at the boundary, checked access, no `!`.
-import type { ElementType, FieldValue, Shape } from "../handle";
-import type { OpType, ParamSpec, Params } from "../op";
-import { hasOp, registerOp } from "../registry";
-import { readVec3, unpack, vec3, writeVec3, type Vec3 } from "../../sim/vec3";
-import {
-  BODY_BLOCK_COUNT,
-  integrateBody,
-  readBodyState,
-  tapBlock,
-  writeBodyState,
-  type IntegrateParams,
-} from "../../sim/body";
+
+import { BODY_BLOCK_COUNT, type IntegrateParams, integrateBody, readBodyState, tapBlock, writeBodyState } from "../../sim/body";
+import { figureAt, figureTargetVel, partnerIndex } from "../../sim/figures";
 import {
   cohereForce,
   constrainForce,
@@ -31,7 +22,10 @@ import {
   swimForce,
   vortexForce,
 } from "../../sim/forces";
-import { figureAt, figureTargetVel, partnerIndex } from "../../sim/figures";
+import { readVec3, unpack, type Vec3, vec3, writeVec3 } from "../../sim/vec3";
+import type { ElementType, FieldValue, Shape } from "../handle";
+import type { OpType, ParamSpec, Params } from "../op";
+import { hasOp, registerOp } from "../registry";
 
 const VEC3: ElementType = { kind: "vec", n: 3 };
 const SCALAR: ElementType = { kind: "scalar" };
@@ -77,7 +71,10 @@ interface ForceOpConfig {
 
 function makeForceOp(cfg: ForceOpConfig): OpType {
   const inputs = cfg.needsVel
-    ? [{ name: "pos", kind: "points" as const }, { name: "vel", kind: "points" as const }]
+    ? [
+        { name: "pos", kind: "points" as const },
+        { name: "vel", kind: "points" as const },
+      ]
     : [{ name: "pos", kind: "points" as const }];
 
   return {
@@ -126,53 +123,72 @@ const strengthSpec = (def = 0.5): ParamSpec => ({ name: "strength", type: "numbe
 // ── The forces ──────────────────────────────────────────────────────────────────────
 
 export const constrainOp = makeForceOp({
-  name: "constrain", label: "Constrain", describe: "Containment toward the centre (DANCERL constraint box).",
+  name: "constrain",
+  label: "Constrain",
+  describe: "Containment toward the centre (DANCERL constraint box).",
   needsVel: false,
   params: [strengthSpec(0.5), { name: "power", type: "number", default: 3, min: 1, max: 4, step: 0.5 }],
   kernel: (i, pos, _v, _n, p) => constrainForce(readVec3(pos, i), num(p, "strength"), num(p, "power")),
 });
 
 export const swimOp = makeForceOp({
-  name: "swim", label: "Swim", describe: "Outward drift from the centre (DANCERL swim).",
-  needsVel: false, params: [strengthSpec(0.3)],
+  name: "swim",
+  label: "Swim",
+  describe: "Outward drift from the centre (DANCERL swim).",
+  needsVel: false,
+  params: [strengthSpec(0.3)],
   kernel: (i, pos, _v, _n, p) => swimForce(readVec3(pos, i), num(p, "strength")),
 });
 
 export const vortexOp = makeForceOp({
-  name: "vortex", label: "Vortex", describe: "Circular stirring about the y-axis (DANCERL circle).",
-  needsVel: false, params: [strengthSpec(0.5)],
+  name: "vortex",
+  label: "Vortex",
+  describe: "Circular stirring about the y-axis (DANCERL circle).",
+  needsVel: false,
+  params: [strengthSpec(0.5)],
   kernel: (i, pos, _v, _n, p) => vortexForce(readVec3(pos, i), num(p, "strength")),
 });
 
 export const solenoidOp = makeForceOp({
-  name: "solenoid", label: "Solenoid", describe: "Single-coil solenoid field about the y-axis (DANCERL solenoid).",
+  name: "solenoid",
+  label: "Solenoid",
+  describe: "Single-coil solenoid field about the y-axis (DANCERL solenoid).",
   needsVel: false,
   params: [strengthSpec(0.4), { name: "coilRadius", type: "number", default: 2.5, min: 0.5, max: 6, step: 0.1 }],
   kernel: (i, pos, _v, _n, p) => solenoidForce(readVec3(pos, i), num(p, "strength"), num(p, "coilRadius")),
 });
 
 export const orbitOp = makeForceOp({
-  name: "orbit", label: "Orbit", describe: "Orbital acceleration about the centre (DANCERL orbit, (p×v)×p).",
-  needsVel: true, params: [strengthSpec(0.5)],
+  name: "orbit",
+  label: "Orbit",
+  describe: "Orbital acceleration about the centre (DANCERL orbit, (p×v)×p).",
+  needsVel: true,
+  params: [strengthSpec(0.5)],
   kernel: (i, pos, vel, _n, p) => orbitForce(readVec3(pos, i), readVec3(vel ?? pos, i), num(p, "strength")),
 });
 
 export const cohereOp = makeForceOp({
-  name: "cohere", label: "Cohere", describe: "Pull toward the centroid of neighbours within radius (DANCERL bond).",
+  name: "cohere",
+  label: "Cohere",
+  describe: "Pull toward the centroid of neighbours within radius (DANCERL bond).",
   needsVel: false,
   params: [strengthSpec(0.5), { name: "radius", type: "number", default: 3, min: 0.3, max: 20, step: 0.1 }],
   kernel: (i, pos, _v, n, p) => cohereForce(i, pos, n, num(p, "strength"), num(p, "radius")),
 });
 
 export const separateOp = makeForceOp({
-  name: "separate", label: "Separate", describe: "Radius repulsion between near neighbours (DANCERL collision).",
+  name: "separate",
+  label: "Separate",
+  describe: "Radius repulsion between near neighbours (DANCERL collision).",
   needsVel: false,
   params: [strengthSpec(0.5), { name: "radius", type: "number", default: 1.5, min: 0.2, max: 8, step: 0.1 }],
   kernel: (i, pos, _v, n, p) => separateForce(i, pos, n, num(p, "strength"), num(p, "radius")),
 });
 
 export const springOp = makeForceOp({
-  name: "spring", label: "Spring", describe: "Bonds pulling neighbours toward an equilibrium distance (DANCERL distance).",
+  name: "spring",
+  label: "Spring",
+  describe: "Bonds pulling neighbours toward an equilibrium distance (DANCERL distance).",
   needsVel: false,
   params: [
     strengthSpec(0.4),
@@ -197,7 +213,10 @@ export const bodyTapOp: OpType = {
   params: [],
   inferShapes(inShapes) {
     const n = pointsN(inShapes[0]!, "bodyTap") / BODY_BLOCK_COUNT;
-    return [{ kind: "points", n }, { kind: "points", n }];
+    return [
+      { kind: "points", n },
+      { kind: "points", n },
+    ];
   },
   inferElements(inEls) {
     requireVec3(inEls[0], "bodyTap.body");
@@ -410,7 +429,9 @@ function callForces(ins: FieldValue[], params: Params): FieldValue[] {
 // ── partnerOrbit: a standalone couple-swing force ────────────────────────────────────
 
 export const partnerOrbitOp = makeForceOp({
-  name: "partnerOrbit", label: "Partner orbit", describe: "Each dancer swings around a partner (offset in the ring) — DANCERL pairwise orbit.",
+  name: "partnerOrbit",
+  label: "Partner orbit",
+  describe: "Each dancer swings around a partner (offset in the ring) — DANCERL pairwise orbit.",
   needsVel: true,
   params: [strengthSpec(0.5), { name: "offset", type: "int", default: 1, min: 1, max: 16, describe: "partner = (i + offset) mod N" }],
   kernel: (i, pos, vel, n, p) => {
@@ -423,8 +444,19 @@ export const partnerOrbitOp = makeForceOp({
 // ── Registration ─────────────────────────────────────────────────────────────────────
 
 export const FORCE_OPS: OpType[] = [
-  constrainOp, swimOp, vortexOp, solenoidOp, orbitOp, cohereOp, separateOp, springOp,
-  partnerOrbitOp, callerOp, clockOp, bodyTapOp, integrateOp,
+  constrainOp,
+  swimOp,
+  vortexOp,
+  solenoidOp,
+  orbitOp,
+  cohereOp,
+  separateOp,
+  springOp,
+  partnerOrbitOp,
+  callerOp,
+  clockOp,
+  bodyTapOp,
+  integrateOp,
 ];
 
 let registered = false;

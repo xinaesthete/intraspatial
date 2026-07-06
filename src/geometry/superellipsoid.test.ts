@@ -3,10 +3,10 @@ import {
   SUPEREGG_SLICES,
   SUPEREGG_STACKS,
   signPow,
-  superellipsoidNormal,
-  superellipsoidPoint,
   supereggVertexAngles,
   supereggVertexCount,
+  superellipsoidNormal,
+  superellipsoidPoint,
   type Vec3,
 } from "./superellipsoid";
 

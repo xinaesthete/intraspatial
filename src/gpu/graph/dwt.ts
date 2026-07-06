@@ -1,3 +1,4 @@
+/** biome-ignore-all lint/style/noNonNullAssertion: lots of array access noise */
 // dwt.ts — separable 2D Discrete Wavelet Transform for the op graph.
 //
 // A faithful Float32 port of the project's reference implementation
@@ -57,12 +58,12 @@ const fwd53_1d: Lift1D = (buf, base, stride, n, tmp) => {
   for (let k = 1; k < n; k += 2) {
     const left = tmp[k - 1]!;
     const right = k + 1 < n ? tmp[k + 1]! : tmp[mirror(k + 1, n)]!;
-    tmp[k] = tmp[k]! -Math.floor((left + right) / 2);
+    tmp[k] = tmp[k]! - Math.floor((left + right) / 2);
   }
   for (let k = 0; k < n; k += 2) {
     const left = k - 1 >= 0 ? tmp[k - 1]! : tmp[mirror(k - 1, n)]!;
     const right = k + 1 < n ? tmp[k + 1]! : tmp[mirror(k + 1, n)]!;
-    tmp[k] = tmp[k]! +Math.floor((left + right + 2) / 4);
+    tmp[k] = tmp[k]! + Math.floor((left + right + 2) / 4);
   }
   for (let k = 0; k < n; k++) {
     const dst = (k & 1) === 0 ? k >> 1 : nLow + (k >> 1);
@@ -80,12 +81,12 @@ const inv53_1d: Lift1D = (buf, base, stride, n, tmp) => {
   for (let k = 0; k < n; k += 2) {
     const left = k - 1 >= 0 ? tmp[k - 1]! : tmp[mirror(k - 1, n)]!;
     const right = k + 1 < n ? tmp[k + 1]! : tmp[mirror(k + 1, n)]!;
-    tmp[k] = tmp[k]! -Math.floor((left + right + 2) / 4);
+    tmp[k] = tmp[k]! - Math.floor((left + right + 2) / 4);
   }
   for (let k = 1; k < n; k += 2) {
     const left = tmp[k - 1]!;
     const right = k + 1 < n ? tmp[k + 1]! : tmp[mirror(k + 1, n)]!;
-    tmp[k] = tmp[k]! +Math.floor((left + right) / 2);
+    tmp[k] = tmp[k]! + Math.floor((left + right) / 2);
   }
   for (let j = 0; j < n; j++) buf[base + j * stride] = tmp[j]!;
 };
@@ -98,22 +99,22 @@ const fwd97_1d: Lift1D = (buf, base, stride, n, tmp) => {
   for (let k = 1; k < n; k += 2) {
     const l = tmp[k - 1]!;
     const r = k + 1 < n ? tmp[k + 1]! : tmp[mirror(k + 1, n)]!;
-    tmp[k] = tmp[k]! +A * (l + r);
+    tmp[k] = tmp[k]! + A * (l + r);
   }
   for (let k = 0; k < n; k += 2) {
     const l = k - 1 >= 0 ? tmp[k - 1]! : tmp[mirror(k - 1, n)]!;
     const r = k + 1 < n ? tmp[k + 1]! : tmp[mirror(k + 1, n)]!;
-    tmp[k] = tmp[k]! +B * (l + r);
+    tmp[k] = tmp[k]! + B * (l + r);
   }
   for (let k = 1; k < n; k += 2) {
     const l = tmp[k - 1]!;
     const r = k + 1 < n ? tmp[k + 1]! : tmp[mirror(k + 1, n)]!;
-    tmp[k] = tmp[k]! +G * (l + r);
+    tmp[k] = tmp[k]! + G * (l + r);
   }
   for (let k = 0; k < n; k += 2) {
     const l = k - 1 >= 0 ? tmp[k - 1]! : tmp[mirror(k - 1, n)]!;
     const r = k + 1 < n ? tmp[k + 1]! : tmp[mirror(k + 1, n)]!;
-    tmp[k] = tmp[k]! +D * (l + r);
+    tmp[k] = tmp[k]! + D * (l + r);
   }
   for (let k = 0; k < n; k++) tmp[k] = tmp[k]! * ((k & 1) === 0 ? 1 / K : K);
   for (let k = 0; k < n; k++) {
@@ -133,22 +134,22 @@ const inv97_1d: Lift1D = (buf, base, stride, n, tmp) => {
   for (let k = 0; k < n; k += 2) {
     const l = k - 1 >= 0 ? tmp[k - 1]! : tmp[mirror(k - 1, n)]!;
     const r = k + 1 < n ? tmp[k + 1]! : tmp[mirror(k + 1, n)]!;
-    tmp[k] = tmp[k]! -D * (l + r);
+    tmp[k] = tmp[k]! - D * (l + r);
   }
   for (let k = 1; k < n; k += 2) {
     const l = tmp[k - 1]!;
     const r = k + 1 < n ? tmp[k + 1]! : tmp[mirror(k + 1, n)]!;
-    tmp[k] = tmp[k]! -G * (l + r);
+    tmp[k] = tmp[k]! - G * (l + r);
   }
   for (let k = 0; k < n; k += 2) {
     const l = k - 1 >= 0 ? tmp[k - 1]! : tmp[mirror(k - 1, n)]!;
     const r = k + 1 < n ? tmp[k + 1]! : tmp[mirror(k + 1, n)]!;
-    tmp[k] = tmp[k]! -B * (l + r);
+    tmp[k] = tmp[k]! - B * (l + r);
   }
   for (let k = 1; k < n; k += 2) {
     const l = tmp[k - 1]!;
     const r = k + 1 < n ? tmp[k + 1]! : tmp[mirror(k + 1, n)]!;
-    tmp[k] = tmp[k]! -A * (l + r);
+    tmp[k] = tmp[k]! - A * (l + r);
   }
   for (let j = 0; j < n; j++) buf[base + j * stride] = tmp[j]!;
 };
@@ -167,7 +168,8 @@ export const KERNELS: Record<Kernel, KernelOps> = {
 /** Subband geometry of a `levels`-deep packed Mallat decomposition of a w×h grid. */
 export function dwtBands(width: number, height: number, levels: number): Band[] {
   const bands: Band[] = [];
-  let curW = width, curH = height;
+  let curW = width,
+    curH = height;
   let lvl = 0;
   for (; lvl < levels && curW >= 2 && curH >= 2; lvl++) {
     const lowW = (curW + 1) >> 1;
@@ -187,7 +189,8 @@ export function fdwt2d(src: ArrayLike<number>, width: number, height: number, ke
   const k = KERNELS[kernel];
   const data = Float32Array.from(src);
   const tmp = new Float32Array(Math.max(width, height));
-  let curW = width, curH = height;
+  let curW = width,
+    curH = height;
   for (let lvl = 0; lvl < levels && curW >= 2 && curH >= 2; lvl++) {
     for (let y = 0; y < curH; y++) k.fwd(data, y * width, 1, curW, tmp);
     for (let x = 0; x < curW; x++) k.fwd(data, x, width, curH, tmp);
@@ -203,7 +206,8 @@ export function idwt2d(src: ArrayLike<number>, width: number, height: number, ke
   const data = Float32Array.from(src);
   const tmp = new Float32Array(Math.max(width, height));
   const sizes: Array<[number, number]> = [];
-  let curW = width, curH = height;
+  let curW = width,
+    curH = height;
   for (let lvl = 0; lvl < levels && curW >= 2 && curH >= 2; lvl++) {
     sizes.push([curW, curH]);
     curW = (curW + 1) >> 1;

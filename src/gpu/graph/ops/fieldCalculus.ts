@@ -17,8 +17,7 @@ function grid(s: Shape): { w: number; h: number } {
 
 const clamp = (v: number, lo: number, hi: number) => (v < lo ? lo : v > hi ? hi : v);
 /** Sample a scalar grid with clamped (replicate) boundaries. */
-const sample = (d: ArrayLike<number>, w: number, h: number, x: number, y: number) =>
-  d[clamp(y, 0, h - 1) * w + clamp(x, 0, w - 1)]!;
+const sample = (d: ArrayLike<number>, w: number, h: number, x: number, y: number) => d[clamp(y, 0, h - 1) * w + clamp(x, 0, w - 1)]!;
 
 /** Central-difference gradient of a scalar field → an interleaved vec2 field [fx, fy]. */
 function gradient(d: ArrayLike<number>, w: number, h: number): Float32Array {
@@ -54,8 +53,10 @@ function laplacian(d: ArrayLike<number>, w: number, h: number): Float32Array {
   for (let y = 0; y < h; y++) {
     for (let x = 0; x < w; x++) {
       out[y * w + x] =
-        sample(d, w, h, x + 1, y) + sample(d, w, h, x - 1, y) +
-        sample(d, w, h, x, y + 1) + sample(d, w, h, x, y - 1) -
+        sample(d, w, h, x + 1, y) +
+        sample(d, w, h, x - 1, y) +
+        sample(d, w, h, x, y + 1) +
+        sample(d, w, h, x, y - 1) -
         4 * sample(d, w, h, x, y);
     }
   }
@@ -82,27 +83,36 @@ function gradMag(d: ArrayLike<number>, w: number, h: number): Float32Array {
  *  (λ₊−λ₋)/(λ₊+λ₋) ∈ [0,1], so |output| is how oriented the neighbourhood is. */
 function structureOrientation(d: ArrayLike<number>, w: number, h: number, radius: number): Float32Array {
   // Per-pixel gradient outer-product components.
-  const gxx = new Float32Array(w * h), gyy = new Float32Array(w * h), gxy = new Float32Array(w * h);
+  const gxx = new Float32Array(w * h),
+    gyy = new Float32Array(w * h),
+    gxy = new Float32Array(w * h);
   for (let y = 0; y < h; y++) {
     for (let x = 0; x < w; x++) {
       const fx = (sample(d, w, h, x + 1, y) - sample(d, w, h, x - 1, y)) * 0.5;
       const fy = (sample(d, w, h, x, y + 1) - sample(d, w, h, x, y - 1)) * 0.5;
       const i = y * w + x;
-      gxx[i] = fx * fx; gyy[i] = fy * fy; gxy[i] = fx * fy;
+      gxx[i] = fx * fx;
+      gyy[i] = fy * fy;
+      gxy[i] = fx * fy;
     }
   }
   const r = Math.max(0, radius | 0);
   const boxAt = (g: Float32Array, x: number, y: number) => {
-    let s = 0, n = 0;
-    for (let dy = -r; dy <= r; dy++) for (let dx = -r; dx <= r; dx++) {
-      s += g[clamp(y + dy, 0, h - 1) * w + clamp(x + dx, 0, w - 1)]!; n++;
-    }
+    let s = 0,
+      n = 0;
+    for (let dy = -r; dy <= r; dy++)
+      for (let dx = -r; dx <= r; dx++) {
+        s += g[clamp(y + dy, 0, h - 1) * w + clamp(x + dx, 0, w - 1)]!;
+        n++;
+      }
     return s / n;
   };
   const out = new Float32Array(w * h * 2);
   for (let y = 0; y < h; y++) {
     for (let x = 0; x < w; x++) {
-      const Jxx = boxAt(gxx, x, y), Jyy = boxAt(gyy, x, y), Jxy = boxAt(gxy, x, y);
+      const Jxx = boxAt(gxx, x, y),
+        Jyy = boxAt(gyy, x, y),
+        Jxy = boxAt(gxy, x, y);
       // Closed-form symmetric 2×2 eigensystem.
       const tr = Jxx + Jyy;
       const diff = Jxx - Jyy;
@@ -140,7 +150,10 @@ function unary(
     return [{ shape: inputs[0]!.shape, dtype: "f32", element: outEl, data: compute(inputs[0]!.data!, w, h, p) }];
   };
   return {
-    name, label, describe, category,
+    name,
+    label,
+    describe,
+    category,
     inputs: [{ name: "in", kind: "grid" }],
     outputs: [{ name: "out", kind: "grid", dtype: "f32" }],
     params,
@@ -157,10 +170,42 @@ function unary(
   };
 }
 
-export const gradientOp = unary("gradient", "Gradient", "Central-difference gradient of a scalar field → a vec2 field.", "Linear algebra", ["scalar"], VEC2, (d, w, h) => gradient(d, w, h));
-export const gradientMagnitudeOp = unary("gradientMagnitude", "Gradient magnitude", "Per-sample |∇f| of a scalar field.", "Linear algebra", ["scalar"], SCALAR, (d, w, h) => gradMag(d, w, h));
-export const laplacianOp = unary("laplacian", "Laplacian", "5-point Laplacian ∇²f of a scalar field.", "Linear algebra", ["scalar"], SCALAR, (d, w, h) => laplacian(d, w, h));
-export const divergenceOp = unary("divergence", "Divergence", "Divergence ∇·v of a vec2 field → a scalar field.", "Linear algebra", ["vec"], SCALAR, (d, w, h) => divergence(d, w, h));
+export const gradientOp = unary(
+  "gradient",
+  "Gradient",
+  "Central-difference gradient of a scalar field → a vec2 field.",
+  "Linear algebra",
+  ["scalar"],
+  VEC2,
+  (d, w, h) => gradient(d, w, h),
+);
+export const gradientMagnitudeOp = unary(
+  "gradientMagnitude",
+  "Gradient magnitude",
+  "Per-sample |∇f| of a scalar field.",
+  "Linear algebra",
+  ["scalar"],
+  SCALAR,
+  (d, w, h) => gradMag(d, w, h),
+);
+export const laplacianOp = unary(
+  "laplacian",
+  "Laplacian",
+  "5-point Laplacian ∇²f of a scalar field.",
+  "Linear algebra",
+  ["scalar"],
+  SCALAR,
+  (d, w, h) => laplacian(d, w, h),
+);
+export const divergenceOp = unary(
+  "divergence",
+  "Divergence",
+  "Divergence ∇·v of a vec2 field → a scalar field.",
+  "Linear algebra",
+  ["vec"],
+  SCALAR,
+  (d, w, h) => divergence(d, w, h),
+);
 export const structureOrientationOp = unary(
   "structureOrientation",
   "Structure orientation",

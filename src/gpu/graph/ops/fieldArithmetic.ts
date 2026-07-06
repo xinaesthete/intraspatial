@@ -4,10 +4,11 @@
 // vec, quaternion). `mul` is the element's algebra product (ordinary / complex / Hamilton
 // — vec is rejected). dot/cross/normalize are the vector operators. All are CPU Tier-1
 // ops; element preconditions are checked at graph-build time in `inferElements`.
+
+import { addFields, crossFields, dotFields, mulFields, normalize, scaleField, subFields } from "../elementMath";
 import type { ElementType, FieldValue, Shape } from "../handle";
 import { elementLabel, elementsEqual, shapesEqual } from "../handle";
 import type { OpType, Params } from "../op";
-import { addFields, crossFields, dotFields, mulFields, normalize, scaleField, subFields } from "../elementMath";
 
 const SCALAR: ElementType = { kind: "scalar" };
 
@@ -56,7 +57,9 @@ function binaryOp(
 }
 
 export const addFieldsOp = binaryOp("addFields", "Add", "Pointwise sum a + b (any matching element).", (_el, a, b) => addFields(a, b));
-export const subFieldsOp = binaryOp("subFields", "Subtract", "Pointwise difference a − b (any matching element).", (_el, a, b) => subFields(a, b));
+export const subFieldsOp = binaryOp("subFields", "Subtract", "Pointwise difference a − b (any matching element).", (_el, a, b) =>
+  subFields(a, b),
+);
 
 // Algebra product a · b. CPU Tier-1 like the rest of the element ops (and `addGrids`).
 // A GPU kernel exists (`complexMulGpu.ts`, validated by `element.gpu.test.ts`) but is

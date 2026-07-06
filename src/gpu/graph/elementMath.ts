@@ -49,15 +49,24 @@ export function mulFields(el: ElementType, a: ArrayLike<number>, b: ArrayLike<nu
       return out;
     case "complex":
       for (let i = 0; i < out.length; i += 2) {
-        const ar = a[i]!, ai = a[i + 1]!, br = b[i]!, bi = b[i + 1]!;
+        const ar = a[i]!,
+          ai = a[i + 1]!,
+          br = b[i]!,
+          bi = b[i + 1]!;
         out[i] = ar * br - ai * bi;
         out[i + 1] = ar * bi + ai * br;
       }
       return out;
     case "quaternion":
       for (let i = 0; i < out.length; i += 4) {
-        const aw = a[i]!, ax = a[i + 1]!, ay = a[i + 2]!, az = a[i + 3]!;
-        const bw = b[i]!, bx = b[i + 1]!, by = b[i + 2]!, bz = b[i + 3]!;
+        const aw = a[i]!,
+          ax = a[i + 1]!,
+          ay = a[i + 2]!,
+          az = a[i + 3]!;
+        const bw = b[i]!,
+          bx = b[i + 1]!,
+          by = b[i + 2]!,
+          bz = b[i + 3]!;
         out[i] = aw * bw - ax * bx - ay * by - az * bz;
         out[i + 1] = aw * bx + ax * bw + ay * bz - az * by;
         out[i + 2] = aw * by - ax * bz + ay * bw + az * bx;
@@ -129,8 +138,12 @@ export function crossFields(el: ElementType, a: ArrayLike<number>, b: ArrayLike<
   sameLen(a, b, "crossFields");
   const out = new Float32Array(a.length);
   for (let i = 0; i < out.length; i += 3) {
-    const ax = a[i]!, ay = a[i + 1]!, az = a[i + 2]!;
-    const bx = b[i]!, by = b[i + 1]!, bz = b[i + 2]!;
+    const ax = a[i]!,
+      ay = a[i + 1]!,
+      az = a[i + 2]!;
+    const bx = b[i]!,
+      by = b[i + 1]!,
+      bz = b[i + 2]!;
     out[i] = ay * bz - az * by;
     out[i + 1] = az * bx - ax * bz;
     out[i + 2] = ax * by - ay * bx;

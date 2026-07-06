@@ -1,14 +1,33 @@
-import { describe, it, expect } from "vitest";
 import tgpu from "typegpu";
 import * as d from "typegpu/data";
+import { describe, expect, it } from "vitest";
 import { getDevice } from "../device";
-import { DancerGpuSim, type DancerGpuParams } from "./dancerGpu";
+import { type DancerGpuParams, DancerGpuSim } from "./dancerGpu";
 
 const P: DancerGpuParams = {
-  constrain: 0.5, cohere: 0.4, cohereRadius: 3, separate: 0.6, separateRadius: 1.4, orbit: 0.35,
-  swim: 0, vortex: 0, solenoid: 0, partner: 0.5, partnerOffset: 1, caller: 1, callerGain: 0.09,
-  callerSpeed: 0.6, period: 480, callerSeed: 0, timeFactor: 0.2, jerkLimit: 0.05, linDamp: 0.96,
-  angDamp: 0.9, speedLimit: 1.2, face: 0.5, maxRadius: 40,
+  constrain: 0.5,
+  cohere: 0.4,
+  cohereRadius: 3,
+  separate: 0.6,
+  separateRadius: 1.4,
+  orbit: 0.35,
+  swim: 0,
+  vortex: 0,
+  solenoid: 0,
+  partner: 0.5,
+  partnerOffset: 1,
+  caller: 1,
+  callerGain: 0.09,
+  callerSpeed: 0.6,
+  period: 480,
+  callerSeed: 0,
+  timeFactor: 0.2,
+  jerkLimit: 0.05,
+  linDamp: 0.96,
+  angDamp: 0.9,
+  speedLimit: 1.2,
+  face: 0.5,
+  maxRadius: 40,
 };
 
 describe("DancerGpuSim trail history", () => {

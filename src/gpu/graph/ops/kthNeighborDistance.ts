@@ -2,8 +2,8 @@
 // its k-th nearest neighbour (the local density estimate ρ_i / local bandwidth).
 // Output is an n×1 matrix, the per-point bandwidth that feeds fuzzyAdjacencyAdaptive.
 import { kthNeighborDistanceGpu } from "../../spatial/kthNeighborDistance";
-import { unpackPoints } from "../handle";
 import type { Shape } from "../handle";
+import { unpackPoints } from "../handle";
 import type { OpType } from "../op";
 
 function pointCount(s: Shape): number {

@@ -3,8 +3,8 @@
 // through a depth-3 delay and confirm the output lags by three ticks, then check the
 // resident memory the delay holds.
 import { beforeAll, describe, expect, it } from "vitest";
-import { advance, createSimState, Graph, registerElementOps, simStateBytes } from "./index";
 import type { FieldValue } from "./handle";
+import { advance, createSimState, Graph, registerElementOps, simStateBytes } from "./index";
 
 beforeAll(async () => {
   await registerElementOps(); // addFields

@@ -1,7 +1,8 @@
 // Registers the built-in ops. Importing this module (or the graph entry point)
 // populates the registry; `listOps()` then drives the React Flow palette.
-import { hasOp, registerOp } from "../registry";
+
 import type { OpType } from "../op";
+import { hasOp, registerOp } from "../registry";
 
 // Register-if-absent. `registerOp` throws on a duplicate name (a useful guard against
 // real collisions), but the registry module outlives a Vite HMR re-evaluation of this
@@ -10,18 +11,19 @@ import type { OpType } from "../op";
 const reg = (op: OpType): void => {
   if (!hasOp(op.name)) registerOp(op);
 };
-import { splatDensityOp } from "./splatDensity";
-import { convolveSeparableOp } from "./convolveSeparable";
-import { getisOrdOp } from "./getisOrd";
-import { thresholdOp } from "./threshold";
+
 import { addGridsOp } from "./addGrids";
-import { kthNeighborDistanceOp } from "./kthNeighborDistance";
+import { convolveSeparableOp } from "./convolveSeparable";
+import { feedbackOp } from "./feedback";
 import { fuzzyAdjacencyOp } from "./fuzzyAdjacency";
 import { fuzzyAdjacencyAdaptiveOp } from "./fuzzyAdjacencyAdaptive";
+import { getisOrdOp } from "./getisOrd";
+import { kthNeighborDistanceOp } from "./kthNeighborDistance";
 import { membershipToDistanceOp } from "./membershipToDistance";
-import { vietorisRipsOp } from "./vietorisRips";
 import { reactionDiffusionStepOp } from "./reactionDiffusion";
-import { feedbackOp } from "./feedback";
+import { splatDensityOp } from "./splatDensity";
+import { thresholdOp } from "./threshold";
+import { vietorisRipsOp } from "./vietorisRips";
 
 let registered = false;
 
@@ -107,16 +109,16 @@ export async function registerWaveletOps(): Promise<void> {
 }
 
 export {
-  splatDensityOp,
-  convolveSeparableOp,
-  getisOrdOp,
-  thresholdOp,
   addGridsOp,
-  kthNeighborDistanceOp,
-  fuzzyAdjacencyOp,
-  fuzzyAdjacencyAdaptiveOp,
-  membershipToDistanceOp,
-  vietorisRipsOp,
-  reactionDiffusionStepOp,
+  convolveSeparableOp,
   feedbackOp,
+  fuzzyAdjacencyAdaptiveOp,
+  fuzzyAdjacencyOp,
+  getisOrdOp,
+  kthNeighborDistanceOp,
+  membershipToDistanceOp,
+  reactionDiffusionStepOp,
+  splatDensityOp,
+  thresholdOp,
+  vietorisRipsOp,
 };

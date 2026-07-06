@@ -11,7 +11,8 @@ function gridShape(s: Shape): { width: number; height: number } {
 }
 
 function combine(a: ArrayLike<number>, b: ArrayLike<number>, params: Params): Float32Array {
-  const wa = (params.wa as number) ?? 1, wb = (params.wb as number) ?? 1;
+  const wa = (params.wa as number) ?? 1,
+    wb = (params.wb as number) ?? 1;
   const out = new Float32Array(a.length);
   for (let i = 0; i < out.length; i++) out[i] = a[i]! * wa + b[i]! * wb;
   return out;
@@ -31,7 +32,8 @@ export const addGridsOp: OpType = {
     { name: "wb", type: "number", default: 1, min: -4, max: 4, step: 0.1 },
   ],
   inferShapes(inputs) {
-    const a = gridShape(inputs[0]!), b = gridShape(inputs[1]!);
+    const a = gridShape(inputs[0]!),
+      b = gridShape(inputs[1]!);
     if (a.width !== b.width || a.height !== b.height) throw new Error("addGrids: grid shapes differ");
     return [inputs[0]!];
   },

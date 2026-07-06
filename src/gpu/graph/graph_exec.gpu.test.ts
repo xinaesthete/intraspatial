@@ -1,19 +1,27 @@
-import { describe, it, expect } from "vitest";
+import { describe, expect, it } from "vitest";
 import { Graph, pull, pullData } from "./index";
 
 // Executor-semantics tests: validate/fallback equivalence and fork-join dedup.
 // Separate file (own fork) — see the note in graph.gpu.test.ts on Dawn teardown.
 
 function fixture() {
-  const xs: number[] = [], ys: number[] = [];
-  for (let i = 0; i < 40; i++) { xs.push(50 + (i % 7) * 0.6); ys.push(50 + Math.floor(i / 7) * 0.6); }
-  for (let i = 0; i < 20; i++) { xs.push((i * 13) % 100); ys.push((i * 29) % 100); }
+  const xs: number[] = [],
+    ys: number[] = [];
+  for (let i = 0; i < 40; i++) {
+    xs.push(50 + (i % 7) * 0.6);
+    ys.push(50 + Math.floor(i / 7) * 0.6);
+  }
+  for (let i = 0; i < 20; i++) {
+    xs.push((i * 13) % 100);
+    ys.push((i * 29) % 100);
+  }
   return { xs, ys, bbox: [0, 0, 100, 100] as [number, number, number, number] };
 }
 
 describe("graph runtime — executor", () => {
   it("native threshold op matches its CPU golden (gpu vs cpu executor mode)", async () => {
-    const w = 16, h = 16;
+    const w = 16,
+      h = 16;
     const grid = Float32Array.from({ length: w * h }, (_, i) => ((i * 2654435761) % 1000) / 1000);
     const g = new Graph();
     const src = g.grid(grid, w, h);

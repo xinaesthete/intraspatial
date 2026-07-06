@@ -6,8 +6,9 @@
 // context and resolved input `FieldValue`s, and returns output `FieldValue`s. The
 // registry keys these by name so the React Flow palette can list and instantiate
 // them.
-import type { Basis, Dtype, ElementType, FieldValue, Shape, ShapeKind } from "./handle";
+
 import type { GpuBackend } from "./backend";
+import type { Basis, Dtype, ElementType, FieldValue, Shape, ShapeKind } from "./handle";
 
 export interface PortSpec {
   name: string;

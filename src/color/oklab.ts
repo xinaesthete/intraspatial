@@ -37,17 +37,9 @@ export function linearChannelToSrgb(c: number): number {
   return c <= 0.0031308 ? 12.92 * c : 1.055 * c ** (1 / 2.4) - 0.055;
 }
 
-export const srgbToLinear = (c: Srgb): LinearRgb => [
-  srgbChannelToLinear(c[0]),
-  srgbChannelToLinear(c[1]),
-  srgbChannelToLinear(c[2]),
-];
+export const srgbToLinear = (c: Srgb): LinearRgb => [srgbChannelToLinear(c[0]), srgbChannelToLinear(c[1]), srgbChannelToLinear(c[2])];
 
-export const linearToSrgb = (c: LinearRgb): Srgb => [
-  linearChannelToSrgb(c[0]),
-  linearChannelToSrgb(c[1]),
-  linearChannelToSrgb(c[2]),
-];
+export const linearToSrgb = (c: LinearRgb): Srgb => [linearChannelToSrgb(c[0]), linearChannelToSrgb(c[1]), linearChannelToSrgb(c[2])];
 
 // ── linear sRGB ⇄ okLab (Ottosson's LMS-cbrt model) ─────────────────────────────────────
 

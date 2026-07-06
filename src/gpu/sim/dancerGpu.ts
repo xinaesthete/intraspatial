@@ -16,7 +16,7 @@ import tgpu, { type StorageFlag, type TgpuBuffer, type UniformFlag } from "typeg
 import * as d from "typegpu/data";
 import * as std from "typegpu/std";
 import { INTEGRATE_DEFAULTS, seedSwarmBody, tapBlock } from "./body";
-import { figureAt, partnerIndex, type Figure } from "./figures";
+import { type Figure, figureAt, partnerIndex } from "./figures";
 
 const WG = 64;
 
@@ -118,21 +118,29 @@ const trailLayout = tgpu.bindGroupLayout({
 // ── device-function helpers (mirror src/gpu/sim/vec3.ts + quat.ts) ────────────────────────
 
 /** normalize with vec3.ts semantics: |v|<eps ⇒ fallback (default zero). */
-const normOr = tgpu.fn([d.vec3f, d.vec3f], d.vec3f)((v, fb) => {
+const normOr = tgpu.fn(
+  [d.vec3f, d.vec3f],
+  d.vec3f,
+)((v, fb) => {
   "use gpu";
   const l = std.length(v);
   return std.select(std.mul(1 / std.max(l, 1e-9), v), fb, l < 1e-9);
 });
 
-const safeNorm = tgpu.fn([d.vec3f], d.vec3f)((v) => {
+const safeNorm = tgpu.fn(
+  [d.vec3f],
+  d.vec3f,
+)((v) => {
   "use gpu";
   return normOr(v, d.vec3f());
 });
 
-
 /** The forward (+z) axis of orientation angle-axis `r` — Rodrigues-rotate (0,0,1) by r.
  *  Matches forward(fromAxisAngle(normalize(angPos),|angPos|)) in body.ts. */
-const rodriguesForward = tgpu.fn([d.vec3f], d.vec3f)((r) => {
+const rodriguesForward = tgpu.fn(
+  [d.vec3f],
+  d.vec3f,
+)((r) => {
   "use gpu";
   const theta = std.length(r);
   const k = std.mul(1 / std.max(theta, 1e-9), r);
@@ -144,7 +152,10 @@ const rodriguesForward = tgpu.fn([d.vec3f], d.vec3f)((r) => {
 });
 
 /** Move `cur` toward `target` by at most `maxStep` — the C² jerk limiter (body.ts approach). */
-const approach = tgpu.fn([d.vec3f, d.vec3f, d.f32], d.vec3f)((cur, target, maxStep) => {
+const approach = tgpu.fn(
+  [d.vec3f, d.vec3f, d.f32],
+  d.vec3f,
+)((cur, target, maxStep) => {
   "use gpu";
   const dd = std.sub(target, cur);
   const dist = std.length(dd);
@@ -153,14 +164,20 @@ const approach = tgpu.fn([d.vec3f, d.vec3f, d.f32], d.vec3f)((cur, target, maxSt
 });
 
 /** clampLength(v, maxLen) (body.ts / vec3.ts). */
-const clampLen = tgpu.fn([d.vec3f, d.f32], d.vec3f)((v, maxLen) => {
+const clampLen = tgpu.fn(
+  [d.vec3f, d.f32],
+  d.vec3f,
+)((v, maxLen) => {
   "use gpu";
   const l = std.length(v);
   return std.select(v, std.mul(maxLen / std.max(l, 1e-9), v), l > maxLen);
 });
 
 /** Solenoid field direction (unit-ish), fallback (0,-1,0) — forces.ts solenoidForce sans coeff. */
-const solenoidDir = tgpu.fn([d.vec3f], d.vec3f)((p) => {
+const solenoidDir = tgpu.fn(
+  [d.vec3f],
+  d.vec3f,
+)((p) => {
   "use gpu";
   const x = p.x;
   const y = p.y;
@@ -175,7 +192,10 @@ const solenoidDir = tgpu.fn([d.vec3f], d.vec3f)((p) => {
 });
 
 /** figureTargetVel — the target *state of motion* per figure (figures.ts). */
-const figureTargetVel = tgpu.fn([d.u32, d.vec3f, d.u32, d.vec3f, d.f32], d.vec3f)((code, p, i, partner, speed) => {
+const figureTargetVel = tgpu.fn(
+  [d.u32, d.vec3f, d.u32, d.vec3f, d.f32],
+  d.vec3f,
+)((code, p, i, partner, speed) => {
   "use gpu";
   const up = d.vec3f(0, 1, 0);
   // swing (0): orbit the couple midpoint
@@ -231,7 +251,10 @@ const gatherFn = tgpu
 /** Compose a column-major model matrix from position `t` and angle-axis orientation `r`
  *  (Rodrigues rotation), uniformly scaled — matching THREE.Matrix4.compose(pos, quat, scale)
  *  for the same rotation. `mat4x4f(col0..col3)`, columns are vec4f. */
-const modelMatrix = tgpu.fn([d.vec3f, d.vec3f, d.f32], d.mat4x4f)((t, r, s) => {
+const modelMatrix = tgpu.fn(
+  [d.vec3f, d.vec3f, d.f32],
+  d.mat4x4f,
+)((t, r, s) => {
   "use gpu";
   const theta = std.length(r);
   const k = std.mul(1 / std.max(theta, 1e-9), r);
@@ -674,7 +697,7 @@ export class DancerGpuSim {
   trailHead(): number {
     // the last write used head = (frame-1) % cap after step()'s frame++ … but the renderer reads
     // AFTER the current step, so newest = frame-1. Guard the empty case.
-    return this.trailCap > 0 ? ((this.frame - 1) % this.trailCap + this.trailCap) % this.trailCap : 0;
+    return this.trailCap > 0 ? (((this.frame - 1) % this.trailCap) + this.trailCap) % this.trailCap : 0;
   }
 
   /** Bind a raw mat4 storage buffer (three.js's `StorageInstancedBufferAttribute` for the

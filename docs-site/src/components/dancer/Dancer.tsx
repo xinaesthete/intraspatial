@@ -170,7 +170,10 @@ export default function Dancer() {
         // genome; the active sim reads it BY REFERENCE, so easing it morphs the dance, and the
         // renderer's colour/size mapping tracks the same eased values.
         const liveParams: DancerParams = { ...paramsRef.current };
-        const smoother = new OnePole(PARAM_KEYS.length, { tau: PARAM_TAU, initial: paramsToVec(paramsRef.current, new Float32Array(PARAM_KEYS.length)) });
+        const smoother = new OnePole(PARAM_KEYS.length, {
+          tau: PARAM_TAU,
+          initial: paramsToVec(paramsRef.current, new Float32Array(PARAM_KEYS.length)),
+        });
         const targetVec = new Float32Array(PARAM_KEYS.length);
         sim.params = liveParams;
         if (gpu) gpu.params = liveParams;
@@ -281,10 +284,22 @@ export default function Dancer() {
                 ))}
               </select>
             </label>
-            <button type="button" className="dancer-fs" onClick={() => setPaused((v) => !v)} aria-pressed={paused} title="hold the current Ceilidh figure (motion keeps running)">
+            <button
+              type="button"
+              className="dancer-fs"
+              onClick={() => setPaused((v) => !v)}
+              aria-pressed={paused}
+              title="hold the current Ceilidh figure (motion keeps running)"
+            >
               {paused ? "▶ resume figures" : "⏸ hold figure"}
             </button>
-            <button type="button" className="dancer-fs" onClick={() => setShowMatrix((v) => !v)} aria-pressed={showMatrix} title="pairwise distance matrix">
+            <button
+              type="button"
+              className="dancer-fs"
+              onClick={() => setShowMatrix((v) => !v)}
+              aria-pressed={showMatrix}
+              title="pairwise distance matrix"
+            >
               ▦ {showMatrix ? "hide matrix" : "matrix"}
             </button>
             <button
@@ -299,7 +314,9 @@ export default function Dancer() {
             >
               ⚘ {showBreed ? "hide breeder" : "breed"}
             </button>
-            <button type="button" className="dancer-fs" onClick={toggleFullscreen} aria-label="fullscreen">⤢ fullscreen</button>
+            <button type="button" className="dancer-fs" onClick={toggleFullscreen} aria-label="fullscreen">
+              ⤢ fullscreen
+            </button>
           </div>
         </div>
 
@@ -322,24 +339,25 @@ export default function Dancer() {
           <div className="dancer-matrix-cap">distance matrix</div>
         </div>
 
-        {status === "unsupported" && (
-          <div className="dancer-overlay">This piece needs WebGPU. Try a recent Chrome, Edge, or Safari.</div>
-        )}
+        {status === "unsupported" && <div className="dancer-overlay">This piece needs WebGPU. Try a recent Chrome, Edge, or Safari.</div>}
         {status === "error" && <div className="dancer-overlay">The 3D stage failed to start (see console).</div>}
 
         {showAbout && (
           <aside className="dancer-about">
-            <button type="button" className="dancer-about-close" onClick={() => setShowAbout(false)} aria-label="close">×</button>
+            <button type="button" className="dancer-about-close" onClick={() => setShowAbout(false)} aria-label="close">
+              ×
+            </button>
             <h1>Folk-Algorithm based Dance Simulation</h1>
             <p>
-              After <em>DANCERL</em> (Andy Lomas, IBM, 1992) — the force-field motion controller for
-              William Latham's SIGGRAPH film, written in the ESME language designed by Stephen Todd and colleagues at IBM Winchester.
+              After <em>DANCERL</em> (Andy Lomas, IBM, 1992) — the force-field motion controller for William Latham's SIGGRAPH film, written
+              in the ESME language designed by Stephen Todd and colleagues at IBM Winchester.
               <br />
-              Experiment in vibe-coding based on a knowledge passed down through the generations, and a reflection on the current
-              xeitgeist. I always loved the way my Dad describes how this algorithm behaves; like a very chaotic Ceilidh where no-one knows
-              what they're supposed to be doing, and all frantically try to move on to the correct movement as the caller calls it.
+              Experiment in vibe-coding based on a knowledge passed down through the generations, and a reflection on the current xeitgeist.
+              I always loved the way my Dad describes how this algorithm behaves; like a very chaotic Ceilidh where no-one knows what
+              they're supposed to be doing, and all frantically try to move on to the correct movement as the caller calls it.
               <br />
-              As of this writing, the actual simulation isn't yet doing anything I consider very interesting, but hopefully will at some point.
+              As of this writing, the actual simulation isn't yet doing anything I consider very interesting, but hopefully will at some
+              point.
             </p>
             <p className="dancer-about-note">
               A 2026 reconstruction by Claude Code, directed by Peter Todd. Drag to orbit · ⤢ for fullscreen.
@@ -347,7 +365,9 @@ export default function Dancer() {
           </aside>
         )}
         {!showAbout && (
-          <button type="button" className="dancer-about-open" onClick={() => setShowAbout(true)}>about</button>
+          <button type="button" className="dancer-about-open" onClick={() => setShowAbout(true)}>
+            about
+          </button>
         )}
       </div>
     </div>

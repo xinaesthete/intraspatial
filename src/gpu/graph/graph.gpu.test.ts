@@ -1,6 +1,6 @@
-import { describe, it, expect } from "vitest";
-import { Graph, pullData } from "./index";
+import { describe, expect, it } from "vitest";
 import { pointHotspotsGpu } from "../spatial/getisOrd";
+import { Graph, pullData } from "./index";
 
 // Composition tests: the graph runtime reproduces the hand-written GPU pipeline.
 // Kept in its own file (one fork) because the splat render path + compute roots do
@@ -9,9 +9,16 @@ import { pointHotspotsGpu } from "../spatial/getisOrd";
 // (see vitest.gpu.config.ts). Executor-only checks live in graph_exec.gpu.test.ts.
 
 function fixture() {
-  const xs: number[] = [], ys: number[] = [];
-  for (let i = 0; i < 40; i++) { xs.push(50 + (i % 7) * 0.6); ys.push(50 + Math.floor(i / 7) * 0.6); }
-  for (let i = 0; i < 20; i++) { xs.push((i * 13) % 100); ys.push((i * 29) % 100); }
+  const xs: number[] = [],
+    ys: number[] = [];
+  for (let i = 0; i < 40; i++) {
+    xs.push(50 + (i % 7) * 0.6);
+    ys.push(50 + Math.floor(i / 7) * 0.6);
+  }
+  for (let i = 0; i < 20; i++) {
+    xs.push((i * 13) % 100);
+    ys.push((i * 29) % 100);
+  }
   return { xs, ys, bbox: [0, 0, 100, 100] as [number, number, number, number] };
 }
 

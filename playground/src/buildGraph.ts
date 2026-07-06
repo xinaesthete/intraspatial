@@ -2,14 +2,14 @@
 // or advance a chosen output. The canvas state is the explicit graph; this is the
 // adapter that hands it to the executor.
 import type { Edge, Node } from "@xyflow/react";
-import { Graph, advance, createSimState, pull } from "../../src/gpu/graph";
 import type { FeedbackHandle, FieldValue, GpuField, GraphMemo, SimState } from "../../src/gpu/graph";
-import { getSource, isSource } from "./sources";
-import { getSpec } from "./specs";
+import { advance, createSimState, Graph, pull } from "../../src/gpu/graph";
 import { browserBackend } from "./backend.browser";
 import { isOpNode, resolveSource } from "./grouping";
-import { expandInstances } from "./subgraphs";
+import { getSource, isSource } from "./sources";
+import { getSpec } from "./specs";
 import type { DefLibrary } from "./subgraphs";
+import { expandInstances } from "./subgraphs";
 
 export interface NodeData {
   opName: string;
@@ -44,7 +44,8 @@ export function buildGraph(inputNodes: Node[], inputEdges: Edge[], defs: DefLibr
   for (const e of allEdges) {
     if (!opIds.has(e.target)) continue; // only edges feeding a real op input
     const rs = resolveSource(allNodes, allEdges, e.source, e.sourceHandle ?? "out");
-    if (rs && opIds.has(rs.node)) edges.push({ id: e.id, source: rs.node, sourceHandle: rs.port, target: e.target, targetHandle: e.targetHandle });
+    if (rs && opIds.has(rs.node))
+      edges.push({ id: e.id, source: rs.node, sourceHandle: rs.port, target: e.target, targetHandle: e.targetHandle });
   }
 
   const graph = new Graph();
@@ -64,7 +65,9 @@ export function buildGraph(inputNodes: Node[], inputEdges: Edge[], defs: DefLibr
     const params = data.params ?? {};
 
     if (isSource(data.opName)) {
-      produced.set(id, getSource(data.opName)!.make(graph, params));
+      const source = getSource(data.opName)?.make(graph, params);
+      if (!source) throw new Error(`Unexpected: failed to produce source '${id}' for op '${data.opName}'`);
+      produced.set(id, source);
       return;
     }
 
@@ -90,7 +93,11 @@ export function buildGraph(inputNodes: Node[], inputEdges: Edge[], defs: DefLibr
     }
     const outs = graph.op(data.opName, inputs, params);
     const map: Record<string, GpuField> = {};
-    spec.outputs.forEach((o, i) => { map[o.name] = outs[i]!; });
+    spec.outputs.forEach((o, i) => {
+      const out = outs[i];
+      if (!out) throw new Error(`missing out ${i}`);
+      map[o.name] = out;
+    });
     produced.set(id, map);
   };
 
@@ -158,6 +165,9 @@ function wrapOnValue(
   const g2c = new Map<string, string>();
   for (const [cid, ports] of produced) {
     for (const portName in ports) {
+      // `portName` comes from `for..in ports`, so the entry is always present; `f?.` would
+      // just bake a literal "undefined:undefined" key if the invariant broke, hiding it.
+      // biome-ignore lint/style/noNonNullAssertion: own enumerable key of `ports`, provably present
       const f = ports[portName]!;
       g2c.set(`${f.producer}:${f.outPort}`, `${cid}:${portName}`);
     }
@@ -184,5 +194,5 @@ export async function advanceNode(
   });
 }
 
-export { createSimState };
 export type { SimState };
+export { createSimState };

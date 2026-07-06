@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, expect, it } from "vitest";
 import { splatDensityGpu } from "./splatDensity";
 
 // CPU golden: full (untruncated) Gaussian KDE sampled at the SAME texel-centre
@@ -44,7 +44,8 @@ describe("splatDensityGpu", () => {
     const xs = [2, 5, 5.4, 8];
     const ys = [2, 6, 6.2, 3];
     const sigma = 1.0;
-    const w = 48, h = 48;
+    const w = 48,
+      h = 48;
     const bbox: [number, number, number, number] = [-2, -2, 12, 12];
     const field = await splatDensityGpu(xs, ys, { width: w, height: h, sigma, radiusSigma: 4, bbox });
     expect(field.width).toBe(w);
@@ -58,13 +59,18 @@ describe("splatDensityGpu", () => {
     const xs = [10];
     const ys = [10];
     const sigma = 2;
-    const w = 40, h = 40;
+    const w = 40,
+      h = 40;
     const bbox: [number, number, number, number] = [0, 0, 20, 20];
     const field = await splatDensityGpu(xs, ys, { width: w, height: h, sigma, bbox });
     // The point at world (10,10) is the centre of the bbox -> texel (~20,~20).
-    let best = -1, bestIdx = -1;
+    let best = -1,
+      bestIdx = -1;
     for (let i = 0; i < field.data.length; i++) {
-      if (field.data[i]! > best) { best = field.data[i]!; bestIdx = i; }
+      if (field.data[i]! > best) {
+        best = field.data[i]!;
+        bestIdx = i;
+      }
     }
     const row = Math.floor(bestIdx / w);
     const col = bestIdx % w;
@@ -80,7 +86,8 @@ describe("splatDensityGpu", () => {
     const xs = [5, 5];
     const ys = [5, 5];
     const sigma = 1.5;
-    const w = 32, h = 32;
+    const w = 32,
+      h = 32;
     const bbox: [number, number, number, number] = [0, 0, 10, 10];
     const field = await splatDensityGpu(xs, ys, { width: w, height: h, sigma, bbox, weights: [2, 3] });
     let peak = 0;

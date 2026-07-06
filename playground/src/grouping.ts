@@ -39,8 +39,8 @@ export interface GroupData {
   [key: string]: unknown;
 }
 export interface Port {
-  id: string;    // = the interface node id (the handle on the group node)
-  node: string;  // the member this interface attaches to (for resolution)
+  id: string; // = the interface node id (the handle on the group node)
+  node: string; // the member this interface attaches to (for resolution)
   port: string;
   kind: string;
   label: string;
@@ -51,7 +51,7 @@ export const isInputNode = (n: Node): boolean => n.type === "input";
 export const isOutputNode = (n: Node): boolean => n.type === "output";
 export const isInterfaceNode = (n: Node): boolean => n.type === "input" || n.type === "output";
 export const isOpNode = (n: Node): boolean => !n.type || n.type === "op";
-export const scopeOf = (n: Node): string => ((n.data as { group?: string } | undefined)?.group) ?? ROOT_SCOPE;
+export const scopeOf = (n: Node): string => (n.data as { group?: string } | undefined)?.group ?? ROOT_SCOPE;
 
 const opName = (n: Node): string => (n.data as unknown as NodeData).opName;
 
@@ -100,7 +100,13 @@ export function resolveSource(
 }
 
 // Consumer-side kind for an input interface node (what it feeds), for colouring.
-function inputKind(nodes: Node[], edges: Edge[], inputNodeId: string, defs: DefLibrary, seen = new Set<string>()): { node: string; port: string; kind: string } {
+function inputKind(
+  nodes: Node[],
+  edges: Edge[],
+  inputNodeId: string,
+  defs: DefLibrary,
+  seen = new Set<string>(),
+): { node: string; port: string; kind: string } {
   if (seen.has(inputNodeId)) return { node: "", port: "", kind: "any" };
   seen.add(inputNodeId);
   const byId = idMap(nodes);
@@ -154,14 +160,21 @@ export function createGroup(
   const minX = Math.min(...sx.map((m) => m.position.x), cx);
   const maxX = Math.max(...sx.map((m) => m.position.x), cx);
 
-  const groupNode: Node = { id: groupId, type: "group", position: { x: cx, y: cy }, data: { label, group: scope } as GroupData as unknown as Record<string, unknown> };
+  const groupNode: Node = {
+    id: groupId,
+    type: "group",
+    position: { x: cx, y: cy },
+    data: { label, group: scope } as GroupData as unknown as Record<string, unknown>,
+  };
   const newNodes: Node[] = [groupNode];
   const nextEdges: Edge[] = [];
-  let inK = 0, outK = 0;
+  let inK = 0,
+    outK = 0;
   const outFor = new Map<string, string>(); // member:port -> output node id (dedup multiple consumers)
 
   for (const e of edges) {
-    const sIn = members.has(e.source), tIn = members.has(e.target);
+    const sIn = members.has(e.source),
+      tIn = members.has(e.target);
     if (tIn && !sIn) {
       // boundary input: ext.src -> member.tgt. Materialise an input node.
       const iid = `${groupId}~in${inK++}`;
@@ -201,7 +214,9 @@ export function createGroup(
   }
 
   const nextNodes = nodes
-    .map((n) => (members.has(n.id) ? { ...n, selected: false, data: { ...(n.data as object), group: groupId } as Record<string, unknown> } : n))
+    .map((n) =>
+      members.has(n.id) ? { ...n, selected: false, data: { ...(n.data as object), group: groupId } as Record<string, unknown> } : n,
+    )
     .concat(newNodes);
   return { nodes: nextNodes, edges: nextEdges };
 }
@@ -227,7 +242,14 @@ export function ungroup(nodes: Node[], edges: Edge[], groupId: string): { nodes:
       const parentE = edges.find((e) => e.target === groupId && e.targetHandle === n.id);
       const childEs = edges.filter((e) => e.source === n.id);
       for (const ce of childEs) {
-        if (parentE) spliced.push({ id: `ug:${ce.id}`, source: parentE.source, sourceHandle: parentE.sourceHandle, target: ce.target, targetHandle: ce.targetHandle });
+        if (parentE)
+          spliced.push({
+            id: `ug:${ce.id}`,
+            source: parentE.source,
+            sourceHandle: parentE.sourceHandle,
+            target: ce.target,
+            targetHandle: ce.targetHandle,
+          });
         drop.add(ce.id);
       }
       if (parentE) drop.add(parentE.id);
@@ -235,7 +257,14 @@ export function ungroup(nodes: Node[], edges: Edge[], groupId: string): { nodes:
       const childE = edges.find((e) => e.target === n.id && (e.targetHandle ?? "in") === "in");
       const parentEs = edges.filter((e) => e.source === groupId && e.sourceHandle === n.id);
       for (const pe of parentEs) {
-        if (childE) spliced.push({ id: `ug:${pe.id}`, source: childE.source, sourceHandle: childE.sourceHandle, target: pe.target, targetHandle: pe.targetHandle });
+        if (childE)
+          spliced.push({
+            id: `ug:${pe.id}`,
+            source: childE.source,
+            sourceHandle: childE.sourceHandle,
+            target: pe.target,
+            targetHandle: pe.targetHandle,
+          });
         drop.add(pe.id);
       }
       if (childE) drop.add(childE.id);
@@ -279,7 +308,12 @@ export function deriveDisplay(nodes: Node[], edges: Edge[], scope: string, defs:
 }
 
 /** Resolve a group output port to the real (op, port) it produces, for preview. */
-export function resolveGroupOutput(nodes: Node[], edges: Edge[], groupId: string, portId?: string): { node: string; port: string } | undefined {
+export function resolveGroupOutput(
+  nodes: Node[],
+  edges: Edge[],
+  groupId: string,
+  portId?: string,
+): { node: string; port: string } | undefined {
   const outs = groupPorts(nodes, edges, groupId).outputs;
   const p = portId ? outs.find((o) => o.id === portId) : outs[0];
   if (!p) return undefined;

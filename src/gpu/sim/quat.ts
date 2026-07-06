@@ -8,7 +8,7 @@
 // consumers — see its own comment) depended on the old (w, x, y, z) wire order, so this
 // migration adopts the library's layout outright rather than translating at the boundary.
 import { quat as Q, vec3 as V3 } from "wgpu-matrix";
-import { type Vec3In, unpack } from "./vec3";
+import { unpack, type Vec3In } from "./vec3";
 
 export type Quat = Float32Array;
 export type QuatIn = Quat | number[];

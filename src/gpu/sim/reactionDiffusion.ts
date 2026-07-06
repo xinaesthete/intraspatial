@@ -131,11 +131,7 @@ const DEFAULTS: Required<GrayScottParams> = { du: 0.16, dv: 0.08, feed: 0.06, ki
 
 /** Advance a Gray–Scott state by `steps` explicit-Euler steps on the GPU. State
  *  grids ping-pong in a pooled pair; only the final state is read back. */
-export async function grayScottStepsGpu(
-  state: GrayScottState,
-  steps: number,
-  params: GrayScottParams = {},
-): Promise<GrayScottState> {
+export async function grayScottStepsGpu(state: GrayScottState, steps: number, params: GrayScottParams = {}): Promise<GrayScottState> {
   const { width: w, height: h } = state;
   const n = w * h;
   if (state.u.length !== n || state.v.length !== n) throw new Error("grayScott: u/v length != width*height");
@@ -150,7 +146,10 @@ export async function grayScottStepsGpu(
   pool.params.write({ w, h, du: p.du, dv: p.dv, feed: p.feed, kill: p.kill, dt: p.dt });
 
   const groups = Math.ceil(n / WG);
-  let uIn = pool.uA, vIn = pool.vA, uOut = pool.uB, vOut = pool.vB;
+  let uIn = pool.uA,
+    vIn = pool.vA,
+    uOut = pool.uB,
+    vOut = pool.vB;
   for (let s = 0; s < steps; s++) {
     const bind = root.unwrap(root.createBindGroup(layout, { params: pool.params, uIn, vIn, uOut, vOut }));
     const enc = device.createCommandEncoder();
@@ -180,14 +179,17 @@ export function grayScottStepCpu(state: GrayScottState, params: GrayScottParams 
   const { width: w, height: h } = state;
   const p = { ...DEFAULTS, ...params };
   const n = w * h;
-  const u = state.u, v = state.v;
-  const uo = new Float32Array(n), vo = new Float32Array(n);
+  const u = state.u,
+    v = state.v;
+  const uo = new Float32Array(n),
+    vo = new Float32Array(n);
   const clamp = (x: number, hi: number) => (x < 0 ? 0 : x > hi ? hi : x);
   const idx = (c: number, r: number) => clamp(r, h - 1) * w + clamp(c, w - 1);
   for (let r = 0; r < h; r++) {
     for (let c = 0; c < w; c++) {
       const i = r * w + c;
-      const uc = u[i]!, vc = v[i]!;
+      const uc = u[i]!,
+        vc = v[i]!;
       const lapU = u[idx(c - 1, r)]! + u[idx(c + 1, r)]! + u[idx(c, r - 1)]! + u[idx(c, r + 1)]! - 4 * uc;
       const lapV = v[idx(c - 1, r)]! + v[idx(c + 1, r)]! + v[idx(c, r - 1)]! + v[idx(c, r + 1)]! - 4 * vc;
       const uvv = uc * vc * vc;
@@ -204,11 +206,13 @@ export function seedGrayScott(width: number, height: number, jitter = 0): GraySc
   const n = width * height;
   const u = new Float32Array(n).fill(1);
   const v = new Float32Array(n);
-  const cx = Math.floor(width / 2), cy = Math.floor(height / 2);
+  const cx = Math.floor(width / 2),
+    cy = Math.floor(height / 2);
   const r = Math.max(2, Math.floor(Math.min(width, height) / 10));
   for (let dy = -r; dy <= r; dy++) {
     for (let dx = -r; dx <= r; dx++) {
-      const x = cx + dx, y = cy + dy;
+      const x = cx + dx,
+        y = cy + dy;
       if (x < 0 || y < 0 || x >= width || y >= height) continue;
       const i = y * width + x;
       u[i] = 0.5;

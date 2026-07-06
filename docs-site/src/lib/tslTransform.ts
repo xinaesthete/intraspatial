@@ -16,7 +16,10 @@ export const rotateByAxisAngle = Fn(([r, v]: [Tsl, Tsl]) => {
   const k = r.div(max(theta, 1e-9));
   const c = cos(theta);
   const s = sin(theta);
-  return v.mul(c).add(cross(k, v).mul(s)).add(k.mul(dot(k, v).mul(oneMinus(c))));
+  return v
+    .mul(c)
+    .add(cross(k, v).mul(s))
+    .add(k.mul(dot(k, v).mul(oneMinus(c))));
 });
 
 /** Map a local vector `v` into a frame whose +z points along the (unit) `forward` — i.e. orient a

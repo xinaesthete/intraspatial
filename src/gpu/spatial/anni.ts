@@ -29,19 +29,19 @@ export interface AnniOptions {
 }
 
 /** Average Nearest Neighbour Index for a point cloud. */
-export async function anniGpu(
-  xs: ArrayLike<number>,
-  ys: ArrayLike<number>,
-  opts: AnniOptions = {},
-): Promise<AnniResult> {
+export async function anniGpu(xs: ArrayLike<number>, ys: ArrayLike<number>, opts: AnniOptions = {}): Promise<AnniResult> {
   const n = xs.length;
   if (n < 2) throw new Error("anni: need at least 2 points");
 
   let area = opts.area;
   if (area === undefined) {
-    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    let minX = Infinity,
+      minY = Infinity,
+      maxX = -Infinity,
+      maxY = -Infinity;
     for (let i = 0; i < n; i++) {
-      const x = xs[i]!, y = ys[i]!;
+      const x = xs[i]!,
+        y = ys[i]!;
       if (x < minX) minX = x;
       if (x > maxX) maxX = x;
       if (y < minY) minY = y;

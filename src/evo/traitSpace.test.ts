@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { ParamSpec } from "../gpu/graph/op";
-import { paramsToSpecimen, specimenToParams, traitSpaceFromParams, withLocked } from "./traitSpace";
 import { neutralSpecimen } from "./specimen";
+import { paramsToSpecimen, specimenToParams, traitSpaceFromParams, withLocked } from "./traitSpace";
 
 // A representative schema exercising every ParamType + the unbounded fallback.
 const SPECS: ParamSpec[] = [
@@ -16,13 +16,13 @@ describe("traitSpaceFromParams", () => {
   it("classifies each ParamSpec into the right trait kind", () => {
     const space = traitSpaceFromParams(SPECS);
     const byName = Object.fromEntries(space.traits.map((t) => [t.paramName, t]));
-    expect(byName.attract!.kind).toBe("number");
-    expect(byName.count!.kind).toBe("number");
-    expect(byName.count!.isInt).toBe(true);
-    expect(byName.mode!.kind).toBe("number");
-    expect(byName.mode!.enumOptions).toEqual(["swirl", "orbit", "swim"]);
-    expect(byName.collide!.kind).toBe("enable");
-    expect(byName.dt!.kind).toBe("fixed");
+    expect(byName.attract?.kind).toBe("number");
+    expect(byName.count?.kind).toBe("number");
+    expect(byName.count?.isInt).toBe(true);
+    expect(byName.mode?.kind).toBe("number");
+    expect(byName.mode?.enumOptions).toEqual(["swirl", "orbit", "swim"]);
+    expect(byName.collide?.kind).toBe("enable");
+    expect(byName.dt?.kind).toBe("fixed");
     // pos array holds attract, count, mode (3 number traits); enable holds collide (1).
     expect(space.numCount).toBe(3);
     expect(space.enableCount).toBe(1);
@@ -58,8 +58,8 @@ describe("traitSpaceFromParams", () => {
   it("withLocked marks the named traits (and all fixed traits) locked", () => {
     const space = withLocked(traitSpaceFromParams(SPECS), ["attract"]);
     const byName = Object.fromEntries(space.traits.map((t) => [t.paramName, t]));
-    expect(byName.attract!.locked).toBe(true);
-    expect(byName.count!.locked).toBe(false);
-    expect(byName.dt!.locked).toBe(true); // fixed traits are always locked
+    expect(byName.attract?.locked).toBe(true);
+    expect(byName.count?.locked).toBe(false);
+    expect(byName.dt?.locked).toBe(true); // fixed traits are always locked
   });
 });

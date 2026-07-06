@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, expect, it } from "vitest";
 import { emptySpaceGpu } from "./emptySpace";
 
 function nearestCpu(qx: number, qy: number, xs: number[], ys: number[]) {
@@ -33,11 +33,20 @@ describe("emptySpaceGpu", () => {
   it("reports larger empty space for a clustered pattern than a spread-out one", async () => {
     const bbox: [number, number, number, number] = [0, 0, 100, 100];
     // clustered: all points in one corner → big voids elsewhere
-    const cx: number[] = [], cy: number[] = [];
-    for (let i = 0; i < 30; i++) { cx.push((i % 6) * 1.5); cy.push(Math.floor(i / 6) * 1.5); }
+    const cx: number[] = [],
+      cy: number[] = [];
+    for (let i = 0; i < 30; i++) {
+      cx.push((i % 6) * 1.5);
+      cy.push(Math.floor(i / 6) * 1.5);
+    }
     // spread: a coarse grid covering the region → small voids
-    const sx: number[] = [], sy: number[] = [];
-    for (let i = 0; i < 6; i++) for (let j = 0; j < 6; j++) { sx.push(i * 18 + 5); sy.push(j * 18 + 5); }
+    const sx: number[] = [],
+      sy: number[] = [];
+    for (let i = 0; i < 6; i++)
+      for (let j = 0; j < 6; j++) {
+        sx.push(i * 18 + 5);
+        sy.push(j * 18 + 5);
+      }
     const clustered = await emptySpaceGpu(cx, cy, { numSamples: 256, bbox, seed: 3 });
     const spread = await emptySpaceGpu(sx, sy, { numSamples: 256, bbox, seed: 3 });
     expect(clustered.mean).toBeGreaterThan(spread.mean * 2);

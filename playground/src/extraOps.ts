@@ -8,26 +8,20 @@
 // objects statically — the SAME graph-module instance the app uses — and register
 // them synchronously, so they are present before the first palette render.
 import { hasOp, registerOp } from "../../src/gpu/graph";
-import { complexOp, realPartOp, imagPartOp, conjugateOp, magnitudeOp } from "../../src/gpu/graph/ops/complexOps";
+import { complexOp, conjugateOp, imagPartOp, magnitudeOp, realPartOp } from "../../src/gpu/graph/ops/complexOps";
+import { FORCE_OPS } from "../../src/gpu/graph/ops/danceForces";
 import {
   addFieldsOp,
-  subFieldsOp,
-  mulFieldsOp,
-  scaleFieldOp,
-  dotFieldsOp,
   crossFieldsOp,
+  dotFieldsOp,
+  mulFieldsOp,
   normalizeFieldOp,
+  scaleFieldOp,
+  subFieldsOp,
 } from "../../src/gpu/graph/ops/fieldArithmetic";
+import { divergenceOp, gradientMagnitudeOp, gradientOp, laplacianOp, structureOrientationOp } from "../../src/gpu/graph/ops/fieldCalculus";
 import { reactionDiffusionComplexOp } from "../../src/gpu/graph/ops/reactionDiffusionComplex";
 import { fdwtOp, idwtOp, thresholdDetailOp } from "../../src/gpu/graph/ops/waveletOps";
-import {
-  gradientOp,
-  gradientMagnitudeOp,
-  laplacianOp,
-  divergenceOp,
-  structureOrientationOp,
-} from "../../src/gpu/graph/ops/fieldCalculus";
-import { FORCE_OPS } from "../../src/gpu/graph/ops/danceForces";
 
 /** Idempotently register the element-algebra and wavelet op packs. Guards on the
  *  registry's actual state (`hasOp`) rather than a module-local flag, so it survives
@@ -35,11 +29,27 @@ import { FORCE_OPS } from "../../src/gpu/graph/ops/danceForces";
  *  blind re-register would throw "duplicate op"). */
 export function registerExtraOps(): void {
   const ops = [
-    complexOp, realPartOp, imagPartOp, conjugateOp, magnitudeOp,
-    addFieldsOp, subFieldsOp, mulFieldsOp, scaleFieldOp, dotFieldsOp, crossFieldsOp, normalizeFieldOp,
+    complexOp,
+    realPartOp,
+    imagPartOp,
+    conjugateOp,
+    magnitudeOp,
+    addFieldsOp,
+    subFieldsOp,
+    mulFieldsOp,
+    scaleFieldOp,
+    dotFieldsOp,
+    crossFieldsOp,
+    normalizeFieldOp,
     reactionDiffusionComplexOp,
-    fdwtOp, idwtOp, thresholdDetailOp,
-    gradientOp, gradientMagnitudeOp, laplacianOp, divergenceOp, structureOrientationOp,
+    fdwtOp,
+    idwtOp,
+    thresholdDetailOp,
+    gradientOp,
+    gradientMagnitudeOp,
+    laplacianOp,
+    divergenceOp,
+    structureOrientationOp,
     ...FORCE_OPS,
   ];
   for (const op of ops) if (!hasOp(op.name)) registerOp(op);

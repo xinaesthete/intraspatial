@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { figureAt, figureTargetVel, FIGURE_SEQUENCE, partnerIndex } from "./figures";
+import { FIGURE_SEQUENCE, figureAt, figureTargetVel, partnerIndex } from "./figures";
 import { dot, length, type Vec3In } from "./vec3";
 
 describe("figureAt", () => {

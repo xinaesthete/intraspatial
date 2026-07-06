@@ -11,15 +11,42 @@
 // Hover-highlight rides a few int uniforms. Picking projects the latest CPU position snapshot.
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
-import { clamp, cos, float, floor, instanceIndex, int, length, max, mix, normalize, oneMinus, sin, smoothstep, storage, transformNormalToView, uniform, varying, vec3 } from "three/tsl";
+import {
+  clamp,
+  cos,
+  float,
+  floor,
+  instanceIndex,
+  int,
+  length,
+  max,
+  mix,
+  normalize,
+  oneMinus,
+  sin,
+  smoothstep,
+  storage,
+  transformNormalToView,
+  uniform,
+  varying,
+  vec3,
+} from "three/tsl";
 import { MeshStandardNodeMaterial, StorageBufferAttribute, WebGPURenderer } from "three/webgpu";
 import type { RenderStateBuffers } from "../../../../src/gpu/sim/dancerGpu";
+import {
+  bodyTaper,
+  CREATURE_HEAD_SEGMENTS,
+  CREATURE_SEGMENTS,
+  CREATURE_VERTEX_COUNT,
+  creatureCell,
+  noseAxial,
+  noseRadial,
+} from "../../lib/creatureTsl";
 import { oklchToLinear } from "../../lib/oklabTsl";
-import { CREATURE_HEAD_SEGMENTS, CREATURE_SEGMENTS, CREATURE_VERTEX_COUNT, bodyTaper, creatureCell, noseAxial, noseRadial } from "../../lib/creatureTsl";
 import { orientToForward } from "../../lib/tslTransform";
 
-// biome-ignore lint/suspicious/noExplicitAny: three TSL node types are inconsistent (see oklabTsl);
 // the creature assembly builds a shader graph, so its intermediate nodes are loosely typed.
+// biome-ignore lint/suspicious/noExplicitAny: three TSL node types are inconsistent (see oklabTsl);
 type Tsl = any;
 
 // Trail history depth (frames of position per agent). The GPU sim appends the current position into
@@ -86,7 +113,11 @@ export interface DancerRendererOptions {
   interactive?: boolean; // default true
 }
 
-export async function createDancerRenderer(canvas: HTMLCanvasElement, n: number, opts: DancerRendererOptions = {}): Promise<DancerRenderer> {
+export async function createDancerRenderer(
+  canvas: HTMLCanvasElement,
+  n: number,
+  opts: DancerRendererOptions = {},
+): Promise<DancerRenderer> {
   const interactive = opts.interactive ?? true;
   const renderer = new WebGPURenderer({ canvas, antialias: true, alpha: true, ...(opts.device ? { device: opts.device } : {}) });
   renderer.setPixelRatio(Math.min(2, window.devicePixelRatio || 1));
@@ -303,10 +334,15 @@ export async function createDancerRenderer(canvas: HTMLCanvasElement, n: number,
     // pair line
     const pair = highlight?.pair ?? null;
     if (pair && pair[0] < count && pair[1] < count) {
-      const a = pair[0], b = pair[1];
+      const a = pair[0],
+        b = pair[1];
       const arr = pairPos.array as Float32Array;
-      arr[0] = positions[a * 3] ?? 0; arr[1] = positions[a * 3 + 1] ?? 0; arr[2] = positions[a * 3 + 2] ?? 0;
-      arr[3] = positions[b * 3] ?? 0; arr[4] = positions[b * 3 + 1] ?? 0; arr[5] = positions[b * 3 + 2] ?? 0;
+      arr[0] = positions[a * 3] ?? 0;
+      arr[1] = positions[a * 3 + 1] ?? 0;
+      arr[2] = positions[a * 3 + 2] ?? 0;
+      arr[3] = positions[b * 3] ?? 0;
+      arr[4] = positions[b * 3 + 1] ?? 0;
+      arr[5] = positions[b * 3 + 2] ?? 0;
       pairPos.needsUpdate = true;
       pairLine.visible = true;
     } else {
@@ -320,7 +356,8 @@ export async function createDancerRenderer(canvas: HTMLCanvasElement, n: number,
     } else {
       // gentle auto-rotate around the swarm (non-interactive cell view)
       const a = 0.0035;
-      const x = camera.position.x, z = camera.position.z;
+      const x = camera.position.x,
+        z = camera.position.z;
       camera.position.x = x * Math.cos(a) - z * Math.sin(a);
       camera.position.z = x * Math.sin(a) + z * Math.cos(a);
       camera.lookAt(0, 0, 0);
@@ -345,7 +382,8 @@ export async function createDancerRenderer(canvas: HTMLCanvasElement, n: number,
     for (let i = 0; i < count; i++) {
       pickVec.set(lastPositions[i * 3] ?? 0, lastPositions[i * 3 + 1] ?? 0, lastPositions[i * 3 + 2] ?? 0).project(camera);
       if (pickVec.z < -1 || pickVec.z > 1) continue;
-      const dx = pickVec.x - ndcX, dy = pickVec.y - ndcY;
+      const dx = pickVec.x - ndcX,
+        dy = pickVec.y - ndcY;
       const dist = Math.hypot(dx, dy);
       if (dist < bestD) {
         bestD = dist;
@@ -383,7 +421,9 @@ export async function createDancerRenderer(canvas: HTMLCanvasElement, n: number,
     // The storage buffers are created when the creature material (whose nodes reference them) first renders.
     const attrs = [posAttr, velAttr, angVelAttr];
     if (attrs.some((a) => !rawBuffer(a))) await renderer.renderAsync(scene, camera);
-    const pos = rawBuffer(posAttr), vel = rawBuffer(velAttr), angVel = rawBuffer(angVelAttr);
+    const pos = rawBuffer(posAttr),
+      vel = rawBuffer(velAttr),
+      angVel = rawBuffer(angVelAttr);
     if (!pos || !vel || !angVel) return null;
     return { pos, vel, angVel };
   };

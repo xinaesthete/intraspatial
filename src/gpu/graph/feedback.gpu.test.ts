@@ -1,6 +1,6 @@
-import { describe, it, expect } from "vitest";
-import { Graph, advance, createSimState, pull } from "./index";
+import { describe, expect, it } from "vitest";
 import { grayScottStepsGpu, seedGrayScott } from "../sim/reactionDiffusion";
+import { advance, createSimState, Graph, pull } from "./index";
 
 describe("feedback (unit-delay) semantics", () => {
   // An accumulator: state_{t+1} = state_t + 1. CPU-only (addGrids), so no GPU work.
@@ -47,7 +47,10 @@ describe("feedback (unit-delay) semantics", () => {
 
 describe("reaction-diffusion as a feedback loop (GPU)", () => {
   it("advancing the loop matches a direct multi-step run", async () => {
-    const w = 24, h = 24, perTick = 5, ticks = 4;
+    const w = 24,
+      h = 24,
+      perTick = 5,
+      ticks = 4;
     const seed = seedGrayScott(w, h, 0.05);
 
     const g = new Graph();

@@ -25,6 +25,6 @@ export const browserBackend: GpuBackend = {
     const root = await getRoot();
     const wrap = root.createBuffer(d.arrayOf(d.f32, Math.max(1, n)), buffer);
     const got = (await wrap.read()) as ArrayLike<number>;
-    return Float32Array.from({ length: n }, (_, i) => got[i]!);
+    return Float32Array.from({ length: n }, (_, i) => got[i] ?? 0);
   },
 };

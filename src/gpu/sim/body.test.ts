@@ -1,15 +1,15 @@
 import { describe, expect, it } from "vitest";
 import {
   BODY_BLOCK_COUNT,
+  type BodyState,
   INTEGRATE_DEFAULTS,
   integrateBody,
   readBodyState,
   seedSwarmBody,
   tapBlock,
   writeBodyState,
-  type BodyState,
 } from "./body";
-import { length, unpack, vec3, type Vec3In } from "./vec3";
+import { length, unpack, type Vec3In, vec3 } from "./vec3";
 
 const ZERO = vec3(0, 0, 0);
 const bodyOf = (pos: Vec3In, vel: Vec3In): BodyState => ({

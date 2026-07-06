@@ -1,5 +1,5 @@
-import { defineConfig } from "vitest/config";
 import typegpu from "unplugin-typegpu/vite";
+import { defineConfig } from "vitest/config";
 
 // GPU tests (`*.gpu.test.ts`) — run via the Dawn (`webgpu`) native addon.
 // Each file runs in its OWN fork process, serially (fileParallelism: false):

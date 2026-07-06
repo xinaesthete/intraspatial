@@ -2,7 +2,7 @@
 // resident state that history/`delay` nodes hold — can grow large (a `delay(k)` keeps k
 // copies of its input), so anything that holds host memory should be able to report it,
 // and a field's cost should be computable statically from its shape/element/dtype.
-import { elementLanes, numCells, SCALAR, type Dtype, type ElementType, type FieldValue, type Shape } from "./handle";
+import { type Dtype, type ElementType, elementLanes, type FieldValue, numCells, SCALAR, type Shape } from "./handle";
 
 /** Bytes per component of a dtype (f32/i32/u32 are all 32-bit). */
 export function dtypeBytes(_dtype: Dtype): number {

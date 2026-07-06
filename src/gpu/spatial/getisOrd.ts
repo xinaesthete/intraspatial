@@ -13,8 +13,8 @@
 // sum uses clamp-to-edge, every cell carries the full window weight W=(2r+1)^2, so
 // the Gi* denominator simplifies to a constant. (A Gaussian window gives a softer,
 // "fuzzier" LISA — see the windowing discussion in the toolbox doc.)
-import { convolveSeparableGpu, boxKernel } from "./convolveSeparable";
-import { splatDensityGpu, type SplatOptions } from "./splatDensity";
+import { boxKernel, convolveSeparableGpu } from "./convolveSeparable";
+import { type SplatOptions, splatDensityGpu } from "./splatDensity";
 
 export interface HotspotField {
   /** Row-major width*height Gi* z-scores. */
@@ -42,7 +42,8 @@ export async function getisOrdGpu(
   const localSum = await convolveSeparableGpu(grid, width, height, boxKernel(radius));
 
   // Global mean and population std (CPU; cheap).
-  let sum = 0, sumSq = 0;
+  let sum = 0,
+    sumSq = 0;
   for (let i = 0; i < n; i++) {
     const v = grid[i]!;
     sum += v;

@@ -175,11 +175,7 @@ export interface DensityField {
 }
 
 /** Splat a point cloud into a Gaussian KDE density grid on the GPU. */
-export async function splatDensityGpu(
-  xs: ArrayLike<number>,
-  ys: ArrayLike<number>,
-  opts: SplatOptions,
-): Promise<DensityField> {
+export async function splatDensityGpu(xs: ArrayLike<number>, ys: ArrayLike<number>, opts: SplatOptions): Promise<DensityField> {
   const n = xs.length;
   if (ys.length !== n) throw new Error("splatDensity: xs and ys length mismatch");
   const { width: w, height: h, sigma } = opts;
@@ -192,9 +188,13 @@ export async function splatDensityGpu(
 
   let bbox = opts.bbox;
   if (!bbox) {
-    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    let minX = Infinity,
+      minY = Infinity,
+      maxX = -Infinity,
+      maxY = -Infinity;
     for (let i = 0; i < n; i++) {
-      const x = xs[i]!, y = ys[i]!;
+      const x = xs[i]!,
+        y = ys[i]!;
       if (x < minX) minX = x;
       if (x > maxX) maxX = x;
       if (y < minY) minY = y;
@@ -233,19 +233,13 @@ export async function splatDensityGpu(
 
   const enc = device.createCommandEncoder();
   const pass = enc.beginRenderPass({
-    colorAttachments: [
-      { view: target!.createView(), clearValue: { r: 0, g: 0, b: 0, a: 0 }, loadOp: "clear", storeOp: "store" },
-    ],
+    colorAttachments: [{ view: target!.createView(), clearValue: { r: 0, g: 0, b: 0, a: 0 }, loadOp: "clear", storeOp: "store" }],
   });
   pass.setPipeline(pipeline);
   pass.setBindGroup(0, bind);
   if (n > 0) pass.draw(4, n); // 4-vertex strip quad, one instance per point
   pass.end();
-  enc.copyTextureToBuffer(
-    { texture: target! },
-    { buffer: rbRaw!, bytesPerRow },
-    { width: w, height: h },
-  );
+  enc.copyTextureToBuffer({ texture: target! }, { buffer: rbRaw!, bytesPerRow }, { width: w, height: h });
   device.queue.submit([enc.finish()]);
 
   const padded = (await rbWrap!.read()) as ArrayLike<number>; // 256-byte-padded rows

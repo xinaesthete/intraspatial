@@ -8,7 +8,7 @@
 // tuned for the seed's world scale (a shell of radius ≈ SHELL). The *calm, deliberate*
 // Ceilidh feel comes mostly from the integrator's DANCERL `timeFactor` and damping, not
 // from shrinking these — keep the influence shapes faithful.
-import { add, addScaled, cross, dot, length, normalize, readVec3, scale, sub, unpack, vec3, type Vec3, type Vec3In, ZERO3 } from "./vec3";
+import { add, addScaled, cross, dot, length, normalize, readVec3, scale, sub, unpack, type Vec3, type Vec3In, vec3, ZERO3 } from "./vec3";
 
 /** World scale the seed uses; forces are tuned around it. */
 export const SHELL = 4.5;
@@ -66,11 +66,16 @@ export function cohereForce(i: number, pos: ArrayLike<number>, n: number, streng
   const p = readVec3(pos, i);
   const [px, py, pz] = unpack(p);
   const r2 = radius * radius;
-  let cx = 0, cy = 0, cz = 0, count = 0;
+  let cx = 0,
+    cy = 0,
+    cz = 0,
+    count = 0;
   for (let j = 0; j < n; j++) {
     if (j === i) continue;
     const [qx, qy, qz] = unpack(readVec3(pos, j));
-    const dx = qx - px, dy = qy - py, dz = qz - pz;
+    const dx = qx - px,
+      dy = qy - py,
+      dz = qz - pz;
     if (dx * dx + dy * dy + dz * dz < r2) {
       cx += qx;
       cy += qy;
@@ -105,14 +110,7 @@ export function separateForce(i: number, pos: ArrayLike<number>, n: number, stre
 
 /** Spring bonds to neighbours within `radius`, pulling each pair toward `restLength` —
  *  DANCERL `DistanceForce` (attract if too far, repel if too close). */
-export function springForce(
-  i: number,
-  pos: ArrayLike<number>,
-  n: number,
-  strength: number,
-  restLength: number,
-  radius: number,
-): Vec3 {
+export function springForce(i: number, pos: ArrayLike<number>, n: number, strength: number, restLength: number, radius: number): Vec3 {
   const [px, py, pz] = unpack(readVec3(pos, i));
   const r2 = radius * radius;
   const k = 0.03 * strength;

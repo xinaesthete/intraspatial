@@ -2,8 +2,9 @@
 // help detail, rendered KaTeX math, and a port summary. Fixed-positioned just to the
 // right of the hovered button, clamped to the viewport. Non-interactive (pointer-events
 // none) so moving the cursor onto it never causes flicker.
-import type { NodeSpec } from "./specs";
+
 import { MathTex } from "./Math";
+import type { NodeSpec } from "./specs";
 
 export function HelpTooltip({ spec, rect }: { spec: NodeSpec; rect: DOMRect }) {
   const left = Math.min(rect.right + 10, window.innerWidth - 330);

@@ -1,4 +1,5 @@
 // The Mutator operators — Todd & Latham's aesthetic-selection primitives made
+/** biome-ignore-all lint/style/noNonNullAssertion: quite a bit of noise for array bound checks */
 // generic over any trait-space. All pure functions of `(specimen, …, rng)`, so a
 // lineage replays exactly.
 //
@@ -10,9 +11,10 @@
 //   • advance — integrate position by velocity with inertia (steering carries on)
 // Live "playing the field" = steer + advance every frame; breeding = mutate + marry.
 // Both write the same specimen, so gestures and traits are the same substance.
-import type { TraitSpace } from "./traitSpace";
-import { cloneSpecimen, type Specimen } from "./specimen";
+
 import { gauss, hashSeed, mulberry32, type Rng } from "./rng";
+import { cloneSpecimen, type Specimen } from "./specimen";
+import type { TraitSpace } from "./traitSpace";
 
 /** Stochastic perturbation. NUMBER traits get Gaussian noise scaled by `rate`
  *  (clamped back into [0,1]); ENABLE traits flip with probability `rate`. Locked

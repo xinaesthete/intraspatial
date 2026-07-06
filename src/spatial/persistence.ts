@@ -40,10 +40,13 @@ interface Simplex {
 
 function symmetricDifference(a: number[], b: number[]): number[] {
   const out: number[] = [];
-  let i = 0, j = 0;
+  let i = 0,
+    j = 0;
   while (i < a.length && j < b.length) {
-    if (a[i] === b[j]) { i++; j++; }
-    else if (a[i]! < b[j]!) out.push(a[i++]!);
+    if (a[i] === b[j]) {
+      i++;
+      j++;
+    } else if (a[i]! < b[j]!) out.push(a[i++]!);
     else out.push(b[j++]!);
   }
   while (i < a.length) out.push(a[i++]!);
@@ -53,11 +56,7 @@ function symmetricDifference(a: number[], b: number[]): number[] {
 
 /** Vietoris-Rips persistence (H0 and H1) of the points described by a row-major
  *  `n*n` symmetric distance matrix. */
-export function vietorisRipsPersistence(
-  dist: ArrayLike<number>,
-  n: number,
-  opts: PersistenceOptions = {},
-): PersistenceResult {
+export function vietorisRipsPersistence(dist: ArrayLike<number>, n: number, opts: PersistenceOptions = {}): PersistenceResult {
   const at = (i: number, j: number) => dist[i * n + j]!;
 
   let maxScale = opts.maxScale;

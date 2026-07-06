@@ -10,15 +10,16 @@
 // and the edge wired to its `next` input is a deferred write committed after the
 // tick — this is what cuts the cycle (a unit delay, z⁻¹). `advance(graph, field,
 // {steps, state})` runs that loop; `pull` is one tick from a fresh (init) state.
-import type { FieldValue, GpuField } from "./handle";
-import type { ExecCtx, OpType } from "./op";
-import { allFinite } from "./op";
+
+import { nodeBackend } from "./backend.node";
 import type { GraphNode } from "./graph";
 import { Graph } from "./graph";
-import { getOp } from "./registry";
-import { nodeBackend } from "./backend.node";
+import type { FieldValue, GpuField } from "./handle";
 import type { GraphMemo } from "./memo";
 import { hashSource, hashString, stableJSON } from "./memo";
+import type { ExecCtx, OpType } from "./op";
+import { allFinite } from "./op";
+import { getOp } from "./registry";
 import { FieldRing } from "./ringBuffer";
 
 export interface PullOptions {
@@ -63,9 +64,7 @@ function topoOrder(graph: Graph, roots: string[]): GraphNode[] {
     const node = graph.getNode(id);
     // feedback (z⁻¹) and delay (z⁻ᵏ) only depend on `init` within a tick — the `next`
     // back-edge is a deferred write, so the loop is a DAG per tick.
-    const deps = node.op === "feedback" || node.op === "delay"
-      ? (node.inputs.init ? [node.inputs.init] : [])
-      : Object.values(node.inputs);
+    const deps = node.op === "feedback" || node.op === "delay" ? (node.inputs.init ? [node.inputs.init] : []) : Object.values(node.inputs);
     for (const ref of deps) visit(ref.node);
     state.set(id, 1);
     order.push(node);
@@ -171,27 +170,33 @@ async function runTick(graph: Graph, field: GpuField, o: TickOptions): Promise<M
     let ck: string | undefined;
     if (memo) {
       const inputKeys = op.inputs.map((spec) => {
-        const ref = node.inputs[spec.name]!;
+        const ref = node.inputs[spec.name];
+        if (!ref) throw new Error(`executor (unexpected): No input '${spec.name}' on ${node.id}`);
         return `${contentKey.get(ref.node) ?? ref.node}#${ref.port}`;
       });
       ck = hashString(`${node.op}|${stableJSON(node.params)}|${inputKeys.join(",")}`);
       contentKey.set(node.id, ck);
       const hits = op.outputs.map((out) => memo.get(`${ck}#${out.name}`));
       if (hits.every((h) => h !== undefined)) {
-        op.outputs.forEach((out, i) => emit(node.id, out.name, hits[i]!));
+        op.outputs.forEach((out, i) => {
+          const hit = hits[i];
+          if (hit !== undefined) emit(node.id, out.name, hit);
+        });
         continue;
       }
     }
 
     const inputs = op.inputs.map((spec) => {
-      const ref = node.inputs[spec.name]!;
+      const ref = node.inputs[spec.name];
+      if (!ref) throw new Error(`executor (unexpected): No input '${spec.name}' on ${node.id}`);
       const v = pulled.get(key(ref.node, ref.port));
       if (!v) throw new Error(`executor: input "${spec.name}" of "${node.id}" not computed`);
       return v;
     });
     const outs = await runNode(op, o.ctx, o.mode, inputs, node.params);
     op.outputs.forEach((out, i) => {
-      const v = outs[i]!;
+      const v = outs[i];
+      if (v === undefined) throw new Error(`executor (unexpected): no output for ${i}`);
       // Stamp the build-time-inferred basis (ADR-0006) so it propagates through ops
       // that don't set it themselves (e.g. editing wavelet coefficients then idwt).
       const b = node.outBases?.[i];
@@ -263,7 +268,8 @@ export async function advance(graph: Graph, field: GpuField, opts: AdvanceOption
     if (!last) throw new Error("advance: sink not produced");
     opts.onFrame?.(t, last);
   }
-  return last!;
+  if (last === undefined) throw new Error(`executor (unexpected): no value output for field ${field.id}`);
+  return last;
 }
 
 /** Convenience: pull a numeric field and return its host data. */

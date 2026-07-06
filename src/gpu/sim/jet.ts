@@ -14,8 +14,9 @@
 // Kept as plain high-level TS types over Struct-of-Arrays Float32 buffers (the layout the
 // op-graph carries as parallel `points` fields and the GPU artefact carries as storage
 // buffers). Could be promoted to a runtime ElementType later.
-import { readVec3, writeVec3, ZERO3, type Vec3 } from "./vec3";
-import { IDENTITY, readQuat, writeQuat, type Quat } from "./quat";
+
+import { IDENTITY, type Quat, readQuat, writeQuat } from "./quat";
+import { readVec3, type Vec3, writeVec3, ZERO3 } from "./vec3";
 
 export interface Jet3 {
   pos: Vec3;
