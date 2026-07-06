@@ -1,0 +1,705 @@
+---
+// Interactive explainer of the brick-atlas PAGE TABLE used by the datasource volume renderer
+// (playground/src/datasource/volumeRenderer.ts, ADR-0008). A 2D slice of the real 3D structures:
+// a mixed-LOD selection → a low-res page table (one texel per finest cell) → a packed brick atlas,
+// plus the streaming LOD-fallback walk-up that never shows a hole.
+//
+// Self-contained illustration (no import of the real renderer — it's a teaching diagram). Styles
+// are `is:global` and namespaced under `.pt-doc` because the grid cells are created in the script
+// at runtime, and Astro's scoped styles only reach elements present in the template.
+---
+
+<div class="pt-doc not-content">
+<div class="page">
+
+  <header class="head">
+    <p class="eyebrow">Per-chunk LOD · single-pass GPU volume raymarch</p>
+    <div class="meta-row">
+      <span class="chip"><b>Structure</b> &nbsp;3 textures, 1 pass</span>
+      <span class="chip"><b>Source</b> &nbsp;volumeRenderer.ts</span>
+      <span class="chip"><b>Decision</b> &nbsp;ADR-0008</span>
+    </div>
+  </header>
+
+  <section>
+    <div class="prose-grid">
+      <h2><span class="num">§0</span>Read&nbsp;me</h2>
+      <p class="tight">A volume too large or too detailed to hold at full resolution is stored as a <b>pyramid</b> of levels, each cut into fixed-size <b>chunks</b> (here <span class="k plain">32³</span> voxels). A view wants different chunks at different levels — fine up close, coarse far away. The renderer must sample all of them in <b>one</b> raymarch. It does that with three cooperating textures. Everything below is a <b>2D slice</b> of what are really 3D structures, drawn small so the whole mapping fits on screen; the algorithm shown is exactly the one in the shader.</p>
+    </div>
+  </section>
+
+  <!-- ============ CONSOLE ============ -->
+  <div class="console" id="pt-console">
+    <div class="console-head">
+      <span class="console-title"><b>Live map</b> &nbsp;selection → page table → atlas</span>
+      <div class="legend" id="pt-legend"></div>
+    </div>
+
+    <div class="panels">
+      <div class="panel">
+        <div class="panel-cap"><span class="idx">A</span><h3>Selection</h3></div>
+        <p class="panel-sub">What the view <em>asked for</em> — a quadtree cut of the finest grid into chunks at mixed levels. Solid = brick resident; hatched = still loading.</p>
+        <div class="grid" id="pt-selGrid"></div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-cap"><span class="idx">B</span><h3>Page table</h3></div>
+        <p class="panel-sub">One RGBA8 texel per <em>finest</em> cell (<span class="k plain">pageDims³</span>). Each stores the atlas slot + level of the brick covering it. Tinted by the level it currently resolves to.</p>
+        <div class="grid" id="pt-ptGrid"></div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-cap"><span class="idx">C</span><h3>Atlas</h3></div>
+        <p class="panel-sub">Resident bricks packed into fixed slots of <span class="k plain">B³</span> voxels (<span class="k plain">slotsPerAxis³</span> of them). Filled as loads land; freed by LRU. Tinted by the level of the brick held.</p>
+        <div class="grid atlas" id="pt-atlasGrid"></div>
+      </div>
+    </div>
+
+    <div class="timeline">
+      <button class="play" id="pt-playBtn" aria-label="Play streaming animation">▶&nbsp;&nbsp;Stream in</button>
+      <input type="range" id="pt-scrub" min="0" max="26" value="26" step="1" aria-label="Streaming timeline" />
+      <div class="tl-state" id="pt-tlState"></div>
+      <div class="tl-legend"><span>◀ nothing resident</span><span>fully resident ▶</span></div>
+    </div>
+
+    <div class="trace" id="pt-trace"></div>
+  </div>
+  <p class="console-hint">Hover any cell in A, B, or C to trace the mapping. Drag the timeline left to watch bricks stream in — coarse stand-ins sharpen as finer data lands.</p>
+
+  <hr class="rule" />
+
+  <!-- ============ PROSE ============ -->
+  <section>
+    <div class="prose-grid">
+      <h2><span class="num">§1</span>The three structures</h2>
+      <div>
+        <p>The <b>pyramid</b> (panel&nbsp;A) is the source data: level&nbsp;0 is full resolution, each coarser level halves each axis. A chunk at level <span class="k plain">L</span> covers <span class="k plain">2ᴸ</span> finest cells per axis — its <em>footprint</em> on the finest grid. A view's selection is a quadtree cut: a set of chunks at mixed levels that tiles the finest grid exactly once.</p>
+        <p>The <b>atlas</b> (panel&nbsp;C) is one big 3D texture divided into a grid of equal slots. Every resident brick — <em>whatever its level</em> — is upscaled to a full <span class="k plain">B³</span> and copied into one slot with <span class="k">copyTextureToTexture</span>. Levels don't get their own textures; they all live together, packed. A free-list hands out slots; an LRU frees them under pressure.</p>
+        <p>The <b>page table</b> (panel&nbsp;B) is the index that ties them together: a dense low-res texture with <em>one texel per finest cell</em>. Each texel answers a single question the ray needs at every step — <em>which atlas slot, at which level, covers this position?</em></p>
+      </div>
+    </div>
+  </section>
+
+  <section class="mt">
+    <div class="prose-grid">
+      <h2><span class="num">§2</span>The texel encoding</h2>
+      <div>
+        <p>Each page-table texel is four bytes — it fits the answer in an RGBA8:</p>
+        <div class="encode">
+          <div class="ch"><div class="cn">R</div><div class="cd">slot.x</div></div>
+          <div class="ch"><div class="cn">G</div><div class="cd">slot.y</div></div>
+          <div class="ch"><div class="cn">B</div><div class="cd">slot.z</div></div>
+          <div class="ch"><div class="cn">A</div><div class="cd">level + 1<br />(0 = empty)</div></div>
+        </div>
+        <p class="tight mt-s">Storing <span class="k plain">level + 1</span> means a zeroed texel reads as <em>empty</em> for free — no sentinel needed. The level is what lets one slot serve cells of different sizes: from it the shader recovers how many finest cells share the brick. <em>(In these 2D panels the slot is drawn as (col, row); the real atlas is 3D and uses all of R, G, B.)</em></p>
+      </div>
+    </div>
+  </section>
+
+  <section class="mt">
+    <div class="prose-grid">
+      <h2><span class="num">§3</span>The lookup, per ray step</h2>
+      <div>
+        <p>The volume is marched <em>once</em>, in normalised array space where the box is axis-aligned. At each sample position <span class="k plain">p ∈ [0,1]³</span>:</p>
+<pre><span class="cm">// 1. read the page table at p — one texel = one finest cell</span>
+<span class="kw">let</span> pt    = <span class="fn">texture3D</span>(pageTex, p);
+<span class="kw">let</span> mask  = pt.a * 255 &gt;= 1;          <span class="cm">// occupied?  (0 ⇒ empty)</span>
+<span class="kw">let</span> level = pt.a * 255 - 1;           <span class="cm">// the resolved brick's level</span>
+<span class="kw">let</span> slot  = pt.rgb * 255;             <span class="cm">// its atlas slot</span>
+
+<span class="cm">// 2. recover the brick-local coord from the level</span>
+<span class="hl">let cells = exp2(level);</span>                <span class="cm">// finest cells this brick spans</span>
+<span class="kw">let</span> base  = <span class="fn">floor</span>(<span class="fn">floor</span>(p * pageDims) / cells) * cells;
+<span class="kw">let</span> local = (p * pageDims - base) / cells;  <span class="cm">// 0..1 inside the brick</span>
+
+<span class="cm">// 3. sample the atlas — the single texture read that returns density</span>
+<span class="kw">let</span> density = <span class="fn">texture3D</span>(atlasTex, (slot + local) / slotsPerAxis).r * mask;</pre>
+        <p>The elegance is in step&nbsp;2: <span class="k">cells = 2ᴸ</span>. A coarse brick covers many finest cells, so many adjacent texels point at the <em>same</em> slot; the level tells the shader to spread the brick's <span class="k plain">0..1</span> range across all of them. A fine brick has <span class="k plain">cells = 1</span> and maps one-to-one. Because the local coordinate is derived from the <em>stored</em> level, a coarse brick standing in for a fine cell is sampled <b>exactly</b> — which is precisely what makes the fallback below correct.</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="mt">
+    <div class="prose-grid">
+      <h2><span class="num">§4</span>Mixed LOD in one pass</h2>
+      <p>Because every level lives in the same atlas and is addressed the same way, a selection that mixes levels (panel&nbsp;A: fine in one corner, coarser elsewhere) needs no per-level passes and no blending of overlapping bricks. <span class="k">rebuildPageTable()</span> walks the selected chunks and, for each, stamps its finest-cell footprint with one brick's (slot, level). The ray reads whichever texel it lands on and samples once. Cost is one texture-lookup pair per step, regardless of how many levels are on screen — no overdraw, and a trivially correct depth write (one fragment per pixel).</p>
+    </div>
+  </section>
+
+  <section class="mt">
+    <div class="prose-grid">
+      <h2><span class="num">§5</span>The fallback walk-up</h2>
+      <div>
+        <p>Streaming is where a naïve page table fails: a not-yet-loaded chunk is a transparent hole. The fix is a walk up the pyramid. When filling a selected cell, <span class="k">residentOrAncestor()</span> takes the finest resident brick covering it — the chunk itself, or the coarsest resident ancestor:</p>
+<pre><span class="kw">while</span> (level &lt; levelCount) {
+  <span class="kw">if</span> (resident.has(<span class="fn">key</span>(level, x, y, z))) <span class="kw">return</span> <span class="hl">that brick</span>;
+  level++;  x &gt;&gt;= 1;  y &gt;&gt;= 1;  z &gt;&gt;= 1;   <span class="cm">// climb one level</span>
+}</pre>
+        <p>Its (slot, level) go into the fine cell's texel — and because step&nbsp;2 derives the local coordinate from that level, the coarse ancestor is sampled at the right sub-region. The result is <b>blur that sharpens</b>: a region shows up coarse immediately and refines in place as finer bricks arrive, never blinking through a hole. <em>Drag the timeline left to see it — the top-left quadrant falls back to the coarse floor, then snaps to full detail as its level-0 bricks land.</em></p>
+        <ul class="notes">
+          <li><b>The coarse floor never leaves.</b> The coarsest full-chunk-grid level is always requested and never evicted, so the walk-up is guaranteed to find <em>something</em> — a hole is impossible once the floor is resident.</li>
+          <li><b>Retain-on-refine, for free.</b> Eviction protects any brick the page table currently references — including an ancestor standing in for a refining region — so a coarse stand-in survives exactly until its finer replacement lands.</li>
+          <li><b>The floor is never drawn directly.</b> The rebuild iterates only the <em>selected</em> chunks; the floor is reached solely through the walk-up, so it can't overwrite a finer resident chunk.</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <section class="mt" id="scaling">
+    <div class="prose-grid">
+      <h2><span class="num">§6</span>How it scales</h2>
+      <div>
+        <p>The design is <b>bounded by the view, not the volume</b>. Every structure here is sized to the working set the camera can see, so cost tracks the <em>visible frustum</em> — not the whole image, which may be far larger than memory. The demo runs a single fixed ceiling; below are the walls it meets at very large sizes and the planned way through each. Crucially, the fallback walk-up (§5) means overflowing any of them <b>degrades quality, never correctness</b>: the image gets coarser, never holed or wrong.</p>
+
+        <div class="walls">
+          <div class="wall">
+            <div class="wall-h"><span class="wall-n">Atlas capacity</span><span class="wall-tag">GPU memory</span></div>
+            <p class="wall-now"><b>Today —</b> a fixed <span class="k plain">12³ = 1728</span>-slot atlas (a 384³ R8 texture, ≈ 54 MB). A whole-volume view at full detail that needs more bricks simply thrashes the LRU; the LOD fallback keeps it correct, only blurrier.</p>
+            <p class="wall-plan"><b>Plan —</b> hold the resident set to the frustum working set (via the resource ceiling below) rather than the whole volume, and grow to a larger / dynamically-sized atlas.</p>
+          </div>
+          <div class="wall">
+            <div class="wall-h"><span class="wall-n">Unbounded selection</span><span class="wall-tag">upstream</span></div>
+            <p class="wall-now"><b>Today —</b> <span class="k">select()</span> returns every in-frustum chunk at the desired level. A whole-view-at-finest demands one chunk per finest cell — tens of thousands at 2048³ and up — which then drives every downstream cost.</p>
+            <p class="wall-plan"><b>Plan —</b> the <em>resource ceiling</em>: <span class="k">selectWithinBudget()</span> raises a global level floor and retries until the working set fits (degrade-to-fit, ADR-0008 §5), reporting “out of memory” only as an honest floor. The renderer doesn't drive this yet — it leans on the fallback to stay correct past capacity.</p>
+          </div>
+          <div class="wall">
+            <div class="wall-h"><span class="wall-n">Dense page table</span><span class="wall-tag">GPU memory · bandwidth</span></div>
+            <p class="wall-now"><b>Today —</b> one texel per <em>finest</em> cell across the whole grid, re-uploaded whole on every change. Its size grows with the finest resolution: 2048³ ⁄ 32³ = 64³ ≈ 1 MB, but 8192³ → 256³ ≈ 67 MB, where the whole-texture re-upload starts to dominate.</p>
+            <p class="wall-plan"><b>Plan —</b> a sparse / hierarchical (multi-resolution) page table that addresses only resident regions, so its size tracks the working set rather than the whole finest grid.</p>
+          </div>
+          <div class="wall">
+            <div class="wall-h"><span class="wall-n">Full rebuild per commit</span><span class="wall-tag">CPU · per-frame</span></div>
+            <p class="wall-now"><b>Today —</b> <span class="k">rebuildPageTable()</span> clears and re-walks the whole selection on every selection change <em>and</em> every brick commit. A fresh stream of N bricks is therefore ~<span class="k plain">O(N²)</span> — fine at demo scale, quadratic at large N.</p>
+            <p class="wall-plan"><b>Plan —</b> coalesce commits per frame and update only the dirty cells. Paired with the sparse table above, that removes both the whole-texture re-upload and the per-commit full walk.</p>
+          </div>
+        </div>
+
+        <p>None of these is a correctness limit. Because a missing fine brick resolves to its coarsest resident ancestor, the honest failure mode under pressure is a <em>coarser</em> image that sharpens as capacity frees — the same “blur that sharpens” the timeline above shows. Turning that graceful degradation from best-effort into <b>bounded</b> memory is exactly what the resource ceiling adds.</p>
+      </div>
+    </div>
+  </section>
+
+  <footer>
+    <span><span class="lab">source</span> &nbsp;playground/src/datasource/volumeRenderer.ts</span>
+    <span><span class="lab">decision</span> &nbsp;ADR-0008 · view-driven multiscale datasource</span>
+    <span><span class="lab">note</span> &nbsp;2D slice of 3D structures</span>
+  </footer>
+
+</div>
+</div>
+
+<style is:global>
+  .pt-doc {
+    --ground: #100c18;
+    --panel: #181320;
+    --panel-2: #1f1830;
+    --line: #2d2440;
+    --line-2: #3b3054;
+    --ink: #ece7dd;
+    --muted: #aca2c0;   /* nudged lighter for contrast (was #9990a8) */
+    --faint: #968ca9;   /* nudged lighter for contrast (was #6b6280) */
+    --amber: #ffd98a;
+    --amber-deep: #f6b352;
+    --l0: #57d1b8;
+    --l1: #6ba6ff;
+    --l2: #ffb454;
+    --l3: #ff7ab6;
+    --mono: ui-monospace, "SF Mono", "SFMono-Regular", Menlo, "Cascadia Mono", Consolas, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    color-scheme: dark;
+    background:
+      radial-gradient(120% 80% at 50% -10%, #1a1230 0%, var(--ground) 55%),
+      var(--ground);
+    color: var(--ink);
+    font-family: var(--sans);
+    line-height: 1.6;
+    font-size: 16px;
+    border: 1px solid var(--line-2);
+    border-radius: 16px;
+    padding: clamp(20px, 4vw, 56px) clamp(16px, 4vw, 40px) 64px;
+  }
+  .pt-doc *, .pt-doc *::before, .pt-doc *::after { box-sizing: border-box; }
+  .pt-doc .page { max-width: 1120px; margin: 0 auto; }
+
+  /* ---- type ---- */
+  .pt-doc .eyebrow {
+    font-family: var(--mono); font-size: 12px; letter-spacing: 0.22em;
+    text-transform: uppercase; color: var(--amber-deep); margin: 0 0 18px;
+  }
+  .pt-doc h1 {
+    font-family: var(--mono); font-weight: 600; font-size: clamp(30px, 5.4vw, 54px);
+    line-height: 1.04; letter-spacing: -0.01em; text-wrap: balance; margin: 0 0 20px; color: var(--ink);
+  }
+  .pt-doc h1 .dim { color: var(--faint); }
+  .pt-doc .lede { font-size: clamp(17px, 2.1vw, 20px); color: #d6d0e0; max-width: 62ch; margin: 0 0 8px; }
+  .pt-doc h2 {
+    font-family: var(--mono); font-weight: 600; font-size: 13px; letter-spacing: 0.16em;
+    text-transform: uppercase; color: var(--amber); margin: 0 0 6px;
+  }
+  .pt-doc h2 .num { color: var(--faint); margin-right: 12px; }
+  .pt-doc section p { max-width: 68ch; color: #d0cadb; }
+  .pt-doc section p.tight { max-width: 72ch; }
+  .pt-doc code, .pt-doc .k {
+    font-family: var(--mono); font-size: 0.88em; background: #241b34; color: var(--amber);
+    padding: 0.12em 0.42em; border-radius: 4px; border: 1px solid var(--line-2); white-space: nowrap;
+  }
+  .pt-doc .k.plain { color: var(--ink); background: #201a2e; }
+  .pt-doc a { color: var(--amber); text-underline-offset: 3px; }
+
+  /* ---- rhythm ---- */
+  .pt-doc header.head { margin-bottom: 40px; }
+  .pt-doc .meta-row { display: flex; flex-wrap: wrap; gap: 10px 8px; margin-top: 26px; }
+  .pt-doc .chip {
+    font-family: var(--mono); font-size: 12px; color: var(--muted); border: 1px solid var(--line);
+    border-radius: 999px; padding: 5px 13px; background: rgba(255,255,255,0.015);
+  }
+  .pt-doc .chip b { color: var(--ink); font-weight: 600; }
+  .pt-doc .rule { height: 1px; background: linear-gradient(90deg, var(--line-2), transparent); border: 0; margin: 56px 0; }
+  .pt-doc section { margin: 0 0 8px; }
+  .pt-doc section.mt { margin-top: 40px; }
+  .pt-doc .prose-grid { display: grid; grid-template-columns: 160px 1fr; gap: 8px 40px; align-items: start; }
+  .pt-doc .mt-s { margin-top: 16px; }
+  @media (max-width: 720px) { .pt-doc .prose-grid { grid-template-columns: 1fr; gap: 4px; } }
+
+  /* ---- console ---- */
+  .pt-doc .console {
+    margin: 20px 0 8px; border: 1px solid var(--line-2); border-radius: 16px;
+    background: linear-gradient(180deg, #191322, #140f1d);
+    box-shadow: 0 24px 60px -30px #000, inset 0 1px 0 rgba(255,255,255,0.03); overflow: hidden;
+  }
+  .pt-doc .console-head {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 16px 24px; padding: 16px 20px;
+    border-bottom: 1px solid var(--line); background: rgba(255,255,255,0.012);
+  }
+  .pt-doc .console-title { font-family: var(--mono); font-size: 12px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--muted); }
+  .pt-doc .console-title b { color: var(--ink); }
+  .pt-doc .console-hint { font-family: var(--mono); font-size: 12px; color: var(--faint); margin: 12px 2px 0; }
+  .pt-doc .legend { display: flex; flex-wrap: wrap; gap: 6px 14px; margin-left: auto; }
+  .pt-doc .legend .lg { display: inline-flex; align-items: center; gap: 7px; font-family: var(--mono); font-size: 11.5px; color: var(--muted); }
+  .pt-doc .swatch { width: 12px; height: 12px; border-radius: 3px; box-shadow: inset 0 0 0 1px rgba(255,255,255,0.25); }
+
+  .pt-doc .panels { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1px; background: var(--line); }
+  @media (max-width: 860px) { .pt-doc .panels { grid-template-columns: 1fr; } }
+  .pt-doc .panel { background: linear-gradient(180deg, #171120, #141020); padding: 18px 18px 20px; min-width: 0; }
+  .pt-doc .panel-cap { display: flex; align-items: baseline; gap: 10px; margin-bottom: 4px; }
+  .pt-doc .panel-cap h3 { font-family: var(--mono); font-size: 12.5px; font-weight: 600; letter-spacing: 0.06em; color: var(--ink); margin: 0; }
+  .pt-doc .panel-cap .idx { font-family: var(--mono); font-size: 11px; color: var(--amber-deep); }
+  .pt-doc .panel-sub { font-family: var(--mono); font-size: 11px; color: var(--faint); margin: 0 0 14px; min-height: 2.6em; }
+
+  .pt-doc .grid {
+    display: grid; grid-template-columns: repeat(8, 1fr); grid-template-rows: repeat(8, 1fr);
+    /* gap 0: each tile carries its OWN separator (an inset line, see .cell / .selblock), so the
+       separation can't read as — or transition through — the empty-selection state. */
+    gap: 0; aspect-ratio: 1; width: 100%; position: relative; border: 1px solid var(--line-2);
+    /* a small frame keeps rounded tiles inside the 8px corner WITHOUT overflow:hidden (which was
+       clipping the highlight rings). */
+    padding: 3px; border-radius: 8px; background: var(--line);
+  }
+
+  /* selection blocks (placed by span) */
+  .pt-doc .selblock {
+    border-radius: 4px; display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 1px; font-family: var(--mono); font-size: 9px; line-height: 1.1; text-align: center;
+    color: #0c0a12; font-weight: 600; cursor: pointer; position: relative;
+    background-color: var(--lv, #191325);
+    box-shadow: inset 0 0 0 1px var(--line);
+    transition: background-color .34s ease, color .34s ease, opacity .25s ease, transform .12s ease, box-shadow .12s ease, filter .12s ease;
+    overflow: hidden;
+  }
+  .pt-doc .selblock .sl-lv { font-weight: 700; letter-spacing: 0.02em; }
+  .pt-doc .selblock .co { font-size: 8.5px; opacity: 0.75; font-weight: 600; }
+  .pt-doc .selblock::before {
+    content: ""; position: absolute; inset: 0; border-radius: inherit; z-index: 0;
+    background: repeating-linear-gradient(45deg, #1c1530 0 5px, #241a3a 5px 10px);
+    opacity: 0; transition: opacity .34s ease; pointer-events: none;
+  }
+  .pt-doc .selblock.pending::before { opacity: 1; }
+  .pt-doc .selblock .sl-lv, .pt-doc .selblock .co { position: relative; z-index: 1; }
+  .pt-doc .selblock.pending { color: var(--muted); box-shadow: inset 0 0 0 1px var(--line-2); }
+  .pt-doc .selblock.pending .sl-lv { opacity: .55; }
+
+  /* page-table + atlas cells */
+  .pt-doc .cell {
+    border-radius: 4px; background-color: var(--lv, #16101f); box-shadow: inset 0 0 0 1px var(--line);
+    display: flex; align-items: center; justify-content: center;
+    font-family: var(--mono); font-size: 9px; color: rgba(255,255,255,0.55);
+    cursor: pointer; position: relative; min-width: 0;
+    transition: background-color .34s ease, color .34s ease, opacity .25s ease, filter .1s ease, box-shadow .12s ease;
+  }
+  .pt-doc .cell.occ { color: rgba(0,0,0,0.62); }
+  .pt-doc .cell.empty { background-color: #120d1b; color: transparent; }
+  .pt-doc .cell.empty::after { content: "·"; color: var(--faint); font-size: 11px; }
+  .pt-doc .atlas .cell.free { background-color: #100b18; }
+  .pt-doc .atlas .cell.free::after { content: ""; }
+
+  /* highlight states — INSET rings, never clipped by the grid, follow the tile radius */
+  .pt-doc .hot { box-shadow: inset 0 0 0 2px var(--amber) !important; z-index: 4; filter: saturate(1.18) brightness(1.06); }
+  .pt-doc .warm { box-shadow: inset 0 0 0 2px var(--amber-deep) !important; z-index: 3; }
+  .pt-doc .ancestor-out { box-shadow: inset 0 0 0 2px var(--l3) !important; z-index: 4; }
+  .pt-doc .dim-others .cell:not(.hot):not(.warm),
+  .pt-doc .dim-others .selblock:not(.hot):not(.ancestor-out) { opacity: 0.68; }
+
+  .pt-doc .lvtag { position: absolute; top: 3px; left: 4px; font-family: var(--mono); font-size: 8.5px; font-weight: 700; color: rgba(0,0,0,0.6); }
+
+  /* timeline */
+  .pt-doc .timeline {
+    padding: 18px 20px 20px; border-top: 1px solid var(--line); background: rgba(255,255,255,0.012);
+    display: grid; grid-template-columns: auto 1fr auto; gap: 14px 18px; align-items: center;
+  }
+  @media (max-width: 640px) { .pt-doc .timeline { grid-template-columns: 1fr; } }
+  .pt-doc .play {
+    font-family: var(--mono); font-size: 12px; letter-spacing: 0.04em; color: var(--ground);
+    background: var(--amber); border: 0; padding: 9px 16px; border-radius: 8px; cursor: pointer;
+    font-weight: 600; display: inline-flex; align-items: center; gap: 8px; white-space: nowrap;
+  }
+  .pt-doc .play:hover { background: var(--amber-deep); }
+  .pt-doc .play:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+  .pt-doc input[type=range] { width: 100%; accent-color: var(--amber-deep); cursor: pointer; height: 22px; }
+  .pt-doc input[type=range]:focus-visible { outline: 2px solid var(--amber); outline-offset: 4px; border-radius: 4px; }
+  .pt-doc .tl-state { font-family: var(--mono); font-size: 12px; color: var(--muted); text-align: right; min-width: 15ch; }
+  .pt-doc .tl-state b { color: var(--ink); }
+  .pt-doc .tl-legend { grid-column: 1 / -1; display: flex; justify-content: space-between; font-family: var(--mono); font-size: 10.5px; color: var(--faint); }
+
+  /* trace readout */
+  .pt-doc .trace {
+    border-top: 1px solid var(--line); padding: 16px 20px 18px; background: #0f0b17;
+    font-family: var(--mono); font-size: 13px; line-height: 1.7; min-height: 132px;
+  }
+  .pt-doc .trace .hint { color: var(--faint); }
+  .pt-doc .trace-line { display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: baseline; }
+  .pt-doc .trace .arrow { color: var(--amber-deep); }
+  .pt-doc .trace .lab { color: var(--faint); }
+  .pt-doc .trace .val { color: var(--ink); }
+  .pt-doc .trace .fallback { color: var(--l3); }
+  .pt-doc .trace .exact { color: var(--l0); }
+  .pt-doc .tk { padding: 1px 6px; border-radius: 4px; border: 1px solid var(--line-2); background: #1a1329; }
+  .pt-doc .tk.lv0 { color: var(--l0); border-color: color-mix(in srgb, var(--l0) 40%, var(--line-2)); }
+  .pt-doc .tk.lv1 { color: var(--l1); border-color: color-mix(in srgb, var(--l1) 40%, var(--line-2)); }
+  .pt-doc .tk.lv2 { color: var(--l2); border-color: color-mix(in srgb, var(--l2) 40%, var(--line-2)); }
+  .pt-doc .tk.lv3 { color: var(--l3); border-color: color-mix(in srgb, var(--l3) 40%, var(--line-2)); }
+
+  /* encoding callout */
+  .pt-doc .encode {
+    display: grid; grid-template-columns: repeat(4, 1fr); gap: 1px; background: var(--line);
+    border: 1px solid var(--line-2); border-radius: 10px; overflow: hidden; margin: 18px 0 4px; max-width: 560px;
+  }
+  .pt-doc .encode .ch { background: #171120; padding: 12px 14px; }
+  .pt-doc .encode .ch .cn { font-family: var(--mono); font-size: 20px; font-weight: 700; }
+  .pt-doc .encode .ch .cd { font-family: var(--mono); font-size: 10.5px; color: var(--muted); margin-top: 4px; line-height: 1.4; }
+  .pt-doc .encode .ch:nth-child(1) .cn { color: #ff6b6b; }
+  .pt-doc .encode .ch:nth-child(2) .cn { color: #7dd87d; }
+  .pt-doc .encode .ch:nth-child(3) .cn { color: #6ba6ff; }
+  .pt-doc .encode .ch:nth-child(4) .cn { color: var(--amber); }
+
+  /* code block */
+  .pt-doc pre {
+    font-family: var(--mono); font-size: 12.5px; line-height: 1.65; background: #0f0b17;
+    border: 1px solid var(--line-2); border-radius: 12px; padding: 18px 20px; overflow-x: auto; color: #cfc8dc; margin: 18px 0;
+  }
+  .pt-doc pre .cm { color: var(--faint); }
+  .pt-doc pre .fn { color: var(--amber); }
+  .pt-doc pre .hl { color: var(--l0); }
+  .pt-doc pre .kw { color: var(--l1); }
+
+  .pt-doc ul.notes { max-width: 70ch; padding-left: 0; list-style: none; }
+  .pt-doc ul.notes li { position: relative; padding-left: 26px; margin: 12px 0; color: #d0cadb; }
+  .pt-doc ul.notes li::before {
+    content: ""; position: absolute; left: 4px; top: 10px; width: 8px; height: 8px; border-radius: 2px;
+    background: var(--amber-deep); box-shadow: 0 0 8px -1px var(--amber-deep);
+  }
+  .pt-doc ul.notes li b { color: var(--ink); }
+
+  /* scaling walls */
+  .pt-doc .walls { display: grid; gap: 12px; margin: 18px 0 6px; max-width: 74ch; }
+  .pt-doc .wall { border: 1px solid var(--line-2); border-radius: 10px; background: #150f20; padding: 13px 16px 14px; }
+  .pt-doc .wall-h { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 10px; margin-bottom: 6px; }
+  .pt-doc .wall-n { font-family: var(--mono); font-size: 13px; font-weight: 700; color: var(--ink); letter-spacing: 0.02em; }
+  .pt-doc .wall-tag {
+    font-family: var(--mono); font-size: 9.5px; text-transform: uppercase; letter-spacing: 0.12em;
+    color: var(--amber-deep); border: 1px solid var(--line-2); border-radius: 999px; padding: 2px 8px;
+  }
+  .pt-doc .wall p { max-width: none; margin: 4px 0; font-size: 14px; line-height: 1.55; color: #cbc4d8; }
+  .pt-doc .wall .wall-now b { color: var(--l3); }   /* the ceiling */
+  .pt-doc .wall .wall-plan b { color: var(--l0); }  /* the way forward */
+
+  .pt-doc footer {
+    margin-top: 64px; padding-top: 24px; border-top: 1px solid var(--line);
+    font-family: var(--mono); font-size: 12.5px; color: var(--muted); display: flex; flex-wrap: wrap; gap: 8px 28px;
+  }
+  .pt-doc footer .lab { color: var(--faint); }
+
+  /* Reduced motion: no fades, no movement — state shown as a faint tint + crisp level-coloured
+     outline instead of a bright fill, so rapid streaming updates stay low-contrast. */
+  @media (prefers-reduced-motion: reduce) {
+    .pt-doc * { transition: none !important; }
+    .pt-doc .cell.occ {
+      background-color: color-mix(in srgb, var(--lv) 12%, #17121f);
+      box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--lv) 38%, transparent);
+      color: color-mix(in srgb, var(--lv) 58%, #cfc8dc);
+    }
+    .pt-doc .cell.occ .lvtag { color: color-mix(in srgb, var(--lv) 58%, #cfc8dc); }
+    .pt-doc .selblock.occ {
+      background-color: color-mix(in srgb, var(--lv) 14%, #17121f);
+      box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--lv) 42%, transparent);
+      color: color-mix(in srgb, var(--lv) 64%, #d6d0e0);
+    }
+    .pt-doc .selblock.occ .co { opacity: .78; }
+    .pt-doc .dim-others .cell:not(.hot):not(.warm),
+    .pt-doc .dim-others .selblock:not(.hot):not(.ancestor-out) { opacity: 0.82; }
+  }
+</style>
+
+<script>
+  (function () {
+    "use strict";
+    var root = document.querySelector(".pt-doc");
+    if (!root) return;
+    var cs = getComputedStyle(root);
+    var PAGE = 8;    // finest grid edge (pageDims), 2D slice
+    var LEVELS = 4;  // 0..3
+    var FLOOR = 3;   // log2(PAGE) — coarsest full-chunk-grid level
+    var ATLAS = 8;   // atlas slot grid edge (2D slice)
+    var LVCOL = [
+      cs.getPropertyValue("--l0").trim(),
+      cs.getPropertyValue("--l1").trim(),
+      cs.getPropertyValue("--l2").trim(),
+      cs.getPropertyValue("--l3").trim(),
+    ];
+    function key(l, x, y) { return l + ":" + x + ":" + y; }
+    function fp(l) { return 1 << l; }
+    function byId(id) { return document.getElementById(id); }
+
+    // ---- the mixed-LOD selection: a quadtree cut of the 8x8 finest grid ----
+    var selection = [];
+    for (var y = 0; y < 4; y++) for (var x = 0; x < 4; x++) selection.push({ l: 0, x: x, y: y }); // TL fine
+    for (var y = 0; y < 2; y++) for (var x = 2; x < 4; x++) selection.push({ l: 1, x: x, y: y }); // TR
+    for (var y = 2; y < 4; y++) for (var x = 0; x < 2; x++) selection.push({ l: 1, x: x, y: y }); // BL
+    selection.push({ l: 2, x: 1, y: 1 }); // BR coarse
+    var floorChunk = { l: FLOOR, x: 0, y: 0 };
+
+    // cellDesired[y][x] = the selected chunk whose footprint contains finest cell (x,y)
+    var cellDesired = [];
+    for (var y = 0; y < PAGE; y++) cellDesired.push(new Array(PAGE));
+    selection.forEach(function (c) {
+      var s = fp(c.l);
+      for (var dy = 0; dy < s; dy++) for (var dx = 0; dx < s; dx++) cellDesired[c.y * s + dy][c.x * s + dx] = c;
+    });
+
+    // ---- load order (streaming). floor first, then coarse→fine ----
+    var loadOrder = [floorChunk];
+    loadOrder.push({ l: 2, x: 1, y: 1 });
+    for (var y = 0; y < 2; y++) for (var x = 2; x < 4; x++) loadOrder.push({ l: 1, x: x, y: y });
+    for (var y = 2; y < 4; y++) for (var x = 0; x < 2; x++) loadOrder.push({ l: 1, x: x, y: y });
+    for (var y = 0; y < 4; y++) for (var x = 0; x < 4; x++) loadOrder.push({ l: 0, x: x, y: y });
+    var MAXSTEP = loadOrder.length; // 26
+
+    var slotOfKey = {};
+    loadOrder.forEach(function (c, i) { slotOfKey[key(c.l, c.x, c.y)] = i; });
+
+    var step = MAXSTEP;
+    var focus = null;
+    var playing = false, timer = null;
+    var REDUCE = !!(window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches);
+    var PLAY_MS = REDUCE ? 720 : 380;
+
+    function residentSet() {
+      var s = {};
+      for (var i = 0; i < step && i < loadOrder.length; i++) { var c = loadOrder[i]; s[key(c.l, c.x, c.y)] = c; }
+      return s;
+    }
+    function residentOrAncestor(res, l, x, y) {
+      while (l < LEVELS) {
+        var k = key(l, x, y);
+        if (res[k]) return { l: l, x: x, y: y, key: k };
+        l++; x >>= 1; y >>= 1;
+      }
+      return null;
+    }
+
+    // ---------- build DOM ----------
+    var legend = byId("pt-legend");
+    ["L0 · finest", "L1", "L2", "L3 · floor"].forEach(function (t, i) {
+      var el = document.createElement("span"); el.className = "lg";
+      el.innerHTML = '<span class="swatch" style="background:' + LVCOL[i] + '"></span>' + t;
+      legend.appendChild(el);
+    });
+
+    var selGrid = byId("pt-selGrid");
+    var selBlocks = [];
+    selection.forEach(function (c) {
+      var b = document.createElement("div");
+      b.className = "selblock";
+      var s = fp(c.l);
+      b.style.gridColumn = c.x * s + 1 + " / span " + s;
+      b.style.gridRow = c.y * s + 1 + " / span " + s;
+      b.innerHTML = '<span class="sl-lv">L' + c.l + '</span><span class="co">(' + c.x + "," + c.y + ")</span>";
+      b.addEventListener("mouseenter", function () { setFocus({ x: c.x * s, y: c.y * s }); });
+      b.addEventListener("mouseleave", clearFocus);
+      b._chunk = c;
+      selGrid.appendChild(b);
+      selBlocks.push(b);
+    });
+
+    var ptGrid = byId("pt-ptGrid");
+    var ptCells = [];
+    for (var y = 0; y < PAGE; y++) {
+      ptCells.push([]);
+      for (var x = 0; x < PAGE; x++) {
+        var cell = document.createElement("div");
+        cell.className = "cell";
+        (function (cx, cy) {
+          cell.addEventListener("mouseenter", function () { setFocus({ x: cx, y: cy }); });
+          cell.addEventListener("mouseleave", clearFocus);
+        })(x, y);
+        ptGrid.appendChild(cell);
+        ptCells[y].push(cell);
+      }
+    }
+
+    var atlasGrid = byId("pt-atlasGrid");
+    var atlasCells = [];
+    for (var i = 0; i < ATLAS * ATLAS; i++) {
+      var acell = document.createElement("div");
+      acell.className = "cell free";
+      (function (idx) {
+        acell.addEventListener("mouseenter", function () { focusSlot(idx); });
+        acell.addEventListener("mouseleave", clearFocus);
+      })(i);
+      atlasGrid.appendChild(acell);
+      atlasCells.push(acell);
+    }
+
+    function focusSlot(idx) {
+      var res = residentSet();
+      for (var y = 0; y < PAGE; y++) for (var x = 0; x < PAGE; x++) {
+        var d = cellDesired[y][x]; if (!d) continue;
+        var r = residentOrAncestor(res, d.l, d.x, d.y);
+        if (r && slotOfKey[r.key] === idx) { setFocus({ x: x, y: y }); return; }
+      }
+    }
+
+    // ---------- render ----------
+    function render() {
+      var res = residentSet();
+
+      selBlocks.forEach(function (b) {
+        var c = b._chunk;
+        var resident = !!res[key(c.l, c.x, c.y)];
+        b.classList.toggle("pending", !resident);
+        b.classList.toggle("occ", resident);
+        if (resident) b.style.setProperty("--lv", LVCOL[c.l]);
+        else b.style.removeProperty("--lv");
+      });
+
+      for (var y = 0; y < PAGE; y++) for (var x = 0; x < PAGE; x++) {
+        var cell = ptCells[y][x];
+        var d = cellDesired[y][x];
+        var r = d ? residentOrAncestor(res, d.l, d.x, d.y) : null;
+        cell.className = "cell";
+        if (!r) { cell.classList.add("empty"); cell.style.removeProperty("--lv"); cell.textContent = ""; }
+        else { cell.classList.add("occ"); cell.style.setProperty("--lv", LVCOL[r.l]); cell.textContent = slotOfKey[r.key]; }
+      }
+
+      atlasCells.forEach(function (cell, i) {
+        var c = i < step ? loadOrder[i] : null;
+        cell.className = "cell";
+        if (!c) { cell.classList.add("free"); cell.style.removeProperty("--lv"); cell.innerHTML = ""; }
+        else { cell.classList.add("occ"); cell.style.setProperty("--lv", LVCOL[c.l]); cell.innerHTML = '<span class="lvtag">L' + c.l + "</span>"; }
+      });
+
+      byId("pt-scrub").value = step;
+      byId("pt-tlState").innerHTML = stateLabel();
+      renderFocus(res);
+    }
+
+    function stateLabel() {
+      if (step === 0) return "<b>0 / " + MAXSTEP + "</b> · holes (pre-floor)";
+      if (step === MAXSTEP) return "<b>" + MAXSTEP + " / " + MAXSTEP + "</b> · fully resident";
+      if (step === 1) return "<b>1 / " + MAXSTEP + "</b> · floor only — coarse, no holes";
+      return "<b>" + step + " / " + MAXSTEP + "</b> · streaming — sharpening";
+    }
+
+    function setFocus(f) { focus = f; byId("pt-console").classList.add("dim-others"); renderFocus(residentSet()); }
+    function clearFocus() { focus = null; byId("pt-console").classList.remove("dim-others"); clearHot(); renderTrace(null); }
+
+    function clearHot() {
+      ptCells.forEach(function (rw) { rw.forEach(function (c) { c.classList.remove("hot", "warm"); }); });
+      atlasCells.forEach(function (c) { c.classList.remove("hot"); });
+      selBlocks.forEach(function (b) { b.classList.remove("hot", "ancestor-out"); });
+    }
+
+    function renderFocus(res) {
+      clearHot();
+      if (!focus) { renderTrace(null); return; }
+      var d = cellDesired[focus.y][focus.x];
+      if (!d) { renderTrace({ desired: null }); return; }
+      var r = residentOrAncestor(res, d.l, d.x, d.y);
+
+      selBlocks.forEach(function (b) {
+        if (b._chunk === d) b.classList.add("hot");
+        if (r && b._chunk.l === r.l && b._chunk.x === r.x && b._chunk.y === r.y && r.l !== d.l) b.classList.add("ancestor-out");
+      });
+
+      if (r) {
+        var s = fp(r.l);
+        var fx = r.x * s, fy = r.y * s;
+        for (var dy = 0; dy < s; dy++) for (var dx = 0; dx < s; dx++) {
+          var cy = fy + dy, cx = fx + dx;
+          if (cy < PAGE && cx < PAGE) ptCells[cy][cx].classList.add(cx === focus.x && cy === focus.y ? "hot" : "warm");
+        }
+        var idx = slotOfKey[r.key];
+        if (atlasCells[idx]) atlasCells[idx].classList.add("hot");
+      }
+      renderTrace({ desired: d, resolved: r });
+    }
+
+    function tokLv(l, text) { return '<span class="tk lv' + l + '">' + text + "</span>"; }
+
+    function renderTrace(info) {
+      var t = byId("pt-trace");
+      if (!info) {
+        t.innerHTML = '<span class="hint">Hover a cell to trace the lookup — the finest cell, the chunk it belongs to, the brick that actually serves it, and where that brick sits in the atlas.</span>';
+        return;
+      }
+      if (!info.desired) { t.innerHTML = '<span class="hint">Outside the selection.</span>'; return; }
+      var d = info.desired, r = info.resolved;
+      var html = '<div class="trace-line"><span class="lab">finest cell</span> <span class="val">(' + focus.x + "," + focus.y + ")</span>"
+        + ' <span class="arrow">∈</span> <span class="lab">selected chunk</span> ' + tokLv(d.l, "L" + d.l + " (" + d.x + "," + d.y + ")") + "</div>";
+      if (!r) {
+        html += '<div class="trace-line"><span class="fallback">✗ no resident ancestor yet — this is a hole. Load the floor (drag right) to guarantee a fallback.</span></div>';
+        t.innerHTML = html; return;
+      }
+      var slotIdx = slotOfKey[r.key];
+      var col = slotIdx % ATLAS, rowN = (slotIdx / ATLAS) | 0;
+      if (r.l === d.l) {
+        html += '<div class="trace-line"><span class="exact">✓ exact</span> <span class="lab">— chunk is resident.</span></div>';
+      } else {
+        var climbed = r.l - d.l;
+        html += '<div class="trace-line"><span class="fallback">↑ fallback</span> <span class="lab">— walked up ' + climbed + " level" + (climbed > 1 ? "s" : "") + " to</span> " + tokLv(r.l, "L" + r.l + " (" + r.x + "," + r.y + ")") + ' <span class="lab">(finer not resident)</span></div>';
+      }
+      html += '<div class="trace-line"><span class="lab">page-table texel writes</span> <span class="tk">slot ' + slotIdx + " = (" + col + "," + rowN + ')</span> <span class="tk">A = level+1 = ' + (r.l + 1) + "</span></div>";
+      var cells = fp(r.l);
+      html += '<div class="trace-line"><span class="lab">shader:</span> <span class="val">cells = 2^' + r.l + " = " + cells + '</span> <span class="arrow">→</span> <span class="lab">this brick spans ' + cells + "×" + cells + " finest cells; sampled at " + (r.l === 0 ? "full" : "1/" + cells) + " resolution here.</span></div>";
+      t.innerHTML = html;
+    }
+
+    // ---------- controls ----------
+    byId("pt-scrub").addEventListener("input", function (e) { stopPlay(); step = parseInt(e.target.value, 10); render(); });
+
+    var playBtn = byId("pt-playBtn");
+    playBtn.addEventListener("click", function () {
+      if (playing) { stopPlay(); return; }
+      if (step >= MAXSTEP) step = 0;
+      playing = true; playBtn.innerHTML = "❚❚&nbsp;&nbsp;Pause";
+      timer = setInterval(function () {
+        step++;
+        if (step >= MAXSTEP) { step = MAXSTEP; render(); stopPlay(); return; }
+        render();
+      }, PLAY_MS);
+      render();
+    });
+    function stopPlay() { playing = false; if (timer) clearInterval(timer); timer = null; playBtn.innerHTML = "▶&nbsp;&nbsp;Stream in"; }
+
+    render();
+  })();
+</script>

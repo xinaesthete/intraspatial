@@ -39,6 +39,13 @@ export default defineConfig({
           ],
         },
         {
+          label: "Datasource & rendering",
+          items: [
+            // Prototype — surfaced for visibility; scope/structure to be reviewed later.
+            { label: "Brick-atlas page table", slug: "datasource/brick-atlas-page-table" },
+          ],
+        },
+        {
           label: "Concepts",
           items: [
             { label: "Windowing, not quadrats", slug: "concepts/windowing" },

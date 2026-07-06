@@ -1,0 +1,15 @@
+---
+title: The brick-atlas page table
+description: How a low-resolution 3D page table maps a mixed-LOD volume into one shared brick atlas so a single raymarch pass can sample it — with a streaming fallback that never shows a hole.
+template: splash
+tableOfContents: false
+hero:
+  tagline: >-
+    A low-resolution 3D lookup texture lets one raymarch pass sample a mixed-resolution
+    volume — packing resident chunks into a shared atlas, composing levels of detail with
+    no overdraw, and never showing a hole while data streams in.
+---
+
+import PageTableDiagram from '../../../components/PageTableDiagram.astro';
+
+<PageTableDiagram />

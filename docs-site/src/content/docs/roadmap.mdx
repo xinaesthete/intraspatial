@@ -54,6 +54,14 @@ after its writer — is written up as a design note: `docs/gpu-resource-sync.md`
 ops over resources where ordering, barriers, pooling and download points are *derived*,
 not assumed). Status: 📋 (model defined; the `GpuField` + scheduler is the build).
 
+## Datasource & volume rendering
+
+A separate, prototype track: a view-driven multiscale datasource and a WebGPU volume
+renderer (per-chunk LOD via a brick atlas + page table, ADR-0008). The technique — and,
+importantly, **how it scales, where the ceilings are, and the planned fixes** — is written
+up on the [brick-atlas page table](/datasource/brick-atlas-page-table/#scaling) page. Status:
+🚧 (prototype; scope and how it fits the rest of the toolbox is still being shaped).
+
 ## Scaling & performance
 
 What costs what, so you can size a problem. Numbers below are single-thread CPU
