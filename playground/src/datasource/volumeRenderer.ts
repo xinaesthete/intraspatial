@@ -39,7 +39,8 @@ import {
   viewZToPerspectiveDepth,
 } from "three/tsl";
 import { MeshBasicNodeMaterial } from "three/webgpu";
-import { type Affine3, chunkKey, type Loader, type Multiscale, type Selection, type Tile } from "../../../src/datasource";
+import { type Affine3, type ChunkId, chunkKey, type Multiscale, type Selection } from "../../../src/datasource";
+import type { BrickSource } from "./brickSource";
 
 const STEPS = 128;
 // One raymarch, two outputs: the compositated colour AND the solid-surface clip depth.
@@ -58,7 +59,7 @@ export class VolumeRenderer {
   readonly group = new THREE.Group();
   private renderer: WebGPURendererLike;
   private ms: Multiscale;
-  private loader: Loader;
+  private source: BrickSource;
   private B: number; // brick edge (chunk voxels)
   private slotsPerAxis: number;
   private pageDims: [number, number, number];
@@ -81,9 +82,9 @@ export class VolumeRenderer {
   private uWorldToNorm = uniform(new THREE.Matrix4());
   private mat: MeshBasicNodeMaterial | null = null;
 
-  constructor(ms: Multiscale, loader: Loader, renderer: WebGPURendererLike) {
+  constructor(ms: Multiscale, source: BrickSource, renderer: WebGPURendererLike) {
     this.ms = ms;
-    this.loader = loader;
+    this.source = source;
     this.renderer = renderer;
     this.B = ms.chunkShape[0];
     this.pageDims = [
@@ -145,12 +146,12 @@ export class VolumeRenderer {
     this.rebuildPageTable();
   }
 
-  private async load(k: string, id: Tile["id"]): Promise<void> {
+  private async load(k: string, id: ChunkId): Promise<void> {
     try {
-      const tile = await this.loader.getChunk(id);
+      const data = await this.source.brick(id);
       const slot = this.allocSlot();
       if (slot === null) return; // atlas full (shouldn't happen at demo scale)
-      const brick = makeR8Texture(this.brickData(tile), this.B, this.B, this.B, THREE.LinearFilter);
+      const brick = makeR8Texture(data, this.B, this.B, this.B, THREE.LinearFilter);
       brick.needsUpdate = true;
       this.renderer.copyTextureToTexture(
         brick,
@@ -163,25 +164,6 @@ export class VolumeRenderer {
     } finally {
       this.loading.delete(k);
     }
-  }
-
-  /** Nearest-upsample a tile (dims ≤ B) into a full B³ brick so the page-table UV
-   *  mapping is uniform regardless of the chunk's own resolution. */
-  private brickData(tile: Tile): Uint8Array {
-    const B = this.B;
-    const [ex, ey, ez] = tile.dims;
-    const out = new Uint8Array(B * B * B);
-    for (let z = 0; z < B; z++) {
-      const sz = Math.min(ez - 1, ((z * ez) / B) | 0);
-      for (let y = 0; y < B; y++) {
-        const sy = Math.min(ey - 1, ((y * ey) / B) | 0);
-        for (let x = 0; x < B; x++) {
-          const sx = Math.min(ex - 1, ((x * ex) / B) | 0);
-          out[(z * B + y) * B + x] = Math.round((tile.data[(sz * ey + sy) * ex + sx] ?? 0) * 255);
-        }
-      }
-    }
-    return out;
   }
 
   private allocSlot(): [number, number, number] | null {

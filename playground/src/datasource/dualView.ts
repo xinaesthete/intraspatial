@@ -25,6 +25,8 @@ import {
   type Vec3,
   worldAabbOfArrayBox,
 } from "../../../src/datasource";
+import type { GpuBackend } from "../../../src/gpu/graph/backend";
+import { mandelbulbBrickSource } from "./brickSource";
 import { NaiveVolumeRenderer } from "./naiveVolumeRenderer";
 import { boundsOverlay, chunkOverlays, disposeGroup, frustumOverlay } from "./overlays";
 import { TileRenderer } from "./tileRenderer";
@@ -73,6 +75,7 @@ export class DualView {
   private overlays = new THREE.Group();
   private ms: Multiscale;
   private loader: Loader;
+  private backend?: GpuBackend; // GPU device seam for GPU-generated volume bricks (adopted from three)
   private bounds: Aabb;
   private isPlane: boolean;
   private center: THREE.Vector3;
@@ -104,10 +107,12 @@ export class DualView {
     combined = false,
     naive = false,
     frameMonitor?: FrameMonitor,
+    backend?: GpuBackend,
   ) {
     const ms = source.ms;
     this.ms = ms;
     this.loader = source.loader;
+    this.backend = backend;
     this.onStats = onStats;
     this.frameMonitor = frameMonitor;
     // Renderer (and its GPU device) is created once by the host and reused across source
@@ -161,7 +166,10 @@ export class DualView {
       this.volume.group.renderOrder = 0;
       this.scene.add(this.volume.group);
     } else {
-      const v = new VolumeRenderer(ms, this.loader, this.renderer);
+      if (!this.backend) throw new Error("GPU volume renderer requires a GpuBackend (adopted from the three.js device)");
+      // Bricks are GPU-generated (Mandelbulb compute) on the renderer's own device.
+      const source = mandelbulbBrickSource(ms, this.backend, ms.chunkShape[0]);
+      const v = new VolumeRenderer(ms, source, this.renderer);
       this.volume = v;
       v.group.renderOrder = 0;
       this.scene.add(v.group);

@@ -4,6 +4,8 @@
 import Stats from "three/examples/jsm/libs/stats.module.js";
 import { WebGPURenderer } from "three/webgpu";
 import { type SyntheticSource, syntheticPlane, syntheticVolume } from "../../src/datasource";
+import type { GpuBackend } from "../../src/gpu/graph/backend";
+import { adoptDevice } from "../../src/gpu/interop";
 import { type DecisionStats, DualView } from "./datasource/dualView";
 import { levelColor } from "./datasource/overlays";
 
@@ -76,6 +78,18 @@ function renderStats(s: DecisionStats, levelCount: number): void {
 
 let view: DualView | null = null;
 let renderer: WebGPURenderer | null = null;
+let backend: GpuBackend | null = null;
+
+// Adopt the renderer's own WebGPU device so our compute ops (the Mandelbulb brick generator)
+// run on the SAME device as the atlas texture — sharing GPU memory without readback is a
+// project priority (see AGENTS.md; src/gpu/interop/adoptDevice.ts). Cached: one device/renderer.
+function getBackend(r: WebGPURenderer): GpuBackend {
+  if (backend) return backend;
+  const device = (r as unknown as { backend?: { device?: GPUDevice } }).backend?.device;
+  if (!device) throw new Error("three WebGPURenderer has no backend device yet (call after init())");
+  backend = adoptDevice(device, "three");
+  return backend;
+}
 
 // One renderer/device for the whole page — reused across source switches (re-creating it
 // per switch leaks GPU devices until WebGPU stops handing out new ones → black canvas).
@@ -108,7 +122,8 @@ async function mount(kind: string): Promise<void> {
   const source: SyntheticSource = isVolume
     ? syntheticVolume({ size: 256, chunk: 32, levelCount })
     : syntheticPlane({ width: 2048, height: 2048, chunk: 64, levelCount });
-  view = new DualView(canvas, inset, r, source, (s) => renderStats(s, source.ms.levelCount), combined, naive, stats);
+  const backendForVolume = isVolume && !naive ? getBackend(r) : undefined;
+  view = new DualView(canvas, inset, r, source, (s) => renderStats(s, source.ms.levelCount), combined, naive, stats, backendForVolume);
   view.setQ(Number(qSlider.value));
   view.setTextures(texChk.checked);
   view.setWireframe(gridChk.checked);
