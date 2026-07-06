@@ -1,6 +1,7 @@
 // Plain-TS host for the Decision view (no React — the "thin illustrative host shell"
 // of ADR-0008 §8). Wires the HTML controls to a framework-free DualView over a
 // synthetic source, and renders the live fetch-budget HUD.
+import Stats from "three/examples/jsm/libs/stats.module.js";
 import { WebGPURenderer } from "three/webgpu";
 import { type SyntheticSource, syntheticPlane, syntheticVolume } from "../../src/datasource";
 import { type DecisionStats, DualView } from "./datasource/dualView";
@@ -42,6 +43,11 @@ const bytesEl = $("bytes");
 const chunksEl = $("chunks");
 const levelsEl = $("levels");
 const errEl = $("err");
+
+const stats = new Stats();
+stats.dom.style.left = "auto";
+stats.dom.style.right = "12px";
+document.body.appendChild(stats.dom);
 
 const fmtBytes = (n: number): string => {
   if (n < 1024) return `${n} B`;
@@ -102,7 +108,7 @@ async function mount(kind: string): Promise<void> {
   const source: SyntheticSource = isVolume
     ? syntheticVolume({ size: 256, chunk: 32, levelCount })
     : syntheticPlane({ width: 2048, height: 2048, chunk: 64, levelCount });
-  view = new DualView(canvas, inset, r, source, (s) => renderStats(s, source.ms.levelCount), combined, naive);
+  view = new DualView(canvas, inset, r, source, (s) => renderStats(s, source.ms.levelCount), combined, naive, stats);
   view.setQ(Number(qSlider.value));
   view.setTextures(texChk.checked);
   view.setWireframe(gridChk.checked);

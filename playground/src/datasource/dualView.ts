@@ -37,6 +37,12 @@ export interface DecisionStats {
   countByLevel: readonly number[];
 }
 
+/** Optional per-frame hooks (e.g. mrdoob Stats begin/end). */
+export interface FrameMonitor {
+  begin(): void;
+  end(): void;
+}
+
 const OVERLAY_LAYER = 1;
 const INSET_W = 340,
   INSET_H = 250,
@@ -87,6 +93,7 @@ export class DualView {
   private width = 1;
   private height = 1;
   private onStats?: (s: DecisionStats) => void;
+  private frameMonitor?: FrameMonitor;
 
   constructor(
     canvas: HTMLCanvasElement,
@@ -96,11 +103,13 @@ export class DualView {
     onStats?: (s: DecisionStats) => void,
     combined = false,
     naive = false,
+    frameMonitor?: FrameMonitor,
   ) {
     const ms = source.ms;
     this.ms = ms;
     this.loader = source.loader;
     this.onStats = onStats;
+    this.frameMonitor = frameMonitor;
     // Renderer (and its GPU device) is created once by the host and reused across source
     // switches — re-creating it per switch leaks GPU devices until WebGPU stops working.
     this.renderer = renderer;
@@ -333,6 +342,7 @@ export class DualView {
   async start(): Promise<void> {
     this.renderer.setAnimationLoop(() => {
       if (this.disposed) return;
+      this.frameMonitor?.begin();
       this.appControls.update();
       this.decisionControls.update();
       if (this.dirty) {
@@ -354,6 +364,7 @@ export class DualView {
       this.renderer.setClearColor(0x0a0f1c, 1);
       this.renderer.clear();
       this.renderer.render(this.scene, this.decisionCamera);
+      this.frameMonitor?.end();
     });
   }
 
