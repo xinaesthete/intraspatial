@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SpatialData image — view-driven (1a)</title>
+  <style>
+    :root { color-scheme: dark; }
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0; height: 100%;
+      background: #0b1020; color: #e2e8f0;
+      font: 13px/1.5 ui-sans-serif, system-ui, sans-serif;
+    }
+    #app { position: fixed; inset: 0; }
+    #stage { width: 100%; height: 100%; display: block; }
+    #panel {
+      position: fixed; top: 12px; left: 12px; width: 280px; padding: 14px 16px;
+      background: rgba(15, 23, 42, 0.82); border: 1px solid #1e293b; border-radius: 10px;
+      backdrop-filter: blur(6px);
+    }
+    #panel h1 { margin: 0 0 2px; font-size: 14px; font-weight: 600; }
+    #panel .sub { margin: 0 0 12px; color: #94a3b8; font-size: 11px; }
+    .row { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 8px 0; }
+    .row label { color: #cbd5e1; }
+    input[type="range"] { width: 140px; }
+    input[type="text"] { width: 100%; background: #0f172a; color: #cbd5e1; border: 1px solid #334155; border-radius: 6px; padding: 3px 6px; font-size: 11px; }
+    select { background: #0f172a; color: #e2e8f0; border: 1px solid #334155; border-radius: 6px; padding: 3px 6px; }
+    #hud { margin-top: 12px; padding-top: 10px; border-top: 1px solid #1e293b; }
+    #hud .big { font-size: 20px; font-weight: 600; }
+    #hud .muted { color: #94a3b8; font-size: 11px; }
+    #label { color: #38bdf8; font-size: 11px; margin: 6px 0 0; }
+    #levels { display: flex; flex-wrap: wrap; gap: 4px 8px; margin-top: 8px; }
+    .lv { display: inline-flex; align-items: center; gap: 5px; font-variant-numeric: tabular-nums; }
+    .sw { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
+    #err { color: #fca5a5; margin-top: 8px; white-space: pre-wrap; }
+    #inset {
+      position: fixed; right: 16px; bottom: 16px; width: 340px; height: 250px;
+      border: 1px solid #334155; border-radius: 8px; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5); cursor: grab;
+    }
+    #inset:active { cursor: grabbing; }
+    #inset .inset-label {
+      position: absolute; top: 6px; left: 8px; padding: 2px 4px; font-size: 10px;
+      letter-spacing: 0.08em; text-transform: uppercase; color: #38bdf8; user-select: none;
+    }
+  </style>
+</head>
+
+<body>
+  <div id="app">
+    <canvas id="stage"></canvas>
+    <div id="inset"><span class="inset-label">decision</span></div>
+    <div id="panel">
+      <h1>SpatialData image (1a)</h1>
+      <p class="sub">Real HTJ2K image from a spatialdata.js store, decoded per-chunk and
+        streamed under camera control. Left: the app view — drag to orbit; the plane reloads at
+        the LOD your view demands. Inset: this camera's frustum through the level-tinted chunks.</p>
+      <div class="row">
+        <label for="element">image</label>
+        <select id="element">
+          <option value="he_image">he_image (RGB)</option>
+          <option value="morphology_focus">morphology_focus (16-bit)</option>
+        </select>
+      </div>
+      <div class="row" style="flex-direction: column; align-items: stretch; gap: 4px">
+        <label for="store">store url</label>
+        <input id="store" type="text" value="http://localhost:8080/xenium_2.q0.001.htj2k.index-permutations.zarr" />
+      </div>
+      <div class="row">
+        <label for="q">detail budget q = <span id="qval">1.0</span></label>
+        <input id="q" type="range" min="0.25" max="4" step="0.05" value="1" />
+      </div>
+      <p id="label">—</p>
+      <div id="hud">
+        <div><span id="bytes" class="big">–</span> <span class="muted">to fetch</span></div>
+        <div class="muted"><span id="chunks">–</span> chunks selected</div>
+        <div id="levels"></div>
+        <div id="err"></div>
+      </div>
+    </div>
+  </div>
+  <script type="module" src="/src/spatialDataMain.ts"></script>
+</body>
+
+</html>

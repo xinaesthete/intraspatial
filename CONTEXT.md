@@ -101,6 +101,32 @@ exactly where zarrextra will eventually live. Partial/resolution-progressive dec
 variant of this interface, not the current one.
 _Avoid_: fetcher, store, reader.
 
+**SpatialDataLoader**:
+The Milestone-2 `Loader` implementation, backed by published spatialdata.js
+(`@spatialdata/core` for element discovery + transforms, `zarrextra` for the per-level `getTile`
+chunk seam and OpenJPH HTJ2K decode). An adapter, not a new abstraction: it maps a SpatialData
+multiscale **image** element onto our Multiscale/Tile model. The dependency is one-way
+(`tgpu-htj2k → sd.js`), lives in the playground (heavy deps out of the engine core), and does not
+pull deck.gl/React (`@spatialdata/layers`/`vis`). The counterpart to the dep-free `SyntheticLoader`
+— two Loaders behind one interface (ADR-0010).
+_Avoid_: OmeZarrLoader (the earlier raw-zarrita name it replaces), sdLoader.
+
+**Stored transform**:
+The **immutable** pixel→world affine a Resource already carries — a SpatialData element's
+coordinate-system transform to `global`, read via `getTransformationForLevel`. The starting placement
+a Multiscale is born with; the baseline an Alignment corrects.
+_Avoid_: transform (ambiguous), placement (means the effective, editable result).
+
+**Alignment**:
+The **user-authored** correction affine layered on top of a Stored transform to place an image in
+world — `worldFromArray = Alignment ∘ storedTransform`, identity until edited. A first-class,
+provenance-carrying, eventually-persistable artifact (the real product of the manual
+slice-registration workflow), *not* ephemeral UI state; the delta form keeps "how far from the
+pipeline's registration" legible and gives a free reset. Edited via a 3D gizmo and fed **into
+`Select`**, so moving an image re-selects chunks, not just repositions pixels. sd.js is immutable
+today, so write-back is a horizon, not a current path.
+_Avoid_: transform, offset, pose, registration (that's the workflow, not the value).
+
 **DWT analysis hook**:
 An analysis branch of the graph *downstream* of Resolve: `fdwt` (+ band statistics / shrinkage /
 features) applied per Tile, on the *already-decoded* pixels — not intercepting the codec's internal

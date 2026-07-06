@@ -66,11 +66,22 @@ export class TileRenderer {
   private makeTexture(tile: Tile): THREE.Texture {
     const [ex, ey] = tile.dims;
     const rgba = new Uint8Array(ex * ey * 4);
+    // Element decides the colour mapping: a scalar Tile (synthetic) → greyscale; an RGB
+    // `vec3` Tile (the SpatialDataLoader's interleaved channels, ADR-0010) → colour. Data is
+    // lane-major float in [0,1]; the texture is RGBA8.
+    const lanes = tile.element.kind === "vec" ? tile.element.n : 1;
+    const to8 = (v: number): number => Math.max(0, Math.min(255, Math.round(v * 255)));
     for (let i = 0; i < ex * ey; i++) {
-      const g = Math.max(0, Math.min(255, Math.round((tile.data[i] ?? 0) * 255)));
-      rgba[i * 4] = g;
-      rgba[i * 4 + 1] = g;
-      rgba[i * 4 + 2] = g;
+      if (lanes >= 3) {
+        rgba[i * 4] = to8(tile.data[i * lanes] ?? 0);
+        rgba[i * 4 + 1] = to8(tile.data[i * lanes + 1] ?? 0);
+        rgba[i * 4 + 2] = to8(tile.data[i * lanes + 2] ?? 0);
+      } else {
+        const g = to8(tile.data[i] ?? 0);
+        rgba[i * 4] = g;
+        rgba[i * 4 + 1] = g;
+        rgba[i * 4 + 2] = g;
+      }
       rgba[i * 4 + 3] = 255;
     }
     const tex = new THREE.DataTexture(rgba, ex, ey);
