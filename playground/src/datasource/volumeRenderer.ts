@@ -39,7 +39,7 @@ import {
   viewZToPerspectiveDepth,
 } from "three/tsl";
 import { MeshBasicNodeMaterial } from "three/webgpu";
-import { type Affine3, type ChunkId, chunkKey, type Multiscale, type Selection } from "../../../src/datasource";
+import { type Affine3, type ChunkId, chunkCounts, chunkKey, type Multiscale, type Selection } from "../../../src/datasource";
 import type { BrickSource } from "./brickSource";
 import { LoadScheduler, type LoadState } from "./loadScheduler";
 
@@ -74,7 +74,18 @@ export class VolumeRenderer {
   private scheduler: LoadScheduler;
   private readonly MAX_CONCURRENT_LOADS = 6;
   private useClock = 0;
+  // desired = the chunks whose in-flight loads we still want to commit (selected + floor).
   private desired = new Set<string>();
+  // selectedKeys = just the view-selected chunks — the regions the page table actually draws
+  // (each resolved to itself or a resident ancestor). The floor is NEVER drawn directly; it is
+  // reached only via the walk-up, so it can't overwrite finer resident chunks.
+  private selectedKeys: string[] = [];
+  // Resident bricks currently referenced by the page table (exact desired OR fallback ancestor).
+  // Recomputed each rebuild; eviction protects these (retain-on-refine + keep fallbacks live).
+  private inUse = new Set<string>();
+  // The coarsest level — proactively kept resident as a no-holes floor (walk-up always finds it).
+  private floorIds: ChunkId[] = [];
+  private floorKeys = new Set<string>();
   private mesh: THREE.Mesh;
   private uCmin = uniform(0.15);
   private uCmax = uniform(1.0);
@@ -117,6 +128,19 @@ export class VolumeRenderer {
       (id) => this.load(id),
       (key) => this.resident.has(key),
     );
+
+    // The fallback floor: the coarsest level that is still a *full* chunk grid, always requested
+    // and never evicted, so the page-table walk-up can always find SOME resident ancestor and
+    // there is never a transparent hole — worst case is blur that sharpens. It must not be finer
+    // OR coarser than this: coarser levels are sub-chunk partials whose finest-cell span is
+    // < 2^level, which the shader's `cells = 2^level` mapping (page table → brick-local coord)
+    // gets wrong. The valid coarsest level is where 2^level == pageDims: log2(pageDims).
+    const maxValidLevel = Math.floor(Math.log2(Math.max(1, Math.min(...this.pageDims))));
+    const coarse = Math.max(0, Math.min(ms.levelCount - 1, maxValidLevel));
+    const [ncx, ncy, ncz] = chunkCounts(ms, coarse);
+    for (let z = 0; z < ncz; z++)
+      for (let y = 0; y < ncy; y++) for (let x = 0; x < ncx; x++) this.floorIds.push({ level: coarse, x, y, z });
+    this.floorKeys = new Set(this.floorIds.map((id) => chunkKey(id)));
   }
 
   setTransfer(cmin: number, cmax: number, gamma: number): void {
@@ -142,14 +166,21 @@ export class VolumeRenderer {
   }
 
   update(sel: Selection): void {
-    this.desired = new Set(sel.chunks.map((c) => chunkKey(c.id)));
+    // Desired = the selected chunks PLUS the coarse floor (so a floor brick's in-flight result
+    // is committed even when select() never picks the coarsest level).
+    this.selectedKeys = sel.chunks.map((c) => chunkKey(c.id));
+    this.desired = new Set(this.selectedKeys);
+    for (const k of this.floorKeys) this.desired.add(k);
     for (const c of sel.chunks) {
       const r = this.resident.get(chunkKey(c.id));
       if (r) r.use = ++this.useClock; // keep resident desired chunks fresh for the LRU
     }
     // Queue the not-yet-resident chunks, nearest-first; the scheduler bounds concurrency and
     // drops queued requests the camera has since left (it reads `resident` to skip the rest).
-    this.scheduler.reconcile(sel.chunks.map((c) => ({ key: chunkKey(c.id), id: c.id, priority: c.nearestDepth })));
+    // The floor loads first (priority below any nearestDepth), so a fallback exists immediately.
+    const reqs = sel.chunks.map((c) => ({ key: chunkKey(c.id), id: c.id, priority: c.nearestDepth }));
+    for (const id of this.floorIds) reqs.push({ key: chunkKey(id), id, priority: -1 });
+    this.scheduler.reconcile(reqs);
     this.rebuildPageTable();
   }
 
@@ -188,11 +219,13 @@ export class VolumeRenderer {
   private allocSlot(): [number, number, number] | null {
     let idx = this.free.pop();
     if (idx === undefined) {
-      // Evict LRU resident not in the desired set.
+      // Evict the LRU resident that is neither referenced by the page table (an exact desired
+      // brick OR a fallback ancestor still standing in for a not-yet-resident finer chunk — this
+      // is what gives retain-on-refine) nor part of the coarse floor.
       let lruKey: string | null = null,
         lruUse = Infinity;
       for (const [k, r] of this.resident) {
-        if (this.desired.has(k)) continue;
+        if (this.inUse.has(k) || this.floorKeys.has(k)) continue;
         if (r.use < lruUse) {
           lruUse = r.use;
           lruKey = k;
@@ -209,26 +242,52 @@ export class VolumeRenderer {
     return [idx % s, ((idx / s) | 0) % s, (idx / (s * s)) | 0];
   }
 
+  /** The finest resident brick covering a desired chunk: the chunk itself if resident, else the
+   *  coarsest resident ancestor (walking up the pyramid). `undefined` only before the floor loads. */
+  private residentOrAncestor(level: number, x: number, y: number, z: number): { key: string; r: Resident } | undefined {
+    let lv = level,
+      cx = x,
+      cy = y,
+      cz = z;
+    while (lv < this.ms.levelCount) {
+      const key = chunkKey({ level: lv, x: cx, y: cy, z: cz });
+      const r = this.resident.get(key);
+      if (r) return { key, r };
+      lv++;
+      cx >>= 1;
+      cy >>= 1;
+      cz >>= 1;
+    }
+    return undefined;
+  }
+
   private rebuildPageTable(): void {
     this.pageData.fill(0);
-    const [pw, ph] = this.pageDims;
-    for (const k of this.desired) {
-      const r = this.resident.get(k);
-      if (!r) continue;
-      const span = 2 ** r.level; // finest cells this brick covers per axis
-      // Parse the chunk coords back from the key: "level:x:y:z".
-      const [, x, y, z] = k.split(":").map(Number);
-      const fx = (x ?? 0) * span,
-        fy = (y ?? 0) * span,
-        fz = (z ?? 0) * span;
-      for (let dz = 0; dz < span; dz++) {
-        for (let dy = 0; dy < span; dy++) {
-          for (let dx = 0; dx < span; dx++) {
-            const cx = fx + dx,
-              cy = fy + dy,
-              cz = fz + dz;
-            if (cx >= pw || cy >= ph || cz >= this.pageDims[2]) continue;
-            const o = ((cz * ph + cy) * pw + cx) * 4;
+    const [pw, ph, pd] = this.pageDims;
+    this.inUse.clear();
+    for (const k of this.selectedKeys) {
+      const [kl, kx, ky, kz] = k.split(":").map(Number);
+      const kLevel = kl ?? 0;
+      // LOD fallback: show the desired chunk if resident, else its coarsest resident ancestor —
+      // blur that sharpens, never a hole. The shader derives the brick-local coord from the
+      // stored level, so an ancestor's (slot, level) sampled through a finer cell is exact.
+      const hit = this.residentOrAncestor(kLevel, kx ?? 0, ky ?? 0, kz ?? 0);
+      if (!hit) continue;
+      this.inUse.add(hit.key); // referenced ⇒ protected from eviction
+      const r = hit.r;
+      // Fill the DESIRED chunk's finest-cell region (span from its level), with the RESOLVED
+      // brick's (slot, level). Loop bounds clamped to the page so coarse spans don't over-iterate.
+      const span = 2 ** kLevel;
+      const fx = (kx ?? 0) * span,
+        fy = (ky ?? 0) * span,
+        fz = (kz ?? 0) * span;
+      const ez = Math.min(span, pd - fz),
+        ey = Math.min(span, ph - fy),
+        ex = Math.min(span, pw - fx);
+      for (let dz = 0; dz < ez; dz++) {
+        for (let dy = 0; dy < ey; dy++) {
+          for (let dx = 0; dx < ex; dx++) {
+            const o = (((fz + dz) * ph + (fy + dy)) * pw + (fx + dx)) * 4;
             this.pageData[o] = r.slot[0];
             this.pageData[o + 1] = r.slot[1];
             this.pageData[o + 2] = r.slot[2];
