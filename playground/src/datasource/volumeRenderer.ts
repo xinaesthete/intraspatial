@@ -41,6 +41,7 @@ import {
 import { MeshBasicNodeMaterial } from "three/webgpu";
 import { type Affine3, type ChunkId, chunkKey, type Multiscale, type Selection } from "../../../src/datasource";
 import type { BrickSource } from "./brickSource";
+import { LoadScheduler, type LoadState } from "./loadScheduler";
 
 const STEPS = 128;
 // One raymarch, two outputs: the compositated colour AND the solid-surface clip depth.
@@ -68,7 +69,10 @@ export class VolumeRenderer {
   private pageData: Uint8Array;
   private free: number[] = [];
   private resident = new Map<string, Resident>();
-  private loading = new Set<string>();
+  // Bounded, nearest-first load queue (replaces fire-every-desired-immediately). Set in the
+  // constructor once `resident`/`source` exist.
+  private scheduler: LoadScheduler;
+  private readonly MAX_CONCURRENT_LOADS = 6;
   private useClock = 0;
   private desired = new Set<string>();
   private mesh: THREE.Mesh;
@@ -107,6 +111,12 @@ export class VolumeRenderer {
     this.mesh = this.makeMesh();
     this.group.add(this.mesh);
     this.syncTransform(); // initialise uWorldToNorm from the base placement
+
+    this.scheduler = new LoadScheduler(
+      this.MAX_CONCURRENT_LOADS,
+      (id) => this.load(id),
+      (key) => this.resident.has(key),
+    );
   }
 
   setTransfer(cmin: number, cmax: number, gamma: number): void {
@@ -134,38 +144,45 @@ export class VolumeRenderer {
   update(sel: Selection): void {
     this.desired = new Set(sel.chunks.map((c) => chunkKey(c.id)));
     for (const c of sel.chunks) {
-      const k = chunkKey(c.id);
-      const r = this.resident.get(k);
-      if (r) {
-        r.use = ++this.useClock;
-        continue;
-      }
-      if (!this.loading.has(k)) {
-        this.loading.add(k);
-        void this.load(k, c.id);
-      }
+      const r = this.resident.get(chunkKey(c.id));
+      if (r) r.use = ++this.useClock; // keep resident desired chunks fresh for the LRU
     }
+    // Queue the not-yet-resident chunks, nearest-first; the scheduler bounds concurrency and
+    // drops queued requests the camera has since left (it reads `resident` to skip the rest).
+    this.scheduler.reconcile(sel.chunks.map((c) => ({ key: chunkKey(c.id), id: c.id, priority: c.nearestDepth })));
     this.rebuildPageTable();
   }
 
-  private async load(k: string, id: ChunkId): Promise<void> {
-    try {
-      const data = await this.source.brick(id);
-      const slot = this.allocSlot();
-      if (slot === null) return; // atlas full (shouldn't happen at demo scale)
-      const brick = makeR8Texture(data, this.B, this.B, this.B, THREE.LinearFilter);
-      brick.needsUpdate = true;
-      this.renderer.copyTextureToTexture(
-        brick,
-        this.atlas,
-        new THREE.Box3(new THREE.Vector3(0, 0, 0), new THREE.Vector3(this.B, this.B, this.B)),
-        new THREE.Vector3(slot[0] * this.B, slot[1] * this.B, slot[2] * this.B),
-      );
-      this.resident.set(k, { slot, level: id.level, brick, use: ++this.useClock });
-      if (this.desired.has(k)) this.rebuildPageTable();
-    } finally {
-      this.loading.delete(k);
-    }
+  /** The chunk's state for the decision view: resident, or the scheduler's pending/loading, or
+   *  missing (wanted but neither queued nor in-flight — transiently, between reconciles). */
+  chunkState(key: string): "resident" | LoadState | "missing" {
+    if (this.resident.has(key)) return "resident";
+    return this.scheduler.state(key) ?? "missing";
+  }
+
+  /** Queued (pending) + in-flight (loading) counts, for the HUD. */
+  loadCounts(): { pending: number; loading: number } {
+    return { pending: this.scheduler.pendingCount, loading: this.scheduler.loadingCount };
+  }
+
+  private async load(id: ChunkId): Promise<void> {
+    const k = chunkKey(id);
+    const data = await this.source.brick(id);
+    // Commit only if still desired: a slow in-flight load for a chunk the camera has left
+    // shouldn't consume an atlas slot (the scheduler already drops the *queued* stale ones).
+    if (!this.desired.has(k)) return;
+    const slot = this.allocSlot();
+    if (slot === null) return; // atlas full — the LOD fallback (step 3) will cover the gap
+    const brick = makeR8Texture(data, this.B, this.B, this.B, THREE.LinearFilter);
+    brick.needsUpdate = true;
+    this.renderer.copyTextureToTexture(
+      brick,
+      this.atlas,
+      new THREE.Box3(new THREE.Vector3(0, 0, 0), new THREE.Vector3(this.B, this.B, this.B)),
+      new THREE.Vector3(slot[0] * this.B, slot[1] * this.B, slot[2] * this.B),
+    );
+    this.resident.set(k, { slot, level: id.level, brick, use: ++this.useClock });
+    this.rebuildPageTable();
   }
 
   private allocSlot(): [number, number, number] | null {

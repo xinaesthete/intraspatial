@@ -26,7 +26,7 @@ import {
   worldAabbOfArrayBox,
 } from "../../../src/datasource";
 import type { GpuBackend } from "../../../src/gpu/graph/backend";
-import { mandelbulbBrickSource } from "./brickSource";
+import { type LatencyModel, mandelbulbBrickSource, slowBrickSource } from "./brickSource";
 import { NaiveVolumeRenderer } from "./naiveVolumeRenderer";
 import { boundsOverlay, chunkOverlays, disposeGroup, frustumOverlay } from "./overlays";
 import { TileRenderer } from "./tileRenderer";
@@ -76,6 +76,8 @@ export class DualView {
   private ms: Multiscale;
   private loader: Loader;
   private backend?: GpuBackend; // GPU device seam for GPU-generated volume bricks (adopted from three)
+  // Mutable latency model shared with the volume's brick source — the "slow network" sim knob.
+  private netModel: LatencyModel = { base: 0, jitter: 0 };
   private bounds: Aabb;
   private isPlane: boolean;
   private center: THREE.Vector3;
@@ -167,8 +169,9 @@ export class DualView {
       this.scene.add(this.volume.group);
     } else {
       if (!this.backend) throw new Error("GPU volume renderer requires a GpuBackend (adopted from the three.js device)");
-      // Bricks are GPU-generated (Mandelbulb compute) on the renderer's own device.
-      const source = mandelbulbBrickSource(ms, this.backend, ms.chunkShape[0]);
+      // Bricks are GPU-generated (Mandelbulb compute) on the renderer's own device, then delayed
+      // by the latency model (the network sim) before the scheduler commits them to the atlas.
+      const source = slowBrickSource(mandelbulbBrickSource(ms, this.backend, ms.chunkShape[0]), this.netModel);
       const v = new VolumeRenderer(ms, source, this.renderer);
       this.volume = v;
       v.group.renderOrder = 0;
@@ -209,6 +212,12 @@ export class DualView {
   }
   setSolid(threshold: number): void {
     this.volume?.setSolid(threshold);
+  }
+  /** Set the simulated network latency (ms) for the volume's brick source: each brick waits
+   *  `base + rand·jitter` before generating. Live — mutates the shared model in place. */
+  setNetwork(base: number, jitter: number): void {
+    this.netModel.base = base;
+    this.netModel.jitter = jitter;
   }
 
   /** A movable opaque image quad (mandelbrot) + a translate/rotate gizmo — slide it

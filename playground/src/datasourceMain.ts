@@ -22,6 +22,20 @@ const qVal = $("qval");
 const pLevels = $<HTMLInputElement>("plevels");
 const pLevelsVal = $("plevelsval");
 const baseRes = $<HTMLSelectElement>("baseres");
+const network = $<HTMLSelectElement>("network");
+
+// Simulated network presets: [base ms, jitter ms]. Jitter staggers arrivals into a visible
+// loading wave; without it every chunk of a selection would pop in at once.
+const NET_PRESETS: Record<string, [number, number]> = {
+  off: [0, 0],
+  fast: [60, 80],
+  "3g": [300, 350],
+  slow: [1200, 900],
+};
+function applyNetwork(): void {
+  const [base, jitter] = NET_PRESETS[network.value] ?? [0, 0];
+  view?.setNetwork(base, jitter);
+}
 const texChk = $<HTMLInputElement>("tex");
 const gridChk = $<HTMLInputElement>("grid");
 const cmin = $<HTMLInputElement>("cmin");
@@ -144,6 +158,7 @@ async function mount(kind: string): Promise<void> {
   view.setSolid(Number(solid.value));
   view.setDepthRead(dread.checked);
   view.setDepthWrite(dwrite.checked);
+  applyNetwork();
   applyTransfer();
   try {
     await view.start();
@@ -169,6 +184,7 @@ pLevels.addEventListener("input", () => {
 });
 pLevels.addEventListener("change", () => void mount(sourceSel.value)); // re-mount: levelCount is baked into the Multiscale
 baseRes.addEventListener("change", () => void mount(sourceSel.value)); // re-mount: base resolution is baked into the Multiscale
+network.addEventListener("change", applyNetwork); // live: mutates the shared latency model, no re-mount
 for (const el of [cmin, cmax, gamma]) el.addEventListener("input", applyTransfer);
 solid.addEventListener("input", () => {
   solidVal.textContent = Number(solid.value).toFixed(2);

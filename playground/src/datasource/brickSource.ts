@@ -21,6 +21,26 @@ export interface BrickSource {
   brick(id: ChunkId): Promise<Uint8Array>;
 }
 
+/** Mutable latency model for the network simulation. Each brick waits `base + rand·jitter` ms
+ *  before the underlying source runs. Mutated live by the UI, so decorators read it per call. */
+export interface LatencyModel {
+  base: number;
+  jitter: number;
+}
+
+/** Wrap a source so each brick is delayed per `model` — the "slow network" simulation. Since
+ *  GPU generation is otherwise near-instant, this is what makes the loading process observable
+ *  (chunks streaming in through the scheduler, LOD-fallback, loading-colour). */
+export function slowBrickSource(inner: BrickSource, model: LatencyModel): BrickSource {
+  return {
+    async brick(id: ChunkId): Promise<Uint8Array> {
+      const delay = model.base + Math.random() * model.jitter;
+      if (delay > 0) await new Promise((resolve) => setTimeout(resolve, delay));
+      return inner.brick(id);
+    },
+  };
+}
+
 const quantize = (f: Float32Array): Uint8Array => {
   const out = new Uint8Array(f.length);
   for (let i = 0; i < f.length; i++) {
