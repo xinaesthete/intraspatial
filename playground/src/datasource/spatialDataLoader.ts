@@ -11,11 +11,14 @@
 // one interface is the proof the seam is real (ADR-0008). Heavy deps live here in the
 // playground, never in the engine core (`src/datasource` stays dependency-free).
 //
-// Slice 1a: `he_image` only, placed **axis-aligned** (the real sd.js `global` affine is
-// deferred to 1b, per ADR-0010); RGB carried as an `element: vec3` — the loader fetches the
-// three channels of each spatial (level,x,y) and interleaves them into one Tile.
+// The image is placed **axis-aligned** (the real sd.js `global` affine is deferred to 1b, per
+// ADR-0010). Up to 4 channels are fetched per spatial (level,x,y) and interleaved as RAW planes
+// into one `element: vec` Tile; the channel-composite material (tileChannelMaterial.ts) does
+// colour/window/blend on the GPU. Channel defaults (colour + contrast + label) are seeded from
+// OME `omero.channels`, with auto-contrast for >8-bit (fluorescence).
 
 import type { Affine3, ChunkId, Loader, Multiscale, Tile, Vec3 } from "../../../src/datasource";
+import { type ChannelSettings, defaultChannelColors, MAX_CHANNELS } from "./tileChannelMaterial";
 
 // zarrextra's viv-compatible per-level pixel source (structural — avoids a value import here).
 interface PixelSource {
@@ -37,6 +40,18 @@ export interface SpatialDataImage {
   readonly loader: Loader;
   /** Human label for the HUD (element name + level-0 pixel extent). */
   readonly label: string;
+  /** Default per-channel render settings (colour + contrast window + visibility), seeded from
+   *  OME `omero.channels` where present, else defaults + auto-contrast. Drives the material. */
+  readonly channels: ChannelSettings[];
+}
+
+/** Parse an OME/omero channel colour (hex `"RRGGBB"` or `"#RRGGBB"`) to [r,g,b] in [0,1]. */
+function parseHexColor(hex: unknown): [number, number, number] | null {
+  if (typeof hex !== "string") return null;
+  const m = /^#?([0-9a-f]{6})$/i.exec(hex.trim());
+  if (!m?.[1]) return null;
+  const n = Number.parseInt(m[1], 16);
+  return [((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255];
 }
 
 let codecReady: Promise<void> | null = null;
@@ -113,14 +128,16 @@ export async function openSpatialDataImage(
   const yi = axisIndex(labels, "y");
   const ci = labels.findIndex((l) => l.toLowerCase() === "c");
   const nChannels = ci === -1 ? 1 : (base.shape[ci] ?? 1);
-  const lanes = Math.min(nChannels, opts.maxChannels ?? 3);
-  const element = lanes >= 3 ? ({ kind: "vec", n: 3 } as const) : ({ kind: "scalar" } as const);
+  // Composite up to MAX_CHANNELS (4, packed into one RGBA tile texture). Raw planes now — the
+  // channel material does colour/window/composite on the GPU (ADR-0010 colormap/contrast).
+  const lanes = Math.min(nChannels, opts.maxChannels ?? MAX_CHANNELS);
+  const element = lanes >= 2 ? ({ kind: "vec", n: lanes as 2 | 3 | 4 } as const) : ({ kind: "scalar" } as const);
+  const outLanes = element.kind === "vec" ? element.n : 1;
 
   const voxelDims0: [number, number, number] = [base.shape[xi] ?? 1, base.shape[yi] ?? 1, 1];
   const tile = base.tileSize;
-  // Normalise decoded integer samples into [0,1] by their dtype range. uint8 (H&E) maps
-  // cleanly; uint16 (fluorescence) is normalised too, but really wants a windowing/contrast
-  // pass — that's the 1b channel-colormap work, not 1a.
+  // Normalise decoded integer samples into [0,1] by their dtype range; the contrast window then
+  // lives in [0,1] space too.
   const norm = /16/.test(base.dtype) ? 65535 : /32/.test(base.dtype) ? 4294967295 : 255;
   const worldFromArray = axisAlignedPlacement(voxelDims0, opts.worldSpan ?? 256);
 
@@ -133,28 +150,86 @@ export async function openSpatialDataImage(
     dtype: "f32",
   };
 
+  const readPlane = (src: PixelSource, c: number, x: number, y: number) => src.getTile({ x, y, selection: ci === -1 ? [0] : { c } });
+
   const loader: Loader = {
     async getChunk(id: ChunkId): Promise<Tile> {
       const src = sources[id.level];
       if (!src) throw new Error(`SpatialDataLoader: no level ${id.level}`);
       // One getTile per channel (each channel is a separate HTJ2K codestream: chunk shape
-      // [1,tile,tile]). zarrextra decodes each transparently; we interleave into one Tile.
-      const planes = await Promise.all(
-        Array.from({ length: lanes }, (_, c) => src.getTile({ x: id.x, y: id.y, selection: ci === -1 ? [0] : { c } })),
-      );
+      // [1,tile,tile]). zarrextra decodes each transparently; we interleave RAW planes into one
+      // Tile — the material tints/windows/composites them on the GPU.
+      const planes = await Promise.all(Array.from({ length: outLanes }, (_, c) => readPlane(src, c, id.x, id.y)));
       const first = planes[0];
       if (!first) throw new Error("SpatialDataLoader: empty channel fetch");
       const w = first.width;
       const h = first.height;
-      const outLanes = element.kind === "vec" ? element.n : 1;
       const data = new Float32Array(w * h * outLanes);
       for (let c = 0; c < outLanes; c++) {
-        const plane = (planes[Math.min(c, planes.length - 1)] ?? first).data;
+        const plane = (planes[c] ?? first).data;
         for (let i = 0; i < w * h; i++) data[i * outLanes + c] = (plane[i] ?? 0) / norm;
       }
       return { id, dims: [w, h, 1], element, dtype: "f32", data };
     },
   };
 
-  return { ms, loader, label: `${elementName} · ${voxelDims0[0]}×${voxelDims0[1]} · ${sources.length} levels` };
+  // Channel defaults: labels + colours + contrast window, seeded from omero where present.
+  const omero = (
+    img as { attrs?: { omero?: { channels?: Array<{ label?: unknown; color?: unknown; window?: { start?: number; end?: number } }> } } }
+  ).attrs?.omero;
+  const omeroCh = omero?.channels ?? [];
+  const labelStrings = Array.from({ length: lanes }, (_, i) => {
+    const l = omeroCh[i]?.label;
+    return typeof l === "string" || typeof l === "number" ? String(l) : `ch${i}`;
+  });
+  const colors = defaultChannelColors(labelStrings);
+  // Auto-contrast integer channels wider than uint8 (fluorescence) from the coarsest level, so
+  // they aren't near-black at the default full-range window; uint8 (RGB) keeps [0,1].
+  const autoLimits = norm > 255 ? await autoContrastFromCoarsest(sources, ms, readPlane, lanes, norm) : null;
+  const channels: ChannelSettings[] = labelStrings.map((label, i) => {
+    const win = omeroCh[i]?.window;
+    const limits: [number, number] =
+      win && typeof win.start === "number" && typeof win.end === "number"
+        ? [win.start / norm, win.end / norm]
+        : (autoLimits?.[i] ?? [0, 1]);
+    return {
+      label,
+      color: parseHexColor(omeroCh[i]?.color) ?? colors[i] ?? [1, 1, 1],
+      contrastLimits: limits,
+      visible: true,
+    };
+  });
+
+  return { ms, loader, label: `${elementName} · ${voxelDims0[0]}×${voxelDims0[1]} · ${sources.length} levels`, channels };
+}
+
+/** Per-channel [0, max] window computed from the coarsest level's tiles — a cheap viv-style
+ *  auto-contrast so 16-bit fluorescence is visible without hand-tuning. */
+async function autoContrastFromCoarsest(
+  sources: PixelSource[],
+  ms: Multiscale,
+  readPlane: (src: PixelSource, c: number, x: number, y: number) => Promise<{ data: ArrayLike<number>; width: number; height: number }>,
+  lanes: number,
+  norm: number,
+): Promise<[number, number][]> {
+  const level = sources.length - 1;
+  const src = sources[level];
+  if (!src) return Array.from({ length: lanes }, () => [0, 1] as [number, number]);
+  const { chunkCounts } = await import("../../../src/datasource");
+  const [nx, ny] = chunkCounts(ms, level);
+  const maxima = new Array<number>(lanes).fill(0);
+  for (let c = 0; c < lanes; c++) {
+    for (let y = 0; y < ny; y++) {
+      for (let x = 0; x < nx; x++) {
+        const t = await readPlane(src, c, x, y).catch(() => null);
+        if (!t) continue;
+        for (let i = 0; i < t.data.length; i++) {
+          const v = (t.data[i] ?? 0) / norm;
+          if (v > (maxima[c] ?? 0)) maxima[c] = v;
+        }
+      }
+    }
+  }
+  // A small headroom below the peak avoids one hot pixel washing the window out.
+  return maxima.map((m) => [0, Math.max(1e-3, m * 0.9)] as [number, number]);
 }

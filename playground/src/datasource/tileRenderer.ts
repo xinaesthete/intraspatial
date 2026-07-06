@@ -24,12 +24,19 @@ export class TileRenderer {
   private loading = new Set<string>();
   private desired = new Set<string>();
 
+  /** Optional material factory: given a tile texture, return the mesh material. When absent,
+   *  a plain greyscale/RGB `MeshBasicMaterial` (synthetic path). The SpatialData path passes the
+   *  owned channel-composite material (ADR-0010) — the tile texture then carries RAW channel
+   *  planes and the material does colour/window/composite on the GPU. */
+  private makeMaterial?: (tex: THREE.Texture) => THREE.Material;
+
   constructor(
     private ms: Multiscale,
     private loader: Loader,
-    maxBytes = 256 * 1024 * 1024,
+    opts: { maxBytes?: number; makeMaterial?: (tex: THREE.Texture) => THREE.Material } = {},
   ) {
-    this.cache = new TileCache<THREE.Texture>({ maxBytes, dispose: (t) => t.dispose() });
+    this.makeMaterial = opts.makeMaterial;
+    this.cache = new TileCache<THREE.Texture>({ maxBytes: opts.maxBytes ?? 256 * 1024 * 1024, dispose: (t) => t.dispose() });
   }
 
   /** Ensure textured meshes for the current Selection; async, non-blocking. */
@@ -66,28 +73,28 @@ export class TileRenderer {
   private makeTexture(tile: Tile): THREE.Texture {
     const [ex, ey] = tile.dims;
     const rgba = new Uint8Array(ex * ey * 4);
-    // Element decides the colour mapping: a scalar Tile (synthetic) → greyscale; an RGB
-    // `vec3` Tile (the SpatialDataLoader's interleaved channels, ADR-0010) → colour. Data is
-    // lane-major float in [0,1]; the texture is RGBA8.
+    // Data is lane-major float in [0,1]. A scalar Tile (synthetic) → greyscale, opaque, for the
+    // plain material. A vec Tile (SpatialData) → RAW channel planes packed R,G,B,A (up to 4); the
+    // channel-composite material tints/windows/composites them, so this texture is *data*, not a
+    // display colour (NoColorSpace, and the material sets its own opacity).
     const lanes = tile.element.kind === "vec" ? tile.element.n : 1;
     const to8 = (v: number): number => Math.max(0, Math.min(255, Math.round(v * 255)));
     for (let i = 0; i < ex * ey; i++) {
-      if (lanes >= 3) {
-        rgba[i * 4] = to8(tile.data[i * lanes] ?? 0);
-        rgba[i * 4 + 1] = to8(tile.data[i * lanes + 1] ?? 0);
-        rgba[i * 4 + 2] = to8(tile.data[i * lanes + 2] ?? 0);
-      } else {
+      if (lanes === 1) {
         const g = to8(tile.data[i] ?? 0);
         rgba[i * 4] = g;
         rgba[i * 4 + 1] = g;
         rgba[i * 4 + 2] = g;
+        rgba[i * 4 + 3] = 255;
+      } else {
+        for (let c = 0; c < 3; c++) rgba[i * 4 + c] = c < lanes ? to8(tile.data[i * lanes + c] ?? 0) : 0;
+        rgba[i * 4 + 3] = lanes >= 4 ? to8(tile.data[i * lanes + 3] ?? 0) : 255;
       }
-      rgba[i * 4 + 3] = 255;
     }
     const tex = new THREE.DataTexture(rgba, ex, ey);
     tex.minFilter = THREE.LinearFilter;
     tex.magFilter = THREE.LinearFilter;
-    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.colorSpace = lanes === 1 ? THREE.SRGBColorSpace : THREE.NoColorSpace;
     tex.needsUpdate = true;
     return tex;
   }
@@ -104,7 +111,8 @@ export class TileRenderer {
     const geo = new THREE.BufferGeometry();
     geo.setAttribute("position", new THREE.Float32BufferAttribute([...c00, ...c10, ...c11, ...c00, ...c11, ...c01], 3));
     geo.setAttribute("uv", new THREE.Float32BufferAttribute([0, 0, 1, 0, 1, 1, 0, 0, 1, 1, 0, 1], 2));
-    const mesh = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ map: tex, side: THREE.DoubleSide }));
+    const material = this.makeMaterial ? this.makeMaterial(tex) : new THREE.MeshBasicMaterial({ map: tex, side: THREE.DoubleSide });
+    const mesh = new THREE.Mesh(geo, material);
     this.meshes.set(k, mesh);
     this.group.add(mesh);
   }

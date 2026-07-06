@@ -107,7 +107,7 @@ export class DualView {
     canvas: HTMLCanvasElement,
     insetEl: HTMLElement,
     renderer: WebGPURenderer,
-    source: { ms: Multiscale; loader: Loader },
+    source: { ms: Multiscale; loader: Loader; makeMaterial?: (tex: THREE.Texture) => THREE.Material },
     onStats?: (s: DecisionStats) => void,
     combined = false,
     naive = false,
@@ -163,7 +163,7 @@ export class DualView {
     bounds.layers.set(OVERLAY_LAYER);
     this.scene.add(bounds);
     if (this.isPlane) {
-      this.tiles = new TileRenderer(ms, this.loader);
+      this.tiles = new TileRenderer(ms, this.loader, { makeMaterial: source.makeMaterial });
       this.scene.add(this.tiles.group);
     } else if (naive) {
       // The pass-per-chunk baseline (no gizmo / depth-culling — a rendering-technique A/B).
