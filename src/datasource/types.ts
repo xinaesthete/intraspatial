@@ -54,7 +54,10 @@ export interface SelectedChunk {
   readonly id: ChunkId;
   /** Optical-axis depth of the chunk's nearest point (world units). */
   readonly nearestDepth: number;
-  /** Decoded (uncompressed) byte size of this chunk's samples. */
+  /** Decoded (uncompressed) byte size of this chunk's samples, at the field's dtype. NOT the
+   *  download size — a chunk's *compressed* size isn't known a-priori (no per-chunk size index in
+   *  the metadata). A conservative proxy for VRAM too: the render backend may store tiles at
+   *  lower precision (e.g. fp16 textures), so resident VRAM is typically smaller than this. */
   readonly approxBytes: number;
 }
 
@@ -62,7 +65,8 @@ export interface SelectedChunk {
  *  Names the chunks; does not fetch. */
 export interface Selection {
   readonly chunks: readonly SelectedChunk[];
-  /** Sum of `approxBytes` — the working-set estimate the Resource ceiling bounds. */
+  /** Sum of `approxBytes` — the decoded **working-set** estimate the Resource ceiling bounds
+   *  (not a fetch/download figure; see `SelectedChunk.approxBytes`). */
   readonly totalApproxBytes: number;
   /** Count of selected chunks per level (index = level), for the HUD. */
   readonly countByLevel: readonly number[];
