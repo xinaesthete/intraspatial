@@ -95,6 +95,21 @@ export class ChannelComposite {
   };
 }
 
+/** Minimal greyscale material for a single-channel (scalar) tile: reads the red channel and
+ *  shows it as grey — the default when no channel material is supplied (the synthetic path). Kept
+ *  here (not in tileRenderer) so the TSL friction stays in one place. */
+export function greyscaleMaterial(tex: THREE.Texture): THREE.Material {
+  const mat = new MeshBasicNodeMaterial();
+  mat.side = THREE.DoubleSide;
+  const build = Fn(() => {
+    const s = texture(tex);
+    return vec4(vec3(s.x), 1);
+  });
+  // biome-ignore lint/suspicious/noExplicitAny: TSL node output → colorNode (ADR-0009 §1 friction)
+  mat.colorNode = build() as any;
+  return mat;
+}
+
 // A default fluorescence palette (DAPI-blue first), used when omero carries no channel colours.
 const FLUOR_PALETTE: [number, number, number][] = [
   [0.2, 0.5, 1.0], // blue

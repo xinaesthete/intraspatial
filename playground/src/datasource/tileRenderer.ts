@@ -18,6 +18,21 @@ import {
   TileCache,
   type Vec3,
 } from "../../../src/datasource";
+import { greyscaleMaterial } from "./tileChannelMaterial";
+
+/** Lanes a tile carries (a scalar tile is one lane). */
+const tileLanes = (tile: Tile): number => (tile.element.kind === "vec" ? tile.element.n : 1);
+
+/** GPU texture format for `lanes` channel planes. WebGPU has no 3-channel texture, so 3 lanes
+ *  pack into RGBA (the 4th unused). `comps` is the stored components-per-texel. */
+function texFormat(lanes: number): { format: THREE.PixelFormat; comps: number } {
+  if (lanes <= 1) return { format: THREE.RedFormat, comps: 1 };
+  if (lanes === 2) return { format: THREE.RGFormat, comps: 2 };
+  return { format: THREE.RGBAFormat, comps: 4 };
+}
+
+/** Decoded (uncompressed) VRAM bytes of a tile's texture — half-float (2 B) × components. */
+const textureBytes = (tile: Tile): number => tile.dims[0] * tile.dims[1] * texFormat(tileLanes(tile)).comps * 2;
 
 export class TileRenderer {
   readonly group = new THREE.Group();
@@ -69,7 +84,7 @@ export class TileRenderer {
     try {
       const tile = await this.loader.getChunk(id);
       const tex = this.makeTexture(tile);
-      this.cache.set(k, tex, tile.dims[0] * tile.dims[1] * 4);
+      this.cache.set(k, tex, textureBytes(tile));
       if (this.desired.has(k) && !this.meshes.has(k)) this.addMesh(k, id, tex);
     } finally {
       this.loading.delete(k);
@@ -93,29 +108,25 @@ export class TileRenderer {
 
   private makeTexture(tile: Tile): THREE.Texture {
     const [ex, ey] = tile.dims;
-    const rgba = new Uint8Array(ex * ey * 4);
-    // Data is lane-major float in [0,1]. A scalar Tile (synthetic) → greyscale, opaque, for the
-    // plain material. A vec Tile (SpatialData) → RAW channel planes packed R,G,B,A (up to 4); the
-    // channel-composite material tints/windows/composites them, so this texture is *data*, not a
-    // display colour (NoColorSpace, and the material sets its own opacity).
-    const lanes = tile.element.kind === "vec" ? tile.element.n : 1;
-    const to8 = (v: number): number => Math.max(0, Math.min(255, Math.round(v * 255)));
+    const lanes = tileLanes(tile);
+    const { format, comps } = texFormat(lanes);
+    // Store the decoded samples as HALF-FLOAT, not quantised to 8-bit: 8-bit banded the narrow
+    // uint16 fluorescence window. Planes are packed into exactly `comps` channels (no greyscale
+    // replication) — a scalar tile is one Red channel, the material/greyscale shader reads .r.
+    // (Precision is fixed at fp16 for now; making it configurable — fp32 exact ↔ 8-bit for VRAM —
+    // is a future VRAM/quality knob.) This texture is raw DATA (NoColorSpace); the material colours it.
+    const half = new Uint16Array(ex * ey * comps);
+    const toHalf = THREE.DataUtils.toHalfFloat;
     for (let i = 0; i < ex * ey; i++) {
-      if (lanes === 1) {
-        const g = to8(tile.data[i] ?? 0);
-        rgba[i * 4] = g;
-        rgba[i * 4 + 1] = g;
-        rgba[i * 4 + 2] = g;
-        rgba[i * 4 + 3] = 255;
-      } else {
-        for (let c = 0; c < 3; c++) rgba[i * 4 + c] = c < lanes ? to8(tile.data[i * lanes + c] ?? 0) : 0;
-        rgba[i * 4 + 3] = lanes >= 4 ? to8(tile.data[i * lanes + 3] ?? 0) : 255;
-      }
+      for (let c = 0; c < comps; c++) half[i * comps + c] = toHalf(c < lanes ? (tile.data[i * lanes + c] ?? 0) : 0);
     }
-    const tex = new THREE.DataTexture(rgba, ex, ey);
+    const tex = new THREE.DataTexture(half, ex, ey, format, THREE.HalfFloatType);
+    // nb in viv and elsewhere there is an assumption that Nearest is more appropriate;
+    // I disagree; I don't think aliasing is a more faithful representation of a signal...
+    // but ultimately, this should be tweakable.
     tex.minFilter = THREE.LinearFilter;
     tex.magFilter = THREE.LinearFilter;
-    tex.colorSpace = lanes === 1 ? THREE.SRGBColorSpace : THREE.NoColorSpace;
+    tex.colorSpace = THREE.NoColorSpace;
     tex.needsUpdate = true;
     return tex;
   }
@@ -132,7 +143,7 @@ export class TileRenderer {
     const geo = new THREE.BufferGeometry();
     geo.setAttribute("position", new THREE.Float32BufferAttribute([...c00, ...c10, ...c11, ...c00, ...c11, ...c01], 3));
     geo.setAttribute("uv", new THREE.Float32BufferAttribute([0, 0, 1, 0, 1, 1, 0, 0, 1, 1, 0, 1], 2));
-    const material = this.makeMaterial ? this.makeMaterial(tex) : new THREE.MeshBasicMaterial({ map: tex, side: THREE.DoubleSide });
+    const material = this.makeMaterial ? this.makeMaterial(tex) : greyscaleMaterial(tex);
     // Coplanar tiles of different levels overlap while a fallback is retained; bias coarser levels
     // back in depth (view-independent) so the finer tile always wins — no z-fighting, finer on top.
     material.polygonOffset = true;
