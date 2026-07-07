@@ -14,6 +14,17 @@ sub-IR. Numeric literals carry `ParamSpec` metadata so the Mutator breeds them.
 
 Full rationale and layer design: [`../render-traits-and-expression-dsl.md`](../render-traits-and-expression-dsl.md).
 
+### Amendment (2026-07-07, via ADR-0010) — GPU backend is TGSL, not TSL
+
+This ADR names the two compile backends as **TSL (GPU)** and **CPU JS**. The GPU backend is
+corrected to **TGSL / TypeGPU** (`"use gpu"` kernels, ADR-0003). At the time of writing, the
+near-term render work was hand-authored TSL on the three.js side, so TSL was named as the GPU
+target; since then ADR-0009 has demoted three.js/TSL to a thin presentation shell, and the whole
+`src/` core is TGSL. TSL survives only as presentation mirrors in `docs-site/src/lib/*Tsl.ts` and
+is being retired. Read every "IR → TSL" reference below as **IR → TGSL**. ADR-0010 (procedural
+geometry-ops) is the first concrete consumer of this IR and builds its GPU backend as TGSL from
+the start.
+
 ## Context & provenance
 
 The user asked for render traits mappable from sim params "or indeed somewhat arbitrary expressions",

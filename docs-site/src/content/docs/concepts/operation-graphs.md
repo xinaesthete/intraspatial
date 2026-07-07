@@ -1,6 +1,6 @@
 ---
 title: Operation graphs
-description: A lazy-pull DAG runtime that chains GPU primitives without round-tripping to the CPU between stages.
+description: A lazy-pull DAG runtime that chains GPU primitives into one dependency-ordered, memoised computation.
 ---
 
 The primitives compose. Today a pipeline like *splat → window → z-score* runs each
@@ -34,9 +34,9 @@ validate-or-fall-back-to-CPU.
 - **Tier 1** wraps an existing `*Gpu` primitive as-is: it downloads its inputs, runs
   the legacy call, and uploads the result. Every primitive becomes a node immediately
   — correct, but it still round-trips on interior edges.
-- **Tier 2** keeps the buffers resident on the GPU across a hot edge, so only the
-  sources upload and only the pulled sink downloads. Promoted per pipeline, with the
-  Tier-1 path kept as the bit-exact golden reference.
+- **Tier 2** *(planned)* will keep the buffers resident on the GPU across a hot edge, so
+  only the sources upload and only the pulled sink downloads. To be promoted per pipeline,
+  with the Tier-1 path kept as the bit-exact golden reference.
 
 ## Authoring
 
