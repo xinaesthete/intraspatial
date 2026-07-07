@@ -6,7 +6,7 @@ import Stats from "three/examples/jsm/libs/stats.module.js";
 import { WebGPURenderer } from "three/webgpu";
 import { type DecisionStats, DualView } from "./datasource/dualView";
 import { levelColor } from "./datasource/overlays";
-import { openSpatialDataImage, type SpatialDataImage } from "./datasource/spatialDataLoader";
+import { openSpatialData, type SpatialDataHandle, type SpatialDataImage } from "./datasource/spatialDataLoader";
 import { type BlendMode, ChannelComposite, type ChannelSettings } from "./datasource/tileChannelMaterial";
 
 const DEFAULT_STORE = "http://localhost:8080/xenium_2.q0.001.htj2k.index-permutations.zarr";
@@ -65,6 +65,7 @@ let view: DualView | null = null;
 let renderer: WebGPURenderer | null = null;
 let composite: ChannelComposite | null = null;
 let channels: ChannelSettings[] = [];
+let handle: SpatialDataHandle | null = null;
 const applyChannels = (): void => composite?.update(channels, blendSel.value as BlendMode);
 
 async function getRenderer(): Promise<WebGPURenderer | null> {
@@ -84,7 +85,52 @@ async function getRenderer(): Promise<WebGPURenderer | null> {
   return r;
 }
 
-async function mount(): Promise<void> {
+/** Populate the image dropdown from the open store, keeping the current pick if it survives. */
+function populateImageOptions(names: string[]): void {
+  const prev = elementSel.value;
+  elementSel.replaceChildren();
+  for (const n of names) {
+    const o = document.createElement("option");
+    o.value = n;
+    o.textContent = n;
+    elementSel.append(o);
+  }
+  if (names.includes(prev)) elementSel.value = prev;
+}
+
+/** Open (or re-open) the store at the URL, list its images into the dropdown, and mount one.
+ *  Called on load and whenever the store URL changes. */
+async function reopenStore(): Promise<void> {
+  errEl.textContent = "";
+  labelEl.textContent = "opening store…";
+  handle = null;
+  try {
+    handle = await openSpatialData(storeInput.value.trim() || DEFAULT_STORE);
+  } catch (e) {
+    view?.dispose();
+    view = null;
+    elementSel.replaceChildren();
+    errEl.textContent = `Open failed:\n${e instanceof Error ? e.message : String(e)}`;
+    labelEl.textContent = "—";
+    // eslint-disable-next-line no-console
+    console.error(e);
+    return;
+  }
+  if (handle.imageNames.length === 0) {
+    view?.dispose();
+    view = null;
+    elementSel.replaceChildren();
+    errEl.textContent = "No image elements found — is this a SpatialData store?";
+    labelEl.textContent = "—";
+    return;
+  }
+  populateImageOptions(handle.imageNames);
+  await mountImage();
+}
+
+/** Build and mount the currently-selected image, reusing the open store handle. */
+async function mountImage(): Promise<void> {
+  if (!handle) return;
   view?.dispose();
   errEl.textContent = "";
   labelEl.textContent = "loading…";
@@ -92,9 +138,9 @@ async function mount(): Promise<void> {
   if (!r) return;
   let src: SpatialDataImage;
   try {
-    src = await openSpatialDataImage(storeInput.value.trim() || DEFAULT_STORE, elementSel.value);
+    src = await handle.image(elementSel.value);
   } catch (e) {
-    errEl.textContent = `Open failed:\n${e instanceof Error ? e.message : String(e)}`;
+    errEl.textContent = `Load failed:\n${e instanceof Error ? e.message : String(e)}`;
     labelEl.textContent = "—";
     // eslint-disable-next-line no-console
     console.error(e);
@@ -200,8 +246,8 @@ qSlider.addEventListener("input", () => {
   view?.setQ(Number(qSlider.value));
 });
 blendSel.addEventListener("change", applyChannels);
-elementSel.addEventListener("change", () => void mount());
-storeInput.addEventListener("change", () => void mount());
+elementSel.addEventListener("change", () => void mountImage()); // reuse the open store, no re-read
+storeInput.addEventListener("change", () => void reopenStore()); // new URL → re-list images
 window.addEventListener("resize", () => view?.resize(canvas.clientWidth, canvas.clientHeight));
 
-void mount();
+void reopenStore();

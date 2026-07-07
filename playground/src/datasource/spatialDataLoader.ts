@@ -99,28 +99,53 @@ function axisAlignedPlacement(voxelDims0: readonly [number, number, number], wor
   };
 }
 
+export interface SpatialDataHandle {
+  /** Names of the image elements in the store — the demo's dropdown source. */
+  readonly imageNames: string[];
+  /** Build a renderable source for one image element, reusing the already-open store. */
+  image(elementName: string, opts?: { worldSpan?: number; maxChannels?: number }): Promise<SpatialDataImage>;
+}
+
 /**
- * Open one image element of a SpatialData store and expose it as a `{ ms, loader }` source.
- * `url` is the store root (a FetchStore URL); `elementName` selects `sdata.images[elementName]`.
+ * Open a SpatialData store (metadata only — `readZarr` parses zarr.json/attrs, no chunk bytes)
+ * and list its image elements. Reuse the handle to build individual images without re-reading
+ * the store. Throws if the URL is not a readable zarr / SpatialData object.
  */
+export async function openSpatialData(url: string): Promise<SpatialDataHandle> {
+  await ensureCodecs();
+  const core = await import("@spatialdata/core");
+  const zx = await import("zarrextra");
+  const sdata = await core.readZarr(url);
+  const images = (sdata.images ?? {}) as Record<string, { getStore(): unknown; attrs?: unknown }>;
+  const imageNames = Object.keys(images);
+  return {
+    imageNames,
+    image: (elementName, opts = {}) => buildImage(zx, images[elementName], elementName, imageNames, opts),
+  };
+}
+
+/** Convenience: open a store and build one image in a single call. */
 export async function openSpatialDataImage(
   url: string,
   elementName: string,
   opts: { worldSpan?: number; maxChannels?: number } = {},
 ): Promise<SpatialDataImage> {
-  await ensureCodecs();
-  const core = await import("@spatialdata/core");
-  const zx = await import("zarrextra");
+  return (await openSpatialData(url)).image(elementName, opts);
+}
 
-  // Metadata only: readZarr parses zarr.json/attrs; no chunk bytes are fetched here.
-  const sdata = await core.readZarr(url);
-  const img = sdata.images?.[elementName];
+async function buildImage(
+  zx: typeof import("zarrextra"),
+  img: { getStore(): unknown; attrs?: unknown } | undefined,
+  elementName: string,
+  imageNames: string[],
+  opts: { worldSpan?: number; maxChannels?: number },
+): Promise<SpatialDataImage> {
   if (!img) {
-    const have = Object.keys(sdata.images ?? {}).join(", ") || "(none)";
+    const have = imageNames.join(", ") || "(none)";
     throw new Error(`SpatialDataLoader: no image '${elementName}' in store; available: ${have}`);
   }
 
-  const sources = (await zx.loadOmeZarrMultiscalesFromStore(img.getStore())) as unknown as PixelSource[];
+  const sources = (await zx.loadOmeZarrMultiscalesFromStore(img.getStore() as never)) as unknown as PixelSource[];
   const base = sources[0];
   if (!base) throw new Error(`SpatialDataLoader: image '${elementName}' has no multiscale levels`);
   const labels = base.labels;
