@@ -47,12 +47,16 @@ The demos are a means to an end: making spatial/topological structure *queryable
 
 ## In-GPU operation graphs
 
-The next structural stage is chaining primitives into a **graph of GPU operations**
-that share pooled resources without round-tripping to the CPU. The hard-won lesson —
-that every sync bug we have hit is one mutable resource read by a consumer not ordered
-after its writer — is written up as a design note: `docs/gpu-resource-sync.md` (a DAG of
-ops over resources where ordering, barriers, pooling and download points are *derived*,
-not assumed). Status: 📋 (model defined; the `GpuField` + scheduler is the build).
+The **operation-graph runtime** (`src/gpu/graph/`) chains primitives into a
+dependency-ordered **graph of GPU operations** — demand-pulled, with per-node
+memoisation and feedback/simulation loops. That runtime is built and tested; see
+[Operation graphs](/concepts/operation-graphs/). What remains is **Tier-2**: keeping
+buffers resident across interior edges so a chain shares pooled resources *without
+round-tripping to the CPU between stages* — today's **Tier-1** nodes round-trip on
+interior edges (correct, and kept as the bit-exact golden reference). The sequencing
+rules are the five invariants in the `docs/gpu-resource-sync.md` design note (every sync
+bug we have hit is one mutable resource read by a consumer not ordered after its writer).
+Status: ✅ runtime + Tier-1 ops + feedback/sim · 📋 Tier-2 resident buffers.
 
 ## Datasource & volume rendering
 

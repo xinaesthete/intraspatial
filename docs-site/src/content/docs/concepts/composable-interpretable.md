@@ -19,9 +19,43 @@ const hot     = await getisOrdGpu(density.data, width, height, { radius: 2 });
 const hot2    = await pointHotspotsGpu(xs, ys, { width, height, sigma, radius: 2 });
 ```
 
-Composition currently happens at the API level (each call uploads, computes, reads
-back). A future **keep-on-GPU** mode will let a whole chain run without round-trips —
-the handle type is planned, the primitives are already shaped for it.
+This eager style is the simplest form of composition, and it has a cost worth naming:
+**each `await` materialises to the CPU** (upload, compute, read back), so a chain
+round-trips the data every step. That's fine for a one-shot analysis; it is exactly
+what the op-graph exists to avoid for longer chains.
+
+### Build lazily, evaluate once
+
+The direction — already the model for the in-GPU op-graph and for the procedural
+geometry-ops — separates *describing* a computation from *running* it. You build
+a chain **synchronously and purely** (no `await`, no promises — building a description
+does no I/O), and cross into async **exactly once**, at the point you demand a result:
+
+```ts
+const g = horn().radius(ramp(50)).bend(ramp(deg(30))).twist(ramp(deg(360)));  // pure, sync — nothing has run
+const mesh = await g.toMesh(device);                                          // the single evaluation boundary
+```
+
+A built chain is a first-class value: inspectable, serialisable, and breedable —
+none of which an in-flight promise allows. When you pull it, you choose the **form**:
+
+- **Lazy** — the unevaluated handle itself. No work done yet; hand it to the next op.
+- **Concrete GPU buffer** — pull to a resident WebGPU / TypeGPU buffer that *stays on
+  device*, feeding rendering or further ops with no CPU round-trip.
+- **Plain typed array** — materialise to the CPU (e.g. positions/normals/indices) with
+  an explicit shape/element/basis schema — the portable, interoperable form.
+
+**The render path is designed to stay entirely on the GPU.** Drawing uses the on-device
+forms — a resident buffer, or the lazy handle lowered straight into a render op — so a whole
+`generate → transform → render` chain runs GPU-resident with no round-trip through a CPU
+mesh. The plain typed array is a portability / interop escape hatch (FAIR export, deck.gl
+/ SpatialData.js handoff), **not** a step on the render path. (Today the runtime is Tier-1 —
+ops round-trip on interior edges; the resident-buffer path and render op are the next build,
+see [Operation graphs](/concepts/operation-graphs/).)
+
+The eager `…Gpu()` calls above are the special case of "pull to a plain typed array at
+every step". Same primitives; the lazy build just lets you defer *which* form you want,
+and skip the round-trips in between.
 
 The deepest form of composition is that the two fronts share operators. A
 **window** is a convolution kernel on the image side and a density/membership kernel
