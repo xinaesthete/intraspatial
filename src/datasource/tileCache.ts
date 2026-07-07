@@ -3,6 +3,7 @@
 // while a cluster/analysis path caches decoded Tiles — same LRU, keyed by chunk
 // identity (not the graph memo), bounded by the Resource ceiling.
 
+import type { MemoryReporting } from "../gpu/graph/memory";
 import type { ChunkId, Loader, Selection, Tile } from "./types";
 
 /** Stable identity of a chunk — the TileCache key. */
@@ -22,7 +23,7 @@ interface Entry<V> {
  * `set` evicts the least-recent while over the ceiling. `dispose` frees an evicted
  * payload (e.g. a GPU texture). Deterministic — pure memoisation, no effect on values.
  */
-export class TileCache<V> {
+export class TileCache<V> implements MemoryReporting {
   private map = new Map<string, Entry<V>>();
   private total = 0;
   private readonly maxBytes: number;
@@ -33,6 +34,11 @@ export class TileCache<V> {
     this.onEvict = opts.dispose;
   }
 
+  /** Resident bytes held (MemoryReporting) — the actual working set, since callers `set` each
+   *  entry's real payload size (the render backend's fp16 texture bytes, a decode's Tile bytes). */
+  get byteLength(): number {
+    return this.total;
+  }
   get bytes(): number {
     return this.total;
   }

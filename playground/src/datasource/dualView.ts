@@ -35,7 +35,10 @@ import { VolumeRenderer } from "./volumeRenderer";
 export interface DecisionStats {
   q: number;
   chunkCount: number;
+  /** Selected working-set estimate (decoded sample bytes; ADR-0008 Resource ceiling). */
   totalBytes: number;
+  /** Actual resident VRAM held by the render backend (MemoryReporting) — the real footprint. */
+  residentBytes: number;
   countByLevel: readonly number[];
 }
 
@@ -95,6 +98,7 @@ export class DualView {
   private showWireframe = true;
   private dirty = true;
   private lastOverlayRefresh = 0; // throttle decision-view recolour while chunks stream in
+  private lastResident = -1; // watch resident VRAM so the memory readout stays live as tiles stream
   private wasLoading = false; // to force one final recolour when the queue drains
   private decisionVisible = true; // inset shown? when collapsed, skip overlay build + inset pass
   private disposed = false;
@@ -400,16 +404,34 @@ export class DualView {
     return { x: this.width - INSET_W - INSET_M, y: this.height - INSET_H - INSET_M, w: INSET_W, h: INSET_H };
   }
 
+  /** Actual resident VRAM of the active render backend (MemoryReporting) — real, not estimated. */
+  private residentBytes(): number {
+    return (this.tiles?.byteLength ?? 0) + (this.volume?.byteLength ?? 0);
+  }
+
   async start(): Promise<void> {
     this.renderer.setAnimationLoop(() => {
       if (this.disposed) return;
       this.frameMonitor?.begin();
       this.appControls.update();
       this.decisionControls.update();
+      // Refresh the HUD when resident VRAM changes (tiles/bricks stream in or evict between camera
+      // moves) — watching the byte count itself is robust to loaders of any speed.
+      const rb = this.residentBytes();
+      if (rb !== this.lastResident) {
+        this.lastResident = rb;
+        this.dirty = true;
+      }
       if (this.dirty) {
         this.dirty = false;
         const sel = this.rebuild();
-        this.onStats?.({ q: this.q, chunkCount: sel.chunks.length, totalBytes: sel.totalApproxBytes, countByLevel: sel.countByLevel });
+        this.onStats?.({
+          q: this.q,
+          chunkCount: sel.chunks.length,
+          totalBytes: sel.totalApproxBytes,
+          residentBytes: this.residentBytes(),
+          countByLevel: sel.countByLevel,
+        });
       }
       this.animateLoadingOverlays();
       // Main pass: app camera, full canvas, data only (layer 0).

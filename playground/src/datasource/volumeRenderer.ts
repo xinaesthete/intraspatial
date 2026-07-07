@@ -39,7 +39,18 @@ import {
   viewZToPerspectiveDepth,
 } from "three/tsl";
 import { MeshBasicNodeMaterial } from "three/webgpu";
-import { type Affine3, type ChunkId, chunkCounts, chunkKey, type Multiscale, type Selection } from "../../../src/datasource";
+import {
+  type Affine3,
+  type ChunkId,
+  chunkCounts,
+  chunkKey,
+  type MemoryReporting,
+  type Multiscale,
+  type Selection,
+} from "../../../src/datasource";
+
+const bufferBytes = (t: THREE.Data3DTexture): number => (t.image.data as ArrayBufferView | undefined)?.byteLength ?? 0;
+
 import type { BrickSource } from "./brickSource";
 import { LoadScheduler, type LoadState } from "./loadScheduler";
 
@@ -56,7 +67,7 @@ interface Resident {
   use: number;
 }
 
-export class VolumeRenderer {
+export class VolumeRenderer implements MemoryReporting {
   readonly group = new THREE.Group();
   private renderer: WebGPURendererLike;
   private ms: Multiscale;
@@ -206,6 +217,14 @@ export class VolumeRenderer {
   /** Queued (pending) + in-flight (loading) counts, for the HUD. */
   loadCounts(): { pending: number; loading: number } {
     return { pending: this.scheduler.pendingCount, loading: this.scheduler.loadingCount };
+  }
+
+  /** Resident VRAM (MemoryReporting): the pre-allocated brick atlas + page table, plus the
+   *  per-chunk brick textures still held (each is also copied into an atlas slot). */
+  get byteLength(): number {
+    let n = bufferBytes(this.atlas) + this.pageData.byteLength;
+    for (const r of this.resident.values()) n += bufferBytes(r.brick);
+    return n;
   }
 
   private async load(id: ChunkId): Promise<void> {

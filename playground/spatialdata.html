@@ -86,6 +86,7 @@
       <div id="channelpanel"></div>
       <div id="hud">
         <div title="Estimated decoded size of the selected chunks — a conservative upper bound on resident VRAM (textures are fp16, so actual VRAM is lower). NOT the download size: compressed HTJ2K chunk sizes aren't known a-priori."><span id="bytes" class="big">–</span> <span class="muted">working set (est.)</span></div>
+        <div class="muted" title="Actual GPU texture VRAM currently held (MemoryReporting), including retained fallback tiles."><span id="resident">–</span> resident (VRAM)</div>
         <div class="muted"><span id="chunks">–</span> chunks selected</div>
         <div id="levels"></div>
         <div id="err"></div>

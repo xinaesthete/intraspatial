@@ -11,6 +11,7 @@ import {
   chunkArrayBox,
   chunkKey,
   type Loader,
+  type MemoryReporting,
   type Multiscale,
   type SelectedChunk,
   type Selection,
@@ -34,7 +35,7 @@ function texFormat(lanes: number): { format: THREE.PixelFormat; comps: number } 
 /** Decoded (uncompressed) VRAM bytes of a tile's texture — half-float (2 B) × components. */
 const textureBytes = (tile: Tile): number => tile.dims[0] * tile.dims[1] * texFormat(tileLanes(tile)).comps * 2;
 
-export class TileRenderer {
+export class TileRenderer implements MemoryReporting {
   readonly group = new THREE.Group();
   private cache: TileCache<THREE.Texture>;
   private meshes = new Map<string, THREE.Mesh>();
@@ -56,6 +57,16 @@ export class TileRenderer {
   ) {
     this.makeMaterial = opts.makeMaterial;
     this.cache = new TileCache<THREE.Texture>({ maxBytes: opts.maxBytes ?? 256 * 1024 * 1024, dispose: (t) => t.dispose() });
+  }
+
+  /** Resident texture VRAM (MemoryReporting) — the actual working set held on the GPU. */
+  get byteLength(): number {
+    return this.cache.byteLength;
+  }
+  /** Chunks currently being fetched/decoded — lets the host refresh the memory readout as
+   *  tiles stream in (resident bytes grow between camera moves). */
+  get loadingCount(): number {
+    return this.loading.size;
   }
 
   /** Ensure textured meshes for the current Selection; async, non-blocking. Rather than drop
