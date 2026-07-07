@@ -7,10 +7,12 @@
 import * as THREE from "three";
 import {
   applyAffine,
+  type ChunkId,
   chunkArrayBox,
   chunkKey,
   type Loader,
   type Multiscale,
+  type SelectedChunk,
   type Selection,
   type Tile,
   TileCache,
@@ -21,8 +23,10 @@ export class TileRenderer {
   readonly group = new THREE.Group();
   private cache: TileCache<THREE.Texture>;
   private meshes = new Map<string, THREE.Mesh>();
+  private meshIds = new Map<string, ChunkId>(); // chunk id per resident mesh (for coverage pruning)
   private loading = new Set<string>();
   private desired = new Set<string>();
+  private selChunks: readonly SelectedChunk[] = []; // the current Selection, for coverage pruning
 
   /** Optional material factory: given a tile texture, return the mesh material. When absent,
    *  a plain greyscale/RGB `MeshBasicMaterial` (synthetic path). The SpatialData path passes the
@@ -39,12 +43,13 @@ export class TileRenderer {
     this.cache = new TileCache<THREE.Texture>({ maxBytes: opts.maxBytes ?? 256 * 1024 * 1024, dispose: (t) => t.dispose() });
   }
 
-  /** Ensure textured meshes for the current Selection; async, non-blocking. */
+  /** Ensure textured meshes for the current Selection; async, non-blocking. Rather than drop
+   *  out-of-selection tiles immediately (which flashes the dark background while the new tiles
+   *  decode), we KEEP them as a fallback and only prune one once every newly-desired tile
+   *  covering its region has loaded — so a moving camera shows coarser detail, never holes. */
   update(selection: Selection): void {
+    this.selChunks = selection.chunks;
     this.desired = new Set(selection.chunks.map((c) => chunkKey(c.id)));
-    for (const k of [...this.meshes.keys()]) {
-      if (!this.desired.has(k)) this.removeMesh(k);
-    }
     for (const sc of selection.chunks) {
       const k = chunkKey(sc.id);
       if (this.meshes.has(k)) continue;
@@ -57,6 +62,7 @@ export class TileRenderer {
       this.loading.add(k);
       void this.load(k, sc.id);
     }
+    this.prune();
   }
 
   private async load(k: string, id: Tile["id"]): Promise<void> {
@@ -67,6 +73,21 @@ export class TileRenderer {
       if (this.desired.has(k) && !this.meshes.has(k)) this.addMesh(k, id, tex);
     } finally {
       this.loading.delete(k);
+      this.prune(); // a freshly-resident tile may now cover (and release) a fallback
+    }
+  }
+
+  /** Drop a retained fallback tile once no still-loading desired tile overlaps its region — i.e.
+   *  it is either fully covered by resident desired tiles or entirely out of the new selection. */
+  private prune(): void {
+    for (const [k, id] of [...this.meshIds]) {
+      if (this.desired.has(k)) continue; // desired tiles are never fallbacks
+      const box = chunkArrayBox(this.ms, id);
+      const stillNeeded = this.selChunks.some((sc) => {
+        if (this.meshes.has(chunkKey(sc.id))) return false; // that desired tile is already up
+        return overlaps2D(box, chunkArrayBox(this.ms, sc.id));
+      });
+      if (!stillNeeded) this.removeMesh(k);
     }
   }
 
@@ -112,8 +133,14 @@ export class TileRenderer {
     geo.setAttribute("position", new THREE.Float32BufferAttribute([...c00, ...c10, ...c11, ...c00, ...c11, ...c01], 3));
     geo.setAttribute("uv", new THREE.Float32BufferAttribute([0, 0, 1, 0, 1, 1, 0, 0, 1, 1, 0, 1], 2));
     const material = this.makeMaterial ? this.makeMaterial(tex) : new THREE.MeshBasicMaterial({ map: tex, side: THREE.DoubleSide });
+    // Coplanar tiles of different levels overlap while a fallback is retained; bias coarser levels
+    // back in depth (view-independent) so the finer tile always wins — no z-fighting, finer on top.
+    material.polygonOffset = true;
+    material.polygonOffsetFactor = id.level;
+    material.polygonOffsetUnits = id.level * 4;
     const mesh = new THREE.Mesh(geo, material);
     this.meshes.set(k, mesh);
+    this.meshIds.set(k, id);
     this.group.add(mesh);
   }
 
@@ -129,10 +156,16 @@ export class TileRenderer {
       });
     else m.dispose();
     this.meshes.delete(k);
+    this.meshIds.delete(k);
   }
 
   dispose(): void {
     for (const k of [...this.meshes.keys()]) this.removeMesh(k);
     this.cache.clear();
   }
+}
+
+/** Do two array-space chunk boxes overlap in the plane (x,y)? Touching edges don't count. */
+function overlaps2D(a: [Vec3, Vec3], b: [Vec3, Vec3]): boolean {
+  return a[0][0] < b[1][0] && a[1][0] > b[0][0] && a[0][1] < b[1][1] && a[1][1] > b[0][1];
 }
