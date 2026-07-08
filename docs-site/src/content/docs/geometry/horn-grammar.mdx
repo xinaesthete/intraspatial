@@ -27,7 +27,7 @@ grid: each of the nine cells is a horn, you select parents and breed a new
 generation, and the grid eases between genotypes with the toolbox's own one-pole
 trait-damping.
 
-**[▶ Open the horn Mutator](/horn-mutator/index.html)** — a self-contained interactive page (opens in this tab; use your browser's back button to return).
+**[▶ Open the horn Mutator](/horn-mutator/)** — a full-page interactive demo (opens in this tab; use your browser's back button to return).
 
 - **Drag** anywhere to orbit all nine cells; **scroll** to zoom.
 - **Click** a cell to select it as the parent; **⇧-click** to add more parents.
@@ -37,10 +37,13 @@ trait-damping.
   read the equivalent `horn(…)` chain.
 
 :::note
-The demo runs the real evaluation math (a faithful port of the library's CPU
-golden, `src/geometry/swept.ts`) and the real Mutator operators
-(`src/evo/mutator.ts`) in one self-contained page. Rendering is WebGL for
-portability; in the library the same IR also lowers to a TypeGPU/WGSL kernel.
-This is a first-slice capability — bend/twist/scale over one swept profile;
-structural ops (branching, stacking, recursion) are designed-for and not yet built.
+The demo imports the library directly and renders on **WebGPU** — each cell's horn
+is evaluated by the codegen'd swept **GPU kernel** (`createSweptGpu`) into resident
+buffers the render pass binds directly, with no CPU tessellation. Because the kernel
+reads gene values from a uniform buffer (structure baked, values as data), all nine
+cells share one pipeline and morph smoothly. Breeding is `breed` over a `TraitSpace`
+from `src/evo`; the easing is the library's `OnePole` trait-damping. It needs WebGPU
+and fails gracefully without it. This is a first-slice capability — bend/twist/scale
+over one swept profile; structural ops (branching, stacking, recursion) are
+designed-for and not yet built.
 :::
