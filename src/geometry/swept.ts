@@ -35,6 +35,8 @@ import {
   wgslExprUniform,
   wgslFloat,
 } from "./expr";
+import { IDENTITY } from "./placement";
+import { type BranchOptions, type StackOptions, Structured } from "./structured";
 import { signPow, type Vec3 } from "./superellipsoid";
 
 // ── The Transform-stack ───────────────────────────────────────────────────────────────
@@ -147,29 +149,30 @@ export class Swept {
   readonly profileRadius: Expr;
   readonly exponent: number;
   readonly length: number;
-  readonly stack: readonly Transform[];
+  /** The Transform-stack: the ordered `bend`/`twist`/`scale` transforms applied along the sweep. */
+  readonly transforms: readonly Transform[];
   readonly angleUnit: AngleUnit;
 
   constructor(init: {
     profileRadius: Expr;
     exponent: number;
     length: number;
-    stack: readonly Transform[];
+    transforms: readonly Transform[];
     angleUnit: AngleUnit;
   }) {
     this.profileRadius = init.profileRadius;
     this.exponent = init.exponent;
     this.length = init.length;
-    this.stack = init.stack;
+    this.transforms = init.transforms;
     this.angleUnit = init.angleUnit;
   }
 
-  private with(patch: Partial<{ profileRadius: Expr; stack: readonly Transform[] }>): Swept {
+  private with(patch: Partial<{ profileRadius: Expr; transforms: readonly Transform[] }>): Swept {
     return new Swept({
       profileRadius: patch.profileRadius ?? this.profileRadius,
       exponent: this.exponent,
       length: this.length,
-      stack: patch.stack ?? this.stack,
+      transforms: patch.transforms ?? this.transforms,
       angleUnit: this.angleUnit,
     });
   }
@@ -184,7 +187,7 @@ export class Swept {
   }
 
   private push(t: Transform): Swept {
-    return this.with({ stack: [...this.stack, t] });
+    return this.with({ transforms: [...this.transforms, t] });
   }
 
   /** Set the profile radius as an `{s, θ}`-expression (a bare number is a constant). */
@@ -207,11 +210,22 @@ export class Swept {
     return this.push({ kind: "scale", factor: toExpr(f) });
   }
 
+  /** Structural op: stack `count` copies of this horn up the sweep axis (a tower). Returns a
+   *  {@link Structured} geometry — the horn becomes an instanced leaf. */
+  stack(count: number, opts?: StackOptions): Structured {
+    return new Structured(this, [IDENTITY], this.angleUnit).stack(count, opts);
+  }
+
+  /** Structural op: branch this horn into a `count`-fold whorl splayed around the axis. */
+  branch(count: number, opts?: BranchOptions): Structured {
+    return new Structured(this, [IDENTITY], this.angleUnit).branch(count, opts);
+  }
+
   /** The breeding surface: every `ParamSpec` gene carried by this geometry's expressions. */
   specs(): ParamSpec[] {
     const out: ParamSpec[] = [];
     collectSpecs(this.profileRadius, out);
-    for (const t of this.stack) collectSpecs(t.kind === "scale" ? t.factor : t.angle, out);
+    for (const t of this.transforms) collectSpecs(t.kind === "scale" ? t.factor : t.angle, out);
     return out;
   }
 
@@ -225,7 +239,7 @@ export class Swept {
     collectConsts(this.profileRadius, out);
     out.push(this.exponent);
     out.push(this.length);
-    for (const t of this.stack) collectConsts(t.kind === "scale" ? t.factor : t.angle, out);
+    for (const t of this.transforms) collectConsts(t.kind === "scale" ? t.factor : t.angle, out);
     return Float32Array.from(out);
   }
 
@@ -239,7 +253,7 @@ export class Swept {
   /** The pointwise closed-form position at `(s, θ)` — profile placement then the stack in order. */
   position(s: number, theta: number): Vec3 {
     let p = this.base(s, theta);
-    for (const t of this.stack) p = applyTransform(t, s, theta, p);
+    for (const t of this.transforms) p = applyTransform(t, s, theta, p);
     return p;
   }
 
@@ -363,7 +377,7 @@ export function catalogue(opts: { angleUnit?: AngleUnit } = {}): Catalogue {
         profileRadius: toExpr(config.radius ?? DEFAULT_RADIUS),
         exponent: config.exponent ?? DEFAULT_EXPONENT,
         length: config.length ?? DEFAULT_LENGTH,
-        stack: [],
+        transforms: [],
         angleUnit: config.angleUnit ?? angleUnit,
       });
     },
@@ -394,7 +408,7 @@ export function sweptShaderWgsl(g: Swept): string {
   const radius = wgslExprUniform(g.profileRadius, ctx);
   const eIdx = ctx.next++; // exponent slot (matches paramVector's push order)
   const lIdx = ctx.next++; // length slot
-  const stack = g.stack.map((t) => transformWgsl(t, ctx)).join("\n    ");
+  const stack = g.transforms.map((t) => transformWgsl(t, ctx)).join("\n    ");
   return /* wgsl */ `
 struct Params { slices: u32, stacks: u32, vertexCount: u32, _pad: u32 };
 @group(0) @binding(0) var<uniform> params: Params;

@@ -70,8 +70,8 @@ describe("transform-ops build the stack in chain order", () => {
   it("is immutable — each op returns a new geometry", () => {
     const base = horn();
     const bent = base.bend(10);
-    expect(base.stack.length).toBe(0);
-    expect(bent.stack.length).toBe(1);
+    expect(base.transforms.length).toBe(0);
+    expect(bent.transforms.length).toBe(1);
   });
 });
 
