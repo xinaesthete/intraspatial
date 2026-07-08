@@ -10,6 +10,13 @@
 // the demo). Heterogeneous trees (different leaf structures per branch) are the next step: they
 // bucket by structure rather than flatten, keeping "structure = a coarse key, not per-instance data".
 //
+// **Counts are continuous.** `count` may be fractional: `n + f` emits n full instances plus one
+// *emergent* instance whose fold weight `smoothstep(f)` rides its uniform scale, so a new member
+// grows in from a point instead of popping (see `splitCount`). The control stays discrete — a UI
+// snaps to integers — while the *transition* between integers goes fractional, letting animation fold
+// members in and out smoothly. Crucially the fold lives entirely inside the placement Mat4, so the
+// pipeline is unchanged: still one base mesh + N transforms, still one instanced draw, no recompile.
+//
 // Deferred (designed-for): true recursion (`sub` — each branch is itself a sub-tree), per-instance
 // progressions as expressions over the instance index, and structure that varies along the sweep.
 
@@ -45,29 +52,59 @@ function toRad(a: AngleLike | undefined, unit: AngleUnit): number {
   throw new Error("structured: angles must be a number or Angle (expressions over the instance index are not supported yet)");
 }
 
-const clampCount = (n: number): number => Math.max(1, Math.floor(n));
+const COUNT_EPS = 1e-6;
 
-/** The Placements for a `stack` of `count`, along +z. */
+/** C1 emergence weight: zero slope at both ends, so a folding instance has no velocity kink as it
+ *  completes (frac→1) and the next one begins (frac→0). */
+const smoothstep = (f: number): number => {
+  const t = f < 0 ? 0 : f > 1 ? 1 : f;
+  return t * t * (3 - 2 * t);
+};
+
+/** Split a possibly-fractional `count` into whole *full* instances (fold weight 1) plus a residual
+ *  fraction. The count is at least 1 — the leaf always exists. When `frac > 0`, one extra *emergent*
+ *  instance is placed with fold weight `smoothstep(frac)` folded into its **uniform scale**, so the
+ *  assembly grows a new member continuously (from a point) rather than popping it in at integers.
+ *  The whole fold lives inside the placement matrix: downstream is still one base mesh + N Mat4s. */
+function splitCount(count: number): { full: number; frac: number } {
+  const c = Math.max(1, count);
+  const full = Math.floor(c + COUNT_EPS);
+  const frac = c - full;
+  return { full, frac: frac < COUNT_EPS ? 0 : frac };
+}
+
+/** The Placements for a `stack` of `count` along +z. Fractional counts grow the top segment in from
+ *  a point at its true anchor (`i·step`) — the tower's existing rungs never move. */
 export function stackPlacements(baseLength: number, count: number, opts: StackOptions | undefined, unit: AngleUnit): Mat4[] {
-  const n = clampCount(count);
+  const { full, frac } = splitCount(count);
   const step = opts?.step ?? baseLength;
   const twist = toRad(opts?.twist, unit);
   const scale = opts?.scale ?? 1;
+  const total = full + (frac > 0 ? 1 : 0);
   const out: Mat4[] = [];
-  for (let i = 0; i < n; i++) out.push(compose([translate(0, 0, i * step), rotZ(i * twist), scaleUniform(scale ** i)]));
+  for (let i = 0; i < total; i++) {
+    const w = i < full ? 1 : smoothstep(frac); // the emergent top rung folds in by weight
+    out.push(compose([translate(0, 0, i * step), rotZ(i * twist), scaleUniform(scale ** i * w)]));
+  }
   return out;
 }
 
-/** The Placements for a `branch` whorl of `count` around +z. */
+/** The Placements for a `branch` whorl of `count` around +z. The angular denominator is the
+ *  *continuous* count, so as `count` grows the existing arms **re-space** while the emergent arm —
+ *  which starts coincident with arm 0 and migrates to its slot — grows in from a point. Integer
+ *  counts reduce to even `2π·j/n` spacing, identical to the discrete path. */
 export function branchPlacements(count: number, opts: BranchOptions | undefined, unit: AngleUnit): Mat4[] {
-  const n = clampCount(count);
+  const { full, frac } = splitCount(count);
   const angle = toRad(opts?.angle, unit);
   const scale = opts?.scale ?? 1;
   const twist = toRad(opts?.twist, unit);
+  const c = Math.max(1, count); // continuous denominator ⇒ arms re-space as the whorl grows
+  const total = full + (frac > 0 ? 1 : 0);
   const out: Mat4[] = [];
-  for (let j = 0; j < n; j++) {
-    const phi = (2 * Math.PI * j) / n;
-    out.push(compose([rotZ(phi), rotX(angle), rotZ(twist), scaleUniform(scale)]));
+  for (let j = 0; j < total; j++) {
+    const w = j < full ? 1 : smoothstep(frac);
+    const phi = (2 * Math.PI * j) / c;
+    out.push(compose([rotZ(phi), rotX(angle), rotZ(twist), scaleUniform(scale * w)]));
   }
   return out;
 }

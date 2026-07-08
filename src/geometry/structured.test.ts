@@ -111,3 +111,91 @@ describe("Swept.stack / Swept.branch build a Structured", () => {
     expect(Array.from(mats.slice(0, 16))).toEqual(IDENTITY);
   });
 });
+
+// Continuous / fractional counts: a `count = n + f` emits n full instances plus one *emergent*
+// instance carrying fold weight `smoothstep(f)` as extra uniform scale, so a new member grows in
+// from a point instead of popping. Integer counts must stay byte-identical to the discrete path.
+const smoothstep = (f: number): number => {
+  const t = f < 0 ? 0 : f > 1 ? 1 : f;
+  return t * t * (3 - 2 * t);
+};
+const scaleOf = (m: Mat4): number => Math.hypot(m[0] ?? 0, m[1] ?? 0, m[2] ?? 0);
+type Mat4 = number[];
+
+describe("fractional stack — the top segment folds in", () => {
+  it("integer counts are unchanged (no emergent instance)", () => {
+    expect(stackPlacements(2, 3, { step: 2 }, "deg").length).toBe(3);
+    // and the full instances are unscaled
+    for (const p of stackPlacements(2, 3, { step: 2 }, "deg")) expect(scaleOf(p)).toBeCloseTo(1, 10);
+  });
+
+  it("a fractional count emits one extra instance, folded by smoothstep(frac)", () => {
+    const ps = stackPlacements(2, 2.5, { step: 2 }, "deg");
+    expect(ps.length).toBe(3);
+    // full instances 0,1 anchored and unscaled
+    close(applyPoint(ps[0] as number[], [1, 0, 0]), [1, 0, 0]);
+    close(applyPoint(ps[1] as number[], [1, 0, 0]), [1, 0, 2]);
+    // emergent instance 2 sits at its true anchor (z=4) but scaled to smoothstep(0.5)=0.5
+    expect(scaleOf(ps[2] as number[])).toBeCloseTo(smoothstep(0.5), 10);
+    close(applyPoint(ps[2] as number[], [1, 0, 0]), [0.5, 0, 4]);
+  });
+
+  it("just above an integer the emergent instance is near-zero scale (no pop)", () => {
+    const ps = stackPlacements(2, 2.001, { step: 2 }, "deg");
+    expect(ps.length).toBe(3);
+    expect(scaleOf(ps[2] as number[])).toBeCloseTo(smoothstep(0.001), 10);
+    expect(scaleOf(ps[2] as number[])).toBeLessThan(1e-4);
+  });
+
+  it("compounding scale still applies to the emergent index", () => {
+    // scale 0.5 per step: emergent index 2 base scale = 0.5**2, then folded by smoothstep(frac)
+    const ps = stackPlacements(1, 2.5, { scale: 0.5 }, "deg");
+    expect(scaleOf(ps[2] as number[])).toBeCloseTo(0.5 ** 2 * smoothstep(0.5), 10);
+  });
+});
+
+describe("fractional branch — the whorl re-spaces as it grows an arm", () => {
+  it("integer counts keep even spacing (byte-identical to discrete)", () => {
+    const ps = branchPlacements(4, { angle: 0 }, "deg");
+    expect(ps.length).toBe(4);
+    close(applyPoint(ps[1] as number[], [1, 0, 0]), [0, 1, 0]); // exactly 90°
+  });
+
+  it("uses the continuous count as the angular denominator (arms re-space)", () => {
+    const c = 2.5;
+    const ps = branchPlacements(c, { angle: 0 }, "deg");
+    expect(ps.length).toBe(3);
+    // full arms 0,1 at phi = 2π·j/c — NOT 2π·j/2
+    const phi1 = (2 * Math.PI * 1) / c;
+    close(applyPoint(ps[1] as number[], [1, 0, 0]), [Math.cos(phi1), Math.sin(phi1), 0]);
+  });
+
+  it("the emergent arm grows from a point at its re-spaced slot", () => {
+    const c = 2.5;
+    const ps = branchPlacements(c, { angle: 0 }, "deg");
+    const w = smoothstep(0.5);
+    const phi2 = (2 * Math.PI * 2) / c;
+    expect(scaleOf(ps[2] as number[])).toBeCloseTo(w, 10);
+    close(applyPoint(ps[2] as number[], [1, 0, 0]), [w * Math.cos(phi2), w * Math.sin(phi2), 0]);
+  });
+
+  it("just above an integer, the new arm emerges coincident with arm 0 (no jump)", () => {
+    const ps = branchPlacements(3.0005, { angle: 0 }, "deg");
+    expect(ps.length).toBe(4);
+    const phi3 = (2 * Math.PI * 3) / 3.0005; // ≈ 2π ⇒ near arm 0's direction
+    close([Math.cos(phi3), Math.sin(phi3), 0], [1, 0, 0], 2); // within tolerance of +x
+    expect(scaleOf(ps[3] as number[])).toBeLessThan(1e-3);
+  });
+});
+
+describe("Swept.stack / Swept.branch accept fractional counts", () => {
+  it("a fractional stack has ceil(count) instances", () => {
+    expect(horn({ radius: 0.5, length: 2 }).stack(2.4).count).toBe(3);
+    expect(horn({ radius: 0.5, length: 2 }).stack(2.0).count).toBe(2);
+  });
+
+  it("counts below 1 clamp to the single leaf", () => {
+    expect(horn().stack(0.3).count).toBe(1);
+    expect(horn().branch(0.3).count).toBe(1);
+  });
+});

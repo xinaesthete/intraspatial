@@ -63,6 +63,15 @@ sweep axis), `branch` (a whorl splayed around it). It does not touch the child's
 N rigid copies of it, producing a Structured. Chaining structural ops multiplies the instances.
 _Avoid_: array (overloaded), duplicate, group. Deferred siblings: `spoke`/`spiral`/`sub` (recursion).
 
+**Fold / continuous count**:
+A structural-op `count` may be **fractional**: `n + f` places n full instances plus one *emergent*
+instance whose fold weight `smoothstep(f)` rides its uniform scale, so a member grows in/out from a
+point instead of popping. For `branch` the angular denominator is the continuous count, so arms
+**re-space** as the whorl grows. The fold lives entirely inside the Placement matrix — the pipeline
+is unchanged (still one base mesh + N transforms). Idiom: the *control* stays discrete (a UI snaps to
+integers); only the animated *transition* between integers is fractional.
+_Avoid_: morph (reserve for profile change), LOD (unrelated), tween (that's the caller's job).
+
 **Structured**:
 The Geometry a Structural-op produces: a shared **base Swept** leaf plus a flat list of
 **Placements**. A whole structural tree over one leaf flattens to this list, so lowering is one base
