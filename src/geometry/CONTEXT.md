@@ -16,9 +16,9 @@ Inspectable, serialisable, breedable, and lowerable; evaluated only when pulled.
 _Avoid_: shape, mesh (a mesh is one *kind* / one materialised form, not the value), model.
 
 **Geometry-kind**:
-The tag on a Geometry node — `swept`, `implicit`, or `mesh` — that decides how it evaluates and
-which ops apply. "Different geometry-types" in the design means different kinds coexisting in one
-IR, bridged explicitly.
+The tag on a Geometry node — `swept`, `structured`, `implicit`, or `mesh` — that decides how it
+evaluates and which ops apply. "Different geometry-types" in the design means different kinds
+coexisting in one IR, bridged explicitly.
 _Avoid_: type (overloaded), representation (fine informally).
 
 **Swept**:
@@ -56,6 +56,36 @@ A Geometry-op that warps an existing Geometry — **kind-polymorphic**. `bend`/`
 `sweep`/`scale`/`translate`. On a Swept node it appends to the Transform-stack; on an Implicit
 node it composes into the domain warp.
 _Avoid_: modifier, deformer, filter.
+
+**Structural-op**:
+A Geometry-op that **instances** a child rather than warping it pointwise — `stack` (copies up the
+sweep axis), `branch` (a whorl splayed around it). It does not touch the child's profile; it places
+N rigid copies of it, producing a Structured. Chaining structural ops multiplies the instances.
+_Avoid_: array (overloaded), duplicate, group. Deferred siblings: `spoke`/`spiral`/`sub` (recursion).
+
+**Fold / continuous count**:
+A structural-op `count` may be **fractional**: `n + f` places n full instances plus one *emergent*
+instance whose fold weight `smoothstep(f)` rides its uniform scale, so a member grows in/out from a
+point instead of popping. For `branch` the angular denominator is the continuous count, so arms
+**re-space** as the whorl grows. The fold lives entirely inside the Placement matrix — the pipeline
+is unchanged (still one base mesh + N transforms). Idiom: the *control* stays discrete (a UI snaps to
+integers); only the animated *transition* between integers is fractional.
+_Avoid_: morph (reserve for profile change), LOD (unrelated), tween (that's the caller's job).
+
+**Structured**:
+The Geometry a Structural-op produces: a shared **base Swept** leaf plus a flat list of
+**Placements**. A whole structural tree over one leaf flattens to this list, so lowering is one base
+mesh + N placements — a concatenation on the CPU, one **instanced draw** on the GPU. A new
+Geometry-kind alongside Swept/Implicit/Mesh; the leaf is what "a Swept node sits under a structural
+node" meant.
+_Avoid_: assembly (fine in prose), group, composite.
+
+**Placement**:
+The rigid (+uniform-scale) transform one instance of a Structured sits under — a 4×4 restricted so a
+normal transforms by the rotation alone. The unit both the CPU golden and the GPU instance buffer
+share, so they can't drift.
+_Avoid_: instance (fine for the *placed copy*), matrix (too generic), transform (reserve for
+Transform-op).
 
 **Boolean-op**:
 `union` / `subtract` / `intersect` — min/max of signed distances. Defined **only on Implicit**;

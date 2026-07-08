@@ -46,6 +46,13 @@ export default defineConfig({
           ],
         },
         {
+          label: "Procedural geometry",
+          items: [
+            // First slice (ADR-0010) — the swept horn grammar + a self-contained Mutator demo.
+            { label: "The swept horn grammar", slug: "geometry/horn-grammar" },
+          ],
+        },
+        {
           label: "Concepts",
           items: [
             { label: "Windowing, not quadrats", slug: "concepts/windowing" },

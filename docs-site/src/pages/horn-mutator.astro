@@ -1,0 +1,150 @@
+---
+// A standalone, full-bleed artefact page (outside the Starlight docs chrome): the horn
+// Mutator breeding grid. All geometry + evolution is the toolbox's own library code — see
+// src/lib/hornMutator.ts (imports src/geometry, src/evo, and the OnePole trait-damping).
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Horn Mutator — geometry-ops breeding grid</title>
+    <meta
+      name="description"
+      content="A Todd–Latham Mutator breeding grid over the swept-horn grammar (ADR-0010): select parents, breed generations, edit a specimen's genes."
+    />
+    <style is:global>
+      :root {
+        color-scheme: dark;
+        --ink: #0a1113; --ink-2: #0e181b;
+        --panel: rgba(13, 23, 26, 0.82); --panel-line: rgba(120, 200, 195, 0.16);
+        --fg: #e6efee; --fg-dim: #8fa5a3; --fg-faint: #5f7573;
+        --accent: #e5894b; --accent-soft: #f0b07f; --teal: #57c4bd;
+        --cell-line: rgba(120, 200, 195, 0.12);
+        --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+        --sans: ui-sans-serif, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      }
+      * { box-sizing: border-box; }
+      html, body { height: 100%; margin: 0; }
+      body {
+        font-family: var(--sans); color: var(--fg);
+        background: radial-gradient(130% 100% at 60% 0%, #16282b 0%, var(--ink-2) 48%, var(--ink) 100%);
+        overflow: hidden;
+      }
+      #stage { position: fixed; inset: 0; }
+
+      #gl { position: absolute; left: 0; top: 0; width: 100%; height: calc(100% - 60px); display: block; touch-action: none; cursor: grab; }
+      #gl:active { cursor: grabbing; }
+      .overlay { position: absolute; left: 0; right: 0; top: 0; bottom: 60px; z-index: 2; display: grid; grid-template-columns: repeat(3, 1fr); grid-template-rows: repeat(3, 1fr); cursor: grab; }
+      .overlay:active { cursor: grabbing; }
+      .cell { position: relative; border: 1px solid var(--cell-line); pointer-events: none; transition: border-color .18s, box-shadow .18s, background .18s; }
+      .cell .tag { position: absolute; top: 8px; left: 9px; font-family: var(--mono); font-size: 10px; letter-spacing: 0.08em; color: var(--fg-faint); }
+      .cell.elite .tag::after { content: " · elite"; color: var(--teal); }
+      .cell.sel { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent), inset 0 0 34px -8px rgba(229,137,75,0.55); background: rgba(229,137,75,0.03); }
+      .cell.sel .tag { color: var(--accent-soft); }
+      .cell.primary .tag::before { content: "◆ "; color: var(--accent); }
+
+      .masthead { position: absolute; top: 16px; left: 18px; z-index: 4; pointer-events: none; max-width: 44ch; }
+      .eyebrow { font-family: var(--mono); font-size: 10.5px; letter-spacing: 0.22em; text-transform: uppercase; color: var(--teal); margin: 0 0 6px; }
+      .masthead h1 { font-size: clamp(18px, 2.4vw, 26px); line-height: 1.05; margin: 0; font-weight: 620; letter-spacing: -0.015em; text-wrap: balance; }
+      .masthead h1 em { font-style: normal; color: var(--accent); }
+      .masthead p { margin: 7px 0 0; color: var(--fg-dim); font-size: 12.5px; line-height: 1.45; max-width: 40ch; }
+
+      .bar { position: absolute; left: 0; right: 0; bottom: 0; height: 60px; z-index: 5; display: flex; align-items: center; gap: 16px; padding: 0 16px; background: linear-gradient(0deg, rgba(8,14,16,0.94), rgba(8,14,16,0.55)); border-top: 1px solid var(--panel-line); backdrop-filter: blur(10px); }
+      .btn { font-family: var(--sans); font-size: 13px; font-weight: 560; color: var(--ink); background: var(--accent); border: none; border-radius: 9px; padding: 9px 16px; cursor: pointer; display: inline-flex; align-items: center; gap: 7px; transition: filter .15s, transform .05s; }
+      .btn:hover { filter: brightness(1.08); }
+      .btn:active { transform: translateY(1px); }
+      .btn.ghost { background: rgba(120,200,195,0.08); color: var(--fg-dim); border: 1px solid var(--panel-line); font-weight: 500; }
+      .btn.ghost:hover { color: var(--fg); border-color: rgba(120,200,195,0.4); }
+      .btn:focus-visible, .icbtn:focus-visible { outline: 2px solid var(--teal); outline-offset: 2px; }
+      .bar .rate { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--fg-dim); }
+      .bar .rate output { font-family: var(--mono); color: var(--accent-soft); font-variant-numeric: tabular-nums; min-width: 3ch; }
+      .bar .stat { font-family: var(--mono); font-size: 11.5px; color: var(--fg-faint); letter-spacing: 0.03em; font-variant-numeric: tabular-nums; }
+      .bar .stat b { color: var(--teal); font-weight: 500; }
+      .bar .spacer { flex: 1; }
+      .toggle { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--fg-dim); cursor: pointer; }
+      .toggle input { accent-color: var(--accent); width: 13px; height: 13px; }
+
+      input[type="range"] { -webkit-appearance: none; appearance: none; height: 20px; background: transparent; margin: 0; cursor: pointer; }
+      input[type="range"]::-webkit-slider-runnable-track { height: 3px; border-radius: 3px; background: linear-gradient(90deg, var(--teal), rgba(120,200,195,0.18)); }
+      input[type="range"]::-moz-range-track { height: 3px; border-radius: 3px; background: rgba(120,200,195,0.28); }
+      input[type="range"]::-webkit-slider-thumb { -webkit-appearance: none; appearance: none; margin-top: -6px; width: 14px; height: 14px; border-radius: 50%; background: var(--fg); border: 2px solid var(--accent); }
+      input[type="range"]::-moz-range-thumb { width: 12px; height: 12px; border-radius: 50%; background: var(--fg); border: 2px solid var(--accent); }
+      input[type="range"]:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 4px rgba(87,196,189,0.35); }
+
+      .params { position: absolute; top: 14px; right: 14px; bottom: 74px; z-index: 6; width: 300px; background: var(--panel); border: 1px solid var(--panel-line); border-radius: 14px; box-shadow: 0 18px 50px -22px rgba(0,0,0,0.75); backdrop-filter: blur(14px); display: flex; flex-direction: column; transition: transform .28s cubic-bezier(.4,0,.2,1), opacity .2s; }
+      .params.folded { transform: translateX(calc(100% + 20px)); opacity: 0; pointer-events: none; }
+      .params__head { display: flex; align-items: center; justify-content: space-between; padding: 13px 14px 11px; border-bottom: 1px solid var(--panel-line); }
+      .params__head h2 { margin: 0; font-size: 12px; font-family: var(--mono); letter-spacing: 0.14em; text-transform: uppercase; color: var(--fg-dim); }
+      .params__head h2 b { color: var(--accent-soft); }
+      .icbtn { background: none; border: none; color: var(--fg-faint); cursor: pointer; font-size: 17px; line-height: 1; padding: 4px; border-radius: 6px; }
+      .icbtn:hover { color: var(--fg); background: rgba(120,200,195,0.08); }
+      .params__body { padding: 14px; overflow-y: auto; display: flex; flex-direction: column; gap: 13px; }
+      .gene { display: grid; grid-template-columns: 1fr auto; align-items: baseline; gap: 2px 8px; }
+      .gene label { font-size: 12px; color: var(--fg-dim); }
+      .gene output { font-family: var(--mono); font-size: 11.5px; color: var(--accent-soft); font-variant-numeric: tabular-nums; }
+      .gene input[type="range"] { grid-column: 1 / -1; }
+      .code { margin-top: 4px; font-family: var(--mono); font-size: 11px; line-height: 1.6; color: var(--fg-dim); background: rgba(0,0,0,0.25); border: 1px solid var(--panel-line); border-radius: 9px; padding: 10px 11px; white-space: pre-wrap; word-break: break-word; }
+      .code .k { color: var(--teal); } .code .fn { color: var(--accent-soft); } .code .n { color: var(--fg); }
+
+      .fold-tab { position: absolute; top: 14px; right: 14px; z-index: 6; font-family: var(--mono); font-size: 11px; letter-spacing: 0.04em; color: var(--fg-dim); background: var(--panel); border: 1px solid var(--panel-line); border-radius: 999px; padding: 7px 14px; cursor: pointer; opacity: 0; pointer-events: none; transition: opacity .2s, color .15s; }
+      .fold-tab.show { opacity: 1; pointer-events: auto; }
+      .fold-tab:hover { color: var(--fg); }
+
+      .hint { position: absolute; left: 18px; bottom: 70px; z-index: 4; font-size: 11.5px; color: var(--fg-faint); pointer-events: none; }
+      .hint kbd { font-family: var(--mono); font-size: 10.5px; background: rgba(120,200,195,0.1); border: 1px solid var(--panel-line); border-radius: 4px; padding: 1px 5px; color: var(--fg-dim); }
+
+      @media (max-width: 720px) {
+        .masthead p { display: none; }
+        .params { width: auto; left: 12px; right: 12px; top: auto; bottom: 74px; max-height: 46vh; }
+        .params.folded { transform: translateY(calc(100% + 30px)); }
+        .hint { display: none; }
+        .bar { gap: 10px; padding: 0 10px; } .bar .stat { display: none; }
+      }
+    </style>
+  </head>
+  <body>
+    <div id="stage">
+      <canvas id="gl"></canvas>
+      <div class="overlay" id="overlay"></div>
+
+      <div class="masthead">
+        <p class="eyebrow">geometry-ops · ADR-0010 · Mutator</p>
+        <h1>Horn <em>breeding grid</em></h1>
+        <p>Each cell is a swept horn — a superellipse profile over θ, warped along the sweep s.
+          Select parents, breed a generation; the grid eases into its new genotypes.</p>
+      </div>
+
+      <button class="fold-tab" id="foldTab">◆ parameters</button>
+
+      <div class="params" id="params">
+        <div class="params__head">
+          <h2>specimen <b id="specName">#1</b></h2>
+          <button class="icbtn" id="foldBtn" title="Fold away" aria-label="Fold panel">⌄</button>
+        </div>
+        <div class="params__body" id="geneList"></div>
+      </div>
+
+      <div class="hint">drag to orbit all · click a cell to select · <kbd>⇧</kbd>-click to add a parent</div>
+
+      <div class="bar">
+        <button class="btn" id="breed">⚘ Breed</button>
+        <button class="btn ghost" id="random">Randomize</button>
+        <label class="rate">mutation
+          <input type="range" id="rate" min="0.02" max="0.5" step="0.01" value="0.18" style="width:96px" />
+          <output id="rate_v">0.18</output>
+        </label>
+        <span class="spacer"></span>
+        <span class="stat">gen <b id="genN">0</b> · <b id="selN">1</b> selected</span>
+        <label class="toggle"><input type="checkbox" id="spin" checked /> spin</label>
+        <label class="toggle"><input type="checkbox" id="wire" /> wire</label>
+      </div>
+    </div>
+
+    <script>
+      import { mountHornMutator } from "../lib/hornMutator";
+      mountHornMutator().catch((err) => console.error(err));
+    </script>
+  </body>
+</html>
