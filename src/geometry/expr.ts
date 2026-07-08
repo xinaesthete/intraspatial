@@ -113,6 +113,55 @@ export function wgslExpr(e: Expr): string {
   }
 }
 
+/** A counter threaded through {@link wgslExprUniform}: assigns each constant its slot in the
+ *  kernel's param buffer, in the same left-to-right traversal order {@link collectConsts} reads
+ *  values in — so a horn's `paramVector()` lines up lane-for-lane with the shader's `P[k]`. */
+export interface UniformCtx {
+  next: number;
+}
+
+/** Lower a Param-expression to WGSL that reads its **constants from a uniform param buffer** `P`
+ *  (a runtime-sized `array<f32>`) rather than baking them as literals — so the *structure* is
+ *  the shader and the *values* are data. Two same-structure expressions therefore produce
+ *  identical WGSL (one pipeline serves every value set); the mirror `collectConsts` supplies the
+ *  matching `P`. `s`/`θ` still map to the shader locals `s`/`th`. */
+export function wgslExprUniform(e: Expr, ctx: UniformCtx): string {
+  switch (e.kind) {
+    case "const":
+      return `P[${ctx.next++}u]`;
+    case "s":
+      return "s";
+    case "theta":
+      return "th";
+    case "add":
+      return `(${wgslExprUniform(e.a, ctx)} + ${wgslExprUniform(e.b, ctx)})`;
+    case "sub":
+      return `(${wgslExprUniform(e.a, ctx)} - ${wgslExprUniform(e.b, ctx)})`;
+    case "mul":
+      return `(${wgslExprUniform(e.a, ctx)} * ${wgslExprUniform(e.b, ctx)})`;
+  }
+}
+
+/** Collect an expression's constant values in the **same traversal order** `wgslExprUniform`
+ *  assigns slots — the value side of the structure/value split. */
+export function collectConsts(e: Expr, out: number[]): number[] {
+  switch (e.kind) {
+    case "const":
+      out.push(e.value);
+      break;
+    case "s":
+    case "theta":
+      break;
+    case "add":
+    case "sub":
+    case "mul":
+      collectConsts(e.a, out);
+      collectConsts(e.b, out);
+      break;
+  }
+  return out;
+}
+
 /** Gather the `ParamSpec` genes carried by an expression's literals, in traversal order —
  *  the breeding surface the Mutator (`src/evo`) enumerates. */
 export function collectSpecs(e: Expr, out: ParamSpec[] = []): ParamSpec[] {

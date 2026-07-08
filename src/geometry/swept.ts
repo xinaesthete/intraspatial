@@ -24,7 +24,17 @@
 import type { ParamSpec } from "../gpu/graph/op";
 import { type AngleUnit, isAngle, unitToRadians } from "./angle";
 import type { AngleLike } from "./angle-like";
-import { collectSpecs, type Expr, type ExprLike, evalExpr, toExpr, wgslExpr, wgslFloat } from "./expr";
+import {
+  collectConsts,
+  collectSpecs,
+  type Expr,
+  type ExprLike,
+  evalExpr,
+  toExpr,
+  type UniformCtx,
+  wgslExprUniform,
+  wgslFloat,
+} from "./expr";
 import { signPow, type Vec3 } from "./superellipsoid";
 
 // ── The Transform-stack ───────────────────────────────────────────────────────────────
@@ -59,15 +69,16 @@ function applyTransform(t: Transform, s: number, theta: number, p: Vec3): Vec3 {
   }
 }
 
-/** The WGSL statement(s) that apply one transform to the local `var p: vec3<f32>`. */
-function transformWgsl(t: Transform): string {
+/** The WGSL statement(s) that apply one transform to the local `var p: vec3<f32>`, reading the
+ *  transform's expression constants from the param buffer `P` (via `ctx`). */
+function transformWgsl(t: Transform, ctx: UniformCtx): string {
   switch (t.kind) {
     case "bend":
-      return `{ let a = ${wgslExpr(t.angle)}; let c = cos(a); let sn = sin(a); p = vec3<f32>(p.x, p.y * c - p.z * sn, p.y * sn + p.z * c); }`;
+      return `{ let a = ${wgslExprUniform(t.angle, ctx)}; let c = cos(a); let sn = sin(a); p = vec3<f32>(p.x, p.y * c - p.z * sn, p.y * sn + p.z * c); }`;
     case "twist":
-      return `{ let a = ${wgslExpr(t.angle)}; let c = cos(a); let sn = sin(a); p = vec3<f32>(p.x * c - p.y * sn, p.x * sn + p.y * c, p.z); }`;
+      return `{ let a = ${wgslExprUniform(t.angle, ctx)}; let c = cos(a); let sn = sin(a); p = vec3<f32>(p.x * c - p.y * sn, p.x * sn + p.y * c, p.z); }`;
     case "scale":
-      return `{ let f = ${wgslExpr(t.factor)}; p = vec3<f32>(p.x * f, p.y * f, p.z); }`;
+      return `{ let f = ${wgslExprUniform(t.factor, ctx)}; p = vec3<f32>(p.x * f, p.y * f, p.z); }`;
   }
 }
 
@@ -202,6 +213,20 @@ export class Swept {
     collectSpecs(this.profileRadius, out);
     for (const t of this.stack) collectSpecs(t.kind === "scale" ? t.factor : t.angle, out);
     return out;
+  }
+
+  /** This geometry's numeric params in the exact order the GPU kernel's param buffer `P` reads
+   *  them (radius-expr constants, exponent, length, then each transform-expr's constants). Two
+   *  same-**structure** horns produce identical WGSL (`toWgsl`) and differ only in this vector —
+   *  so one pipeline renders any of them; per instance you upload a new `paramVector`. The CPU
+   *  golden reads the same values directly, so parity is preserved. */
+  paramVector(): Float32Array {
+    const out: number[] = [];
+    collectConsts(this.profileRadius, out);
+    out.push(this.exponent);
+    out.push(this.length);
+    for (const t of this.stack) collectConsts(t.kind === "scale" ? t.factor : t.angle, out);
+    return Float32Array.from(out);
   }
 
   /** The base swept placement before the Transform-stack: the profile point at `(s, θ)` on the
@@ -358,24 +383,34 @@ export function horn(config?: HornConfig): Swept {
 
 /** Assemble the full WGSL compute shader for a Swept geometry: decode each grid corner to
  *  `(s, θ)`, evaluate the closed-form position, and derive the finite-difference normal — the
- *  GPU image of {@link Swept.tessellate}. Buffers are flat `array<f32>` (3 lanes/vertex). */
+ *  GPU image of {@link Swept.tessellate}. Buffers are flat `array<f32>` (3 lanes/vertex).
+ *
+ *  Param **values** are read from the storage buffer `P` (a runtime-sized `array<f32>`, laid out
+ *  by {@link Swept.paramVector}), not baked as literals — so the emitted WGSL depends only on the
+ *  horn's *structure*. Same-structure horns share one pipeline; per instance you upload a new
+ *  `paramVector`. Only truly-fixed values (`TWO_PI`, the framing step `FRAME_H`) stay baked. */
 export function sweptShaderWgsl(g: Swept): string {
-  const stack = g.stack.map(transformWgsl).join("\n    ");
+  const ctx: UniformCtx = { next: 0 };
+  const radius = wgslExprUniform(g.profileRadius, ctx);
+  const eIdx = ctx.next++; // exponent slot (matches paramVector's push order)
+  const lIdx = ctx.next++; // length slot
+  const stack = g.stack.map((t) => transformWgsl(t, ctx)).join("\n    ");
   return /* wgsl */ `
 struct Params { slices: u32, stacks: u32, vertexCount: u32, _pad: u32 };
 @group(0) @binding(0) var<uniform> params: Params;
 @group(0) @binding(1) var<storage, read_write> outPos: array<f32>;
 @group(0) @binding(2) var<storage, read_write> outNor: array<f32>;
+@group(0) @binding(3) var<storage, read> P: array<f32>;
 
 const TWO_PI: f32 = 6.283185307179586;
 const FRAME_H: f32 = ${wgslFloat(FRAME_H)};
-const E: f32 = ${wgslFloat(g.exponent)};
-const L: f32 = ${wgslFloat(g.length)};
 
 fn signpow(x: f32, e: f32) -> f32 { return sign(x) * pow(abs(x), e); }
 
 fn evalPos(s: f32, th: f32) -> vec3<f32> {
-  let r = ${wgslExpr(g.profileRadius)};
+  let E = P[${eIdx}u];
+  let L = P[${lIdx}u];
+  let r = ${radius};
   var p = vec3<f32>(r * signpow(cos(th), E), r * signpow(sin(th), E), s * L);
     ${stack}
   return p;

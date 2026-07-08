@@ -1,6 +1,22 @@
 import { describe, expect, it } from "vitest";
 import type { ParamSpec } from "../gpu/graph/op";
-import { add, collectSpecs, constant, evalExpr, linear, mul, ramp, S, sub, THETA, toExpr, wgslExpr, wgslFloat } from "./expr";
+import {
+  add,
+  collectConsts,
+  collectSpecs,
+  constant,
+  evalExpr,
+  linear,
+  mul,
+  ramp,
+  S,
+  sub,
+  THETA,
+  toExpr,
+  wgslExpr,
+  wgslExprUniform,
+  wgslFloat,
+} from "./expr";
 
 describe("Param-expression evaluation", () => {
   it("evaluates the free variables and constants", () => {
@@ -49,6 +65,22 @@ describe("WGSL codegen mirrors the tree", () => {
   it("lowers ramp and linear structurally", () => {
     expect(wgslExpr(ramp(360))).toBe("(360.0 * s)");
     expect(wgslExpr(linear(0, 360))).toBe("(0.0 + (360.0 * s))");
+  });
+});
+
+describe("uniform codegen (structure/value split)", () => {
+  it("reads constants from P[] in left-to-right order; collectConsts supplies the values", () => {
+    const e = add(mul(constant(2), S), sub(THETA, constant(5)));
+    const ctx = { next: 0 };
+    expect(wgslExprUniform(e, ctx)).toBe("((P[0u] * s) + (th - P[1u]))");
+    expect(ctx.next).toBe(2);
+    expect(collectConsts(e, [])).toEqual([2, 5]);
+  });
+
+  it("same structure, different values → identical WGSL", () => {
+    const shape = (peak: number) => wgslExprUniform(ramp(peak), { next: 0 });
+    expect(shape(360)).toBe(shape(720));
+    expect(shape(360)).toBe("(P[0u] * s)");
   });
 });
 

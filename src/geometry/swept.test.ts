@@ -105,6 +105,28 @@ describe("breeding surface", () => {
   });
 });
 
+describe("GPU param vector (structure/value split)", () => {
+  it("orders values as radius-consts, exponent, length, then transform-consts", () => {
+    const g = horn({ radius: linear(0.2, 0.6), exponent: 0.8, length: 3 })
+      .twist(ramp(360)) // deg default → mul(π/180, mul(360, s)) → consts [π/180, 360]
+      .scale(linear(1, 0.5)); // → consts [1, -0.5]
+    const pv = Array.from(g.paramVector());
+    const want = [0.2, 0.4, 0.8, 3, Math.PI / 180, 360, 1, -0.5];
+    expect(pv.length).toBe(want.length);
+    // paramVector is a Float32Array (it feeds the GPU), so compare at f32 precision.
+    want.forEach((w, i) => {
+      expect(pv[i]).toBeCloseTo(w, 5);
+    });
+  });
+
+  it("same structure horns emit identical WGSL but differ in paramVector", () => {
+    const a = horn({ radius: 1, length: 2 }).twist(ramp(360));
+    const b = horn({ radius: 1, length: 2 }).twist(ramp(90));
+    expect(a.toWgsl()).toBe(b.toWgsl());
+    expect(Array.from(a.paramVector())).not.toEqual(Array.from(b.paramVector()));
+  });
+});
+
 describe("tessellation", () => {
   it("produces a (slices+1)×(stacks+1) vertex grid and quad indices", () => {
     const mesh = horn().tessellate({ slices: 4, stacks: 3 });
