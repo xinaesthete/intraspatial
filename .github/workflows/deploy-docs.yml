@@ -1,0 +1,57 @@
+name: Deploy docs site to GitHub Pages
+
+on:
+  # Publish on every push to the default branch...
+  push:
+    branches: [main]
+  # ...and allow manual runs from the Actions tab.
+  workflow_dispatch:
+
+# Least-privilege token for the Pages deployment (id-token is required by deploy-pages).
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Only one live deployment at a time; don't cancel an in-flight publish.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # pnpm workspace — pin the version the repo declares (packageManager: pnpm@11.9.0).
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      # Full workspace install. The `webgpu` native addon ships a prebuilt binary and its
+      # postinstall is a macOS-only no-op, and the `openjph-wasm` file: sibling is an optional
+      # dep that's skipped when absent — so neither is needed for the docs build.
+      - run: pnpm install --frozen-lockfile
+
+      - name: Build docs site
+        run: pnpm --filter docs-site build
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs-site/dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
