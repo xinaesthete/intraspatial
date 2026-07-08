@@ -46,6 +46,9 @@ cells share one pipeline and morph smoothly; the structural `stack`/`branch` ops
 instance that leaf as a single GPU **instanced draw** (one base buffer + a per-cell
 matrix buffer), so the grid breeds both the horn's shape *and* its structure. Breeding
 is `breed` over a `TraitSpace` from `src/evo`; the easing is the library's `OnePole`
-trait-damping. It needs WebGPU and fails gracefully without it. Still designed-for, not
-yet built: recursion (`sub`), heterogeneous trees, and a composable profile sub-grammar.
+trait-damping. Structural **counts are continuous**: the control snaps to whole numbers, but
+a fractional count folds a member in/out by its `smoothstep` weight (and `branch` re-spaces its
+whorl), so a bred change to `stack`/`branch` grows an arm in smoothly rather than popping it.
+It needs WebGPU and fails gracefully without it. Still designed-for, not yet built: recursion
+(`sub`), heterogeneous trees, and a composable profile sub-grammar.
 :::

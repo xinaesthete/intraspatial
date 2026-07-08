@@ -89,13 +89,47 @@ function leafHorn(sp: Specimen): Swept {
     .scale(linear(1, num(p, "taper")));
 }
 
-/** The structural assembly (structural genes) instancing the leaf. */
+// ── Structural counts: discrete control, continuous animation ────────────────────────
+// The count genes (`stackN`/`branchN`) are `int` traits — the control snaps to whole numbers. But
+// the library takes *fractional* counts and folds a member in/out by its smoothstep weight, so the
+// OnePole transition between two integer targets is a smooth grow/shrink. We therefore read the
+// UN-rounded smoothed value here (not `specimenToParams`, which re-quantises ints) and snap targets
+// to integers at generation time — only the in-flight interpolation is fractional.
+const STRUCT_TRAITS = ["stackN", "branchN"];
+const traitByName = (name: string) => SPACE.traits.find((t) => t.paramName === name);
+
+/** Continuous (un-rounded) value of a trait from a specimen's normalised coords. */
+function contValue(sp: Specimen, name: string): number {
+  const t = traitByName(name);
+  if (!t || t.slot < 0) return 1;
+  const u = Math.min(1, Math.max(0, sp.pos[t.slot] ?? 0));
+  return t.min + u * (t.max - t.min);
+}
+
+/** Snap a specimen's structural counts to whole integers (the control is discrete). Mutates in place
+ *  and returns it, so `breed`/`randomSpecimen` land on integer counts; the fold happens only while the
+ *  OnePole eases from the previous snapped target to this one. */
+function quantizeStructural(sp: Specimen): Specimen {
+  for (const name of STRUCT_TRAITS) {
+    const t = traitByName(name);
+    if (!t || t.slot < 0 || t.max <= t.min) continue;
+    const k = Math.round(t.min + Math.min(1, Math.max(0, sp.pos[t.slot] ?? 0)) * (t.max - t.min));
+    sp.pos[t.slot] = (k - t.min) / (t.max - t.min);
+  }
+  return sp;
+}
+
+/** The structural assembly (structural genes) instancing the leaf. Counts are the continuous,
+ *  smoothed values so a whorl/tower grows a member in or out smoothly; splay + per-arm scale fade in
+ *  as the whorl opens from one arm to two (`opening`), so the first branch buds rather than snaps. */
 function assemblyOf(sp: Specimen, base: Swept): Structured {
   const p = specimenToParams(SPACE, sp);
-  const bn = num(p, "branchN");
+  const stackC = contValue(sp, "stackN");
+  const branchC = contValue(sp, "branchN");
+  const opening = Math.min(1, Math.max(0, branchC - 1));
   return base
-    .stack(num(p, "stackN"), { twist: num(p, "stackTwist") })
-    .branch(bn, { angle: bn > 1 ? num(p, "branchAngle") : 0, scale: bn > 1 ? num(p, "branchScale") : 1 });
+    .stack(stackC, { twist: num(p, "stackTwist") })
+    .branch(branchC, { angle: num(p, "branchAngle") * opening, scale: 1 + (num(p, "branchScale") - 1) * opening });
 }
 
 // ── mat4 (column-major, WebGPU clip-space z ∈ [0,1]) ─────────────────────────────────
@@ -259,7 +293,7 @@ export async function mountHornMutator(): Promise<void> {
   const nextSeed = (): number => (rng() * 0x100000000) >>> 0;
 
   const cells: Cell[] = Array.from({ length: CELLS }, () => {
-    const target = randomSpecimen(SPACE, nextSeed());
+    const target = quantizeStructural(randomSpecimen(SPACE, nextSeed()));
     const base = leafHorn(target);
     const handle = createSweptGpu(device, root, base, CELL_SLICES, CELL_STACKS);
     const cam = device.createBuffer({ size: 96, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
@@ -524,11 +558,17 @@ export async function mountHornMutator(): Promise<void> {
       inp.type = "range";
       inp.min = "0";
       inp.max = "1";
-      inp.step = "0.001";
+      // Int genes (the structural counts) detent to whole values: the control is discrete, the
+      // animation between detents is smooth. Continuous genes get a fine step.
+      const trait = traitByName(g.name);
+      const detent = trait?.isInt && trait.max > trait.min ? 1 / (trait.max - trait.min) : 0;
+      inp.step = detent > 0 ? String(detent) : "0.001";
       inp.value = String(c.target.pos[g.slot] ?? 0);
       inp.style.gridColumn = "1 / -1";
       inp.addEventListener("input", () => {
-        c.target.pos[g.slot] = Number(inp.value);
+        let v = Number(inp.value);
+        if (detent > 0) v = Math.round(v / detent) * detent; // snap the control to an integer count
+        c.target.pos[g.slot] = v;
         c.dirty = true;
         out.textContent = g.meta.fmt(num(specimenToParams(SPACE, c.target), g.name));
         updateCode();
@@ -584,12 +624,12 @@ export async function mountHornMutator(): Promise<void> {
     const parents = [(cells[primary] as Cell).target, ...others.map((i) => (cells[i] as Cell).target)];
     const kids = breed(SPACE, parents, CELLS, { rate, rng, keepElite: true });
     cells.forEach((c, i) => {
-      c.target = kids[i] ?? c.target;
+      c.target = quantizeStructural(kids[i] ?? c.target);
     });
     bumpGen();
   });
   document.getElementById("random")?.addEventListener("click", () => {
-    for (const c of cells) c.target = randomSpecimen(SPACE, nextSeed());
+    for (const c of cells) c.target = quantizeStructural(randomSpecimen(SPACE, nextSeed()));
     bumpGen();
   });
   const rateInp = document.getElementById("rate") as HTMLInputElement | null;
