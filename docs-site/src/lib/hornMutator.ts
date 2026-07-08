@@ -1,14 +1,15 @@
 // The horn Mutator demo — driven by the toolbox's OWN library code, rendered on WebGPU.
-// Geometry is our GPU code: each cell's horn is evaluated by the codegen'd swept kernel
-// (`createSweptGpu`, src/geometry) into GPU-resident position/normal buffers that the render
-// pass binds directly — no CPU tessellation, no round-trip. Because the kernel reads gene values
-// from a uniform buffer (structure baked, values as data), all nine cells share ONE compute
-// pipeline and morph smoothly: each eased frame just uploads a new `paramVector`.
+// Geometry is our GPU code: each cell's horn leaf is evaluated by the codegen'd swept kernel
+// (`createSweptGpu`) into GPU-resident buffers, and the structural grammar (`stack`/`branch`)
+// instances that leaf — drawn as a single WebGPU **instanced** pass (one base buffer + a per-cell
+// matrix buffer from `Structured.instanceMatrices()`). Because the leaf kernel reads gene values
+// from a uniform buffer, all cells share one compute pipeline and morph smoothly.
 //
-// Breeding is `src/evo` (Todd–Latham Mutator): a `TraitSpace` over the horn's `ParamSpec`s, with
-// `breed`/`randomSpecimen` moving real `Specimen`s. The between-generation easing is the library's
-// `OnePole` trait-damping. This module owns only presentation — the WebGPU device, render
-// pipeline, camera, and DOM wiring. Requires WebGPU; it fails gracefully if unavailable.
+// Breeding is `src/evo` (Todd–Latham Mutator): a `TraitSpace` over the horn's shape *and*
+// structural `ParamSpec`s, with `breed`/`randomSpecimen` moving real `Specimen`s. The easing is the
+// library's `OnePole` trait-damping. Structure (instance counts) is a coarse key — a cheap draw
+// param — while continuous shape/structural values are the high-frequency axis. Requires WebGPU;
+// fails gracefully without it.
 
 import tgpu from "typegpu";
 import {
@@ -20,22 +21,29 @@ import {
   type TraitSpace,
   traitSpaceFromParams,
 } from "../../../src/evo";
-import { gridIndices, horn, linear, ramp, type Swept } from "../../../src/geometry";
+import { gridIndices, horn, linear, ramp, type Structured, type Swept } from "../../../src/geometry";
 import { createSweptGpu, type SweptGpuHandle } from "../../../src/geometry/sweptGpu";
 import { OnePole } from "../../../src/gpu/graph/onePole";
 import type { ParamSpec } from "../../../src/gpu/graph/op";
 
-// ── The horn's evolvable traits (a ParamSpec schema → a TraitSpace, exactly like the dancer) ──
+// ── Evolvable traits: the horn's shape genes + structural genes (a TraitSpace, like the dancer) ──
 const HORN_SPECS: ParamSpec[] = [
   { name: "baseR", type: "number", default: 0.3, min: 0.04, max: 0.9 },
   { name: "tipR", type: "number", default: 0.5, min: 0.02, max: 1.0 },
   { name: "exp", type: "number", default: 1.0, min: 0.45, max: 2.0 },
   { name: "len", type: "number", default: 4.0, min: 1.6, max: 6.2 },
-  { name: "twist", type: "number", default: 360, min: 0, max: 1152 }, // degrees along the sweep (÷360 = turns)
+  { name: "twist", type: "number", default: 360, min: 0, max: 1152 }, // degrees along the sweep
   { name: "bend", type: "number", default: 60, min: 0, max: 170 }, // degrees along the sweep
   { name: "taper", type: "number", default: 0.6, min: 0.08, max: 1.3 }, // tip cross-section scale
+  // structural genes — instance the leaf into towers / whorls
+  { name: "stackN", type: "int", default: 1, min: 1, max: 3 },
+  { name: "stackTwist", type: "number", default: 0, min: 0, max: 180 }, // deg per stacked step
+  { name: "branchN", type: "int", default: 1, min: 1, max: 5 },
+  { name: "branchAngle", type: "number", default: 28, min: 0, max: 70 }, // deg splay
+  { name: "branchScale", type: "number", default: 0.7, min: 0.3, max: 1 },
 ];
 const SPACE: TraitSpace = traitSpaceFromParams(HORN_SPECS);
+const MAX_INSTANCES = 3 * 5; // stackN.max × branchN.max
 
 interface GeneMeta {
   label: string;
@@ -49,6 +57,11 @@ const GENE_META: Record<string, GeneMeta> = {
   twist: { label: "twist", fmt: (v) => `${(v / 360).toFixed(2)} turn` },
   bend: { label: "bend", fmt: (v) => `${v.toFixed(0)}°` },
   taper: { label: "taper", fmt: (v) => `×${v.toFixed(2)}` },
+  stackN: { label: "stack", fmt: (v) => `×${Math.round(v)}` },
+  stackTwist: { label: "stack twist", fmt: (v) => `${v.toFixed(0)}°` },
+  branchN: { label: "branch", fmt: (v) => `×${Math.round(v)}` },
+  branchAngle: { label: "branch splay", fmt: (v) => `${v.toFixed(0)}°` },
+  branchScale: { label: "branch scale", fmt: (v) => `×${v.toFixed(2)}` },
 };
 const GENE_ROWS = SPACE.traits
   .filter((t) => t.kind === "number")
@@ -60,21 +73,29 @@ const GENE_ROWS = SPACE.traits
 const BEND_SLOT = GENE_ROWS.find((g) => g.name === "bend")?.slot ?? 0;
 
 const CELLS = 9;
-const CELL_SLICES = 46;
-const CELL_STACKS = 74;
-const TAU = 0.13; // trait-damping time constant (seconds)
+const CELL_SLICES = 44;
+const CELL_STACKS = 66;
+const TAU = 0.13;
 const FOV = (44 * Math.PI) / 180;
 
 const num = (params: Record<string, unknown>, k: string): number => Number(params[k]);
 
-/** Build a real `Swept` horn from a specimen's decoded params (the library grammar). All cells
- *  share this structure, so they share the GPU pipeline; only the paramVector differs. */
-function hornFromSpecimen(sp: Specimen): Swept {
+/** The leaf horn (shape genes) — the GPU-evaluated base every instance shares. */
+function leafHorn(sp: Specimen): Swept {
   const p = specimenToParams(SPACE, sp);
   return horn({ radius: linear(num(p, "baseR"), num(p, "tipR")), exponent: num(p, "exp"), length: num(p, "len") })
     .twist(ramp(num(p, "twist")))
     .bend(ramp(num(p, "bend")))
     .scale(linear(1, num(p, "taper")));
+}
+
+/** The structural assembly (structural genes) instancing the leaf. */
+function assemblyOf(sp: Specimen, base: Swept): Structured {
+  const p = specimenToParams(SPACE, sp);
+  const bn = num(p, "branchN");
+  return base
+    .stack(num(p, "stackN"), { twist: num(p, "stackTwist") })
+    .branch(bn, { angle: bn > 1 ? num(p, "branchAngle") : 0, scale: bn > 1 ? num(p, "branchScale") : 1 });
 }
 
 // ── mat4 (column-major, WebGPU clip-space z ∈ [0,1]) ─────────────────────────────────
@@ -132,8 +153,16 @@ const RENDER_WGSL = `
 struct Cam { mvp: mat4x4<f32>, eye: vec3<f32>, wire: f32, accent: vec3<f32>, pad: f32 };
 @group(0) @binding(0) var<uniform> cam: Cam;
 struct VSOut { @builtin(position) pos: vec4<f32>, @location(0) n: vec3<f32>, @location(1) wp: vec3<f32> };
-@vertex fn vs(@location(0) p: vec3<f32>, @location(1) nor: vec3<f32>) -> VSOut {
-  var o: VSOut; o.pos = cam.mvp * vec4<f32>(p, 1.0); o.n = nor; o.wp = p; return o;
+@vertex fn vs(@location(0) p: vec3<f32>, @location(1) nor: vec3<f32>,
+              @location(2) m0: vec4<f32>, @location(3) m1: vec4<f32>, @location(4) m2: vec4<f32>, @location(5) m3: vec4<f32>) -> VSOut {
+  let M = mat4x4<f32>(m0, m1, m2, m3);
+  let wp = (M * vec4<f32>(p, 1.0)).xyz;                 // instance placement (assembly space)
+  let R = mat3x3<f32>(m0.xyz, m1.xyz, m2.xyz);
+  var o: VSOut;
+  o.pos = cam.mvp * vec4<f32>(wp, 1.0);
+  o.n = normalize(R * nor);
+  o.wp = wp;
+  return o;
 }
 @fragment fn fs(inp: VSOut) -> @location(0) vec4<f32> {
   var N = normalize(inp.n); let V = normalize(cam.eye - inp.wp); if (dot(N, V) < 0.0) { N = -N; }
@@ -150,6 +179,9 @@ interface Cell {
   handle: SweptGpuHandle;
   cam: GPUBuffer;
   bind: GPUBindGroup;
+  inst: GPUBuffer; // per-instance placement matrices
+  instMats: Float32Array; // host copy, for camera framing
+  instanceCount: number;
   target: Specimen;
   filter: OnePole;
   dirty: boolean;
@@ -186,7 +218,6 @@ export async function mountHornMutator(): Promise<void> {
   const format = navigator.gpu.getPreferredCanvasFormat();
   ctx.configure({ device, format, alphaMode: "premultiplied" });
 
-  // ── Render pipeline (shared explicit layout so tri/line pipelines share cell bind groups) ──
   const module = device.createShaderModule({ code: RENDER_WGSL });
   const camBGL = device.createBindGroupLayout({
     entries: [{ binding: 0, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: "uniform" } }],
@@ -195,6 +226,16 @@ export async function mountHornMutator(): Promise<void> {
   const vertexBuffers: GPUVertexBufferLayout[] = [
     { arrayStride: 12, attributes: [{ shaderLocation: 0, offset: 0, format: "float32x3" }] },
     { arrayStride: 12, attributes: [{ shaderLocation: 1, offset: 0, format: "float32x3" }] },
+    {
+      arrayStride: 64,
+      stepMode: "instance",
+      attributes: [
+        { shaderLocation: 2, offset: 0, format: "float32x4" },
+        { shaderLocation: 3, offset: 16, format: "float32x4" },
+        { shaderLocation: 4, offset: 32, format: "float32x4" },
+        { shaderLocation: 5, offset: 48, format: "float32x4" },
+      ],
+    },
   ];
   const mkPipe = (topology: GPUPrimitiveTopology): GPURenderPipeline =>
     device.createRenderPipeline({
@@ -207,7 +248,6 @@ export async function mountHornMutator(): Promise<void> {
   const triPipe = mkPipe("triangle-list");
   const linePipe = mkPipe("line-list");
 
-  // Shared index buffers.
   const triIndices = gridIndices(CELL_SLICES, CELL_STACKS);
   const wireIndices = wireFromTris(triIndices);
   const triIdx = device.createBuffer({ size: triIndices.byteLength, usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST });
@@ -220,10 +260,23 @@ export async function mountHornMutator(): Promise<void> {
 
   const cells: Cell[] = Array.from({ length: CELLS }, () => {
     const target = randomSpecimen(SPACE, nextSeed());
-    const handle = createSweptGpu(device, root, hornFromSpecimen(target), CELL_SLICES, CELL_STACKS);
+    const base = leafHorn(target);
+    const handle = createSweptGpu(device, root, base, CELL_SLICES, CELL_STACKS);
     const cam = device.createBuffer({ size: 96, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
     const bind = device.createBindGroup({ layout: camBGL, entries: [{ binding: 0, resource: { buffer: cam } }] });
-    return { handle, cam, bind, target, filter: new OnePole(SPACE.numCount, { tau: TAU, initial: target.pos }), dirty: false };
+    const inst = device.createBuffer({ size: MAX_INSTANCES * 64, usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST });
+    const cell: Cell = {
+      handle,
+      cam,
+      bind,
+      inst,
+      instMats: new Float32Array(16),
+      instanceCount: 1,
+      target,
+      filter: new OnePole(SPACE.numCount, { tau: TAU, initial: target.pos }),
+      dirty: true,
+    };
+    return cell;
   });
 
   // ── State ────────────────────────────────────────────────────────────────────────────
@@ -238,7 +291,6 @@ export async function mountHornMutator(): Promise<void> {
   let zoom = 1;
   let autoT = 0;
 
-  // ── Depth target (recreated on resize) ────────────────────────────────────────────────
   let depthTex: GPUTexture | null = null;
   let depthView: GPUTextureView | null = null;
   function syncSize(): void {
@@ -254,34 +306,6 @@ export async function mountHornMutator(): Promise<void> {
     }
   }
 
-  const camScratch = new Float32Array(24);
-  function writeCam(cell: Cell, vw: number, vh: number): void {
-    const p = specimenToParams(SPACE, smoothed(cell));
-    const len = num(p, "len");
-    const maxR = Math.max(num(p, "baseR"), num(p, "tipR"));
-    const bendFrac = cell.filter.value()[BEND_SLOT] ?? 0;
-    const extent = 0.5 * len + 1.15 * maxR + 0.28 * len * bendFrac + 0.2;
-    const aspect = vw / Math.max(1, vh);
-    const fit = Math.min(aspect, 1);
-    const eyeR = extent / Math.tan(FOV / 2) / (0.92 * fit) / zoom;
-    const y = yaw + autoT;
-    const eye: Vec3 = [eyeR * Math.cos(pitch) * Math.sin(y), eyeR * Math.sin(pitch), eyeR * Math.cos(pitch) * Math.cos(y)];
-    const proj = M4.perspectiveZO(FOV, aspect, 0.02, 200);
-    const view = M4.lookAt(eye, [0, 0, 0], [0, 1, 0]);
-    const model: Mat4 = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, -len / 2, 1];
-    const mvp = M4.mul(proj, M4.mul(view, model));
-    for (let i = 0; i < 16; i++) camScratch[i] = mvp[i] ?? 0;
-    camScratch[16] = eye[0];
-    camScratch[17] = eye[1];
-    camScratch[18] = eye[2] + len / 2; // object-space eye (undo model z-translate)
-    camScratch[19] = wire ? 1 : 0;
-    camScratch[20] = 0.9;
-    camScratch[21] = 0.53;
-    camScratch[22] = 0.29;
-    camScratch[23] = 0;
-    device.queue.writeBuffer(cell.cam, 0, camScratch);
-  }
-
   const smoothed = (c: Cell): Specimen => ({
     pos: Float64Array.from(c.filter.value()),
     vel: c.target.vel,
@@ -289,7 +313,7 @@ export async function mountHornMutator(): Promise<void> {
     seed: c.target.seed,
   });
 
-  // ── Trait-damping: re-evaluate the GPU geometry only while a cell is moving ────────────
+  // ── Trait-damping: re-evaluate leaf geometry + instance placements while a cell is moving ──
   function easeCells(dt: number): void {
     for (const c of cells) {
       const cur = c.filter.value();
@@ -298,9 +322,64 @@ export async function mountHornMutator(): Promise<void> {
       if (maxd < 1e-4 && !c.dirty) continue;
       if (maxd < 1e-4) c.filter.reset(c.target.pos);
       else c.filter.push(c.target.pos, dt);
-      c.handle.update(hornFromSpecimen(smoothed(c)).paramVector());
+      const sp = smoothed(c);
+      const base = leafHorn(sp);
+      c.handle.update(base.paramVector()); // leaf on the GPU
+      const asm = assemblyOf(sp, base);
+      c.instMats = asm.instanceMatrices(); // structural instancing (CPU-side placements)
+      c.instanceCount = asm.count;
+      device.queue.writeBuffer(c.inst, 0, c.instMats);
       c.dirty = false;
     }
+  }
+
+  const camScratch = new Float32Array(24);
+  function writeCam(cell: Cell, vw: number, vh: number): void {
+    const p = specimenToParams(SPACE, smoothed(cell));
+    const len = num(p, "len");
+    const maxR = Math.max(num(p, "baseR"), num(p, "tipR"));
+    const bendFrac = cell.filter.value()[BEND_SLOT] ?? 0;
+    const baseHalf = 0.5 * len + 1.15 * maxR + 0.28 * len * bendFrac + 0.2;
+    // Assembly bounds + centroid from the instance placements, so towers/whorls stay framed.
+    let cx = 0;
+    let cy = 0;
+    let cz = 0;
+    let extent = baseHalf;
+    const n = Math.max(1, cell.instanceCount);
+    for (let k = 0; k < n; k++) {
+      const b = k * 16;
+      const m = cell.instMats;
+      const sc = Math.hypot(m[b] ?? 0, m[b + 1] ?? 0, m[b + 2] ?? 0);
+      const tx = m[b + 12] ?? 0;
+      const ty = m[b + 13] ?? 0;
+      const tz = m[b + 14] ?? 0;
+      cx += tx;
+      cy += ty;
+      cz += tz + (len / 2) * sc;
+      extent = Math.max(extent, Math.hypot(tx, ty, tz) + baseHalf * sc);
+    }
+    cx /= n;
+    cy /= n;
+    cz /= n;
+    const aspect = vw / Math.max(1, vh);
+    const fit = Math.min(aspect, 1);
+    const eyeR = extent / Math.tan(FOV / 2) / (0.92 * fit) / zoom;
+    const y = yaw + autoT;
+    const eye: Vec3 = [eyeR * Math.cos(pitch) * Math.sin(y), eyeR * Math.sin(pitch), eyeR * Math.cos(pitch) * Math.cos(y)];
+    const proj = M4.perspectiveZO(FOV, aspect, 0.02, 400);
+    const view = M4.lookAt(eye, [0, 0, 0], [0, 1, 0]);
+    const model: Mat4 = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, -cx, -cy, -cz, 1]; // centre the assembly
+    const mvp = M4.mul(proj, M4.mul(view, model));
+    for (let i = 0; i < 16; i++) camScratch[i] = mvp[i] ?? 0;
+    camScratch[16] = eye[0] + cx; // eye in assembly space (undo the centring)
+    camScratch[17] = eye[1] + cy;
+    camScratch[18] = eye[2] + cz;
+    camScratch[19] = wire ? 1 : 0;
+    camScratch[20] = 0.9;
+    camScratch[21] = 0.53;
+    camScratch[22] = 0.29;
+    camScratch[23] = 0;
+    device.queue.writeBuffer(cell.cam, 0, camScratch);
   }
 
   function render(dt: number): void {
@@ -322,22 +401,21 @@ export async function mountHornMutator(): Promise<void> {
     pass.setPipeline(wire ? linePipe : triPipe);
     const idxBuf = wire ? wireIdx : triIdx;
     const idxCount = wire ? wireIndices.length : triIndices.length;
+    pass.setIndexBuffer(idxBuf, "uint32");
     for (let i = 0; i < CELLS; i++) {
       const col = i % 3;
       const row = (i / 3) | 0;
       const vw = col < 2 ? cw : W - 2 * cw;
       const vh = row < 2 ? ch : H - 2 * ch;
-      const vx = col * cw;
-      const vy = row * ch; // WebGPU viewport origin is top-left
       const cell = cells[i] as Cell;
       writeCam(cell, vw, vh);
-      pass.setViewport(vx, vy, vw, vh, 0, 1);
-      pass.setScissorRect(vx, vy, vw, vh);
+      pass.setViewport(col * cw, row * ch, vw, vh, 0, 1);
+      pass.setScissorRect(col * cw, row * ch, vw, vh);
       pass.setBindGroup(0, cell.bind);
       pass.setVertexBuffer(0, cell.handle.positions);
       pass.setVertexBuffer(1, cell.handle.normals);
-      pass.setIndexBuffer(idxBuf, "uint32");
-      pass.drawIndexed(idxCount);
+      pass.setVertexBuffer(2, cell.inst);
+      pass.drawIndexed(idxCount, cell.instanceCount);
     }
     pass.end();
     device.queue.submit([enc.finish()]);
@@ -471,12 +549,18 @@ export async function mountHornMutator(): Promise<void> {
     if (!codeEl) return;
     const p = specimenToParams(SPACE, (cells[primary] as Cell).target);
     const n = (x: string): string => `<span class="n">${x}</span>`;
-    codeEl.innerHTML =
+    const stackN = Math.round(num(p, "stackN"));
+    const branchN = Math.round(num(p, "branchN"));
+    let s =
       `<span class="fn">horn</span>({ radius: <span class="k">linear</span>(${n(num(p, "baseR").toFixed(2))}, ${n(num(p, "tipR").toFixed(2))}),\n` +
       `      exponent: ${n(num(p, "exp").toFixed(2))}, length: ${n(num(p, "len").toFixed(1))} })\n` +
       `  .<span class="fn">twist</span>(<span class="k">ramp</span>(${n(num(p, "twist").toFixed(0))}))\n` +
       `  .<span class="fn">bend</span>(<span class="k">ramp</span>(${n(num(p, "bend").toFixed(0))}))\n` +
       `  .<span class="fn">scale</span>(<span class="k">linear</span>(1, ${n(num(p, "taper").toFixed(2))}))`;
+    if (stackN > 1) s += `\n  .<span class="fn">stack</span>(${n(String(stackN))}, { twist: ${n(`${num(p, "stackTwist").toFixed(0)}`)} })`;
+    if (branchN > 1)
+      s += `\n  .<span class="fn">branch</span>(${n(String(branchN))}, { angle: <span class="k">deg</span>(${n(num(p, "branchAngle").toFixed(0))}), scale: ${n(num(p, "branchScale").toFixed(2))} })`;
+    codeEl.innerHTML = s;
   }
   const setFolded = (f: boolean): void => {
     panel?.classList.toggle("folded", f);
@@ -500,7 +584,7 @@ export async function mountHornMutator(): Promise<void> {
     const parents = [(cells[primary] as Cell).target, ...others.map((i) => (cells[i] as Cell).target)];
     const kids = breed(SPACE, parents, CELLS, { rate, rng, keepElite: true });
     cells.forEach((c, i) => {
-      c.target = kids[i] ?? c.target; // smooth stays → eases into the new genotype
+      c.target = kids[i] ?? c.target;
     });
     bumpGen();
   });
