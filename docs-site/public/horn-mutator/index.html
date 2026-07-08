@@ -1,0 +1,512 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+</head>
+<body>
+<meta charset="utf-8">
+<title>Horn mutator — geometry-ops breeding grid</title>
+<style>
+  :root {
+    --ink: #0a1113; --ink-2: #0e181b;
+    --panel: rgba(13, 23, 26, 0.82); --panel-line: rgba(120, 200, 195, 0.16);
+    --fg: #e6efee; --fg-dim: #8fa5a3; --fg-faint: #5f7573;
+    --accent: #e5894b; --accent-soft: #f0b07f; --teal: #57c4bd;
+    --cell-line: rgba(120, 200, 195, 0.12);
+    --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+    --sans: ui-sans-serif, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    font-family: var(--sans); color: var(--fg);
+    background: radial-gradient(130% 100% at 60% 0%, #16282b 0%, var(--ink-2) 48%, var(--ink) 100%);
+    overflow: hidden;
+  }
+  #stage { position: fixed; inset: 0; }
+
+  /* Grid viewport */
+  #gl { position: absolute; left: 0; top: 0; width: 100%; height: calc(100% - 60px); display: block; touch-action: none; cursor: grab; }
+  #gl:active { cursor: grabbing; }
+  .overlay {
+    position: absolute; left: 0; right: 0; top: 0; bottom: 60px; z-index: 2;
+    display: grid; grid-template-columns: repeat(3, 1fr); grid-template-rows: repeat(3, 1fr);
+    cursor: grab;
+  }
+  .overlay:active { cursor: grabbing; }
+  .cell {
+    position: relative; border: 1px solid var(--cell-line); pointer-events: none;
+    transition: border-color .18s, box-shadow .18s, background .18s;
+  }
+  .cell .tag {
+    position: absolute; top: 8px; left: 9px; font-family: var(--mono); font-size: 10px;
+    letter-spacing: 0.08em; color: var(--fg-faint);
+  }
+  .cell.elite .tag::after { content: " · elite"; color: var(--teal); }
+  .cell.sel { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent), inset 0 0 34px -8px rgba(229,137,75,0.55); background: rgba(229,137,75,0.03); }
+  .cell.sel .tag { color: var(--accent-soft); }
+  .cell.primary .tag::before { content: "◆ "; color: var(--accent); }
+
+  /* Masthead */
+  .masthead { position: absolute; top: 16px; left: 18px; z-index: 4; pointer-events: none; max-width: 44ch; }
+  .eyebrow { font-family: var(--mono); font-size: 10.5px; letter-spacing: 0.22em; text-transform: uppercase; color: var(--teal); margin: 0 0 6px; }
+  .masthead h1 { font-size: clamp(18px, 2.4vw, 26px); line-height: 1.05; margin: 0; font-weight: 620; letter-spacing: -0.015em; text-wrap: balance; }
+  .masthead h1 em { font-style: normal; color: var(--accent); }
+  .masthead p { margin: 7px 0 0; color: var(--fg-dim); font-size: 12.5px; line-height: 1.45; max-width: 40ch; }
+
+  /* Bottom command bar */
+  .bar {
+    position: absolute; left: 0; right: 0; bottom: 0; height: 60px; z-index: 5;
+    display: flex; align-items: center; gap: 16px; padding: 0 16px;
+    background: linear-gradient(0deg, rgba(8,14,16,0.94), rgba(8,14,16,0.55));
+    border-top: 1px solid var(--panel-line); backdrop-filter: blur(10px);
+  }
+  .btn {
+    font-family: var(--sans); font-size: 13px; font-weight: 560; color: var(--ink);
+    background: var(--accent); border: none; border-radius: 9px; padding: 9px 16px; cursor: pointer;
+    display: inline-flex; align-items: center; gap: 7px; transition: filter .15s, transform .05s;
+  }
+  .btn:hover { filter: brightness(1.08); }
+  .btn:active { transform: translateY(1px); }
+  .btn.ghost { background: rgba(120,200,195,0.08); color: var(--fg-dim); border: 1px solid var(--panel-line); font-weight: 500; }
+  .btn.ghost:hover { color: var(--fg); border-color: rgba(120,200,195,0.4); }
+  .btn:focus-visible, .icbtn:focus-visible { outline: 2px solid var(--teal); outline-offset: 2px; }
+  .bar .rate { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--fg-dim); }
+  .bar .rate output { font-family: var(--mono); color: var(--accent-soft); font-variant-numeric: tabular-nums; min-width: 3ch; }
+  .bar .stat { font-family: var(--mono); font-size: 11.5px; color: var(--fg-faint); letter-spacing: 0.03em; font-variant-numeric: tabular-nums; }
+  .bar .stat b { color: var(--teal); font-weight: 500; }
+  .bar .spacer { flex: 1; }
+  .toggle { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--fg-dim); cursor: pointer; }
+  .toggle input { accent-color: var(--accent); width: 13px; height: 13px; }
+
+  input[type="range"] { -webkit-appearance: none; appearance: none; height: 20px; background: transparent; margin: 0; cursor: pointer; }
+  input[type="range"]::-webkit-slider-runnable-track { height: 3px; border-radius: 3px; background: linear-gradient(90deg, var(--teal), rgba(120,200,195,0.18)); }
+  input[type="range"]::-moz-range-track { height: 3px; border-radius: 3px; background: rgba(120,200,195,0.28); }
+  input[type="range"]::-webkit-slider-thumb { -webkit-appearance: none; appearance: none; margin-top: -6px; width: 14px; height: 14px; border-radius: 50%; background: var(--fg); border: 2px solid var(--accent); }
+  input[type="range"]::-moz-range-thumb { width: 12px; height: 12px; border-radius: 50%; background: var(--fg); border: 2px solid var(--accent); }
+  input[type="range"]:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 4px rgba(87,196,189,0.35); }
+
+  /* Foldable parameters panel */
+  .params {
+    position: absolute; top: 14px; right: 14px; bottom: 74px; z-index: 6; width: 300px;
+    background: var(--panel); border: 1px solid var(--panel-line); border-radius: 14px;
+    box-shadow: 0 18px 50px -22px rgba(0,0,0,0.75); backdrop-filter: blur(14px);
+    display: flex; flex-direction: column; transition: transform .28s cubic-bezier(.4,0,.2,1), opacity .2s;
+  }
+  .params.folded { transform: translateX(calc(100% + 20px)); opacity: 0; pointer-events: none; }
+  .params__head { display: flex; align-items: center; justify-content: space-between; padding: 13px 14px 11px; border-bottom: 1px solid var(--panel-line); }
+  .params__head h2 { margin: 0; font-size: 12px; font-family: var(--mono); letter-spacing: 0.14em; text-transform: uppercase; color: var(--fg-dim); }
+  .params__head h2 b { color: var(--accent-soft); }
+  .icbtn { background: none; border: none; color: var(--fg-faint); cursor: pointer; font-size: 17px; line-height: 1; padding: 4px; border-radius: 6px; }
+  .icbtn:hover { color: var(--fg); background: rgba(120,200,195,0.08); }
+  .params__body { padding: 14px; overflow-y: auto; display: flex; flex-direction: column; gap: 13px; }
+  .gene { display: grid; grid-template-columns: 1fr auto; align-items: baseline; gap: 2px 8px; }
+  .gene label { font-size: 12px; color: var(--fg-dim); }
+  .gene output { font-family: var(--mono); font-size: 11.5px; color: var(--accent-soft); font-variant-numeric: tabular-nums; }
+  .gene input[type="range"] { grid-column: 1 / -1; }
+  .code { margin-top: 4px; font-family: var(--mono); font-size: 11px; line-height: 1.6; color: var(--fg-dim); background: rgba(0,0,0,0.25); border: 1px solid var(--panel-line); border-radius: 9px; padding: 10px 11px; white-space: pre-wrap; word-break: break-word; }
+  .code .k { color: var(--teal); } .code .fn { color: var(--accent-soft); } .code .n { color: var(--fg); }
+
+  .fold-tab {
+    position: absolute; top: 14px; right: 14px; z-index: 6;
+    font-family: var(--mono); font-size: 11px; letter-spacing: 0.04em; color: var(--fg-dim);
+    background: var(--panel); border: 1px solid var(--panel-line); border-radius: 999px; padding: 7px 14px;
+    cursor: pointer; opacity: 0; pointer-events: none; transition: opacity .2s, color .15s;
+  }
+  .fold-tab.show { opacity: 1; pointer-events: auto; }
+  .fold-tab:hover { color: var(--fg); }
+
+  .hint { position: absolute; left: 18px; bottom: 70px; z-index: 4; font-size: 11.5px; color: var(--fg-faint); pointer-events: none; }
+  .hint kbd { font-family: var(--mono); font-size: 10.5px; background: rgba(120,200,195,0.1); border: 1px solid var(--panel-line); border-radius: 4px; padding: 1px 5px; color: var(--fg-dim); }
+
+  @media (max-width: 720px) {
+    .masthead p { display: none; }
+    .params { width: auto; left: 12px; right: 12px; top: auto; bottom: 74px; max-height: 46vh; }
+    .params.folded { transform: translateY(calc(100% + 30px)); }
+    .hint { display: none; }
+    .bar { gap: 10px; padding: 0 10px; } .bar .stat { display: none; }
+  }
+</style>
+
+<div id="stage">
+  <canvas id="gl"></canvas>
+  <div class="overlay" id="overlay"></div>
+
+  <div class="masthead">
+    <p class="eyebrow">geometry-ops · ADR-0010 · Mutator</p>
+    <h1>Horn <em>breeding grid</em></h1>
+    <p>Each cell is a swept horn — a superellipse profile over θ, warped along the sweep s.
+      Select parents, breed a generation; the grid eases into its new genotypes.</p>
+  </div>
+
+  <button class="fold-tab" id="foldTab">◆ parameters</button>
+
+  <div class="params" id="params">
+    <div class="params__head">
+      <h2>specimen <b id="specName">#1</b></h2>
+      <button class="icbtn" id="foldBtn" title="Fold away" aria-label="Fold panel">⌄</button>
+    </div>
+    <div class="params__body" id="geneList"></div>
+  </div>
+
+  <div class="hint">drag to orbit all · click a cell to select · <kbd>⇧</kbd>-click to add a parent</div>
+
+  <div class="bar">
+    <button class="btn" id="breed">⚘ Breed</button>
+    <button class="btn ghost" id="random">Randomize</button>
+    <label class="rate">mutation
+      <input type="range" id="rate" min="0.02" max="0.5" step="0.01" value="0.18" style="width:96px">
+      <output id="rate_v">0.18</output>
+    </label>
+    <span class="spacer"></span>
+    <span class="stat">gen <b id="genN">0</b> · <b id="selN">1</b> selected</span>
+    <label class="toggle"><input type="checkbox" id="spin" checked> spin</label>
+    <label class="toggle"><input type="checkbox" id="wire"> wire</label>
+  </div>
+</div>
+
+<script>
+"use strict";
+// ─────────────────────────────────────────────────────────────────────────────
+// A probe UI over the ADR-0010 geometry-ops: the Todd–Latham Mutator breeding
+// grid driving the swept-horn grammar. The horn eval is a faithful JS port of
+// src/geometry/swept.ts (the CPU golden — verified equal to Swept.position to 1e-12);
+// mutate/marry/breed mirror src/evo/mutator.ts; the per-cell easing is our
+// OnePole trait-damping (α = 1 − exp(−dt/τ), src/gpu/graph/onePole.ts).
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ── Genes: the breedable ParamSpecs (normalised trait pos ∈ [0,1] over [min,max]) ──
+const GENES = [
+  { key: "baseR", name: "base radius",   min: 0.04, max: 0.9,  fmt: v => v.toFixed(2) },
+  { key: "tipR",  name: "tip radius",    min: 0.02, max: 1.0,  fmt: v => v.toFixed(2) },
+  { key: "exp",   name: "superellipse e",min: 0.45, max: 2.0,  fmt: v => v.toFixed(2) },
+  { key: "len",   name: "sweep length",  min: 1.6,  max: 6.2,  fmt: v => v.toFixed(1) },
+  { key: "twist", name: "twist (turns)", min: 0,    max: 3.2,  fmt: v => v.toFixed(2) + " turn" },
+  { key: "bend",  name: "bend (degrees)",min: 0,    max: 170,  fmt: v => v.toFixed(0) + "°" },
+  { key: "taper", name: "taper",         min: 0.08, max: 1.3,  fmt: v => "×" + v.toFixed(2) },
+];
+const CELLS = 9;
+const CELL_SLICES = 46, CELL_STACKS = 74;
+const TAU = 0.13; // trait-damping time constant (seconds)
+
+const toRaw = (g, pos) => g.min + pos * (g.max - g.min);
+const toPos = (g, raw) => (raw - g.min) / (g.max - g.min);
+const clamp01 = x => (x < 0 ? 0 : x > 1 ? 1 : x);
+function gauss() { let u = 0, v = 0; while (!u) u = Math.random(); while (!v) v = Math.random(); return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v); }
+
+// ── Mutator ops (mirror src/evo/mutator.ts, number traits only) ────────────────
+function mutate(pos, rate) { const o = {}; for (const g of GENES) o[g.key] = clamp01(pos[g.key] + gauss() * rate); return o; }
+function marry(a, b) { const o = {}; for (const g of GENES) { const t = Math.random(); o[g.key] = a[g.key] * (1 - t) + b[g.key] * t; } return o; }
+function randomPos() { const o = {}; for (const g of GENES) o[g.key] = Math.random(); return o; }
+function breed(parents, rate) {
+  const out = [];
+  out.push({ ...parents[0] });               // elite: primary parent unchanged
+  for (let i = 1; i < CELLS; i++) {
+    if (parents.length === 1) { out.push(mutate(parents[0], rate)); }
+    else {
+      const a = parents[(Math.random() * parents.length) | 0];
+      let b = parents[(Math.random() * parents.length) | 0];
+      if (b === a) b = parents[(parents.indexOf(a) + 1) % parents.length];
+      out.push(mutate(marry(a, b), rate));
+    }
+  }
+  return out;
+}
+
+// ── Horn eval — faithful port of Swept.tessellate / Swept.position ─────────────
+const FRAME_H = 1e-2;
+const signPow = (x, e) => Math.sign(x) * Math.pow(Math.abs(x), e);
+function hornPosition(p, s, th) {
+  const r = p.baseR + (p.tipR - p.baseR) * s;            // radius: linear(base, tip)
+  let x = r * signPow(Math.cos(th), p.exp);
+  let y = r * signPow(Math.sin(th), p.exp);
+  let z = s * p.len;
+  { const a = p.twist * 2 * Math.PI * s, c = Math.cos(a), sn = Math.sin(a); const nx = x*c - y*sn, ny = x*sn + y*c; x = nx; y = ny; }  // twist: ramp
+  { const a = (p.bend * Math.PI / 180) * s, c = Math.cos(a), sn = Math.sin(a); const ny = y*c - z*sn, nz = y*sn + z*c; y = ny; z = nz; } // bend: ramp
+  { const f = 1 + (p.taper - 1) * s; x *= f; y *= f; }   // scale: linear(1, taper)
+  return [x, y, z];
+}
+const INDICES = (() => {
+  const cols = CELL_SLICES + 1;
+  const idx = new Uint32Array(CELL_SLICES * CELL_STACKS * 6); let k = 0;
+  for (let row = 0; row < CELL_STACKS; row++) for (let col = 0; col < CELL_SLICES; col++) {
+    const a = row * cols + col, b = a + 1, c = a + cols, d = c + 1;
+    idx[k++] = a; idx[k++] = c; idx[k++] = d; idx[k++] = a; idx[k++] = d; idx[k++] = b;
+  }
+  return idx;
+})();
+function tessellate(p) {
+  const cols = CELL_SLICES + 1, rows = CELL_STACKS + 1;
+  const inter = new Float32Array(cols * rows * 6);
+  const sub = (a, b) => [a[0]-b[0], a[1]-b[1], a[2]-b[2]];
+  const cross = (a, b) => [a[1]*b[2]-a[2]*b[1], a[2]*b[0]-a[0]*b[2], a[0]*b[1]-a[1]*b[0]];
+  for (let row = 0; row < rows; row++) for (let col = 0; col < cols; col++) {
+    const s = row / CELL_STACKS, th = (col / CELL_SLICES) * 2 * Math.PI;
+    const pos = hornPosition(p, s, th);
+    const dT = sub(hornPosition(p, s, th + FRAME_H), hornPosition(p, s, th - FRAME_H));
+    const dS = sub(hornPosition(p, s + FRAME_H, th), hornPosition(p, s - FRAME_H, th));
+    let n = cross(dT, dS); const L = Math.hypot(n[0], n[1], n[2]);
+    n = L > 1e-8 ? [n[0]/L, n[1]/L, n[2]/L] : [0, 0, 1];
+    const o = (row * cols + col) * 6;
+    inter[o] = pos[0]; inter[o+1] = pos[1]; inter[o+2] = pos[2];
+    inter[o+3] = n[0]; inter[o+4] = n[1]; inter[o+5] = n[2];
+  }
+  return inter;
+}
+
+// ── mat4 (column-major) ────────────────────────────────────────────────────────
+const M4 = {
+  perspective(f_, a, n, fa) { const f = 1/Math.tan(f_/2), nf = 1/(n-fa); return [f/a,0,0,0, 0,f,0,0, 0,0,(fa+n)*nf,-1, 0,0,2*fa*n*nf,0]; },
+  lookAt(e, c, up) {
+    const s=(a,b)=>[a[0]-b[0],a[1]-b[1],a[2]-b[2]], nr=v=>{const l=Math.hypot(v[0],v[1],v[2])||1;return[v[0]/l,v[1]/l,v[2]/l];}, cr=(a,b)=>[a[1]*b[2]-a[2]*b[1],a[2]*b[0]-a[0]*b[2],a[0]*b[1]-a[1]*b[0]];
+    const z=nr(s(e,c)), x=nr(cr(up,z)), y=cr(z,x);
+    return [x[0],y[0],z[0],0, x[1],y[1],z[1],0, x[2],y[2],z[2],0, -(x[0]*e[0]+x[1]*e[1]+x[2]*e[2]), -(y[0]*e[0]+y[1]*e[1]+y[2]*e[2]), -(z[0]*e[0]+z[1]*e[1]+z[2]*e[2]), 1];
+  },
+  mul(a, b) { const o = new Array(16); for (let c=0;c<4;c++) for (let r=0;r<4;r++) o[c*4+r]=a[r]*b[c*4]+a[4+r]*b[c*4+1]+a[8+r]*b[c*4+2]+a[12+r]*b[c*4+3]; return o; }
+};
+
+// ── GL ───────────────────────────────────────────────────────────────────────
+const canvas = document.getElementById("gl");
+const gl = canvas.getContext("webgl2", { antialias: true, alpha: true });
+const VERT = `#version 300 es
+layout(location=0) in vec3 aPos; layout(location=1) in vec3 aNor;
+uniform mat4 uMVP; out vec3 vN; out vec3 vP;
+void main(){ vN=aNor; vP=aPos; gl_Position=uMVP*vec4(aPos,1.0); }`;
+const FRAG = `#version 300 es
+precision highp float; in vec3 vN; in vec3 vP;
+uniform vec3 uEye; uniform vec3 uAccent; uniform float uWire; out vec4 frag;
+void main(){
+  vec3 V=normalize(uEye-vP); vec3 N=normalize(vN); if(dot(N,V)<0.0) N=-N;
+  vec3 key=normalize(vec3(0.5,0.9,0.6)); float diff=max(dot(N,key),0.0); float hemi=0.5+0.5*N.y;
+  vec3 ground=vec3(0.05,0.08,0.09), sky=vec3(0.34,0.52,0.55);
+  vec3 col=mix(ground,uAccent,hemi)*(0.28+0.85*diff)+mix(ground,sky,hemi)*0.28;
+  vec3 H=normalize(key+V); col+=vec3(1.0,0.92,0.82)*pow(max(dot(N,H),0.0),42.0)*0.5;
+  col+=uAccent*pow(1.0-max(dot(N,V),0.0),3.0)*0.5;
+  if(uWire>0.5) col=mix(col,vec3(0.85,0.95,0.93),0.6);
+  frag=vec4(pow(col,vec3(0.4545)),1.0);
+}`;
+function compile(t, s){ const sh=gl.createShader(t); gl.shaderSource(sh,s); gl.compileShader(sh); if(!gl.getShaderParameter(sh,gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(sh)); return sh; }
+const prog = gl.createProgram();
+gl.attachShader(prog, compile(gl.VERTEX_SHADER, VERT)); gl.attachShader(prog, compile(gl.FRAGMENT_SHADER, FRAG)); gl.linkProgram(prog);
+if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(prog));
+const U = { mvp: gl.getUniformLocation(prog,"uMVP"), eye: gl.getUniformLocation(prog,"uEye"), accent: gl.getUniformLocation(prog,"uAccent"), wire: gl.getUniformLocation(prog,"uWire") };
+const ebo = gl.createBuffer();
+gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ebo); gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, INDICES, gl.STATIC_DRAW);
+gl.enable(gl.DEPTH_TEST); gl.enable(gl.SCISSOR_TEST);
+const wireEbo = gl.createBuffer();
+const WIRE_INDICES = (() => {
+  const set = new Set(); const push=(a,b)=>set.add(a<b?a*4294967296+b:b*4294967296+a);
+  for (let i=0;i<INDICES.length;i+=3){ push(INDICES[i],INDICES[i+1]); push(INDICES[i+1],INDICES[i+2]); push(INDICES[i+2],INDICES[i]); }
+  const out=new Uint32Array(set.size*2); let j=0; for (const v of set){ out[j++]=Math.floor(v/4294967296); out[j++]=v%4294967296; } return out;
+})();
+gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, wireEbo); gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, WIRE_INDICES, gl.STATIC_DRAW);
+
+// ── Cells: each holds a genotype (target), an eased genotype (smooth), and a VAO/VBO ──
+function makeCell() {
+  const vao = gl.createVertexArray(); const vbo = gl.createBuffer();
+  gl.bindVertexArray(vao); gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
+  gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0,3,gl.FLOAT,false,24,0);
+  gl.enableVertexAttribArray(1); gl.vertexAttribPointer(1,3,gl.FLOAT,false,24,12);
+  gl.bindVertexArray(null);
+  return { vao, vbo, target: randomPos(), smooth: null, dirty: true };
+}
+const cells = Array.from({ length: CELLS }, makeCell);
+for (const c of cells) c.smooth = { ...c.target };   // prime (snapFirst)
+
+function rawOf(pos) { const o = {}; for (const g of GENES) o[g.key] = toRaw(g, pos[g.key]); return o; }
+function uploadCell(c) {
+  const inter = tessellate(rawOf(c.smooth));
+  gl.bindBuffer(gl.ARRAY_BUFFER, c.vbo); gl.bufferData(gl.ARRAY_BUFFER, inter, gl.DYNAMIC_DRAW);
+  c.dirty = false;
+}
+for (const c of cells) uploadCell(c);
+
+// ── Selection / generation state ───────────────────────────────────────────────
+let selected = new Set([0]);   // parents for breeding
+let primary = 0;               // which specimen the params panel edits
+let generation = 0;
+let spin = true, wire = false, rate = 0.18;
+
+// ── Trait-damping (OnePole) + per-frame mesh rebuild ───────────────────────────
+function easeCells(dt) {
+  const a = 1 - Math.exp(-Math.max(dt, 0) / TAU);
+  for (const c of cells) {
+    let moving = false;
+    for (const g of GENES) {
+      const t = c.target[g.key], y = c.smooth[g.key];
+      let ny = y + a * (t - y);
+      if (Math.abs(t - ny) < 1e-4) ny = t; else moving = true;
+      c.smooth[g.key] = ny;
+    }
+    if (moving || c.dirty) uploadCell(c);
+  }
+}
+
+// ── Camera (shared across the grid) ────────────────────────────────────────────
+let yaw = 0.7, pitch = 0.28, zoom = 1, autoT = 0;
+const FOV = 44 * Math.PI / 180;
+function syncSize() {
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const w = Math.max(1, Math.floor(canvas.clientWidth * dpr)), h = Math.max(1, Math.floor(canvas.clientHeight * dpr));
+  if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
+}
+function drawCell(c, vx, vy, vw, vh) {
+  gl.viewport(vx, vy, vw, vh); gl.scissor(vx, vy, vw, vh);
+  gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+  const len = toRaw(GENES[3], c.smooth.len);
+  const maxR = Math.max(toRaw(GENES[0], c.smooth.baseR), toRaw(GENES[1], c.smooth.tipR));
+  // Rough half-extent of the swept form, so every cell frames its specimen alike
+  // regardless of length/radius/bend. (bend curls the axis laterally up to ~len.)
+  const bendFrac = c.smooth.bend;                       // normalised 0..1
+  const extent = 0.5 * len + 1.15 * maxR + 0.28 * len * bendFrac + 0.2;
+  const aspect = vw / Math.max(1, vh);
+  const fit = Math.min(aspect, 1);                      // fit to the tighter axis
+  const eyeR = (extent / Math.tan(FOV / 2)) / (0.92 * fit) / zoom;
+  const y = yaw + autoT;
+  const eye = [eyeR*Math.cos(pitch)*Math.sin(y), eyeR*Math.sin(pitch), eyeR*Math.cos(pitch)*Math.cos(y)];
+  const proj = M4.perspective(FOV, aspect, 0.02, 200);
+  const view = M4.lookAt(eye, [0,0,0], [0,1,0]);
+  const model = [1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,-len/2,1];
+  gl.uniformMatrix4fv(U.mvp, false, new Float32Array(M4.mul(proj, M4.mul(view, model))));
+  gl.uniform3fv(U.eye, new Float32Array([eye[0], eye[1], eye[2] + len/2]));
+  gl.bindVertexArray(c.vao);
+  if (wire) { gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, wireEbo); gl.drawElements(gl.LINES, WIRE_INDICES.length, gl.UNSIGNED_INT, 0); }
+  else { gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ebo); gl.drawElements(gl.TRIANGLES, INDICES.length, gl.UNSIGNED_INT, 0); }
+}
+function render(dt) {
+  if (spin) autoT += dt * 0.3;
+  easeCells(dt);
+  syncSize();
+  const W = canvas.width, H = canvas.height;
+  const cw = Math.floor(W/3), ch = Math.floor(H/3);
+  gl.clearColor(0,0,0,0);
+  gl.useProgram(prog);
+  gl.uniform3fv(U.accent, new Float32Array([0.90, 0.53, 0.29]));
+  gl.uniform1f(U.wire, wire ? 1 : 0);
+  for (let i = 0; i < CELLS; i++) {
+    const col = i % 3, row = (i / 3) | 0;
+    const vw = col < 2 ? cw : W - 2 * cw;      // last column fills the remainder
+    const vh = row < 2 ? ch : H - 2 * ch;      // last row fills the remainder
+    const vx = col * cw;
+    const vy = H - (row * ch + vh);            // GL origin is bottom-left
+    drawCell(cells[i], vx, vy, vw, vh);
+  }
+}
+let last = 0;
+function loop(t) { const dt = Math.min((t - last)/1000, 0.05); last = t; render(dt); requestAnimationFrame(loop); }
+
+// ── Grid overlay: cells, selection, orbit ──────────────────────────────────────
+const overlay = document.getElementById("overlay");
+const cellEls = [];
+for (let i = 0; i < CELLS; i++) {
+  const el = document.createElement("div"); el.className = "cell";
+  const tag = document.createElement("span"); tag.className = "tag"; tag.textContent = "#" + (i + 1);
+  el.appendChild(tag); overlay.appendChild(el); cellEls.push(el);
+}
+function refreshCellStyles() {
+  cellEls.forEach((el, i) => {
+    el.classList.toggle("sel", selected.has(i));
+    el.classList.toggle("primary", i === primary);
+    el.classList.toggle("elite", i === 0 && generation > 0);
+  });
+  document.getElementById("selN").textContent = String(selected.size);
+}
+function cellIndexAt(clientX, clientY) {
+  const r = overlay.getBoundingClientRect();
+  const col = Math.min(2, Math.max(0, Math.floor((clientX - r.left) / (r.width / 3))));
+  const row = Math.min(2, Math.max(0, Math.floor((clientY - r.top) / (r.height / 3))));
+  return row * 3 + col;
+}
+
+// orbit vs click discrimination
+let down = false, moved = false, sx = 0, sy = 0, px = 0, py = 0;
+overlay.addEventListener("pointerdown", (e) => { down = true; moved = false; sx = px = e.clientX; sy = py = e.clientY; overlay.setPointerCapture(e.pointerId); });
+overlay.addEventListener("pointermove", (e) => {
+  if (!down) return;
+  if (Math.abs(e.clientX - sx) + Math.abs(e.clientY - sy) > 5) moved = true;
+  if (moved) { yaw -= (e.clientX - px) * 0.008; pitch = Math.max(-1.35, Math.min(1.35, pitch + (e.clientY - py) * 0.008)); }
+  px = e.clientX; py = e.clientY;
+});
+overlay.addEventListener("pointerup", (e) => {
+  down = false;
+  if (moved) return;                       // was an orbit drag
+  const i = cellIndexAt(e.clientX, e.clientY);
+  if (e.shiftKey || e.metaKey || e.ctrlKey) {
+    if (selected.has(i) && selected.size > 1) selected.delete(i); else selected.add(i);
+    primary = i;
+  } else { selected = new Set([i]); primary = i; }
+  refreshCellStyles(); buildGenePanel();
+});
+overlay.addEventListener("wheel", (e) => { e.preventDefault(); zoom = Math.max(0.45, Math.min(2.6, zoom * (1 - Math.sign(e.deltaY) * 0.08))); }, { passive: false });
+
+// ── Parameters panel (folds away) ──────────────────────────────────────────────
+const geneList = document.getElementById("geneList");
+const panel = document.getElementById("params");
+const foldTab = document.getElementById("foldTab");
+let geneInputs = {};
+function buildGenePanel() {
+  const c = cells[primary];
+  document.getElementById("specName").textContent = "#" + (primary + 1);
+  geneList.innerHTML = ""; geneInputs = {};
+  for (const g of GENES) {
+    const row = document.createElement("div"); row.className = "gene";
+    const raw = toRaw(g, c.target[g.key]);
+    row.innerHTML = `<label for="g_${g.key}">${g.name}</label><output id="o_${g.key}">${g.fmt(raw)}</output>`;
+    const inp = document.createElement("input");
+    inp.type = "range"; inp.id = "g_" + g.key; inp.min = "0"; inp.max = "1"; inp.step = "0.001";
+    inp.value = String(c.target[g.key]); inp.style.gridColumn = "1 / -1";
+    inp.addEventListener("input", () => {
+      c.target[g.key] = +inp.value;
+      document.getElementById("o_" + g.key).textContent = g.fmt(toRaw(g, +inp.value));
+      updateCode();
+    });
+    row.appendChild(inp); geneList.appendChild(row); geneInputs[g.key] = inp;
+  }
+  const code = document.createElement("div"); code.className = "code"; code.id = "code";
+  geneList.appendChild(code); updateCode();
+}
+function updateCode() {
+  const c = cells[primary], p = rawOf(c.target), n = x => `<span class="n">${x}</span>`;
+  document.getElementById("code").innerHTML =
+    `<span class="fn">horn</span>({ radius: <span class="k">linear</span>(${n(p.baseR.toFixed(2))}, ${n(p.tipR.toFixed(2))}),\n` +
+    `      exponent: ${n(p.exp.toFixed(2))}, length: ${n(p.len.toFixed(1))} })\n` +
+    `  .<span class="fn">twist</span>(<span class="k">ramp</span>(${n((p.twist*360).toFixed(0))}))\n` +
+    `  .<span class="fn">bend</span>(<span class="k">ramp</span>(${n(p.bend.toFixed(0))}))\n` +
+    `  .<span class="fn">scale</span>(<span class="k">linear</span>(1, ${n(p.taper.toFixed(2))}))`;
+}
+function setFolded(f) { panel.classList.toggle("folded", f); foldTab.classList.toggle("show", f); }
+document.getElementById("foldBtn").addEventListener("click", () => setFolded(true));
+foldTab.addEventListener("click", () => setFolded(false));
+
+// ── Command bar ────────────────────────────────────────────────────────────────
+document.getElementById("breed").addEventListener("click", () => {
+  // Primary parent first so it survives as the elite (cell #1); then the other selected.
+  const others = [...selected].filter(i => i !== primary);
+  const parents = [cells[primary].target, ...others.map(i => cells[i].target)].map(p => ({ ...p }));
+  const kids = breed(parents, rate);
+  cells.forEach((c, i) => { c.target = kids[i]; });        // smooth stays → eases into the new genotype
+  generation++; document.getElementById("genN").textContent = String(generation);
+  selected = new Set([0]); primary = 0;
+  refreshCellStyles(); buildGenePanel();
+});
+document.getElementById("random").addEventListener("click", () => {
+  cells.forEach(c => { c.target = randomPos(); });
+  generation++; document.getElementById("genN").textContent = String(generation);
+  selected = new Set([0]); primary = 0; refreshCellStyles(); buildGenePanel();
+});
+const rateInp = document.getElementById("rate");
+rateInp.addEventListener("input", () => { rate = +rateInp.value; document.getElementById("rate_v").textContent = rate.toFixed(2); });
+document.getElementById("spin").addEventListener("change", e => { spin = e.target.checked; });
+document.getElementById("wire").addEventListener("change", e => { wire = e.target.checked; });
+
+if (window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches) { spin = false; document.getElementById("spin").checked = false; }
+
+refreshCellStyles();
+buildGenePanel();
+syncSize();
+requestAnimationFrame(loop);
+</script>
+
+</body>
+</html>

@@ -1,0 +1,46 @@
+---
+title: The swept horn grammar
+description: A composable procedural-geometry grammar — a superellipse profile swept along a curve under a stack of closed-form transforms, evaluated the same on the CPU and the GPU.
+---
+
+Procedural geometry in this toolbox starts from the **horn**: a cross-section
+(**profile**) swept along a curve and warped by an ordered stack of transforms —
+`bend`, `twist`, `scale`. It is a clean re-derivation of the FormGrow horn grammar
+from the long-running **Todd–Latham** collaboration, rebuilt here as a lazy,
+typed geometry expression-IR (see decision record ADR-0010).
+
+The defining property is that a horn is **pointwise closed-form**:
+
+$$\mathrm{eval}(s,\ \theta)\ \rightarrow\ (\text{position},\ \text{normal})$$
+
+for a sweep coordinate $s \in [0,1]$ (base → tip) and a spoke coordinate
+$\theta \in [0,2\pi)$ (around the profile). There is no marching or recurrence
+along the sweep, so the same expression is compiled two ways that agree by
+construction: a **CPU golden** `(s, θ)` loop, and a per-vertex **WGSL** kernel
+generated from the same IR. A parity test pins them together to within `1e-4`.
+
+## Live demo — the Mutator breeding grid
+
+The grammar's parameters are ordinary numbers, so they breed. This demo is a
+[Todd–Latham **Mutator**](https://en.wikipedia.org/wiki/Mutator_(genetic_algorithm))
+grid: each of the nine cells is a horn, you select parents and breed a new
+generation, and the grid eases between genotypes with the toolbox's own one-pole
+trait-damping.
+
+**[▶ Open the horn Mutator](/horn-mutator/index.html)** — a self-contained interactive page (opens in this tab; use your browser's back button to return).
+
+- **Drag** anywhere to orbit all nine cells; **scroll** to zoom.
+- **Click** a cell to select it as the parent; **⇧-click** to add more parents.
+- **Breed** produces a generation of mutated offspring around the selected elite;
+  **Randomize** scatters fresh genotypes.
+- Open the folded **parameters** panel to edit a specimen's genes directly and
+  read the equivalent `horn(…)` chain.
+
+:::note
+The demo runs the real evaluation math (a faithful port of the library's CPU
+golden, `src/geometry/swept.ts`) and the real Mutator operators
+(`src/evo/mutator.ts`) in one self-contained page. Rendering is WebGL for
+portability; in the library the same IR also lowers to a TypeGPU/WGSL kernel.
+This is a first-slice capability — bend/twist/scale over one swept profile;
+structural ops (branching, stacking, recursion) are designed-for and not yet built.
+:::
