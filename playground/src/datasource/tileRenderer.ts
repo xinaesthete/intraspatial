@@ -21,6 +21,13 @@ import {
 } from "../../../src/datasource";
 import { greyscaleMaterial } from "./tileChannelMaterial";
 
+/** Per-level depth separation (in array-z / voxel units): each coarser level sits this much farther
+ *  along the plane normal, so a finer tile wins the depth test over a coexisting coarse fallback
+ *  without z-fighting. Sub-voxel, so no visible parallax; big enough to clear depth-buffer precision
+ *  when zoomed in (where it matters). Fixed direction for now — a camera-relative (view-dependent)
+ *  bias is a follow-up (see docs/datasource-renderer-plan.md). */
+const LEVEL_Z_BIAS = 0.1;
+
 /** Lanes a tile carries (a scalar tile is one lane). */
 const tileLanes = (tile: Tile): number => (tile.element.kind === "vec" ? tile.element.n : 1);
 
@@ -145,7 +152,13 @@ export class TileRenderer implements MemoryReporting {
   private addMesh(k: string, id: Tile["id"], tex: THREE.Texture): void {
     const [lo, hi] = chunkArrayBox(this.ms, id);
     const a = this.ms.worldFromArray;
-    const z = 0.5;
+    // Sit coarser levels a hair farther along the plane normal (+array-z), so where a coarse
+    // fallback and a finer tile briefly coexist the finer one wins the depth test — no z-fighting —
+    // while every tile still depth-tests AND writes depth against the rest of the scene.
+    // (polygonOffset is the view-independent tool for this but three's WebGPU backend ignores it.)
+    // The bias assumes the viewer is on the plane's front side, as an image viewer is; from the far
+    // side it degrades to showing the coarser tile, not a mosaic. Per-region masking is the real fix.
+    const z = 0.5 + id.level * LEVEL_Z_BIAS;
     const p = (x: number, y: number): Vec3 => applyAffine(a, [x, y, z]);
     const c00 = p(lo[0], lo[1]),
       c10 = p(hi[0], lo[1]),
@@ -155,11 +168,6 @@ export class TileRenderer implements MemoryReporting {
     geo.setAttribute("position", new THREE.Float32BufferAttribute([...c00, ...c10, ...c11, ...c00, ...c11, ...c01], 3));
     geo.setAttribute("uv", new THREE.Float32BufferAttribute([0, 0, 1, 0, 1, 1, 0, 0, 1, 1, 0, 1], 2));
     const material = this.makeMaterial ? this.makeMaterial(tex) : greyscaleMaterial(tex);
-    // Coplanar tiles of different levels overlap while a fallback is retained; bias coarser levels
-    // back in depth (view-independent) so the finer tile always wins — no z-fighting, finer on top.
-    material.polygonOffset = true;
-    material.polygonOffsetFactor = id.level;
-    material.polygonOffsetUnits = id.level * 4;
     const mesh = new THREE.Mesh(geo, material);
     this.meshes.set(k, mesh);
     this.meshIds.set(k, id);
