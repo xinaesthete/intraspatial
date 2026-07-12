@@ -7,8 +7,11 @@ import { bytesPerSample, type Multiscale } from "./types";
 
 const ceilDiv = (a: number, b: number): number => Math.ceil(a / b);
 
-/** Voxel dimensions of level L (`ceil(dims0 / 2^L)`, ≥ 1). */
+/** Voxel dimensions of level L. Uses the Resource's real per-level dims when known (`ms.levelDims`,
+ *  e.g. a floor-halving OME-Zarr pyramid), else the `ceil(dims0 / 2^L)` idealisation. */
 export function levelVoxelDims(ms: Multiscale, level: number): [number, number, number] {
+  const real = ms.levelDims?.[level];
+  if (real) return [Math.max(1, real[0]), Math.max(1, real[1]), Math.max(1, real[2])];
   const f = 2 ** level;
   return [Math.max(1, ceilDiv(ms.voxelDims0[0], f)), Math.max(1, ceilDiv(ms.voxelDims0[1], f)), Math.max(1, ceilDiv(ms.voxelDims0[2], f))];
 }
@@ -27,15 +30,26 @@ export function chunkVoxelExtent(ms: Multiscale, id: { level: number; x: number;
   return [e(v[0], c[0], id.x), e(v[1], c[1], id.y), e(v[2], c[2], id.z)];
 }
 
-/** The chunk's box in **level-0 array units** (one level-L voxel = `2^L` level-0
- *  voxels), clamped to the full-resolution extent. Returns `[min, max]`. */
+/** The chunk's box in **level-0 array units**, from the chunk's *fractional* coverage of its level
+ *  scaled to the full extent — so every level maps to the same world box and cross-level tiles align
+ *  exactly (rather than a level-L chunk being placed at `2^L·chunkShape`, which drifts from the real
+ *  data when the pyramid isn't exactly halving). Returns `[min, max]`. */
 export function chunkArrayBox(ms: Multiscale, id: { level: number; x: number; y: number; z: number }): [Vec3, Vec3] {
-  const f = 2 ** id.level;
-  const c = ms.chunkShape;
-  const d0 = ms.voxelDims0;
-  const lo: Vec3 = [id.x * c[0] * f, id.y * c[1] * f, id.z * c[2] * f];
-  const hi: Vec3 = [Math.min(d0[0], (id.x + 1) * c[0] * f), Math.min(d0[1], (id.y + 1) * c[1] * f), Math.min(d0[2], (id.z + 1) * c[2] * f)];
-  return [lo, hi];
+  const [cx, cy, cz] = ms.chunkShape;
+  const [d0x, d0y, d0z] = ms.voxelDims0;
+  const [dLx, dLy, dLz] = levelVoxelDims(ms, id.level);
+  // level-voxel span of this chunk (clamped to the level) → fraction of the level → level-0 units.
+  const edge = (i: number, cw: number, dL: number, d0: number): [number, number] => [
+    (Math.min(i * cw, dL) / dL) * d0,
+    (Math.min((i + 1) * cw, dL) / dL) * d0,
+  ];
+  const [lox, hix] = edge(id.x, cx, dLx, d0x);
+  const [loy, hiy] = edge(id.y, cy, dLy, d0y);
+  const [loz, hiz] = edge(id.z, cz, dLz, d0z);
+  return [
+    [lox, loy, loz],
+    [hix, hiy, hiz],
+  ];
 }
 
 /** The world AABB of a chunk. */

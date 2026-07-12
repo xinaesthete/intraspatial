@@ -160,6 +160,10 @@ async function buildImage(
   const outLanes = element.kind === "vec" ? element.n : 1;
 
   const voxelDims0: [number, number, number] = [base.shape[xi] ?? 1, base.shape[yi] ?? 1, 1];
+  // Real per-level dims: OME-Zarr pyramids floor-halve, so the downsample isn't exactly 2^L (here
+  // L4 x = 11580/723 ≈ 16.017). Carrying the true shapes makes every level map to the same world
+  // extent, so cross-level tiles align exactly instead of drifting toward the far edge.
+  const levelDims: [number, number, number][] = sources.map((s) => [s.shape[xi] ?? 1, s.shape[yi] ?? 1, 1]);
   const tile = base.tileSize;
   // Normalise decoded integer samples into [0,1] by their dtype range; the contrast window then
   // lives in [0,1] space too.
@@ -170,6 +174,7 @@ async function buildImage(
     voxelDims0,
     chunkShape: [tile, tile, 1],
     levelCount: sources.length,
+    levelDims,
     worldFromArray,
     element,
     dtype: "f32",

@@ -9,7 +9,7 @@ import type { Affine3 } from "./math";
 export type { Dtype, ElementType } from "../gpu/graph/handle";
 
 /** A `Multiscale` handle: cheap metadata for an addressable pyramid, no samples.
- *  Level L downsamples every axis by `2^L`; chunks hold a constant voxel count per
+ *  Level L downsamples every axis by `~2^L`; chunks hold a constant voxel count per
  *  level (`chunkShape`). `worldFromArray` places level-0 voxels into world. */
 export interface Multiscale {
   /** Full-resolution voxel dimensions `[W, H, D]`; `D === 1` for a plane. */
@@ -18,6 +18,11 @@ export interface Multiscale {
   readonly chunkShape: readonly [number, number, number];
   /** Number of pyramid levels (level 0 = full resolution). */
   readonly levelCount: number;
+  /** Real voxel dimensions per level (index = level), when the pyramid's downsampling isn't
+   *  exactly `2^L` (e.g. floor-halving in an OME-Zarr). Absent ⇒ derive `ceil(voxelDims0 / 2^L)`.
+   *  Used so every level's chunks map to the *same* world extent — cross-level tiles then align
+   *  exactly, instead of drifting by the accumulated 2^L-vs-actual error toward the far edge. */
+  readonly levelDims?: readonly (readonly [number, number, number])[];
   /** Array space (level-0 voxel units) → world. */
   readonly worldFromArray: Affine3;
   readonly element: ElementType;
