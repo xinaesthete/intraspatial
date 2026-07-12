@@ -63,11 +63,14 @@ store, not the checked-in `blobs_multiscale_image` (which is `zstd`, not HTJ2K, 
 make the bounded-working-set behaviour tangible).
 
 **Slice 1a — seam proof, `he_image` only:**
-- Maps onto the **existing power-of-2 `Multiscale` / `select.ts` unchanged**
-  (`voxelDims0=[11580,45087,1]`, `chunkShape=[1024,1024,1]`, `levelCount=5`). The real per-level
-  scale (`2.00004×…`) vs exact `2×`, and the resulting off-by-one voxel at each level's far
-  border, are both negligible (chunk-grid counts are identical; the loader reports each border
-  tile's actual returned dims).
+- Maps onto the **existing `Multiscale` / `select.ts`** (`voxelDims0=[11580,45087,1]`,
+  `chunkShape=[1024,1024,1]`, `levelCount=5`). The real per-level scale is *not* exactly `2×`
+  (OME-Zarr floor-halves: L4 x = `11580/723 ≈ 16.017`). Initially approximated as `2^L` and thought
+  negligible — but it placed a level-L tile's far edge at `dimsL·2^L` instead of the true extent
+  (~12 px cross-level gap at L4, growing toward the far edge), causing a visible shift + shimmer as
+  tiles resolved. **Fixed (2026-07-07):** `Multiscale.levelDims` carries the real per-level shapes
+  and `chunkArrayBox` places each chunk by its fractional coverage of the full extent, so every
+  level maps to the same world box. Synthetic sources omit `levelDims` and keep the `2^L` path.
 - **RGB via `element: { kind: 'vec', n: 3 }`** — the datasource's first real use of the ADR-0004
   element-algebra facet. `SpatialDataLoader.getChunk` fetches all three channels for a spatial
   `(level, x, y)` (3× `getTile` with `selection: { c }`, 3 OpenJPH decodes) and interleaves them
