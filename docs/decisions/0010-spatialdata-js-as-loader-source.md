@@ -201,5 +201,7 @@ directions are recorded — noted, not built:
   RGB as `vec3`.
 - [`../datasource-renderer-plan.md`](../datasource-renderer-plan.md) — Milestone 2; the
   `OmeZarrLoader` step this ADR reshapes into `SpatialDataLoader`.
+- [`../zarrextra-worker-decode.md`](../zarrextra-worker-decode.md) — the exact recipe for
+  off-main-thread HTJ2K decode + recommended upstream `zarrextra` changes to make it easier to set up.
 - [`../../CONTEXT.md`](../../CONTEXT.md) — glossary (`SpatialDataLoader`, `Alignment`, `stored
   transform` added alongside `Loader`).
