@@ -11,11 +11,16 @@ import { defineConfig } from "vite";
 // exactly as the GPU vitest config does, so the SAME op definitions run here.
 export default defineConfig({
   plugins: [react(), typegpu()],
-  // openjph-wasm (the HTJ2K decoder behind the SpatialDataLoader, ADR-0010) loads its
-  // Emscripten glue via a relative dynamic import (`./wasm/libopenjph.mjs`); vite's dep
-  // pre-bundling rewrites that path into `.vite/deps/` and breaks it. Excluding it keeps the
-  // package served from node_modules with its own relative wasm resolution intact.
-  optimizeDeps: { exclude: ["openjph-wasm"] },
+  // Keep the WHOLE zarrextra package out of Vite dep pre-bundling (SpatialDataLoader, ADR-0010).
+  // Two reasons, both from pre-bundling: (1) `zarrextra/workers` resolves its worker via
+  // `new URL('./codec-worker.js', import.meta.url)`, which pre-bundling rewrites to a
+  // `.vite/deps/codec-worker.js` that is never emitted → the worker 404s; (2) more subtly,
+  // pre-bundling `zarrextra` but not `zarrextra/workers` splits `chunkDecode` into two module
+  // instances, so `enableWorkerChunkDecode()` flips the worker backend on one instance while
+  // `getTile` reads the other (still inline) → decode silently falls back to the main thread and
+  // fails to resolve the codec. Excluding the whole package gives ONE instance served from
+  // node_modules, so the worker actually intercepts decode. (Vite 5; MDV is on Vite 7.)
+  optimizeDeps: { exclude: ["zarrextra", "zarrextra/workers"] },
   resolve: {
     alias: {
       webgpu: fileURLToPath(new URL("./src/webgpu-stub.ts", import.meta.url)),

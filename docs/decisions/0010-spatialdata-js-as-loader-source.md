@@ -126,19 +126,30 @@ make the bounded-working-set behaviour tangible).
   subpackage) once the seam is proven — prototype-mode placement now, per ADR-0008 §packaging.
 - **`element: vec3`** support must reach the tile-upload path (texture format branch); the pure
   model already accounts for lanes (`bytesPerSample`).
-- **Wire-up findings (resolved while building 1a):**
-  - The **published** `zarrextra@0.2.3` dynamic-imports **`@cornerstonejs/codec-openjph`** for its
-    default OpenJPH path — *not* `openjph-wasm` (the local sd.js repo is ahead of the release).
-    Rather than add cornerstone, we pass a **custom `decoder`** to `registerExperimentalHtj2kCodec({
-    decoder })` built on this project's `openjph-wasm` (its `decode()` returns planar
-    component-major samples — exactly the chunk byte order zarrita reshapes). This is the
-    `ImageCodecDecoder` seam the published API exposes for "applications with their own WASM
-    loading," and keeps the ecosystem's own codec on both sides.
-  - `openjph-wasm` loads its Emscripten glue via a **relative dynamic import**; vite's dep
-    pre-bundling rewrites that path and breaks it, so the playground vite config needs
-    **`optimizeDeps: { exclude: ["openjph-wasm"] }`** (one line — the "no extra vite config" hope
-    was nearly right). `@spatialdata/core` also pulls `apache-arrow`/`parquet-wasm` (its table
-    support) which log harmless warnings on image-only use.
+- **Decode runs off-main-thread in zarrextra's codec worker (2026-07-07), matching MDV.** Two
+  calls, once, before reads (mirrors MDV's `ensureChunkWorker`): `registerExperimentalHtj2kCodec()`
+  (registers the `experimental.openjph_htj2k` id so the pipeline *recognises* the codec) +
+  `enableWorkerChunkDecode()` from `zarrextra/workers` (routes the decode *work* to a worker pool
+  that self-contains the OpenJPH/HTJ2K codec + wasm). Registration says *what*, the worker says
+  *where*. This supersedes the earlier main-thread custom `openjph-wasm` decoder: the worker deps
+  (`@cornerstonejs/codec-openjph@2.4.7`, `@fideus-labs/fizarrita@1.4.1`, `@fideus-labs/worker-pool@1.0.0`)
+  are zarrextra optional deps already resolved in our lockfile at MDV's exact versions, so
+  `registerExperimentalHtj2kCodec()` needs no custom decoder, and `openjph-wasm` is no longer
+  imported on this path. The UI no longer stalls while tiles decode.
+- **Vite wire-up findings (resolved while building 1a):**
+  - **`optimizeDeps: { exclude: ["zarrextra", "zarrextra/workers"] }`** (one line, replacing the
+    earlier `openjph-wasm` exclude). Two pre-bundling hazards, both fixed by excluding the *whole*
+    package: (1) `zarrextra/workers` resolves its worker via `new URL('./codec-worker.js',
+    import.meta.url)`, which pre-bundling rewrites to a `.vite/deps/codec-worker.js` that is never
+    emitted → the worker 404s and decode hangs; (2) more subtly, pre-bundling `zarrextra` but not
+    `zarrextra/workers` splits `chunkDecode` into **two module instances**, so
+    `enableWorkerChunkDecode()` flips the worker backend on one while `getTile` reads the other
+    (still inline) → decode silently falls back to the main thread and can't resolve
+    `@cornerstonejs/codec-openjph` as a bare specifier. One instance from node_modules fixes both.
+    (We are on Vite 5; MDV on Vite 7 uses `worker: { format: 'iife' }` and does *not* exclude — the
+    trade-off differs by Vite version.)
+  - `@spatialdata/core` also pulls `apache-arrow`/`parquet-wasm` (its table support) which log
+    harmless warnings on image-only use.
   - The local dev server is **CORS-enabled**, so no vite proxy is required.
 - **Implementation status (2026-07-06): 1a landed and verified in the browser.** `he_image`
   (1.5 Gpx RGB HTJ2K) streams from the store, decodes per-chunk, and renders on the plane; zooming

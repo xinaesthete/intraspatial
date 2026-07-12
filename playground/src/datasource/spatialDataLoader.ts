@@ -54,28 +54,28 @@ function parseHexColor(hex: unknown): [number, number, number] | null {
   return [((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255];
 }
 
-let codecReady: Promise<void> | null = null;
-/** Register the HTJ2K codec into zarrita's global registry, once. The *published* zarrextra
- *  dynamic-imports `@cornerstonejs/codec-openjph` for its default OpenJPH path; we instead
- *  inject our own decoder built on this project's `openjph-wasm` (ADR-0010: the local codec is
- *  the ecosystem's reference decoder). Decode runs CPU-side on the main thread (ADR-0008 §9);
- *  moving it to `enableWorkerChunkDecode()` is a later optimisation. */
-function ensureCodecs(): Promise<void> {
-  if (!codecReady) {
-    codecReady = (async () => {
+let workerReady: Promise<void> | null = null;
+/** Enable zarrextra's off-main-thread codec worker pool once — MDV's `ensureChunkWorker` pattern
+ *  (`enableWorkerChunkDecode` from `zarrextra/workers`, same `zarrextra@0.2.3`). The worker
+ *  self-contains the OpenJPH/HTJ2K codec + wasm (zarrextra's optional `@cornerstonejs/codec-openjph`
+ *  behind the `@fideus-labs/*` worker pool) and hooks zarrita's decode path, so `getTile` decodes
+ *  HTJ2K in a worker: no main-thread codec registration, no `openjph-wasm` import, and no extra
+ *  vite config (the worker URL uses the `import.meta.url` pattern Vite bundles natively). Decode
+ *  stays CPU (ADR-0008 §9) but off the main thread, so the UI no longer stalls while tiles decode. */
+function ensureWorkerDecode(): Promise<void> {
+  if (!workerReady) {
+    workerReady = (async () => {
       const zx = await import("zarrextra");
-      const ojph = await import("openjph-wasm");
-      // zarrextra's ImageCodecDecoder: (encoded, meta, config) → decoded bytes. openjph-wasm's
-      // decode returns planar component-major samples — exactly the chunk byte order zarrita
-      // reshapes. One zarr chunk here is a single channel, so components === 1.
-      const decoder = async (encoded: Uint8Array): Promise<ArrayBufferView> => {
-        const img = await ojph.decode(encoded);
-        return img.data;
-      };
-      zx.registerExperimentalHtj2kCodec({ decoder });
+      // Register the codec id so the decode pipeline recognises `experimental.openjph_htj2k`; with
+      // `@cornerstonejs/codec-openjph` now installed (a zarrextra optional dep, same as MDV) this
+      // needs no custom decoder. Enabling the worker pool then routes the actual decode
+      // off-main-thread — registration says *what* the codec is, the worker says *where* it runs.
+      zx.registerExperimentalHtj2kCodec();
+      const { enableWorkerChunkDecode } = await import("zarrextra/workers");
+      enableWorkerChunkDecode();
     })();
   }
-  return codecReady;
+  return workerReady;
 }
 
 const axisIndex = (labels: string[], axis: string): number => {
@@ -112,7 +112,7 @@ export interface SpatialDataHandle {
  * the store. Throws if the URL is not a readable zarr / SpatialData object.
  */
 export async function openSpatialData(url: string): Promise<SpatialDataHandle> {
-  await ensureCodecs();
+  await ensureWorkerDecode();
   const core = await import("@spatialdata/core");
   const zx = await import("zarrextra");
   const sdata = await core.readZarr(url);
