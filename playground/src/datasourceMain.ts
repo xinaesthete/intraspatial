@@ -3,7 +3,7 @@
 // synthetic source, and renders the live fetch-budget HUD.
 import Stats from "three/examples/jsm/libs/stats.module.js";
 import { WebGPURenderer } from "three/webgpu";
-import { type SyntheticSource, syntheticPlane, syntheticVolume } from "../../src/datasource";
+import { formatBytes, type SyntheticSource, syntheticPlane, syntheticVolume } from "../../src/datasource";
 import type { GpuBackend } from "../../src/gpu/graph/backend";
 import { adoptDevice } from "../../src/gpu/interop";
 import { type DecisionStats, DualView } from "./datasource/dualView";
@@ -59,6 +59,7 @@ function applyTransfer(): void {
   view?.setTransfer(Number(cmin.value), Number(cmax.value), Number(gamma.value));
 }
 const bytesEl = $("bytes");
+const residentEl = $("resident");
 const chunksEl = $("chunks");
 const levelsEl = $("levels");
 const errEl = $("err");
@@ -68,15 +69,9 @@ stats.dom.style.left = "auto";
 stats.dom.style.right = "12px";
 document.body.appendChild(stats.dom);
 
-const fmtBytes = (n: number): string => {
-  if (n < 1024) return `${n} B`;
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
-  if (n < 1024 * 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(1)} MB`;
-  return `${(n / (1024 * 1024 * 1024)).toFixed(2)} GB`;
-};
-
 function renderStats(s: DecisionStats, levelCount: number): void {
-  bytesEl.textContent = fmtBytes(s.totalBytes);
+  bytesEl.textContent = formatBytes(s.totalBytes);
+  residentEl.textContent = formatBytes(s.residentBytes);
   chunksEl.textContent = String(s.chunkCount);
   levelsEl.replaceChildren();
   s.countByLevel.forEach((count, level) => {

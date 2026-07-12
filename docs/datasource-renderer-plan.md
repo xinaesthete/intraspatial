@@ -64,6 +64,21 @@ decoder fixtures already do) — sourcing it is its own small task.
 - Within-chunk resolution progression / progressive-over-frames decode (likely zarrextra).
 - Second datasource family (points/AnnData → X-UMAP) to test the abstraction against non-grids.
 - Anisotropic LOD; empty-space skipping; global byte-budget solver; render-in-graph node.
+- **Cross-level tile compositing (follow-up to the interim fix).** Coexisting coarse/fine tiles are
+  currently separated by a fixed per-level geometric z-offset (`LEVEL_Z_BIAS` in `tileRenderer.ts`)
+  so the finer wins the depth test without z-fighting — `polygonOffset` would be the view-independent
+  tool but three's WebGPU backend ignores it. Two improvements, in order of increasing scope:
+  1. **View-dependent offset** (cheap): bias coarser levels *away from the live camera* each frame
+     instead of a fixed +normal direction, so the finer tile wins from any side (removes the
+     "front-side only" caveat).
+  2. **Per-region masking** (the real fix): a coarse tile knows which of its footprint is already
+     covered by resident finer levels and doesn't draw those parts — no overlap at all, so no depth
+     trickery needed. Prior art: `psychogeo/src/geo/TileShader.ts` (attribute-less, index-only
+     geometry drawing height-map meshes at different resolutions in GLSL) was heading toward exactly
+     this masking; we want the same shape here (WebGPU/TSL). This is also the seam for
+     **height-field-modulated tile geometry** (the `positionNode` reserved in ADR-0010 / the
+     render-traits doc). NB psychogeo's separate `horn` geometry wants similar treatment — noted, not
+     in scope here.
 
 ## Open task before coding
 

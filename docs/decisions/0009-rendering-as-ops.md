@@ -114,6 +114,21 @@ migrate now. Open:
 - Depth/occlusion interop with three.js during the transition — the concrete blocker to validate
   early.
 
+### Horizon: raster passes as rendering ops, and blend-as-layers (noted 2026-07-06, not decided)
+
+This ADR frames rendering-as-ops around the *compute* raymarch. A complementary direction, raised
+while building the SpatialData channel compositor (ADR-0010): **raster passes are also a class of
+rendering op** — not compute kernels, but owned GPU raster jobs (vertex-displaced grid + fragment
+shading) that could equally live in the pull-graph. The motivating UX is a **Photoshop-style layers
+panel** where the choice of per-layer **raster blend operations** (additive / max / alpha-over / …)
+composes the output — which is exactly what a **TCM** (MuSpAn topographical correlation map) overlay
+needs: a blended raster layer derived from spatial statistics. The first concrete substrate is the
+tile channel-composite material (ADR-0010): it is authored now as a plain three.js TSL `NodeMaterial`
+with the **blend as a parameter, not hardwired**, and channel settings shaped like viv's — so a
+future "raster rendering op" *wraps* it rather than replacing it, and this door stays open at no
+cost. **Deliberately not decided now:** whether raster passes become first-class graph ops, the op
+signature, and the layers-panel model. Recorded so we don't build away from it.
+
 ## References
 
 - ADR-0008 (view-driven datasource; render backends, pull-time camera input)

@@ -24,7 +24,15 @@ import {
   vec4,
 } from "three/tsl";
 import { MeshBasicNodeMaterial } from "three/webgpu";
-import { chunkArrayBox, chunkKey, type Loader, type Multiscale, type Selection, type Tile } from "../../../src/datasource";
+import {
+  chunkArrayBox,
+  chunkKey,
+  type Loader,
+  type MemoryReporting,
+  type Multiscale,
+  type Selection,
+  type Tile,
+} from "../../../src/datasource";
 
 const STEPS = 48; // per chunk — each box is small, so fewer steps than the whole-volume march
 
@@ -34,7 +42,7 @@ interface ChunkMesh {
   use: number;
 }
 
-export class NaiveVolumeRenderer {
+export class NaiveVolumeRenderer implements MemoryReporting {
   readonly group = new THREE.Group();
   private ms: Multiscale;
   private loader: Loader;
@@ -59,6 +67,13 @@ export class NaiveVolumeRenderer {
         new THREE.Vector3(ax2[0], ax2[1], ax2[2]),
       )
       .setPosition(origin[0], origin[1], origin[2]);
+  }
+
+  /** Resident VRAM (MemoryReporting): one 3D texture per resident chunk (no shared atlas). */
+  get byteLength(): number {
+    let n = 0;
+    for (const r of this.resident.values()) n += (r.tex.image.data as ArrayBufferView | undefined)?.byteLength ?? 0;
+    return n;
   }
 
   setTransfer(cmin: number, cmax: number, gamma: number): void {
