@@ -19,7 +19,9 @@ export default defineConfig({
   // instances, so `enableWorkerChunkDecode()` flips the worker backend on one instance while
   // `getTile` reads the other (still inline) → decode silently falls back to the main thread and
   // fails to resolve the codec. Excluding the whole package gives ONE instance served from
-  // node_modules, so the worker actually intercepts decode. (Vite 5; MDV is on Vite 7.)
+  // node_modules, so the worker actually intercepts decode. Under Vite 8 `optimizeDeps` runs
+  // through Rolldown (was esbuild), but `exclude` is still the sanctioned fix for the
+  // `new Worker(new URL(..., import.meta.url))` pattern — excluding preserves the relative URL.
   optimizeDeps: { exclude: ["zarrextra", "zarrextra/workers"] },
   resolve: {
     alias: {
