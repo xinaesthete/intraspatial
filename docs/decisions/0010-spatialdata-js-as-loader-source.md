@@ -157,6 +157,30 @@ make the bounded-working-set behaviour tangible).
   in microscopy-specific assumptions, not a reason to abstract ahead of need. Day-job is microscopy
   for now.
 
+### Near-term horizons (noted 2026-07-07)
+
+The channel colormap/contrast work landed after 1a: a GPU channel-composite material
+(`playground/src/datasource/tileChannelMaterial.ts`) with per-channel colour/contrast/visibility
+and a blend parameter, seeded from `omero.channels` with auto-contrast for >8-bit. From that, three
+directions are recorded — noted, not built:
+
+- **Arbitrary channel counts + a more extensible material.** The composite currently caps at
+  `MAX_CHANNELS = 4` (packed into one RGBA tile texture) in a hand-authored TSL material. Two things
+  to revisit together: (1) **> 4 channels** need a different carrier — the first-class **channel/var
+  axis** in `Selection` (reserved in CONTEXT.md) plus a texture-array or multi-pass composite;
+  (2) the material should become **extensible / expressible in the op-graph** rather than a fixed
+  shader — the raster-as-rendering-op + blend-as-layers-panel direction in
+  [ADR-0009](./0009-rendering-as-ops.md)'s horizon note. The material is built so a rendering op
+  *wraps* it later (blend is already a parameter), so this door is open at no cost.
+- **deck.gl integration of *our* render (investigate).** Distinct from ADR-0008's deck.gl-as-a-
+  Loader/layer-backend interop: the question of compositing *this* WebGPU tile/volume render **into
+  a deck.gl context** (shared device / one pass — the ADR-0008 §interop **I2** spike), so an
+  sd.js/MDV deck.gl app can host our renderer directly.
+- **Dataset hosting — local-only for now.** The demo assumes a SpatialData/OME-Zarr store the user
+  hosts **locally** (default: a CORS-enabled server at `localhost:8080`); the demo panel now carries
+  a disclaimer to that effect, and any reachable store URL works (image elements list themselves).
+  A publicly-accessible sample dataset is planned so the demo runs without local setup.
+
 ## References
 
 - [ADR-0008](./0008-view-driven-multiscale-datasource.md) — view-driven datasource; the layering
