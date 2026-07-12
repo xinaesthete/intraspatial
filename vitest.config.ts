@@ -7,8 +7,11 @@ import { defineConfig } from "vitest/config";
 // both (see package.json).
 export default defineConfig({
   test: {
+    // Vitest 4 removed `poolOptions`; the old `forks.singleFork: true` is now the
+    // top-level `maxWorkers: 1` + `isolate: false` (one shared fork process).
     pool: "forks",
-    poolOptions: { forks: { singleFork: true } },
+    maxWorkers: 1,
+    isolate: false,
     testTimeout: 30_000,
     include: ["test/**/*.test.ts", "src/**/*.test.ts"],
     exclude: ["**/node_modules/**", "**/dist/**", "**/*.gpu.test.ts"],

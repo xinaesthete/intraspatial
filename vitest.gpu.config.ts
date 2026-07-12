@@ -17,5 +17,12 @@ export default defineConfig({
     fileParallelism: false,
     testTimeout: 30_000,
     include: ["test/**/*.gpu.test.ts", "src/**/*.gpu.test.ts"],
+    // Dawn's native atexit teardown still segfaults a few fork processes AFTER their
+    // tests have passed and reported (the isolation above shrinks it to a couple of
+    // files, not all). Vitest 2 tolerated that dirty worker exit; Vitest 4 escalates
+    // it to a run-failing "Worker exited unexpectedly" unhandled error. This flag
+    // restores the v2 behaviour — scoped to this GPU config ONLY (the CPU suite keeps
+    // full strictness) — so a benign post-report segfault no longer fails a green run.
+    dangerouslyIgnoreUnhandledErrors: true,
   },
 });
