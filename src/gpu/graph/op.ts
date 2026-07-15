@@ -31,6 +31,10 @@ export interface ParamSpec {
   options?: string[];
   /** Short help shown in the UI. */
   describe?: string;
+  /** Free-form tags for grouping/filtering params (orthogonal to the dotted-path `name`
+   *  namespace). Used by param-exploration UIs to filter a set and apply operations to it
+   *  (freeze/mutate/steer/…). Optional and additive — ops that don't set it are unaffected. */
+  tags?: string[];
 }
 
 export type Params = Record<string, unknown>;

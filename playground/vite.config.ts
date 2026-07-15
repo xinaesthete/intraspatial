@@ -35,4 +35,13 @@ export default defineConfig({
     port: Number(process.env.PORT) || 5173,
     fs: { allow: [".."] }, // allow importing ../src/...
   },
+  build: {
+    rollupOptions: {
+      input: {
+        main: fileURLToPath(new URL("./index.html", import.meta.url)),
+        datasource: fileURLToPath(new URL("./datasource.html", import.meta.url)),
+        hspf: fileURLToPath(new URL("./hspf.html", import.meta.url)),
+      },
+    },
+  },
 });

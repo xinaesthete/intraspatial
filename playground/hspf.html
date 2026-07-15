@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>HsPf — spatial selection–migration</title>
+    <style>
+      :root { color-scheme: dark; }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0; font: 14px/1.5 system-ui, sans-serif; color: #e6e6e6; background: #14151a;
+        display: flex; min-height: 100vh;
+      }
+      #app { display: flex; gap: 20px; padding: 24px; width: 100%; align-items: flex-start; flex-wrap: wrap; }
+      header { width: 100%; }
+      header h1 { margin: 0 0 2px; font-size: 20px; font-weight: 600; }
+      header p { margin: 0; color: #9aa0aa; font-size: 13px; }
+      #stagewrap { background: #0c0d11; border: 1px solid #24262e; border-radius: 8px; padding: 12px; }
+      #stage { display: block; border-radius: 4px; background:
+        repeating-conic-gradient(#1b1d24 0% 25%, #191b21 0% 50%) 0 0 / 20px 20px; } /* checker = transparent */
+      #panel { min-width: 240px; display: flex; flex-direction: column; gap: 14px; }
+      .row { display: flex; flex-direction: column; gap: 4px; }
+      .row label { color: #9aa0aa; font-size: 12px; display: flex; justify-content: space-between; }
+      .buttons { display: flex; gap: 8px; }
+      button, select {
+        font: inherit; color: #e6e6e6; background: #23252e; border: 1px solid #333642;
+        border-radius: 6px; padding: 6px 12px; cursor: pointer;
+      }
+      button:hover, select:hover { background: #2b2e39; }
+      button.primary { background: #2d5bd7; border-color: #2d5bd7; }
+      input[type="range"] { width: 100%; }
+      .stat { font-variant-numeric: tabular-nums; color: #cdd2db; }
+      .check { flex-direction: row; align-items: center; gap: 8px; }
+      #error { color: #ff8f8f; max-width: 640px; }
+      code { background: #23252e; padding: 1px 5px; border-radius: 4px; }
+    </style>
+  </head>
+  <body>
+    <div id="app">
+      <header>
+        <h1>HsPf — spatial selection–migration on the GPU</h1>
+        <p>Sickle-cell (HbS) × <em>P. falciparum</em> genotype frequencies evolving over a raster map of Africa.
+          Re-derived from prior art by Gavin Band &amp; Andre Python.</p>
+      </header>
+      <div id="stagewrap"><canvas id="stage"></canvas></div>
+      <div id="panel">
+        <div id="error"></div>
+        <div class="buttons">
+          <button id="playpause" class="primary">Play</button>
+          <button id="reset">Reset</button>
+        </div>
+        <div class="row">
+          <label>Channel</label>
+          <select id="channel">
+            <option value="1">Genotype −+ (Pf-linked only)</option>
+            <option value="2">Genotype +− (sickle only)</option>
+            <option value="3" selected>Genotype ++ (both)</option>
+            <option value="0">Genotype −− (neither)</option>
+            <option value="4">Linkage disequilibrium (r)</option>
+          </select>
+        </div>
+        <div class="row check"><input type="checkbox" id="contours" checked /><label>Contours</label></div>
+        <div class="row">
+          <label>Neighbourhood concentration <span class="stat" id="concval"></span></label>
+          <input type="range" id="concentration" min="1" max="30" step="0.5" />
+        </div>
+        <div class="row">
+          <label>Two-bite (recombination) rate <span class="stat" id="tbrval"></span></label>
+          <input type="range" id="twobite" min="0" max="1" step="0.01" />
+        </div>
+        <div class="row">
+          <label>Steps per frame <span class="stat" id="speedval"></span></label>
+          <input type="range" id="speed" min="1" max="16" step="1" value="2" />
+        </div>
+        <div class="row"><span class="stat">generation <b id="gen">0</b></span></div>
+      </div>
+    </div>
+    <script type="module" src="/src/hspfMain.ts"></script>
+  </body>
+</html>

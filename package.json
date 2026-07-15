@@ -27,6 +27,7 @@
     "build:wasm:dev": "wasm-pack build rust/htj2k-core --dev --target web --out-dir pkg --out-name htj2k_core"
   },
   "dependencies": {
+    "geotiff": "^3.0.5",
     "typegpu": "catalog:",
     "webgpu": "^0.4.0",
     "wgpu-matrix": "^3.4.2"
