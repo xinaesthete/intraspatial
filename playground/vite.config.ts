@@ -41,6 +41,8 @@ export default defineConfig({
         main: fileURLToPath(new URL("./index.html", import.meta.url)),
         datasource: fileURLToPath(new URL("./datasource.html", import.meta.url)),
         hspf: fileURLToPath(new URL("./hspf.html", import.meta.url)),
+        geometry: fileURLToPath(new URL("./geometry.html", import.meta.url)),
+        raymarch: fileURLToPath(new URL("./raymarch.html", import.meta.url)),
       },
     },
   },

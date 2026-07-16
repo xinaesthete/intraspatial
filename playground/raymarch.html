@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Geometry — implicit raymarch (hybrid)</title>
+    <style>
+      :root { color-scheme: dark; }
+      * { box-sizing: border-box; }
+      html, body { margin: 0; height: 100%; background: #0b1020; color: #e6edf6; font: 13px/1.5 ui-sans-serif, system-ui, sans-serif; }
+      #app { position: fixed; inset: 0; }
+      #stage { width: 100%; height: 100%; display: block; }
+      #panel {
+        position: fixed; top: 12px; left: 12px; padding: 12px 14px;
+        background: rgba(14, 20, 34, 0.82); border: 1px solid #24304a; border-radius: 10px;
+        backdrop-filter: blur(6px); max-width: 320px;
+      }
+      #panel h1 { margin: 0 0 2px; font-size: 14px; font-weight: 640; }
+      #panel p { margin: 0 0 10px; color: #93a4c0; font-size: 12px; }
+      #panel label { display: flex; align-items: center; gap: 8px; font-size: 12px; color: #b9c6de; margin-bottom: 7px; }
+      #panel select { flex: 1; background: #0e1424; color: #e6edf6; border: 1px solid #2a3752; border-radius: 6px; padding: 3px 6px; }
+      #panel .chk { accent-color: #ff8a3c; }
+      .k { font-family: ui-monospace, "SF Mono", Menlo, monospace; color: #ffb072; font-size: 11px; }
+      #err { position: fixed; inset: 0; display: none; place-items: center; text-align: center; padding: 2rem; color: #93a4c0; }
+    </style>
+  </head>
+  <body>
+    <div id="app">
+      <canvas id="stage"></canvas>
+      <div id="panel">
+        <h1>Hybrid decomposition</h1>
+        <p>One model — a house <span class="k">smooth-unioned</span> with a noise growth — split
+        automatically: the planar skeleton is <span class="k">BSP-meshed</span> (three.js PBR), the
+        non-planar region is <span class="k">raymarched</span> in its reported box. They share one depth
+        buffer, so the growth blends into the roof. The noise drifts over time.</p>
+        <label><input id="house" class="chk" type="checkbox" checked /> Show meshed house</label>
+        <label><input id="wire" class="chk" type="checkbox" /> Wireframe overlay (triangulation)</label>
+        <label><input id="region" class="chk" type="checkbox" /> Show non-planar region box</label>
+      </div>
+      <div id="err"></div>
+    </div>
+    <script type="module" src="/src/raymarchMain.ts"></script>
+  </body>
+</html>

@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Geometry — implicit CSG (surface nets)</title>
+    <style>
+      :root { color-scheme: dark; }
+      * { box-sizing: border-box; }
+      html, body { margin: 0; height: 100%; background: #0b1020; color: #e6edf6; font: 13px/1.5 ui-sans-serif, system-ui, sans-serif; }
+      #app { position: fixed; inset: 0; }
+      #stage { width: 100%; height: 100%; display: block; }
+      #panel {
+        position: fixed; top: 12px; left: 12px; padding: 12px 14px;
+        background: rgba(14, 20, 34, 0.82); border: 1px solid #24304a; border-radius: 10px;
+        backdrop-filter: blur(6px); max-width: 300px;
+      }
+      #panel h1 { margin: 0 0 2px; font-size: 14px; font-weight: 640; letter-spacing: -0.01em; }
+      #panel p { margin: 0 0 10px; color: #93a4c0; font-size: 12px; }
+      #panel label { display: flex; align-items: center; gap: 8px; font-size: 12px; color: #b9c6de; margin-bottom: 7px; }
+      #panel select, #panel input[type="range"] { flex: 1; accent-color: #ff8a3c; }
+      #panel select { background: #0e1424; color: #e6edf6; border: 1px solid #2a3752; border-radius: 6px; padding: 3px 6px; }
+      .k { font-family: ui-monospace, "SF Mono", Menlo, monospace; color: #ffb072; font-size: 11px; }
+      #stat { margin-top: 8px; font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 11px; color: #7f90ac; }
+      #err { position: fixed; inset: 0; display: none; place-items: center; text-align: center; padding: 2rem; color: #93a4c0; }
+    </style>
+  </head>
+  <body>
+    <div id="app">
+      <canvas id="stage"></canvas>
+      <div id="panel">
+        <h1>Implicit CSG geometry</h1>
+        <p>Our <span class="k">implicit</span> kind — CSG via SDFs. Two meshers: the <span class="k">grid</span>
+        dual-contour (staircases non-axis planes) vs the exact <span class="k">plane BSP</span> (clean
+        lines, polyhedral only). Toggle Wireframe to compare the edges.</p>
+        <label>Shape <select id="shape"></select></label>
+        <label>Mesher <select id="mesher">
+          <option value="dc">Dual contour (grid)</option>
+          <option value="bsp">Plane BSP (exact)</option>
+        </select></label>
+        <label><input id="merge" type="checkbox" checked /> Merge coplanar faces (BSP)</label>
+        <label>Resolution <input id="res" type="range" min="24" max="80" step="4" value="56" /><span class="k" id="resv">56</span></label>
+        <label><input id="sharpen" type="checkbox" checked /> Sharpen (dual contouring)</label>
+        <label><input id="wire" type="checkbox" /> Wireframe</label>
+        <div id="stat">—</div>
+      </div>
+      <div id="err"></div>
+    </div>
+    <script type="module" src="/src/geometryMain.ts"></script>
+  </body>
+</html>

@@ -1,0 +1,770 @@
+<title>Surface Nets & Dual Contouring on the GPU</title>
+<style>
+  :root {
+    --ground: #0e1416;
+    --panel: #131c1f;
+    --panel-2: #16211f;
+    --ink: #e9f0ec;
+    --muted: #8fa6a2;
+    --faint: #5f7370;
+    --line: #23302f;
+    --grid: #1a2524;
+    --accent: #f2b134;        /* the extracted mesh — vertices + contour */
+    --accent-ink: #f6c25c;
+    --accent-soft: rgba(242,177,52,.13);
+    --inside: #6d7cff;        /* the sign field — inside */
+    --inside-soft: rgba(109,124,255,.15);
+    --grad: #37c6c0;          /* gradients / Hermite normals */
+    --good: #4bbf7b;
+    --sans: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+    --measure: 66ch;
+    --bleed: 1000px;
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      --ground: #f2f5f3;
+      --panel: #ffffff;
+      --panel-2: #f7faf8;
+      --ink: #12201e;
+      --muted: #55675f;
+      --faint: #7d8f89;
+      --line: #dde5e1;
+      --grid: #e7ede9;
+      --accent: #b5760f;
+      --accent-ink: #9c6207;
+      --accent-soft: rgba(181,118,15,.11);
+      --inside: #4d5ce6;
+      --inside-soft: rgba(77,92,230,.12);
+      --grad: #128b85;
+    }
+  }
+  :root[data-theme="dark"] {
+    --ground: #0e1416; --panel: #131c1f; --panel-2: #16211f; --ink: #e9f0ec;
+    --muted: #8fa6a2; --faint: #5f7370; --line: #23302f; --grid: #1a2524;
+    --accent: #f2b134; --accent-ink: #f6c25c; --accent-soft: rgba(242,177,52,.13);
+    --inside: #6d7cff; --inside-soft: rgba(109,124,255,.15); --grad: #37c6c0;
+  }
+  :root[data-theme="light"] {
+    --ground: #f2f5f3; --panel: #ffffff; --panel-2: #f7faf8; --ink: #12201e;
+    --muted: #55675f; --faint: #7d8f89; --line: #dde5e1; --grid: #e7ede9;
+    --accent: #b5760f; --accent-ink: #9c6207; --accent-soft: rgba(181,118,15,.11);
+    --inside: #4d5ce6; --inside-soft: rgba(77,92,230,.12); --grad: #128b85;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--ground);
+    color: var(--ink);
+    font-family: var(--sans);
+    font-size: 17px;
+    line-height: 1.62;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: var(--measure); margin: 0 auto; padding: 0 22px; }
+  .bleed { max-width: var(--bleed); margin: 0 auto; padding: 0 22px; }
+
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: .72rem;
+    letter-spacing: .18em;
+    text-transform: uppercase;
+    color: var(--accent-ink);
+    margin: 0 0 14px;
+  }
+  h1 {
+    font-size: clamp(2.1rem, 5.4vw, 3.5rem);
+    line-height: 1.03;
+    letter-spacing: -.025em;
+    font-weight: 720;
+    text-wrap: balance;
+    margin: 0 0 .5em;
+  }
+  h2 {
+    font-size: clamp(1.4rem, 3vw, 1.95rem);
+    letter-spacing: -.02em;
+    font-weight: 660;
+    text-wrap: balance;
+    margin: 0 0 .35em;
+  }
+  h3 { font-size: 1.06rem; font-weight: 640; letter-spacing: -.01em; margin: 0 0 .3em; }
+  p { margin: 0 0 1.05em; }
+  a { color: var(--accent-ink); text-underline-offset: 3px; text-decoration-thickness: 1px; }
+  strong { font-weight: 660; color: var(--ink); }
+  .lede { font-size: 1.22rem; line-height: 1.5; color: var(--muted); text-wrap: pretty; }
+  .muted { color: var(--muted); }
+  code, .k {
+    font-family: var(--mono);
+    font-size: .86em;
+    background: var(--accent-soft);
+    color: var(--accent-ink);
+    padding: .1em .38em;
+    border-radius: 4px;
+  }
+
+  header.hero { padding: clamp(48px, 9vw, 104px) 0 30px; }
+  section { padding: 30px 0; }
+  .section-mark {
+    font-family: var(--mono);
+    font-size: .74rem;
+    letter-spacing: .14em;
+    color: var(--faint);
+    text-transform: uppercase;
+    display: block;
+    margin-bottom: 8px;
+  }
+  hr.rule { border: 0; border-top: 1px solid var(--line); margin: 8px 0; }
+
+  /* ---- demo shell ---- */
+  .demo {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    overflow: hidden;
+    margin: 8px 0 6px;
+  }
+  .demo-head {
+    display: flex; flex-wrap: wrap; gap: 10px 18px;
+    align-items: center; justify-content: space-between;
+    padding: 14px 16px;
+    border-bottom: 1px solid var(--line);
+    background: var(--panel-2);
+  }
+  .controls { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; }
+  .seg {
+    display: inline-flex; background: var(--ground);
+    border: 1px solid var(--line); border-radius: 9px; padding: 3px; gap: 2px;
+  }
+  .seg button {
+    font: inherit; font-size: .82rem; font-weight: 560;
+    color: var(--muted); background: transparent;
+    border: 0; border-radius: 6px; padding: 5px 11px; cursor: pointer;
+    transition: background .14s, color .14s;
+  }
+  .seg button:hover { color: var(--ink); }
+  .seg button[aria-pressed="true"] { background: var(--accent); color: #17120a; }
+  :root[data-theme="light"] .seg button[aria-pressed="true"],
+  @media (prefers-color-scheme: light) { }
+  .field-label { font-family: var(--mono); font-size: .68rem; letter-spacing: .12em; text-transform: uppercase; color: var(--faint); margin-right: 2px; }
+  .range { display: inline-flex; align-items: center; gap: 9px; }
+  input[type=range] { accent-color: var(--accent); width: 118px; }
+  .checks { display: flex; flex-wrap: wrap; gap: 6px 15px; }
+  .chk { display: inline-flex; align-items: center; gap: 6px; font-size: .82rem; color: var(--muted); cursor: pointer; user-select: none; }
+  .chk input { accent-color: var(--accent); }
+  .canvas-holder { position: relative; background:
+      linear-gradient(var(--panel), var(--panel)); }
+  canvas { display: block; width: 100%; height: auto; }
+  .readout {
+    display: flex; flex-wrap: wrap; gap: 4px 22px;
+    padding: 11px 16px; border-top: 1px solid var(--line);
+    font-family: var(--mono); font-size: .78rem; color: var(--muted);
+    background: var(--panel-2);
+  }
+  .readout b { color: var(--accent-ink); font-weight: 600; }
+  .legend { display: flex; flex-wrap: wrap; gap: 6px 18px; align-items: center; font-size: .78rem; color: var(--muted); }
+  .legend span { display: inline-flex; align-items: center; gap: 7px; }
+  .dot { width: 11px; height: 11px; border-radius: 50%; display: inline-block; }
+  .dot.hollow { background: transparent; border: 1.5px solid var(--faint); }
+  .swatch-line { width: 18px; height: 0; border-top: 2.5px solid var(--accent); display: inline-block; }
+  .caption { font-size: .86rem; color: var(--muted); margin: 12px 0 0; text-wrap: pretty; }
+
+  /* ---- generic panels / grids ---- */
+  .cols { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+  @media (max-width: 720px) { .cols { grid-template-columns: 1fr; } }
+  .card {
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: 12px; padding: 18px 18px 20px;
+  }
+  .card h3 { display: flex; align-items: baseline; gap: 9px; }
+  .card .tag { font-family: var(--mono); font-size: .66rem; letter-spacing: .1em; text-transform: uppercase; color: var(--faint); }
+  .mini-wrap { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  @media (max-width: 560px) { .mini-wrap { grid-template-columns: 1fr; } }
+  .mini { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 12px; }
+  .mini canvas { border-radius: 6px; }
+  .mini h4 { margin: 10px 2px 2px; font-size: .92rem; font-weight: 620; }
+  .mini p { margin: 2px 2px 2px; font-size: .82rem; color: var(--muted); }
+
+  ul.clean { margin: 0 0 1.05em; padding-left: 1.15em; }
+  ul.clean li { margin-bottom: .5em; }
+  ul.clean li::marker { color: var(--accent); }
+
+  /* ---- pipeline ---- */
+  .pipe { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+  @media (max-width: 720px) { .pipe { grid-template-columns: 1fr; } }
+  .stage {
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: 12px; padding: 16px; position: relative;
+  }
+  .stage .num {
+    font-family: var(--mono); font-size: .74rem; color: var(--accent-ink);
+    letter-spacing: .1em;
+  }
+  .stage h4 { margin: 4px 0 8px; font-size: 1rem; }
+  .stage p { font-size: .88rem; margin: 0 0 10px; color: var(--muted); }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .chip {
+    font-family: var(--mono); font-size: .7rem; color: var(--ink);
+    background: var(--ground); border: 1px solid var(--line);
+    border-radius: 6px; padding: 3px 7px;
+  }
+  .chip.out { color: var(--accent-ink); border-color: var(--accent-soft); }
+
+  .kv { display: grid; grid-template-columns: auto 1fr; gap: 4px 16px; font-size: .9rem; margin: 4px 0 1.05em; }
+  .kv dt { font-family: var(--mono); font-size: .8rem; color: var(--accent-ink); }
+  .kv dd { margin: 0; color: var(--muted); }
+
+  .note {
+    border-left: 2px solid var(--accent); background: var(--accent-soft);
+    padding: 12px 16px; border-radius: 0 8px 8px 0; margin: 0 0 1.05em;
+    font-size: .95rem;
+  }
+  .note.g { border-left-color: var(--grad); background: color-mix(in srgb, var(--grad) 12%, transparent); }
+
+  footer { padding: 40px 0 70px; color: var(--muted); font-size: .9rem; }
+  footer h3 { color: var(--ink); }
+  .refs { display: grid; gap: 9px; }
+  .refs a { display: block; }
+  .refs .src { font-family: var(--mono); font-size: .74rem; color: var(--faint); }
+
+  @media (prefers-reduced-motion: no-preference) {
+    .fade { animation: rise .5s ease both; }
+    @keyframes rise { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+  }
+</style>
+
+<header class="hero wrap fade">
+  <p class="eyebrow">Isosurface extraction &middot; compute pass</p>
+  <h1>From a field of numbers to a mesh</h1>
+  <p class="lede">A scalar field &mdash; an analytic SDF, or a sampled volume &mdash; is just a number at
+  every point. <strong>Surface nets</strong> and <strong>dual contouring</strong> turn the surface where
+  that number crosses zero into triangles, one independent cell at a time. That independence is what makes
+  it a natural fit for a GPU compute pass. Here's the whole idea, in two dimensions you can poke at.</p>
+</header>
+
+<div class="bleed fade">
+  <div class="demo" id="demo">
+    <div class="demo-head">
+      <div class="controls">
+        <span class="field-label">Field</span>
+        <div class="seg" id="shape" role="group" aria-label="Field shape">
+          <button data-v="blob" aria-pressed="true">Smooth blob</button>
+          <button data-v="square" aria-pressed="false">Rotated box</button>
+          <button data-v="cross" aria-pressed="false">Plus</button>
+        </div>
+        <span class="field-label">Vertex</span>
+        <div class="seg" id="method" role="group" aria-label="Vertex placement">
+          <button data-v="naive" aria-pressed="true">Surface nets</button>
+          <button data-v="dual" aria-pressed="false">Dual contouring</button>
+        </div>
+        <span class="range">
+          <span class="field-label">Res</span>
+          <input type="range" id="res" min="4" max="34" value="12" step="1" aria-label="Grid resolution">
+          <span class="k" id="resval" style="min-width:2.4em;text-align:center">12</span>
+        </span>
+      </div>
+    </div>
+    <div class="canvas-holder">
+      <canvas id="c" width="1960" height="980" role="img"
+        aria-label="A scalar field sampled on a grid, with the extracted contour drawn through it"></canvas>
+    </div>
+    <div class="readout">
+      <span class="legend">
+        <span><span class="dot" style="background:var(--inside)"></span>corner inside (f&lt;0)</span>
+        <span><span class="dot hollow"></span>corner outside</span>
+        <span><span class="dot" style="background:var(--accent)"></span>cell vertex</span>
+        <span><span class="swatch-line"></span>contour</span>
+      </span>
+      <span style="margin-left:auto">active cells <b id="r-cells">0</b></span>
+      <span>vertices <b id="r-verts">0</b></span>
+    </div>
+  </div>
+  <p class="caption wrap" style="max-width:var(--measure)">
+    Switch to the <strong>Rotated box</strong> or <strong>Plus</strong> and flip <strong>Surface nets &rarr; Dual
+    contouring</strong>: watch the corners. Naive surface nets round every corner off; dual contouring
+    reconstructs them from the gradient at each crossing. Hover a cell to see its own crossings and vertex.
+  </p>
+</div>
+
+<section class="wrap">
+  <span class="section-mark">The setup</span>
+  <h2>A grid, a sign at every corner</h2>
+  <p>Everything starts with a function <code>f(p)</code> that returns a signed number: negative inside the
+  solid, positive outside, zero exactly on the surface. Two things produce such a field, and the extraction
+  code doesn't care which:</p>
+  <dl class="kv">
+    <dt>analytic</dt><dd>a signed distance function &mdash; a sphere, a box, a smooth-union of them. Cheap to evaluate anywhere; gradients are exact or a few extra taps.</dd>
+    <dt>sampled</dt><dd>a volume &mdash; a voxel grid, a medical scan, a density field. You read <code>f</code> by fetching (and interpolating) the nearest samples.</dd>
+  </dl>
+  <p>Lay a regular grid over the field and evaluate <code>f</code> at every <strong>corner</strong>. Each
+  corner is now simply <em>inside</em> or <em>outside</em>. Wherever an edge of the grid connects an inside
+  corner to an outside corner, the surface must cross that edge &mdash; a <strong>sign change</strong>. Those
+  bipolar edges are the entire signal; the rest of the grid is empty space we skip.</p>
+</section>
+
+<section class="bleed">
+  <div class="wrap">
+    <span class="section-mark">Primal vs. dual</span>
+    <h2>Where do the vertices go?</h2>
+    <p>Two families answer this differently. <strong>Marching cubes</strong> is <em>primal</em>: it puts
+    vertices <em>on the grid edges</em> at the crossings, then stitches them per-cell from a 256-entry case
+    table. <strong>Surface nets</strong> is <em>dual</em>: it puts <em>one vertex inside each</em> cell that
+    straddles the surface, then connects the vertices of neighbouring cells across each shared bipolar edge.</p>
+  </div>
+  <div class="mini-wrap wrap" style="max-width:840px">
+    <div class="mini">
+      <canvas id="mA" width="760" height="760"></canvas>
+      <h4>Primal &mdash; vertices on edges</h4>
+      <p>Marching squares/cubes. Vertices live where the surface cuts an edge; topology comes from a case table per cell.</p>
+    </div>
+    <div class="mini">
+      <canvas id="mB" width="760" height="760"></canvas>
+      <h4>Dual &mdash; one vertex per cell</h4>
+      <p>Surface nets. Vertices live inside cells; edges are dual to the grid's bipolar edges. Fewer, more uniform quads.</p>
+    </div>
+  </div>
+  <div class="wrap" style="margin-top:22px">
+    <p>The dual layout is why this family is attractive for us: the mesh is a clean quad grid (uniform valence,
+    easy to relax or subdivide), each cell is <strong>independent</strong> during vertex placement, and &mdash;
+    crucially &mdash; the single free vertex per cell is a <em>degree of freedom we can aim</em>. That's the
+    opening dual contouring exploits.</p>
+  </div>
+</section>
+
+<section class="wrap">
+  <span class="section-mark">Placing the vertex</span>
+  <h2>The QEF: aiming the vertex at the corner</h2>
+  <p>Naive surface nets place the cell's vertex at the <em>average</em> of its edge crossings &mdash; roughly
+  the cell centre. On a smooth surface that's fine. On a hard edge it's a disaster: the average sits in the
+  middle of the cell and the corner gets sanded flat (you just watched it in the demo).</p>
+  <p><strong>Dual contouring</strong> keeps more information at each crossing: not just <em>where</em> the
+  surface cuts the edge, but the <strong>gradient</strong> &mdash; the surface normal &mdash; there. This
+  crossing-plus-normal pair is <em>Hermite data</em>. Each crossing then defines a line (in 3D, a plane) the
+  surface is tangent to, and the ideal vertex is the point that lies on <em>all of them at once</em>.</p>
+  <div class="note g">
+    <strong>The quadratic error function.</strong> With crossings <code>p<sub>i</sub></code> and unit normals
+    <code>n<sub>i</sub></code>, place the vertex at the <code>x</code> minimising
+    <code>E(x) = &Sigma;<sub>i</sub> ( n<sub>i</sub> &middot; (x &minus; p<sub>i</sub>) )<sup>2</sup></code> &mdash; the summed squared distance to every tangent plane.
+    Two crossings on two faces of a corner give two planes whose intersection <em>is</em> the corner, so
+    <code>x</code> lands exactly on it. Minimising is a tiny normal-equations solve
+    (<code>A<sup>T</sup>A x = A<sup>T</sup>b</code>, a 3&times;3 system per cell), regularised toward the cell centre so flat or
+    near-parallel crossings stay stable, and clamped to the cell so it can't shoot off.</p>
+  </div>
+  <p>That's the whole difference between the two toggle states: same grid, same crossings, same connectivity
+  &mdash; naive averages, dual solves. Everything else about the algorithm is identical.</p>
+</section>
+
+<section class="bleed">
+  <div class="wrap">
+    <span class="section-mark">On the GPU</span>
+    <h2>Three passes over independent cells</h2>
+    <p>Because each cell classifies and places its vertex without talking to its neighbours, the work maps
+    onto a compute dispatch almost directly. The only genuinely global step is <em>compaction</em> &mdash;
+    turning the sparse set of active cells into a packed vertex buffer with stable indices. A common shape:</p>
+  </div>
+  <div class="pipe wrap" style="max-width:940px">
+    <div class="stage">
+      <span class="num">PASS 01</span>
+      <h4>Classify</h4>
+      <p>One thread per cell (or per corner). Sample <code>f</code>, read off the 8 corner signs, mark the
+      cell active if any edge is bipolar. Count actives.</p>
+      <div class="chips">
+        <span class="chip">in: field / SDF</span>
+        <span class="chip out">out: active mask</span>
+        <span class="chip out">out: counts</span>
+      </div>
+    </div>
+    <div class="stage">
+      <span class="num">PASS 02</span>
+      <h4>Place &amp; compact</h4>
+      <p>Prefix-sum the mask (or an atomic bump) to give each active cell a slot. Per active cell: find
+      crossings, tap gradients, solve the QEF, write the vertex. Store the cell&rarr;slot map.</p>
+      <div class="chips">
+        <span class="chip">in: active mask</span>
+        <span class="chip">scan / atomics</span>
+        <span class="chip out">out: vertices</span>
+        <span class="chip out">out: slot map</span>
+      </div>
+    </div>
+    <div class="stage">
+      <span class="num">PASS 03</span>
+      <h4>Connect</h4>
+      <p>One thread per bipolar edge. Look up the (2 in 2D, 4 in 3D) adjacent cells' slots and emit a
+      quad/triangle fan. Append to an index buffer sized for an indirect draw.</p>
+      <div class="chips">
+        <span class="chip">in: slot map</span>
+        <span class="chip out">out: indices</span>
+        <span class="chip out">out: draw args</span>
+      </div>
+    </div>
+  </div>
+  <div class="wrap" style="margin-top:22px">
+    <ul class="clean">
+      <li><strong>Compaction is the real work.</strong> A dense grid is mostly empty; you don't want a vertex
+      slot per cell. A parallel prefix-sum over the active mask (or a per-workgroup atomic counter feeding a
+      global offset) packs actives contiguously and hands each one the stable index its neighbours will look up
+      in pass 3.</li>
+      <li><strong>Indexing must be deterministic.</strong> Pass 3 references a cell's vertex by the slot pass 2
+      assigned &mdash; the two passes must agree on cell&rarr;slot with no race. This determinism is also what
+      lets a re-run reproduce the same buffers (it matters for us: it's how a picking id stays stable).</li>
+      <li><strong>Everything feeds an indirect draw.</strong> Vertex and index counts aren't known on the CPU;
+      write them into a draw-args buffer and issue <code>drawIndexedIndirect</code> &mdash; the mesh never
+      round-trips through the CPU.</li>
+      <li><strong>3D adds a case table for connectivity</strong> (which edges of a cell are bipolar), but vertex
+      placement stays the same one-QEF-per-cell. Transvoxel / manifold-dual-contouring variants handle
+      LOD seams and non-manifold cells.</li>
+    </ul>
+  </div>
+</section>
+
+<section class="wrap">
+  <span class="section-mark">Where this lands for us</span>
+  <h2>One extraction pass, several sources</h2>
+  <p>This is the mesh side of the <code>implicit</code> geometry-kind (ADR-0010), and the same pass is how we
+  get geometry <em>from data</em>. The field being contoured is the only thing that changes:</p>
+  <ul class="clean">
+    <li><strong>Plane-based / CSG.</strong> Half-spaces and boxes combined with min/max booleans &mdash; the
+    classic constructive solids. Sharp by nature, so dual contouring (not naive surface nets) is the right
+    default; the corners are the whole point.</li>
+    <li><strong>General implicit &amp; smooth-ops.</strong> Smooth-union, blends, arbitrary <code>F(x,y,z)=0</code>.
+    Note these aren't always true distance fields &mdash; a non-Lipschitz <code>F</code> needs care at the
+    crossing solve (or interval arithmetic, the way the prior-art CSG field did) rather than a naive lerp.</li>
+    <li><strong>Data-derived.</strong> The isosurface of a sampled volume &mdash; a spatial image, a density.
+    Identical pass; <code>f</code> is a texture fetch and the gradient is a finite difference of samples.</li>
+  </ul>
+  <div class="note">
+    <strong>Provenance rides along (ADR-0012).</strong> When the field is a primitive tree, pass 2 already knows
+    which primitive was the <code>argmin</code> of the min/max at each vertex &mdash; write that id into the
+    vertex, and a picked triangle resolves back to the CSG leaf that made it. Pair it with the <strong>depth</strong>
+    the render seam always produces (for world-position reconstruction &mdash; orbit-pivot under the cursor) and
+    picking-id + depth are co-produced outputs. For a data-derived surface there's no primitive tree, so the
+    token becomes a <em>field-space address</em> instead &mdash; same resolver, different token.</div>
+  <p class="muted" style="font-size:.95rem">On watertight mesh <em>booleans</em> specifically (exact predicates,
+  guaranteed-manifold output for export): that's the case for buying <a href="https://github.com/elalish/manifold">Manifold</a>
+  (C++&rarr;wasm) rather than writing it &mdash; and it's why the Rust route isn't worth opening here.</p>
+</section>
+
+<footer class="wrap">
+  <hr class="rule" style="margin-bottom:28px">
+  <h3>Going deeper</h3>
+  <div class="refs" style="margin-top:14px">
+    <a href="https://www.cs.wustl.edu/~taoju/research/dualContour.pdf">Ju, Losasso, Schaefer, Warren &mdash; <em>Dual Contouring of Hermite Data</em> (SIGGRAPH 2002)<span class="src">the QEF method, verbatim source</span></a>
+    <a href="https://www.merl.com/publications/docs/TR99-24.pdf">Gibson &mdash; <em>Constrained Elastic Surface Nets</em> (1998)<span class="src">the original surface-nets paper</span></a>
+    <a href="https://www.boristhebrave.com/2018/04/15/dual-contouring-tutorial/">Boris the Brave &mdash; <em>Dual Contouring Tutorial</em><span class="src">the clearest practical walkthrough, with code</span></a>
+    <a href="https://transvoxel.org/">Lengyel &mdash; <em>The Transvoxel Algorithm</em><span class="src">seamless LOD transitions for marching cubes</span></a>
+    <a href="https://github.com/elalish/manifold">Manifold<span class="src">robust mesh CSG, C++ &rarr; wasm &mdash; the buy-not-build option</span></a>
+  </div>
+  <p style="margin-top:26px" class="muted">Caveats worth remembering: the QEF can be ill-conditioned on
+  near-flat cells (regularise + clamp); dual meshes can be non-manifold where a cell holds more than one
+  surface sheet (needs vertex splitting); and self-intersections happen on thin features below the grid size.
+  None of these are visible in the 2D toy above &mdash; they're the reason the 3D production versions are longer.</p>
+</footer>
+
+<script>
+(function () {
+  "use strict";
+  var root = document.documentElement;
+
+  // ---- fields (domain coords, negative = inside) ----
+  function box(x, y, bx, by) {
+    var qx = Math.abs(x) - bx, qy = Math.abs(y) - by;
+    var ox = Math.max(qx, 0), oy = Math.max(qy, 0);
+    return Math.hypot(ox, oy) + Math.min(Math.max(qx, qy), 0);
+  }
+  function rot(x, y, a) { var c = Math.cos(a), s = Math.sin(a); return [x * c - y * s, x * s + y * c]; }
+  var fields = {
+    blob: function (x, y) {
+      var d1 = Math.hypot(x + 0.34, y + 0.14) - 0.56;
+      var d2 = Math.hypot(x - 0.44, y - 0.30) - 0.44;
+      var k = 0.30;
+      var h = Math.max(0, 1 - Math.abs(d1 - d2) / k);
+      return Math.min(d1, d2) - h * h * k * 0.25;
+    },
+    square: function (x, y) { var r = rot(x, y, 0.5); return box(r[0], r[1], 0.66, 0.66); },
+    cross: function (x, y) {
+      var r = rot(x, y, 0.36);
+      return Math.min(box(r[0], r[1], 0.74, 0.26), box(r[0], r[1], 0.26, 0.74));
+    }
+  };
+  function grad(f, x, y) {
+    var e = 1e-3;
+    var gx = (f(x + e, y) - f(x - e, y)) / (2 * e);
+    var gy = (f(x, y + e) - f(x, y - e)) / (2 * e);
+    var L = Math.hypot(gx, gy) || 1;
+    return [gx / L, gy / L];
+  }
+
+  var DOM = 1.32; // half-extent of domain
+
+  // crossings on one cell's four edges -> [{p:[x,y], n:[x,y]}]
+  function cellCrossings(f, x0, y0, x1, y1, v00, v10, v01, v11) {
+    var out = [];
+    function edge(ax, ay, fa, bx, by, fb) {
+      if ((fa < 0) === (fb < 0)) return;
+      var t = fa / (fa - fb);
+      var px = ax + (bx - ax) * t, py = ay + (by - ay) * t;
+      out.push({ p: [px, py], n: grad(f, px, py) });
+    }
+    edge(x0, y0, v00, x1, y0, v10); // bottom
+    edge(x1, y0, v10, x1, y1, v11); // right
+    edge(x0, y1, v01, x1, y1, v11); // top
+    edge(x0, y0, v00, x0, y1, v01); // left
+    return out;
+  }
+  function qef(cr, cx, cy, half) {
+    var a00 = 0, a01 = 0, a11 = 0, b0 = 0, b1 = 0, lam = 0.08;
+    for (var i = 0; i < cr.length; i++) {
+      var n = cr[i].n, p = cr[i].p, d = n[0] * p[0] + n[1] * p[1];
+      a00 += n[0] * n[0]; a01 += n[0] * n[1]; a11 += n[1] * n[1];
+      b0 += n[0] * d; b1 += n[1] * d;
+    }
+    a00 += lam; a11 += lam; b0 += lam * cx; b1 += lam * cy;
+    var det = a00 * a11 - a01 * a01, x = cx, y = cy;
+    if (Math.abs(det) > 1e-9) { x = (a11 * b0 - a01 * b1) / det; y = (a00 * b1 - a01 * b0) / det; }
+    x = Math.max(cx - half, Math.min(cx + half, x));
+    y = Math.max(cy - half, Math.min(cy + half, y));
+    return [x, y];
+  }
+
+  // compute grid: values + per active cell vertex (both methods)
+  function compute(fname, N) {
+    var f = fields[fname];
+    var step = (2 * DOM) / N;
+    var vals = [];
+    for (var a = 0; a <= N; a++) {
+      vals[a] = [];
+      for (var b = 0; b <= N; b++) vals[a][b] = f(-DOM + a * step, -DOM + b * step);
+    }
+    var cells = {}; // key ci*N+cj -> {naive, dc, cr, cx, cy}
+    var nActive = 0;
+    for (var ci = 0; ci < N; ci++) {
+      for (var cj = 0; cj < N; cj++) {
+        var x0 = -DOM + ci * step, y0 = -DOM + cj * step, x1 = x0 + step, y1 = y0 + step;
+        var v00 = vals[ci][cj], v10 = vals[ci + 1][cj], v01 = vals[ci][cj + 1], v11 = vals[ci + 1][cj + 1];
+        var cr = cellCrossings(f, x0, y0, x1, y1, v00, v10, v01, v11);
+        if (!cr.length) continue;
+        var mx = 0, my = 0;
+        for (var i = 0; i < cr.length; i++) { mx += cr[i].p[0]; my += cr[i].p[1]; }
+        mx /= cr.length; my /= cr.length;
+        var cx = x0 + step / 2, cy = y0 + step / 2;
+        cells[ci * N + cj] = { naive: [mx, my], dc: qef(cr, cx, cy, step / 2), cr: cr, cx: cx, cy: cy };
+        nActive++;
+      }
+    }
+    return { f: f, N: N, step: step, vals: vals, cells: cells, nActive: nActive };
+  }
+
+  // dual segments across bipolar grid edges
+  function dualSegments(g, method) {
+    var N = g.N, vals = g.vals, segs = [];
+    function vert(ci, cj) {
+      var c = g.cells[ci * N + cj]; if (!c) return null; return method === "dual" ? c.dc : c.naive;
+    }
+    for (var a = 0; a <= N; a++) {
+      for (var b = 0; b <= N; b++) {
+        if (a < N && (vals[a][b] < 0) !== (vals[a + 1][b] < 0)) { // horizontal edge -> cells (a,b),(a,b-1)
+          if (b < N && b - 1 >= 0) { var u = vert(a, b), v = vert(a, b - 1); if (u && v) segs.push([u, v]); }
+        }
+        if (b < N && (vals[a][b] < 0) !== (vals[a][b + 1] < 0)) { // vertical edge -> cells (a,b),(a-1,b)
+          if (a < N && a - 1 >= 0) { var u2 = vert(a, b), v2 = vert(a - 1, b); if (u2 && v2) segs.push([u2, v2]); }
+        }
+      }
+    }
+    return segs;
+  }
+  // primal (marching-squares) segments: connect the crossings within each cell
+  function primalSegments(g) {
+    var segs = [];
+    for (var key in g.cells) {
+      var cr = g.cells[key].cr;
+      if (cr.length === 2) segs.push([cr[0].p, cr[1].p]);
+      else if (cr.length === 4) { segs.push([cr[0].p, cr[1].p]); segs.push([cr[2].p, cr[3].p]); }
+    }
+    return segs;
+  }
+
+  function css(name) { return getComputedStyle(root).getPropertyValue(name).trim(); }
+
+  // ---- main demo ----
+  var canvas = document.getElementById("c"), ctx = canvas.getContext("2d");
+  var state = { shape: "blob", method: "naive", res: 12, hover: null };
+
+  var ASPECT_MAIN = 0.6; // fixed design aspect — never read back off the mutating canvas
+  function fit(cv, aspect) {
+    var holder = cv.parentElement, cssw = holder.clientWidth;
+    var dpr = Math.min(window.devicePixelRatio || 1, 2);
+    if (!cssw) return dpr;
+    cv.style.width = "100%";
+    cv.style.height = (cssw * aspect) + "px";
+    cv.width = Math.max(1, Math.round(cssw * dpr));
+    cv.height = Math.max(1, Math.round(cssw * aspect * dpr));
+    return dpr;
+  }
+
+  function draw() {
+    fit(canvas, ASPECT_MAIN);
+    var W = canvas.width, H = canvas.height, pad = Math.round(W * 0.03);
+    var size = Math.min(W, H) - pad * 2, ox = (W - size) / 2, oy = (H - size) / 2;
+    function tx(x) { return ox + ((x + DOM) / (2 * DOM)) * size; }
+    function ty(y) { return oy + size - ((y + DOM) / (2 * DOM)) * size; }
+
+    var C = {
+      panel: css("--panel"), grid: css("--grid"), line: css("--line"),
+      inside: css("--inside"), insideSoft: css("--inside-soft"),
+      accent: css("--accent"), faint: css("--faint"), grad: css("--grad"), muted: css("--muted")
+    };
+    ctx.clearRect(0, 0, W, H);
+
+    var g = compute(state.shape, state.res);
+    var N = g.N, step = g.step;
+
+    // active-cell fills
+    ctx.fillStyle = C.accent; ctx.globalAlpha = 0.05;
+    for (var key in g.cells) {
+      var ci = Math.floor(key / N), cj = key % N;
+      var X = tx(-DOM + ci * step), Y = ty(-DOM + (cj + 1) * step);
+      ctx.fillRect(X, Y, size / N, size / N);
+    }
+    ctx.globalAlpha = 1;
+
+    // hover highlight
+    if (state.hover && g.cells[state.hover]) {
+      var hci = Math.floor(state.hover / N), hcj = state.hover % N;
+      ctx.fillStyle = C.accent; ctx.globalAlpha = 0.14;
+      ctx.fillRect(tx(-DOM + hci * step), ty(-DOM + (hcj + 1) * step), size / N, size / N);
+      ctx.globalAlpha = 1;
+    }
+
+    // grid lines
+    ctx.strokeStyle = C.grid; ctx.lineWidth = Math.max(1, W / 1400);
+    ctx.beginPath();
+    for (var i = 0; i <= N; i++) {
+      var gx = tx(-DOM + i * step); ctx.moveTo(gx, ty(-DOM)); ctx.lineTo(gx, ty(DOM));
+      var gy = ty(-DOM + i * step); ctx.moveTo(tx(-DOM), gy); ctx.lineTo(tx(DOM), gy);
+    }
+    ctx.stroke();
+
+    // true surface (fine dual contour), faint dashed
+    var truth = dualSegments(compute(state.shape, 150), "dual");
+    ctx.strokeStyle = C.faint; ctx.globalAlpha = 0.55;
+    ctx.lineWidth = Math.max(1, W / 1500); ctx.setLineDash([W / 240, W / 200]);
+    ctx.beginPath();
+    for (var s = 0; s < truth.length; s++) { ctx.moveTo(tx(truth[s][0][0]), ty(truth[s][0][1])); ctx.lineTo(tx(truth[s][1][0]), ty(truth[s][1][1])); }
+    ctx.stroke(); ctx.setLineDash([]); ctx.globalAlpha = 1;
+
+    // corner dots
+    var rr = Math.max(2.5, size / N * 0.10);
+    for (var a = 0; a <= N; a++) for (var b = 0; b <= N; b++) {
+      var inside = g.vals[a][b] < 0;
+      var px = tx(-DOM + a * step), py = ty(-DOM + b * step);
+      ctx.beginPath(); ctx.arc(px, py, rr, 0, 7);
+      if (inside) { ctx.fillStyle = C.inside; ctx.fill(); }
+      else { ctx.strokeStyle = C.faint; ctx.lineWidth = Math.max(1, W / 1300); ctx.stroke(); }
+    }
+
+    // gradients on hovered cell's crossings (teal)
+    if (state.hover && g.cells[state.hover]) {
+      var hc = g.cells[state.hover], al = size / N * 0.62;
+      ctx.strokeStyle = C.grad; ctx.lineWidth = Math.max(1.5, W / 900);
+      for (var q = 0; q < hc.cr.length; q++) {
+        var cp = hc.cr[q].p, cn = hc.cr[q].n;
+        ctx.beginPath(); ctx.moveTo(tx(cp[0]), ty(cp[1]));
+        ctx.lineTo(tx(cp[0]) + cn[0] * al, ty(cp[1]) - cn[1] * al); ctx.stroke();
+        ctx.beginPath(); ctx.arc(tx(cp[0]), ty(cp[1]), rr * 0.7, 0, 7); ctx.fillStyle = C.grad; ctx.fill();
+      }
+    }
+
+    // contour
+    var segs = dualSegments(g, state.method);
+    ctx.strokeStyle = C.accent; ctx.lineWidth = Math.max(2, W / 620);
+    ctx.lineJoin = "round"; ctx.lineCap = "round";
+    ctx.beginPath();
+    for (var t = 0; t < segs.length; t++) { ctx.moveTo(tx(segs[t][0][0]), ty(segs[t][0][1])); ctx.lineTo(tx(segs[t][1][0]), ty(segs[t][1][1])); }
+    ctx.stroke();
+
+    // cell vertices
+    var vr = Math.max(3, size / N * 0.13), nv = 0;
+    ctx.fillStyle = C.accent;
+    for (var k in g.cells) {
+      var vtx = state.method === "dual" ? g.cells[k].dc : g.cells[k].naive;
+      ctx.beginPath(); ctx.arc(tx(vtx[0]), ty(vtx[1]), vr, 0, 7); ctx.fill(); nv++;
+    }
+
+    document.getElementById("r-cells").textContent = g.nActive;
+    document.getElementById("r-verts").textContent = nv;
+    return { g: g, N: N, step: step, tx: tx, ty: ty, size: size, ox: ox, oy: oy };
+  }
+
+  var last = draw();
+
+  // hover -> cell key
+  canvas.addEventListener("mousemove", function (ev) {
+    if (!last) return;
+    var rect = canvas.getBoundingClientRect();
+    var dpr = canvas.width / rect.width;
+    var mx = (ev.clientX - rect.left) * dpr, my = (ev.clientY - rect.top) * dpr;
+    var N = last.N, step = last.step;
+    var fx = (mx - last.ox) / last.size * (2 * DOM) - DOM;
+    var fy = (1 - (my - last.oy) / last.size) * (2 * DOM) - DOM;
+    var ci = Math.floor((fx + DOM) / step), cj = Math.floor((fy + DOM) / step);
+    var key = (ci >= 0 && ci < N && cj >= 0 && cj < N) ? ci * N + cj : null;
+    if (key !== state.hover) { state.hover = key; last = draw(); }
+  });
+  canvas.addEventListener("mouseleave", function () { if (state.hover !== null) { state.hover = null; last = draw(); } });
+
+  // controls
+  function wireSeg(id, key) {
+    var grp = document.getElementById(id);
+    grp.addEventListener("click", function (e) {
+      var btn = e.target.closest("button"); if (!btn) return;
+      Array.prototype.forEach.call(grp.querySelectorAll("button"), function (b) { b.setAttribute("aria-pressed", b === btn ? "true" : "false"); });
+      state[key] = btn.getAttribute("data-v"); last = draw();
+    });
+  }
+  wireSeg("shape", "shape"); wireSeg("method", "method");
+  var res = document.getElementById("res"), resval = document.getElementById("resval");
+  res.addEventListener("input", function () { state.res = +res.value; resval.textContent = res.value; last = draw(); });
+
+  // ---- mini diagrams (primal vs dual) ----
+  function drawMini(id, mode) {
+    var cv = document.getElementById(id); if (!cv) return;
+    fit(cv, 1);
+    var cx2 = cv.getContext("2d"), W = cv.width, H = cv.height, pad = W * 0.08;
+    var size = Math.min(W, H) - pad * 2, ox = (W - size) / 2, oy = (H - size) / 2;
+    function tx(x) { return ox + ((x + DOM) / (2 * DOM)) * size; }
+    function ty(y) { return oy + size - ((y + DOM) / (2 * DOM)) * size; }
+    var C = { grid: css("--grid"), inside: css("--inside"), accent: css("--accent"), faint: css("--faint") };
+    var g = compute("blob", 7), N = g.N, step = g.step;
+    cx2.clearRect(0, 0, W, H);
+    cx2.strokeStyle = C.grid; cx2.lineWidth = Math.max(1, W / 700); cx2.beginPath();
+    for (var i = 0; i <= N; i++) { var gx = tx(-DOM + i * step); cx2.moveTo(gx, ty(-DOM)); cx2.lineTo(gx, ty(DOM)); var gy = ty(-DOM + i * step); cx2.moveTo(tx(-DOM), gy); cx2.lineTo(tx(DOM), gy); }
+    cx2.stroke();
+    var rr = size / N * 0.09;
+    for (var a = 0; a <= N; a++) for (var b = 0; b <= N; b++) {
+      var px = tx(-DOM + a * step), py = ty(-DOM + b * step);
+      cx2.beginPath(); cx2.arc(px, py, rr, 0, 7);
+      if (g.vals[a][b] < 0) { cx2.fillStyle = C.inside; cx2.fill(); } else { cx2.strokeStyle = C.faint; cx2.lineWidth = Math.max(1, W / 650); cx2.stroke(); }
+    }
+    var segs = mode === "primal" ? primalSegments(g) : dualSegments(g, "naive");
+    cx2.strokeStyle = C.accent; cx2.lineWidth = Math.max(2, W / 320); cx2.lineJoin = "round"; cx2.lineCap = "round";
+    cx2.beginPath();
+    for (var s = 0; s < segs.length; s++) { cx2.moveTo(tx(segs[s][0][0]), ty(segs[s][0][1])); cx2.lineTo(tx(segs[s][1][0]), ty(segs[s][1][1])); }
+    cx2.stroke();
+    cx2.fillStyle = C.accent;
+    if (mode === "primal") {
+      for (var key in g.cells) { var cr = g.cells[key].cr; for (var q = 0; q < cr.length; q++) { cx2.beginPath(); cx2.arc(tx(cr[q].p[0]), ty(cr[q].p[1]), size / N * 0.11, 0, 7); cx2.fill(); } }
+    } else {
+      for (var k in g.cells) { var v = g.cells[k].naive; cx2.beginPath(); cx2.arc(tx(v[0]), ty(v[1]), size / N * 0.13, 0, 7); cx2.fill(); }
+    }
+  }
+  function drawMinis() { drawMini("mA", "primal"); drawMini("mB", "dual"); }
+  drawMinis();
+
+  // redraw on resize + theme change
+  var rt;
+  window.addEventListener("resize", function () { clearTimeout(rt); rt = setTimeout(function () { last = draw(); drawMinis(); }, 90); });
+  var mo = new MutationObserver(function () { last = draw(); drawMinis(); });
+  mo.observe(root, { attributes: true, attributeFilter: ["data-theme"] });
+  if (window.matchMedia) window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", function () { last = draw(); drawMinis(); });
+})();
+</script>
