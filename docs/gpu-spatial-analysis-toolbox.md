@@ -119,6 +119,36 @@ Two honest qualifications:
   (e.g. a Getis-Ord hotspot surface); **PCF/K when you want a function of distance**;
   hard quadrats only when a downstream step genuinely needs disjoint regions.
 
+#### Status: argued, not yet validated
+
+Everything above is a **theoretical** case — MAUP, boxcar sidelobes, recovered
+cross-boundary pairs, GPU-naturalness. It has **not** been tested empirically: we have
+no type-I error or power numbers for either choice. "Windowing, not quadrats" is a
+well-reasoned working preference, **not a measured result**; treat it as provisional.
+
+**The validation to run** (cheap, and blocked on nothing): simulate a **CSR null** plus
+clustered (Thomas / Matérn) and inhibition alternatives; compute both ways at *matched
+effective resolution*; measure (a) **type-I error under the null** — does each method's
+nominal significance hold its level? — (b) **power** under the alternatives, and (c)
+quadrats' sensitivity to grid origin/phase.
+
+The subtlety that makes this worth measuring rather than assuming: overlapping windows
+are **not independent**, so a naive per-position P-value is anti-conservative — the
+effective number of tests is far below the number of window positions. "The null must
+follow the window" (above) is the fix *in principle*; validation is what shows the
+re-derived weighted permutation null actually **holds its nominal level** in practice.
+So the honest comparison is **calibrated windows vs quadrats** — never naive-windowed
+vs quadrats, which would flatter the windowed path for the wrong reason.
+
+Harness cost is low: it is the **Monte-Carlo null-model sweep already planned** below
+(§flagship), pointed at synthetic patterns instead of real data.
+
+**What would change the recommendation:** if calibrated windows fail to hold level, or
+hold it only at a resolution/cost where quadrats match them on power, the quadrat path
+earns its place back. Note quadrats are also the cheaper path to *stream* — a
+tile-aligned quadrat is self-contained, whereas a window straddling a tile edge needs
+the halo/apron described above.
+
 ### Render vs compute: splat by blending, not atomics
 
 The constraint note below says core WGSL has **no f32 atomics**, so the obvious

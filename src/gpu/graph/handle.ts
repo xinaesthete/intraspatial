@@ -61,6 +61,69 @@ export function basisLabel(b: Basis): string {
   return b.kind === "wavelet" ? `wavelet ${b.wavelet}·L${b.levels}` : "spatial";
 }
 
+/** An *open* tensor axis (ADR-0004/0015): a named, runtime-length bulk dimension with **no**
+ *  per-element algebra — deliberately distinct from the closed `ElementType`. `channel`/`time`
+ *  axes carry NGFF semantics; their *interpretation* is resolved by sd.js and consumed here,
+ *  never parsed (ADR-0015 ownership boundary). Axis-parametric ops (reduce/select/composite over
+ *  a named axis) operate on these; the algebraic element ops are rejected on them at build time. */
+export type AxisType = "channel" | "time" | "gene" | "custom";
+
+/** Per-index metadata for a `channel` axis, index-aligned to the axis `length`. Resolved from
+ *  NGFF `omero.channels` on the sd.js side of the Loader (ADR-0015 fork B: it lives on the axis). */
+export interface ChannelEntry {
+  /** Marker/stain name — the channel's semantic identity (NGFF has no wavelength/ontology field). */
+  label?: string;
+  /** Display colour, hex e.g. `"0000FF"`. */
+  color?: string;
+  window?: { min: number; max: number; start: number; end: number };
+  active?: boolean;
+}
+
+export interface TensorAxis {
+  /** Axis name, e.g. `"c"`, `"t"`, `"gene"`. */
+  name: string;
+  type: AxisType;
+  /** Open, runtime length. */
+  length: number;
+  /** UDUNITS-2 string (time axes); channels usually none. */
+  unit?: string;
+  /** Channel axis: per-index metadata, index-aligned to `length`. */
+  entries?: ChannelEntry[];
+}
+
+/** Product of all open-axis lengths (1 if none). A field's flat sample count is
+ *  `numCells(domain) · elementLanes(element) · axesProduct(axes)`. */
+export function axesProduct(axes?: readonly TensorAxis[]): number {
+  return axes ? axes.reduce((p, a) => p * a.length, 1) : 1;
+}
+
+/** The `channel` axis of a field, if it has one. */
+export function channelAxis(v: { axes?: readonly TensorAxis[] }): TensorAxis | undefined {
+  return v.axes?.find((a) => a.type === "channel");
+}
+
+/** Field *polarity* (ADR-0015): an ordinary intensity field vs a label/segmentation image. A label
+ *  is **not** a per-sample element — it is a whole-field kind with structural invariants (integer
+ *  dtype, 0 = background, no channel axis, nearest-only resampling) plus a value→properties map. */
+export type FieldRole = { kind: "intensity" } | { kind: "label"; labels: LabelMeta };
+
+export interface LabelMeta {
+  /** Ref to the parent intensity field (NGFF `image-label.source`). */
+  source?: string;
+  /** value → rgba (NGFF `image-label.colors`). */
+  colors?: Array<{ value: number; rgba: [number, number, number, number] }>;
+  /** value → arbitrary property bag (NGFF `image-label.properties`). */
+  properties?: Array<{ value: number; [k: string]: unknown }>;
+  /** INVARIANT (ADR-0015 fork D): label ids are categorical — resample **nearest**, never linear;
+   *  averaging fabricates non-existent ids. The multiscale/pyramid path must honour this. */
+  resample: "nearest";
+  /** Link to a `Table` by instance id (region/region_key/instance_key). */
+  instanceKey?: string;
+}
+
+/** The implicit polarity of any field that doesn't declare one. */
+export const INTENSITY: FieldRole = { kind: "intensity" };
+
 export type ShapeKind = "grid" | "points" | "matrix" | "scalar" | "opaque";
 
 export type Shape =
@@ -85,6 +148,10 @@ export interface GpuField {
   readonly element?: ElementType;
   /** Basis the values are expressed in (ADR-0006). Absent ⇒ `spatial`. */
   readonly basis?: Basis;
+  /** Open tensor axes — channel/time/gene (ADR-0004/0015). Absent ⇒ none. */
+  readonly axes?: readonly TensorAxis[];
+  /** Field polarity (ADR-0015). Absent ⇒ `intensity`. */
+  readonly role?: FieldRole;
   /** The node that writes this value. */
   readonly producer: NodeId;
   /** Which output port of that node. */
@@ -102,8 +169,14 @@ export interface FieldValue {
   element?: ElementType;
   /** Basis the values are expressed in (ADR-0006). Absent ⇒ `spatial`. */
   basis?: Basis;
+  /** Open tensor axes — channel/time/gene (ADR-0004/0015). Absent ⇒ none. */
+  axes?: readonly TensorAxis[];
+  /** Field polarity (ADR-0015). Absent ⇒ `intensity`. */
+  role?: FieldRole;
   /** Host data for numeric shapes (grid/points/matrix/scalar). Length is
-   *  `numCells(shape) * elementLanes(element)` — samples interleaved lane-major. */
+   *  `numCells(shape) * elementLanes(element) * axesProduct(axes)`. Element lanes are
+   *  interleaved (lane-major); open axes are **planar** (outermost, per-index contiguous —
+   *  matching the zarr/xarray `(c,y,x)` layout the sd.js loader delivers). */
   data?: Float32Array | Int32Array | Uint32Array;
   /** Arbitrary payload for `opaque` shapes. */
   payload?: unknown;
@@ -117,6 +190,20 @@ export function elementOf(v: { element?: ElementType }): ElementType {
 /** The basis of a field or value, defaulting to `spatial` when undeclared. */
 export function basisOf(v: { basis?: Basis }): Basis {
   return v.basis ?? SPATIAL;
+}
+
+/** The polarity of a field or value, defaulting to `intensity` when undeclared. */
+export function roleOf(v: { role?: FieldRole }): FieldRole {
+  return v.role ?? INTENSITY;
+}
+
+/** Enforce the ADR-0015 label invariants (integer dtype, no channel axis); throws on violation.
+ *  Nearest-only resampling is a separate constraint enforced by the multiscale path. A no-op on
+ *  intensity fields. Call at the point a label field is produced (op output / builder). */
+export function assertLabelInvariants(v: { role?: FieldRole; dtype: Dtype; axes?: readonly TensorAxis[] }): void {
+  if (roleOf(v).kind !== "label") return;
+  if (v.dtype === "f32") throw new Error("label field must have integer dtype (u32/i32), not f32");
+  if (channelAxis(v)) throw new Error("label field must not carry a channel axis");
 }
 
 /** Unpack a points `FieldValue` (packed [x0,y0,x1,y1,...]) into parallel arrays. */
