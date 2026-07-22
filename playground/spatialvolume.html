@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SpatialData volume — raymarched 3D</title>
+  <style>
+    :root { color-scheme: dark; }
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0; height: 100%;
+      background: #0b1020; color: #e2e8f0;
+      font: 13px/1.5 ui-sans-serif, system-ui, sans-serif;
+    }
+    #app { position: fixed; inset: 0; }
+    #stage { width: 100%; height: 100%; display: block; }
+    #panel {
+      position: fixed; top: 12px; left: 12px; width: 292px; max-height: calc(100% - 24px); overflow-y: auto;
+      padding: 14px 16px; background: rgba(15, 23, 42, 0.86); border: 1px solid #1e293b; border-radius: 10px;
+      backdrop-filter: blur(6px);
+    }
+    #panel h1 { margin: 0 0 2px; font-size: 14px; font-weight: 600; }
+    #panel .sub { margin: 0 0 10px; color: #94a3b8; font-size: 11px; }
+    .row { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 8px 0; }
+    .row label { color: #cbd5e1; }
+    input[type="range"] { width: 130px; }
+    input[type="text"] { width: 100%; background: #0f172a; color: #cbd5e1; border: 1px solid #334155; border-radius: 6px; padding: 3px 6px; font-size: 11px; }
+    select { background: #0f172a; color: #e2e8f0; border: 1px solid #334155; border-radius: 6px; padding: 3px 6px; font-size: 11px; }
+    .section2 { margin: 10px 0 4px; padding-top: 8px; border-top: 1px solid #1e293b; color: #38bdf8; font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em; }
+    #hud { margin-top: 12px; padding-top: 10px; border-top: 1px solid #1e293b; }
+    #hud .big { font-size: 20px; font-weight: 600; }
+    #hud .muted { color: #94a3b8; font-size: 11px; }
+    #label { color: #38bdf8; font-size: 11px; margin: 6px 0 0; }
+    #pyramid { color: #94a3b8; font-size: 10px; line-height: 1.4; margin: 6px 0 0; }
+    .note { color: #fcd34d; font-size: 10px; line-height: 1.4; margin: -2px 0 6px; }
+    .note code { background: #0f172a; border: 1px solid #334155; border-radius: 3px; padding: 0 3px; }
+    #err { color: #fca5a5; margin-top: 8px; white-space: pre-wrap; font-size: 11px; }
+    #range { color: #94a3b8; font-size: 10px; margin: 4px 0 0; line-height: 1.4; }
+    .section2 button { float: right; background: #1e293b; color: #e2e8f0; border: 1px solid #334155; border-radius: 5px; padding: 1px 7px; font-size: 10px; text-transform: none; letter-spacing: 0; cursor: pointer; }
+    .section2 button:hover { background: #334155; }
+  </style>
+</head>
+
+<body>
+  <div id="app">
+    <canvas id="stage"></canvas>
+    <div id="panel">
+      <h1>SpatialData volume (3D)</h1>
+      <p class="sub">Raymarched volume from an OME-Zarr store with a <b>z</b> axis. Bricks are z-slabs
+        streamed under camera control, bounded by a degrade-to-fit budget. Drag to orbit.</p>
+      <div class="row" style="flex-direction: column; align-items: stretch; gap: 4px">
+        <label for="store">store url</label>
+        <input id="store" type="text" value="http://localhost:8080/8090_13_Punch1_fused_htj2k_lossy.zarr/" />
+      </div>
+      <p class="note">⚠ Needs a locally hosted, CORS-enabled store whose axes include <code>z</code>.
+        2-D images belong in <code>spatialdata.html</code> / <code>spatialscene.html</code>.</p>
+      <div class="row">
+        <label for="element">image</label>
+        <select id="element"></select>
+      </div>
+      <div class="row">
+        <label for="channel">channel</label>
+        <select id="channel"></select>
+      </div>
+
+      <div class="section2">detail &amp; budget</div>
+      <div class="row">
+        <label for="q">detail q = <span id="qval">1.0</span></label>
+        <input id="q" type="range" min="0.25" max="4" step="0.05" value="1" />
+      </div>
+      <div class="row">
+        <label for="budget">budget <span id="budgetval">512 MB</span></label>
+        <input id="budget" type="range" min="64" max="4096" step="64" value="512" />
+      </div>
+
+      <div class="section2">transfer function <button id="auto" type="button">auto</button></div>
+      <div class="row">
+        <label for="cmin">min <span id="cminval">–</span></label>
+        <input id="cmin" type="range" min="0" max="1" step="0.005" value="0.05" />
+      </div>
+      <div class="row">
+        <label for="cmax">max <span id="cmaxval">–</span></label>
+        <input id="cmax" type="range" min="0" max="1" step="0.005" value="0.5" />
+      </div>
+      <div class="row">
+        <label for="gamma">gamma <span id="gammaval">1.00</span></label>
+        <input id="gamma" type="range" min="0.2" max="3" step="0.05" value="1" />
+      </div>
+      <p id="range"></p>
+
+      <div id="hud">
+        <div title="Estimated decoded size of the selected bricks (f32 samples) — the engine's working-set estimate. The naive volume renderer quantises to R8, so real VRAM is ~4x smaller."><span id="bytes" class="big">–</span> <span class="muted">working set (est.)</span></div>
+        <div class="muted"><span id="resident">–</span> resident (VRAM)</div>
+        <div class="muted"><span id="chunks">–</span> bricks · <span id="level">–</span></div>
+        <p id="label">—</p>
+        <p id="pyramid"></p>
+        <div id="err"></div>
+      </div>
+    </div>
+  </div>
+  <script type="module" src="/src/spatialVolumeMain.ts"></script>
+</body>
+
+</html>
