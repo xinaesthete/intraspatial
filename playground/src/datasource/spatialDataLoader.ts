@@ -43,6 +43,11 @@ export interface SpatialDataImage {
   /** Default per-channel render settings (colour + contrast window + visibility), seeded from
    *  OME `omero.channels` where present, else defaults + auto-contrast. Drives the material. */
   readonly channels: ChannelSettings[];
+  /** The REAL sd.js level-0 array→`global` placement (element ∘ dataset transform), when the store
+   *  carries one — the seam for co-registering several images in a shared coordinate system (1b).
+   *  Absent ⇒ no stored transform (fall back to axis-aligned staggering). Independent of `ms`'s
+   *  demo-normalised `worldFromArray`; the scene composes it with a common global→world similarity. */
+  readonly globalFromArray?: Affine3;
 }
 
 /** Parse an OME/omero channel colour (hex `"RRGGBB"` or `"#RRGGBB"`) to [r,g,b] in [0,1]. */
@@ -97,6 +102,48 @@ function axisAlignedPlacement(voxelDims0: readonly [number, number, number], wor
       [0, 0, s],
     ],
   };
+}
+
+/** A math.gl-ish 4×4 with the methods we touch (structural — avoids importing @math.gl/core here). */
+interface Mat4Like {
+  toArray(): number[];
+  multiplyRight(m: Mat4Like): Mat4Like;
+}
+interface TransformLike {
+  toMatrix(): Mat4Like;
+}
+interface RasterElementLike {
+  getTransformationForLevel?(
+    level: number,
+    cs: string,
+  ): { element?: { ok: boolean; value: TransformLike }; dataset?: TransformLike } | undefined;
+}
+
+/** The real sd.js level-0 array→`global` placement as our `Affine3`, or undefined if the store
+ *  carries no such transform. Composes the element transform (intrinsic→global) with the level-0
+ *  dataset transform (array→intrinsic). The 4×4's spatial input order is [x, y, z] (verified against
+ *  the Xenium store: feeding pixel x,y lands `he_image` inside `morphology_focus`'s global footprint;
+ *  the swapped order lands far outside). Column-major → `Affine3` (columns = axes, translation =
+ *  origin) mirrors `multiImageScene.matrixToAffine`. */
+function readGlobalFromArray(img: unknown): Affine3 | undefined {
+  const el = img as RasterElementLike;
+  try {
+    const lv = el.getTransformationForLevel?.(0, "global");
+    if (!lv?.element?.ok) return undefined;
+    const m = lv.element.value.toMatrix();
+    if (lv.dataset?.toMatrix) m.multiplyRight(lv.dataset.toMatrix());
+    const e = m.toArray(); // column-major 16
+    return {
+      origin: [e[12] ?? 0, e[13] ?? 0, e[14] ?? 0],
+      axes: [
+        [e[0] ?? 0, e[1] ?? 0, e[2] ?? 0],
+        [e[4] ?? 0, e[5] ?? 0, e[6] ?? 0],
+        [e[8] ?? 0, e[9] ?? 0, e[10] ?? 0],
+      ],
+    };
+  } catch {
+    return undefined;
+  }
 }
 
 export interface SpatialDataHandle {
@@ -230,7 +277,15 @@ async function buildImage(
     };
   });
 
-  return { ms, loader, label: `${elementName} · ${voxelDims0[0]}×${voxelDims0[1]} · ${sources.length} levels`, channels };
+  const globalFromArray = readGlobalFromArray(img);
+
+  return {
+    ms,
+    loader,
+    label: `${elementName} · ${voxelDims0[0]}×${voxelDims0[1]} · ${sources.length} levels`,
+    channels,
+    globalFromArray,
+  };
 }
 
 /** Per-channel [0, max] window computed from the coarsest level's tiles — a cheap viv-style

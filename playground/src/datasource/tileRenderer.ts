@@ -56,6 +56,10 @@ export class TileRenderer implements MemoryReporting {
    *  owned channel-composite material (ADR-0010) — the tile texture then carries RAW channel
    *  planes and the material does colour/window/composite on the GPU. */
   private makeMaterial?: (tex: THREE.Texture) => THREE.Material;
+  private blending: THREE.Blending = THREE.NormalBlending; // layer blend mode, applied to every tile material
+  private depthTest = true; // overlays turn this off so they composite over the base regardless of z
+  private depthWrite = true;
+  private renderOrderVal = 0; // draw order = layer order (later layers on top)
 
   constructor(
     private ms: Multiscale,
@@ -96,6 +100,42 @@ export class TileRenderer implements MemoryReporting {
       void this.load(k, sc.id);
     }
     this.prune();
+  }
+
+  /** Set the layer blend mode for this image's tiles (Normal = over, Additive = sum). Applies to
+   *  every resident tile material and is remembered for tiles that stream in later. */
+  setBlending(blending: THREE.Blending): void {
+    this.blending = blending;
+    this.forEachMaterial((m) => {
+      m.blending = blending;
+    });
+  }
+
+  /** Depth behaviour for this image's tiles. The base layer keeps depth on (intra-image LOD: finer
+   *  tiles win via LEVEL_Z_BIAS); overlay layers turn depthTest off so they composite over the base
+   *  regardless of z (the layers model — one shared depth buffer can't isolate per-image LOD AND
+   *  blend across images without render-to-texture). */
+  setDepth(depthTest: boolean, depthWrite: boolean): void {
+    this.depthTest = depthTest;
+    this.depthWrite = depthWrite;
+    this.forEachMaterial((m) => {
+      m.depthTest = depthTest;
+      m.depthWrite = depthWrite;
+    });
+  }
+
+  /** Draw order for this image's tiles (higher = later = on top), so layers composite in order. */
+  setRenderOrder(order: number): void {
+    this.renderOrderVal = order;
+    for (const mesh of this.meshes.values()) mesh.renderOrder = order;
+  }
+
+  private forEachMaterial(fn: (m: THREE.Material) => void): void {
+    for (const mesh of this.meshes.values()) {
+      const m = mesh.material;
+      if (Array.isArray(m)) for (const mm of m) fn(mm);
+      else fn(m);
+    }
   }
 
   private async load(k: string, id: Tile["id"]): Promise<void> {
@@ -168,7 +208,11 @@ export class TileRenderer implements MemoryReporting {
     geo.setAttribute("position", new THREE.Float32BufferAttribute([...c00, ...c10, ...c11, ...c00, ...c11, ...c01], 3));
     geo.setAttribute("uv", new THREE.Float32BufferAttribute([0, 0, 1, 0, 1, 1, 0, 0, 1, 1, 0, 1], 2));
     const material = this.makeMaterial ? this.makeMaterial(tex) : greyscaleMaterial(tex);
+    material.blending = this.blending;
+    material.depthTest = this.depthTest;
+    material.depthWrite = this.depthWrite;
     const mesh = new THREE.Mesh(geo, material);
+    mesh.renderOrder = this.renderOrderVal;
     this.meshes.set(k, mesh);
     this.meshIds.set(k, id);
     this.group.add(mesh);
