@@ -61,6 +61,7 @@ export default defineConfig({
           label: "Start here",
           items: [
             { label: "Overview", slug: "index" },
+            { label: "Viewer prototypes", slug: "prototypes" },
             { label: "Composable & interpretable", slug: "concepts/composable-interpretable" },
             { label: "FAIR by design", slug: "concepts/fair" },
             { label: "Roadmap & status", slug: "roadmap" },
@@ -71,6 +72,7 @@ export default defineConfig({
           items: [
             // Prototype — surfaced for visibility; scope/structure to be reviewed later.
             { label: "Brick-atlas page table", slug: "datasource/brick-atlas-page-table" },
+            { label: "Multi-image scene editor", slug: "datasource/spatial-scene" },
           ],
         },
         {

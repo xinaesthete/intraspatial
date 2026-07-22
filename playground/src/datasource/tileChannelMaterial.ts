@@ -43,9 +43,22 @@ export class ChannelComposite {
   private uHi = uniform(new THREE.Vector4(1, 1, 1, 1)); // per-channel contrast max
   private uVis = uniform(new THREE.Vector4(0, 0, 0, 0)); // per-channel visibility 0/1
   private uBlend = uniform(0); // 0 = additive, 1 = max
+  private uOpacity = uniform(1); // per-LAYER opacity (this image's alpha when composited over others)
+  private transparent: boolean;
 
-  constructor(settings: readonly ChannelSettings[], blend: BlendMode = "additive") {
+  /** `opts.transparent` opts into layer compositing: the minted materials are transparent with a
+   *  live per-image opacity (alpha = uOpacity), so several images blend across one another (the
+   *  multi-image scene). Left off (default) the material stays fully opaque — the single-image
+   *  DualView path is unchanged. */
+  constructor(settings: readonly ChannelSettings[], blend: BlendMode = "additive", opts: { transparent?: boolean; opacity?: number } = {}) {
+    this.transparent = opts.transparent ?? false;
+    this.uOpacity.value = opts.opacity ?? 1;
     this.update(settings, blend);
+  }
+
+  /** Set this image's layer opacity live (affects every resident tile at once). */
+  setOpacity(opacity: number): void {
+    this.uOpacity.value = opacity;
   }
 
   /** Push channel settings into the shared uniforms — affects all live tiles immediately. */
@@ -76,6 +89,15 @@ export class ChannelComposite {
   makeMaterial = (tex: THREE.Texture): THREE.Material => {
     const mat = new MeshBasicNodeMaterial();
     mat.side = THREE.DoubleSide;
+    if (this.transparent) {
+      // Layer compositing: draw transparent so this image blends over the ones beneath it, but KEEP
+      // depthWrite on so intra-image LOD (coarse/fine tiles) still resolves by depth within this
+      // image's own (per-image cleared) depth buffer. Both Normal and Additive blending use SrcAlpha
+      // for the source, so alpha = uOpacity fades either way; the blend MODE is set on the mesh by
+      // TileRenderer.setBlending.
+      mat.transparent = true;
+      mat.depthWrite = true;
+    }
     const build = Fn(() => {
       const s = texture(tex); // vec4: .x..w are the 4 raw channel planes
       // windowed intensity per channel (vec4), then gated by visibility
@@ -87,7 +109,7 @@ export class ChannelComposite {
       const additive = c0.add(c1).add(c2).add(c3);
       const maxed = max(max(c0, c1), max(c2, c3));
       const rgb = mix(additive, maxed, step(float(0.5), this.uBlend));
-      return vec4(clamp(rgb, 0, 1), 1);
+      return vec4(clamp(rgb, 0, 1), this.transparent ? this.uOpacity : float(1));
     });
     // biome-ignore lint/suspicious/noExplicitAny: TSL node output → colorNode (ADR-0009 §1 friction)
     mat.colorNode = build() as any;

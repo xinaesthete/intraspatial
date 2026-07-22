@@ -1,0 +1,42 @@
+---
+title: Viewer prototypes
+description: The live WebGPU prototypes — implicit CSG geometry, the operation-graph composer, and the SpatialData image/volume viewers — built and published alongside these docs.
+---
+
+These are the project's working prototypes, built from `playground/` and published with this site. They
+are development artefacts rather than polished demos: they exist to exercise the engine end to end.
+
+:::caution[WebGPU required]
+Open these in Chrome or Edge. Each page reports clearly if WebGPU is unavailable.
+:::
+
+## Geometry — implicit CSG
+
+- **[Implicit CSG (surface nets)](/playground/geometry.html)** — the plane-native BSP mesher and noise
+  op, meshing implicit CSG solids.
+- **[Implicit raymarch (hybrid)](/playground/raymarch.html)** — the same implicit geometry rendered by
+  raymarching, and the hybrid mesh/raymarch path.
+
+## SpatialData viewers
+
+- **[Image viewer (1a)](/playground/spatialdata.html)** — one HTJ2K image streamed per-chunk under
+  camera control, with the decision-view inset showing which chunks the view demanded.
+- **[Multi-image scene editor](/playground/spatialscene.html)** — several images co-registered in one
+  scene, each with an editable 3D transform (gizmo + numeric panel) and layer blending. See
+  [the write-up](/datasource/spatial-scene).
+- **[Volume viewer (3D)](/playground/spatialvolume.html)** — raymarched volumetric HTJ2K: z-slab bricks
+  streamed under a degrade-to-fit budget, with an auto-ranged transfer function.
+
+:::note[These three need a local data store]
+The SpatialData viewers read from a **locally hosted, CORS-enabled** OME-Zarr store, so on the public
+site they will load and then report that the store is unreachable. Point the store URL at your own
+server to use them. A publicly-hosted sample dataset is still an open item.
+:::
+
+## Engine &amp; analysis
+
+- **[Operation-graph composer](/playground/index.html)** — the React Flow composer for the in-GPU
+  operation graph.
+- **[Datasource decision view](/playground/datasource.html)** — the view-driven multiscale datasource
+  against synthetic data: level selection, chunk residency, and the volume raymarch A/B.
+- **[HsPf — spatial selection/migration](/playground/hspf.html)** — the spatial GPU example.

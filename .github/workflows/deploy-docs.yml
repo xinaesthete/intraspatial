@@ -1,9 +1,13 @@
-name: Deploy docs site to GitHub Pages
+name: Docs site — build (PRs) and deploy (main)
 
 on:
   # Publish on every push to the default branch...
   push:
     branches: [main]
+  # ...validate the same build on pull requests, without deploying. The docs deploy now depends on a
+  # second artefact (the built viewer prototypes), so a break there would otherwise only surface
+  # after merge — when it would take the live site's deploy down with it.
+  pull_request:
   # ...and allow manual runs from the Actions tab.
   workflow_dispatch:
 
@@ -13,14 +17,14 @@ permissions:
   pages: write
   id-token: write
 
-# Only one live deployment at a time; don't cancel an in-flight publish.
-concurrency:
-  group: pages
-  cancel-in-progress: false
-
 jobs:
   build:
     runs-on: ubuntu-latest
+    # Pages deploys must not overlap (see the deploy job); PR validation has no such constraint, so
+    # key it by ref and let a new push supersede an in-flight run.
+    concurrency:
+      group: docs-build-${{ github.ref }}
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -34,21 +38,52 @@ jobs:
 
       # Full workspace install. The `webgpu` native addon ships a prebuilt binary and its
       # postinstall is a macOS-only no-op, and the `openjph-wasm` file: sibling is an optional
-      # dep that's skipped when absent — so neither is needed for the docs build.
+      # dep that's skipped when absent — so neither is needed for the docs build. (The playground
+      # depends on the PUBLISHED openjph-wasm, which installs normally and the volume viewer needs.)
       - run: pnpm install --frozen-lockfile
+
+      # The viewer prototypes are a separate Vite multi-page app. Build them first; the docs build's
+      # sync-playground step copies the result into public/playground/ so Pages serves them at
+      # <base>/playground/*.html.
+      - name: Build viewer prototypes
+        run: pnpm build:playground
 
       - name: Build docs site
         run: pnpm --filter docs-site build
 
+      # Assert the prototypes actually reached the published output. sync-playground deliberately
+      # warns-and-skips when the playground dist is missing (so docs-only builds still pass), and a
+      # page missing from the Vite `input` map is likewise silent — both would otherwise ship a
+      # half-empty gallery. Fail loudly here instead.
+      - name: Verify prototypes reached the docs output
+        run: |
+          set -euo pipefail
+          test -f docs-site/dist/prototypes/index.html
+          for page in index datasource spatialdata spatialscene spatialvolume geometry raymarch hspf; do
+            test -f "docs-site/dist/playground/${page}.html" || { echo "::error::missing playground/${page}.html"; exit 1; }
+          done
+          # The volume viewer decodes HTJ2K through openjph-wasm; its Emscripten glue resolves this
+          # binary relative to itself, and it is emitted by a build-only plugin.
+          test -f docs-site/dist/playground/assets/libopenjph.wasm || { echo "::error::openjph wasm not emitted"; exit 1; }
+          echo "8 prototypes + openjph wasm present in docs-site/dist"
+
       - uses: actions/configure-pages@v5
+        if: github.event_name != 'pull_request'
 
       - uses: actions/upload-pages-artifact@v3
+        if: github.event_name != 'pull_request'
         with:
           path: docs-site/dist
 
   deploy:
     needs: build
+    # PRs stop at build — nothing is published from them.
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
+    # Only one live deployment at a time; don't cancel an in-flight publish.
+    concurrency:
+      group: pages
+      cancel-in-progress: false
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
