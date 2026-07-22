@@ -124,6 +124,29 @@ export interface LabelMeta {
 /** The implicit polarity of any field that doesn't declare one. */
 export const INTENSITY: FieldRole = { kind: "intensity" };
 
+/** Pool identity of a leased buffer (ADR-0017, invariant 3). `release` returns the buffer to
+ *  the free list of exactly the `usage` class and `capacity` bucket it was drawn from — the
+ *  pool never calls `destroy()`, because mid-process buffer destruction segfaults Dawn-on-Node
+ *  (ADR-0002/0003). */
+export interface LeaseToken {
+  /** Monotonic id, for debugging and double-release detection. */
+  readonly id: number;
+  /** The `GPUBufferUsage` flags this buffer was created with. */
+  readonly usage: number;
+  /** Bucketed byte capacity of the physical buffer (≥ the requested `byteLength`). */
+  readonly capacity: number;
+}
+
+/** A GPU-resident field payload (ADR-0017, Tier-2). Carried on a `FieldValue` *instead of*
+ *  host `data`, so an interior graph edge stays on-device — invariant 4's "interior edges stay
+ *  on-GPU". `byteLength` is the *logical* size of the value; the physical buffer may be larger
+ *  (see `lease.capacity`), so readers must bound themselves by the logical length. */
+export interface ResidentBuffer {
+  readonly buffer: GPUBuffer;
+  readonly byteLength: number;
+  readonly lease: LeaseToken;
+}
+
 export type ShapeKind = "grid" | "points" | "matrix" | "scalar" | "opaque";
 
 export type Shape =
@@ -178,6 +201,14 @@ export interface FieldValue {
    *  interleaved (lane-major); open axes are **planar** (outermost, per-index contiguous —
    *  matching the zarr/xarray `(c,y,x)` layout the sd.js loader delivers). */
   data?: Float32Array | Int32Array | Uint32Array;
+  /** GPU-resident payload (ADR-0017, Tier-2), same logical contents and layout as `data`.
+   *  Present on interior edges between `resident` ops, which is what keeps them off the host
+   *  (invariant 4). The executor bridges the two representations on demand: it downloads into
+   *  `data` before a non-resident op and uploads into `buffer` before a resident one.
+   *
+   *  INVARIANT: at least one of `data` / `buffer` / `payload` is present. A value may carry
+   *  both transiently — immediately after a bridge in either direction. */
+  buffer?: ResidentBuffer;
   /** Arbitrary payload for `opaque` shapes. */
   payload?: unknown;
 }

@@ -71,12 +71,33 @@ describe("resource-sync invariant 4 — boundary-only transfer", () => {
     // Every pull must download at least once — the sink itself.
     for (const r of rows) expect(r.downloads).toBeGreaterThanOrEqual(1);
 
-    // BASELINE RATCHET. Filled from the measured numbers below; tighten as Tier-2 lands.
-    // Under invariant 4 this whole array becomes [1, 1, 1, 1].
+    // THE INVARIANT ITSELF: downloads must not grow with chain length. Adding a resident op to
+    // the middle of a chain must cost zero transfers. This is the assertion that actually
+    // encodes invariant 4 — the ratchet below only pins the constant.
+    const beyondSource = rows.filter((r) => r.ops >= 2).map((r) => r.downloads);
+    expect(new Set(beyondSource).size).toBe(1);
+
+    // BASELINE RATCHET. Tighten as further ops convert; never loosen without saying why.
     expect(rows.map((r) => r.downloads)).toEqual(BASELINE_DOWNLOADS);
   });
 });
 
-// Measured on Dawn-on-Node. Downloads SHOULD be constant (1) per invariant 4; the growth
-// here is the Tier-1 interior-edge round-trip, quantified.
-const BASELINE_DOWNLOADS = [1, 2, 3, 4];
+// Measured on Dawn-on-Node. **This is invariant 4 fully met for this chain.**
+//
+// The history is the point of the ratchet:
+//   [1, 2, 3, 4] — one download per op. Every interior edge round-tripped its whole field to
+//                  the host and back; the growth IS the Tier-1 violation, quantified.
+//   [1, 2, 2, 2] — ADR-0017 stage 2 made `convolveSeparable` and `threshold` resident, so
+//                  interior edges stopped transferring and the count stopped growing. The
+//                  residual 2 were `splatDensity` (still Tier-1) plus the sink.
+//   [1, 1, 1, 1] — `splatDensity` converted: it now binds the packed points value directly,
+//                  strips the copy's 256-byte row padding in a compute pass instead of on the
+//                  host, and leaves the density grid resident.
+//
+// The single remaining download is the SINK, and it is not a violation: `pullData` downloads
+// because the host is genuinely consuming the value. A render-terminated graph asking for
+// `pullResident` performs zero downloads — asserted in resident.gpu.test.ts.
+//
+// Anything above 1 here is a regression: some op has stopped being resident, or the executor
+// has inserted a bridge that should not be there.
+const BASELINE_DOWNLOADS = [1, 1, 1, 1];

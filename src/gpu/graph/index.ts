@@ -7,10 +7,29 @@
 export type { GpuBackend, Root } from "./backend";
 export { nodeBackend } from "./backend.node";
 export type { AdvanceOptions, PullOptions, SimState } from "./executor";
-export { advance, createSimState, pull, pullData, simStateBytes } from "./executor";
+export {
+  advance,
+  createSimState,
+  disposeSimState,
+  pull,
+  pullData,
+  pullResident,
+  simStateBytes,
+} from "./executor";
 export type { DelayHandle, EdgeRef, FeedbackHandle, GraphNode } from "./graph";
 export { Graph } from "./graph";
-export type { Basis, Dtype, ElementType, FieldValue, GpuField, NodeId, Shape, ShapeKind } from "./handle";
+export type {
+  Basis,
+  Dtype,
+  ElementType,
+  FieldValue,
+  GpuField,
+  LeaseToken,
+  NodeId,
+  ResidentBuffer,
+  Shape,
+  ShapeKind,
+} from "./handle";
 export {
   basisLabel,
   basisOf,
@@ -31,6 +50,8 @@ export { FieldOnePole, OnePole, type OnePoleOptions } from "./onePole";
 export type { ExecCtx, OpHelp, OpType, ParamSpec, Params, ParamType, PortSpec } from "./op";
 export { allFinite, defaultParams, param } from "./op";
 export { registerBuiltinOps, registerElementOps, registerWaveletOps } from "./ops/index";
+export type { PoolStats } from "./pool";
+export { BufferPool, residentUsage } from "./pool";
 export { getOp, hasOp, listOps, registerOp } from "./registry";
 export { FieldRing, RingBuffer } from "./ringBuffer";
 

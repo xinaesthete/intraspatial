@@ -1,6 +1,7 @@
 # ADR-0017 — Tier-2 resident buffer edges (implementing gpu-resource-sync invariants 1/3/4)
 
-Status: **draft / proposed** (2026-07-13)
+Status: **accepted — stages 1–3 + the invariant-5 amendment implemented** (proposed 2026-07-13,
+landed 2026-07-20). Stages 4–5 remain open; see *What stages 1–3 actually measured*.
 
 ## Context
 
@@ -152,17 +153,113 @@ Consequence: `docs/gpu-resource-sync.md` invariant 5 should be revised to say th
 ## Staging (each stage tightens the budget ratchet)
 
 - **Stage 0 — done.** `instrument.ts` + `readbackBudget.gpu.test.ts`; baseline `[1,2,3,4]`.
-- **Stage 1 — substrate, no op conversions.** `ResidentBuffer`, lease/release + DAG liveness,
-  `resident?` opt-in, executor bridge. Budget unchanged; full suite still green.
-- **Stage 2 — pilot, linear chain.** Convert `convolveSeparable` + `threshold` to resident. The
-  3-op chain drops **3 → 1** downloads — a directly measured win on the existing test.
-- **Stage 3 — resident feedback.** The HsPf-shaped case: ping-pong leases through a `feedback`
-  node, validated against HsPf's behaviour.
+- **Stage 1 — done.** Substrate, no op conversions. `ResidentBuffer`/`LeaseToken` on `FieldValue`
+  ([`handle.ts`](../../src/gpu/graph/handle.ts)), a liveness pool
+  ([`pool.ts`](../../src/gpu/graph/pool.ts)) behind `lease`/`release`/`upload`/`poolStats` on
+  `GpuBackend`, the `resident?` opt-in on `OpType`, and the executor bridge + DAG refcounting.
+  Budget unchanged at `[1,2,3,4]`; full suite green — as predicted.
+- **Stage 2 — done.** `convolveSeparable` + `threshold` converted. Budget `[1,2,3,4] → [1,2,2,2]`.
+- **Stage 3 — done.** Resident feedback ping-pong (see below).
 - **Stage 4 — resident render op.** ADR-0014's `surface(camera) → {position, normal, valid}` +
   `material` contract as a graph op consuming a resident field; no-download display.
 - **Stage 5 — retrofit satellites** (`sweptGpu`, `implicitGpu`, HsPf's kernel) onto resident edges.
 
 Stages 1–2 are the load-bearing ones; 3–5 are unblocked consequences.
+
+### What stages 1–3 actually measured (2026-07-20)
+
+**The ratchet reached `[1,1,1,1]`, in two steps.** Converting `convolveSeparable` and `threshold`
+took `[1,2,3,4]` → `[1,2,2,2]`: that removed every *interior* transfer, so the count stopped
+growing with chain length — which is what invariant 4 actually asserts, and the budget test now
+asserts constancy directly rather than just pinning an array. The two residual downloads were
+`splatDensity` (still Tier-1, heading the chain) and the sink. Converting `splatDensity`
+(below) removed the first, leaving **`[1,1,1,1]`**: the sink alone, which `pullData` downloads
+because the host genuinely consumes it — invariant 4 working as intended, not a violation. A
+render-terminated graph asking for `pullResident` performs **zero** downloads.
+
+Note the ADR's stage-2 prediction of "3 → 1" was really a prediction about the whole chain, and
+only came true once the *source* converted too. Worth remembering when reading a staged plan: the
+op you convert is not always the op that is transferring.
+
+**Two hazards found while building it, both worth recording.**
+
+- **Wrapping a pooled buffer as a TypeGPU buffer makes the root a second owner of it**, and both
+  owners free it at teardown. That was harmless while readback targets were module-scoped
+  singletons — one wrapper each, created once — but a pool *recycles* buffers, so an uncached
+  wrap mints a fresh owner for the same Dawn handle on every download, and process exit then
+  double-frees it. This is a new way to reach the ADR-0002/0003 atexit segfault, created by the
+  pool itself. `backend.node.readbackF32` now caches one wrapper per buffer, and resident ops
+  build **raw** bind groups ([`residentBind.ts`](../../src/gpu/graph/residentBind.ts)) rather than
+  wrapping at all, so ownership stays with the pool.
+- **`hashSource`'s fallthrough was a correctness bug, not just a perf one.** A value with neither
+  `data` nor `payload` hashed to the constant `"empty"`, so *every* resident source would have
+  collided with every other and served wrong cache hits. Resident sources now key off object
+  identity. The ADR called this "forced, not optional"; it is more than that — it had to land in
+  stage 1, before any value could carry a buffer.
+
+**Ownership turned out to be the whole of stage 3.** Ping-pong is not implemented by handing ops a
+destination buffer (the op contract has ops lease their own outputs). Instead the feedback store
+*adopts* the incoming lease and *releases* the superseded one; because the pool is a free list,
+next tick's producer is handed back that very buffer. Two buffers alternate — HsPf's
+`[src, dst] = [dst, src]` expressed through the lease API, with no new op API and no per-tick
+allocation. Verified over 22 ticks: zero additional buffers. Three consequences fell out:
+
+- The executor needs an explicit **transfer of ownership** from tick to store, and a matching
+  `disposeSimState` — otherwise discarding a simulation strands a lease forever, since the pool
+  never destroys.
+- `feedback`/`delay` were **not decrementing their `init` refcount** at all (they `continue` past
+  the op path), so a resident `init` leaked one buffer per tick. Fixed.
+- **`delay` is deliberately left host-backed.** `FieldRing` stores host frames, so a depth-k
+  history has nothing to ping-pong; generalising it needs k+1 rotating buffers *and* an on-device
+  path for `sample`'s interpolation. `delay` remains an explicit, documented host boundary.
+
+**Invariant 5 is now implemented too.** `runNode` runs `execute` and lets failures propagate; the
+`sanity → cpuGolden` fallback and the per-output `allFinite` scan are gone. `OpType.sanity` was
+removed with them — worth recording *why* it was safe: the only op that ever defined it was
+`vietorisRipsPersistence`, whose implementation was `return true`, i.e. it existed purely to opt
+out of the scan being deleted. Nothing used the mechanism to validate anything. `cpuGolden` stays
+as the test oracle and the `mode: "cpu"` implementation.
+
+**`splatDensity` converted — and the near-miss is the lesson.** It renders to an r32float texture
+and `copyTextureToBuffer`s into a 256-byte-row-aligned staging buffer, so the row padding had to be
+stripped somewhere. That is now a small TGSL compute pass writing tightly-packed `w*h` into the
+leased output, and the vertex stage reads the graph's packed `[x0,y0,…]` points **directly** (the
+shader takes floats-per-point from its uniform: 3 for the host path's `(x,y,weight)`, 2 for the
+graph's points value), so no host repacking either.
+
+The de-pad kernel was wrong on the first attempt in a way **the budget test could not see**:
+`row = i / w` on `u32` operands transpiles to *float* division, so a fractional row scrambled the
+source index. Downloads read a perfect `[1,1,1,1]` while the grid itself was corrupt — total mass
+17.5 against the correct 58.0, the blob split across two wrong columns. The resolver did warn
+(`Implicit conversions from [params.rowFloats: u32] to f32`), which is worth heeding rather than
+scrolling past. Caught only because a *correctness* test compared the resident splat against the
+host path elementwise.
+
+**Generalising: a transfer-count ratchet measures transfers, not truth.** Every op converted under
+this ADR needs a paired numeric check, or the budget test will happily certify a fast, wrong graph.
+`residentValues.gpu.test.ts` compares the resident splat against `splatDensityGpu` — not against
+`cpuGolden`, deliberately: same render, same texture, so they should agree bit-for-bit (they do,
+`maxd = 0`), and any drift isolates exactly what the conversion touched. Splat's render path
+differs from the analytic CPU KDE by ~1.6e-2 regardless, which would have masked this bug entirely.
+The test uses a 24-wide grid on purpose — `24*4 = 96` bytes per row is *not* 256-aligned, so the
+padding is real; a 64-wide grid would be aligned by luck and exercise nothing.
+
+**Still host-coupled: the default `bbox`.** Deriving it from the points needs their values, so
+`splatDensity` falls back to the host array when no explicit `bbox` param is given. That works
+today only because the executor keeps `data` alongside `buffer` after an upload. A points value
+produced by an upstream *resident* op has no host array, and the op throws rather than silently
+downloading it — reading the points back is precisely the transfer this path exists to remove. The
+fix when that case arrives is a GPU min/max reduction, not a readback.
+
+**Backend parity is now tested** (`backendParity.gpu.test.ts`). This was the gap that let a real
+regression ship: every graph test relied on the executor's `ctx: opts.ctx ?? { backend: nodeBackend }`
+default, so no test ever passed an explicit `ctx` and the other two `GpuBackend` implementations
+were exercised by nothing. When this ADR added `lease`/`release`/`upload`/`poolStats` to the
+interface, `backend.browser.ts` was missed and the playground threw `backend.upload is not a
+function` on its first resident op. Two mitigations: the browser backend moved from `playground/`
+into `src/gpu/graph/`, so the root tsconfig actually typechecks it; and the new test runs the same
+resident graph through `nodeBackend`, an `adoptDevice`-wrapped backend, and `browserBackend`,
+asserting identical output and zero outstanding leases. Verified to fail on the original bug.
 
 ## Why
 
@@ -182,11 +279,33 @@ Stages 1–2 are the load-bearing ones; 3–5 are unblocked consequences.
 - **The `resident?` bridge can mask regressions** — an op silently falling back to host download
   looks correct. Mitigation: the budget ratchet, plus a debug mode that logs every executor-inserted
   materialisation with its node id.
+- **KNOWN LIMITATION — the bridge cannot produce a non-default usage class.** `residentAt` calls
+  `backend.upload(v.data)` with no `usage` argument, so a host value bridged into a resident op
+  always lands in the default resident class. An op needing e.g. `| VERTEX` (geometry a render pass
+  binds — `hornMutator.ts` does exactly this via `setVertexBuffer`) will therefore be handed a
+  buffer that *physically lacks the flag*, and the pool correctly refuses to substitute one, since
+  free lists are keyed on usage. The op's own leases are fine — only the **bridged input** is
+  affected. This is latent until the first geometry op; the fix is additive (an optional usage hint
+  on `PortSpec`, or threading `usage` through the bridge), and is called out here so it is designed
+  rather than rediscovered.
+- **Open: should `residentUsage()` simply include `VERTEX`?** A named vertex class was written and
+  then **removed** before merge — nothing in the graph reached it, and shipping speculative API is
+  worse than adding it on demand. `lease` still takes arbitrary flags, so the capability exists.
+  The real question is whether the split is worth having at all: this ADR already argues
+  over-provisioning *within* the resident class is essentially free (flags are mostly a placement
+  hint; these buffers are device-local either way), which points at folding VERTEX in and having
+  **one** pooled class. Against: it is a guess until a real geometry workload measures it. Decide
+  when stage 5 lands, with a workload in hand.
+- **One lease per output port.** The executor tracks ownership per `(node, port)`, so a
+  multi-output resident op works — but each output must carry its own lease. Returning the same
+  `ResidentBuffer` on two ports double-releases, which the pool rejects. Recorded in
+  `OpType.resident`'s contract; **untested**, since all three resident ops today are single-output
+  (`reactionDiffusion`, `bodyTap` and `integrate` are the multi-output ops, none of them resident).
 - **Buffer usage flags — resolved: split the pool by mappability.** WebGPU *forbids* combining
   mappable and non-mappable usage (`MAP_READ` may combine with nothing but `COPY_DST`; `MAP_WRITE`
   with nothing but `COPY_SRC`), so `STORAGE | MAP_READ` is invalid — there is no universal buffer to
-  over-provision toward. Therefore: a **resident class** (`STORAGE | COPY_SRC | COPY_DST`, plus
-  `VERTEX` where geometry needs it) that is pooled and aliased, where over-provisioning is
+  over-provision toward. Therefore: a **resident class** (`STORAGE | COPY_SRC | COPY_DST`; whether
+  `VERTEX` joins it is left open above) that is pooled and aliased, where over-provisioning is
   essentially free (the flags are mostly a placement hint and these live in device-local memory
   regardless); and a **staging class** (`MAP_READ | COPY_DST`) created short-lived at the download
   boundary, never pooled — which is what TypeGPU's `.read()` already does internally. The cost to

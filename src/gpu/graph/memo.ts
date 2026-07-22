@@ -49,10 +49,32 @@ export function stableJSON(obj: unknown): string {
   return "{" + keys.map((k) => JSON.stringify(k) + ":" + stableJSON((obj as Record<string, unknown>)[k])).join(",") + "}";
 }
 
-/** Identity key for a source value (shape + its data bytes / opaque payload). */
+/** Per-object identity for source values we cannot hash by content. Keyed weakly, so tagging a
+ *  value never keeps it alive. Two *structurally equal* resident sources get different tags —
+ *  that costs a cache miss, which is the safe direction to be wrong in. */
+const identityTags = new WeakMap<object, string>();
+let identitySeq = 0;
+
+function identityTag(v: FieldValue): string {
+  let tag = identityTags.get(v);
+  if (tag === undefined) {
+    tag = `id${identitySeq++}`;
+    identityTags.set(v, tag);
+  }
+  return tag;
+}
+
+/** Identity key for a source value (shape + its data bytes / opaque payload).
+ *
+ *  A GPU-resident source (ADR-0017) has no host bytes to hash, so it keys off object identity
+ *  instead. This is not merely a perf question: hashing such a value by content would fall
+ *  through to a single constant, making *every* resident source collide with every other and
+ *  silently serve wrong cache hits. Identity keying is forced, per ADR-0017's `hashSource`
+ *  note — a resident source that is mutated in place on the GPU must be re-`source`d (or its
+ *  `version` bumped) to be seen as new, exactly as a mutated host array must be. */
 export function hashSource(v: FieldValue): string {
   const shape = stableJSON(v.shape);
-  const body = v.data ? hashBytes(v.data) : v.payload !== undefined ? stableJSON(v.payload) : "empty";
+  const body = v.data ? hashBytes(v.data) : v.payload !== undefined ? stableJSON(v.payload) : v.buffer ? identityTag(v) : "empty";
   return "src:" + hashString(shape + "|" + body);
 }
 

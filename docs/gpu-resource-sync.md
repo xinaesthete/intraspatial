@@ -55,6 +55,18 @@ executor enforces *sequencing*.
 
 ## Invariants the executor must hold
 
+> **Implementation status (2026-07-20).** Invariants 1, 3 and 4 are implemented for Tier-2
+> resident ops per ADR-0017 stages 1–3: `src/gpu/graph/pool.ts` is the liveness pool
+> (`lease`/`release`, never `destroy`), the executor refcounts consumers per produced port and
+> bridges host↔GPU only where a representation change is genuinely required, and a resident
+> `feedback` state ping-pongs two leases. Ops opt in with `resident: true`; ops without it keep
+> Tier-1 behaviour unchanged. The measured effect is in
+> [ADR-0017](decisions/0017-tier2-resident-buffer-edges.md) and is ratcheted by
+> `src/gpu/graph/readbackBudget.gpu.test.ts`. Invariant 5 as revised is now what the code does:
+> `runNode` runs `execute` and lets failures propagate — the `sanity → cpuGolden` fallback and
+> the per-output `allFinite` scan are gone, and `OpType.sanity` with them. `cpuGolden` remains
+> the test oracle and the `mode: "cpu"` implementation.
+
 1. **Single writer per resource per submit.** Within one submitted batch, a resource
    has at most one writer, and every reader of it is ordered after that writer by an
    explicit barrier or a submit boundary. If an op needs to both read and write a

@@ -30,7 +30,4 @@ export const vietorisRipsOp: OpType = {
     const result: PersistenceResult = vietorisRipsPersistence(inputs[0]!.data!, n, maxScale > 0 ? { maxScale } : {});
     return [{ shape: { kind: "opaque", name: "persistence" }, dtype: "f32", payload: result }];
   },
-  sanity() {
-    return true; // CPU op; nothing to validate against
-  },
 };
