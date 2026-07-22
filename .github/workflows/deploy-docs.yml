@@ -37,6 +37,12 @@ jobs:
       # dep that's skipped when absent — so neither is needed for the docs build.
       - run: pnpm install --frozen-lockfile
 
+      # The viewer prototypes are a separate Vite multi-page app. Build them first; the docs build's
+      # sync-playground step copies the result into public/playground/ so Pages serves them at
+      # <base>/playground/*.html. (Skipped with a warning if this step is ever removed.)
+      - name: Build viewer prototypes
+        run: pnpm build:playground
+
       - name: Build docs site
         run: pnpm --filter docs-site build
 

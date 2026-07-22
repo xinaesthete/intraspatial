@@ -4,11 +4,12 @@
   "version": "0.0.1",
   "scripts": {
     "sync:primer": "node scripts/sync-primer.mjs",
-    "dev": "node scripts/sync-primer.mjs && astro dev",
-    "start": "node scripts/sync-primer.mjs && astro dev",
-    "build": "node scripts/sync-primer.mjs && astro build",
+    "dev": "node scripts/sync-primer.mjs && node scripts/sync-playground.mjs && astro dev",
+    "start": "node scripts/sync-primer.mjs && node scripts/sync-playground.mjs && astro dev",
+    "build": "node scripts/sync-primer.mjs && node scripts/sync-playground.mjs && astro build",
     "preview": "astro preview",
-    "astro": "astro"
+    "astro": "astro",
+    "sync:playground": "node scripts/sync-playground.mjs"
   },
   "dependencies": {
     "@astrojs/react": "^6.0.0",
