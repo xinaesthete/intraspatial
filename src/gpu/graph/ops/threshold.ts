@@ -13,6 +13,7 @@ import * as d from "typegpu/data";
 import * as std from "typegpu/std";
 import type { Root } from "../backend";
 import type { OpType, Params } from "../op";
+import { rawBindGroup } from "../residentBind";
 
 const WG = 64;
 
@@ -43,22 +44,19 @@ const threshFn = tgpu
   })
   .$name("threshold");
 
-function makePool(root: Root, n: number) {
-  const cap = Math.max(1, n);
-  return {
-    n,
-    src: root.createBuffer(d.arrayOf(d.f32, cap)).$usage("storage"),
-    dst: root.createBuffer(d.arrayOf(d.f32, cap)).$usage("storage"),
-    params: root.createBuffer(ThreshParams).$usage("uniform"),
-  };
-}
-
 interface Pipe {
   pipeline: GPUComputePipeline;
-  pool: ReturnType<typeof makePool>;
+  /** Only the uniform block is module-scoped now. Since ADR-0017 the src/dst storage buffers
+   *  come from the executor's lease, so this op no longer keeps a private grid-sized scratch
+   *  pool at all — the value it is handed *is* the buffer it reads. */
+  params: ReturnType<typeof makeParams>;
 }
 
-// One pipeline + pool per backend root (roots are device singletons).
+function makeParams(root: Root) {
+  return root.createBuffer(ThreshParams).$usage("uniform");
+}
+
+// One pipeline + uniform block per backend root (roots are device singletons).
 const pipes = new WeakMap<object, Promise<Pipe>>();
 
 function getPipe(device: GPUDevice, root: Root): Promise<Pipe> {
@@ -69,17 +67,11 @@ function getPipe(device: GPUDevice, root: Root): Promise<Pipe> {
       const module = device.createShaderModule({ code });
       const pipeLayout = device.createPipelineLayout({ bindGroupLayouts: usedBindGroupLayouts.map((l) => root.unwrap(l)) });
       const pipeline = device.createComputePipeline({ layout: pipeLayout, compute: { module, entryPoint: "threshold" } });
-      return { pipeline, pool: makePool(root, 1) };
+      return { pipeline, params: makeParams(root) };
     })();
     pipes.set(root as object, p);
   }
   return p;
-}
-
-function ensurePool(root: Root, pipe: Pipe, n: number) {
-  if (pipe.pool.n >= n) return pipe.pool;
-  pipe.pool = makePool(root, Math.max(n, pipe.pool.n * 2));
-  return pipe.pool;
 }
 
 function softFlag(params: Params): number {
@@ -114,19 +106,24 @@ export const thresholdOp: OpType = {
   inferShapes(inputs) {
     return [inputs[0]!];
   },
+  resident: true,
   async execute(ctx, inputs, params) {
     const inField = inputs[0]!;
-    const host = inField.data!;
-    const n = host.length;
+    const src = inField.buffer;
+    if (!src) throw new Error("threshold: resident op received a non-resident input");
+    const n = src.byteLength / 4;
     const device = await ctx.backend.getDevice();
     const root = await ctx.backend.getRoot();
     const pipe = await getPipe(device, root);
-    const pool = ensurePool(root, pipe, n);
 
-    device.queue.writeBuffer(root.unwrap(pool.src), 0, Float32Array.from(host) as BufferSource);
-    pool.params.write({ n, thresh: params.thresh as number, soft: softFlag(params), softness: softness(params) });
+    // Pointwise, but still not in place: invariant 1 requires read-modify-write over a shared
+    // field to use two physical buffers, and the input buffer may be aliased by another reader.
+    const dst = await ctx.backend.lease(src.byteLength);
+    pipe.params.write({ n, thresh: params.thresh as number, soft: softFlag(params), softness: softness(params) });
 
-    const bind = root.unwrap(root.createBindGroup(layout, { params: pool.params, src: pool.src, dst: pool.dst }));
+    // Raw bind group over the pooled buffers — see residentBind.ts for why these are not
+    // wrapped as TypeGPU buffers. Order matches the `layout` declaration: params, src, dst.
+    const bind = rawBindGroup(device, root, layout, [pipe.params, src.buffer, dst.buffer]);
     const enc = device.createCommandEncoder();
     const pass = enc.beginComputePass();
     pass.setPipeline(pipe.pipeline);
@@ -135,9 +132,8 @@ export const thresholdOp: OpType = {
     pass.end();
     device.queue.submit([enc.finish()]);
 
-    const got = (await pool.dst.read()) as ArrayLike<number>;
-    const data = Float32Array.from({ length: n }, (_, i) => got[i]!);
-    return [{ shape: inField.shape, dtype: "f32", data }];
+    // No readback — the value stays resident and the next op binds this buffer directly.
+    return [{ shape: inField.shape, dtype: "f32", buffer: dst }];
   },
   cpuGolden(inputs, params) {
     const inField = inputs[0]!;

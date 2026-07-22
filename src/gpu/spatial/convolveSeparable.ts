@@ -12,6 +12,7 @@ import tgpu from "typegpu";
 import * as d from "typegpu/data";
 import * as std from "typegpu/std";
 import { getDevice } from "../device";
+import { type BindEntry, rawBindGroup } from "../graph/residentBind";
 
 const WG = 64;
 
@@ -148,4 +149,48 @@ export async function convolveSeparableGpu(
 
   const got = (await p.a.read()) as ArrayLike<number>;
   return Float32Array.from({ length: cells }, (_, i) => got[i]!);
+}
+
+/** Tier-2 form (ADR-0017): convolve a GPU-resident grid into a GPU-resident destination, with
+ *  no host transfer in either direction. Same two-pass kernel as `convolveSeparableGpu` — only
+ *  the ends differ, which is the whole of what residency changes.
+ *
+ *  `src` and `dst` are pooled buffers owned by the caller (the executor's lease). They must be
+ *  distinct: the two passes read and write across the whole grid, so writing in place would
+ *  violate invariant 1's single-writer rule. The module pool supplies the intermediate only. */
+export async function convolveSeparableResident(
+  src: GPUBuffer,
+  dst: GPUBuffer,
+  width: number,
+  height: number,
+  kernel: ArrayLike<number>,
+): Promise<void> {
+  if (src === dst) throw new Error("convolveSeparableResident: src and dst must be distinct buffers");
+  if (kernel.length % 2 === 0) throw new Error("convolveSeparable: kernel length must be odd");
+  const cells = width * height;
+  const r = (kernel.length - 1) / 2;
+
+  const { device, root, pipeline } = await getPipe();
+  const p = ensurePool(root, cells, kernel.length);
+  device.queue.writeBuffer(root.unwrap(p.w), 0, Float32Array.from(kernel) as BufferSource);
+
+  const groups = Math.ceil(cells / WG);
+  // Raw bind groups over the pooled buffers — see residentBind.ts for why these are not wrapped
+  // as TypeGPU buffers. Order matches the `layout` declaration: params, src, wts, dst.
+  const run = (from: BindEntry, to: BindEntry, stepX: number, stepY: number) => {
+    p.params.write({ w: width, h: height, r, stepX, stepY });
+    const bind = rawBindGroup(device, root, layout, [p.params, from, p.w, to]);
+    const enc = device.createCommandEncoder();
+    const pass = enc.beginComputePass();
+    pass.setPipeline(pipeline);
+    pass.setBindGroup(0, bind);
+    pass.dispatchWorkgroups(groups);
+    pass.end();
+    device.queue.submit([enc.finish()]);
+  };
+
+  // Per-dependent-stage submits (invariant 2): the vertical pass reads what the horizontal
+  // wrote, so the boundary between them is explicit rather than assumed.
+  run(src, p.b, 1, 0); // horizontal: src -> scratch
+  run(p.b, dst, 0, 1); // vertical:   scratch -> dst
 }

@@ -17,7 +17,9 @@ We've made the same move twice already:
 - **Quadrats → windows.** Hard binning assigns each point to exactly one cell — a
   boxcar in space, with the worst sidelobes of any window. Replacing it with a
   smooth, overlapping window (Gaussian/Hann) removes the grid-phase artefacts and
-  recovers cross-boundary relationships. (See the toolbox doc.)
+  recovers cross-boundary relationships. (See the toolbox doc — note this preference is
+  **argued but not yet empirically validated**; no type-I/power numbers exist for it
+  either way. See its "Status: argued, not yet validated" note.)
 - **Hard adjacency → fuzzy adjacency.** A graph edge that exists iff two points
   are within radius `R` is a boxcar in *distance*. Replacing the 0/1 indicator with
   a smooth membership `μ_ij = exp(-d²/2σ²)` gives a weighted graph where an edge

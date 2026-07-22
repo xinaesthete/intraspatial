@@ -6,16 +6,36 @@ import tgpu from "typegpu";
 import * as d from "typegpu/data";
 import { getDevice } from "../device";
 import type { GpuBackend, Root } from "./backend";
+import type { ResidentBuffer } from "./handle";
+import { BufferPool, type PoolStats, residentUsage } from "./pool";
 
-let cached: Promise<{ device: GPUDevice; root: Root }> | undefined;
+let cached: Promise<{ device: GPUDevice; root: Root; pool: BufferPool }> | undefined;
 
-function init(): Promise<{ device: GPUDevice; root: Root }> {
+function init(): Promise<{ device: GPUDevice; root: Root; pool: BufferPool }> {
   cached ??= (async () => {
     const device = await getDevice();
     const root = tgpu.initFromDevice({ device });
-    return { device, root };
+    return { device, root, pool: new BufferPool(device) };
   })();
   return cached;
+}
+
+/** The pool is created with the device, so synchronous `poolStats()` needs a handle to it once
+ *  acquired. Before the first `getDevice()` there is nothing allocated and stats are zero. */
+let poolRef: BufferPool | undefined;
+
+/** One readback wrapper per raw buffer — see `readbackF32` for why this must not be per-call.
+ *  Sized to the buffer's physical capacity so the wrapper stays valid whatever logical length a
+ *  lease is later used at; callers take the prefix they asked for. */
+const wrappers = new WeakMap<GPUBuffer, ReturnType<Root["createBuffer"]>>();
+
+function wrapperFor(root: Root, buffer: GPUBuffer) {
+  let w = wrappers.get(buffer);
+  if (!w) {
+    w = root.createBuffer(d.arrayOf(d.f32, Math.max(1, Math.floor(buffer.size / 4))), buffer);
+    wrappers.set(buffer, w);
+  }
+  return w;
 }
 
 export const nodeBackend: GpuBackend = {
@@ -29,8 +49,41 @@ export const nodeBackend: GpuBackend = {
   async readbackF32(buffer: GPUBuffer, n: number): Promise<Float32Array> {
     const { root } = await init();
     // Wrap the caller's raw buffer so `.read()` (not raw mapAsync) does the readback.
-    const wrap = root.createBuffer(d.arrayOf(d.f32, Math.max(1, n)), buffer);
-    const got = (await wrap.read()) as ArrayLike<number>;
+    //
+    // The wrapper is CACHED PER BUFFER, and that is load-bearing since ADR-0017. Wrapping makes
+    // the TypeGPU root a second owner of a buffer someone else allocated, and every wrapper
+    // frees its buffer when the root is torn down. That was harmless while readback targets
+    // were module-scoped singletons — one wrapper each, created once. The Tier-2 pool recycles
+    // buffers, so an uncached wrap mints a fresh owner for the *same* Dawn handle on every
+    // download, and process exit then double-frees it: the atexit segfault of ADR-0002/0003.
+    // One wrapper per buffer, forever, keeps ownership single.
+    const got = (await wrapperFor(root, buffer).read()) as ArrayLike<number>;
     return Float32Array.from({ length: n }, (_, i) => got[i] ?? 0);
+  },
+
+  async lease(byteLength: number, usage: number = residentUsage()): Promise<ResidentBuffer> {
+    const { pool } = await init();
+    poolRef = pool;
+    return pool.lease(byteLength, usage);
+  },
+
+  release(b: ResidentBuffer): void {
+    // A release can only follow a lease, so the pool exists by now.
+    if (!poolRef) throw new Error("nodeBackend.release: no pool — release without a preceding lease");
+    poolRef.release(b);
+  },
+
+  async upload(data: ArrayBufferView, usage: number = residentUsage()): Promise<ResidentBuffer> {
+    const { device, pool } = await init();
+    poolRef = pool;
+    const res = pool.lease(data.byteLength, usage);
+    // Whole-view write: `writeBuffer`'s dataOffset/size are counted in the view's *elements*,
+    // not bytes, so passing byte counts there overruns. Omitting them writes exactly the view.
+    device.queue.writeBuffer(res.buffer, 0, data as BufferSource);
+    return res;
+  },
+
+  poolStats(): PoolStats {
+    return poolRef?.stats() ?? { live: 0, free: 0, created: 0, bytes: 0 };
   },
 };

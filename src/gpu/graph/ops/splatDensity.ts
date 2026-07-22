@@ -1,11 +1,16 @@
-// Tier-1 graph node wrapping `splatDensityGpu` (points -> KDE density grid). The
-// legacy function owns its own pipeline/pool/readback; this adapter only marshals
-// the graph's `FieldValue`s in and out (download/upload at the boundary). A hot
-// path would later promote this to a GPU-resident (Tier-2) op.
+// Tier-2 graph node wrapping `splatDensityResident` (points -> KDE density grid).
+//
+// This is the source end of invariant 4: the graph's packed `[x0,y0,...]` points value is bound
+// straight into the splat's vertex stage (no host repacking), and the density grid it produces
+// stays on the GPU. With this converted, a splat -> convolve -> threshold chain performs no
+// transfers at all beyond the source upload and whatever the sink genuinely consumes.
+//
+// The one thing still resolved host-side is the default `bbox`, which needs the points' own
+// bounds. See `resolveBbox` below.
 
 import { gaussianKdeField } from "../../../spatial/scalarField";
-import { splatDensityGpu } from "../../spatial/splatDensity";
-import type { FieldValue } from "../handle";
+import { splatDensityResident } from "../../spatial/splatDensity";
+import type { FieldValue, Shape } from "../handle";
 import type { OpType, Params } from "../op";
 import { param } from "../op";
 
@@ -50,6 +55,33 @@ function resolveBbox(xs: number[], ys: number[], params: Params): [number, numbe
   return [minX - pad, minY - pad, maxX + pad, maxY + pad];
 }
 
+function pointCount(s: Shape): number {
+  if (s.kind !== "points") throw new Error("splatDensity: input must be points");
+  return s.n;
+}
+
+/** The world box for the resident path.
+ *
+ *  An explicit `bbox` param wins and needs nothing from the host. Otherwise we fall back to the
+ *  points' own bounds, which requires their values — and that is the one place this op is still
+ *  host-coupled. It works because the executor keeps `data` alongside `buffer` when it uploads a
+ *  host value, so a points *source* still has its array here. A points value produced by some
+ *  upstream resident op would not, and we throw rather than silently downloading it: reading the
+ *  points back is exactly the transfer this path exists to remove. The fix when that case arrives
+ *  is a GPU min/max reduction, not a readback. */
+function residentBbox(v: FieldValue, params: Params): [number, number, number, number] {
+  const explicit = bboxParam(params);
+  if (explicit) return explicit;
+  if (!v.data) {
+    throw new Error(
+      "splatDensity: resident points need an explicit `bbox` param — deriving it from the points " +
+        "would require reading them back (ADR-0017 invariant 4). Pass bbox, or add a GPU bounds reduction.",
+    );
+  }
+  const { xs, ys } = unpackXY(v);
+  return resolveBbox(xs, ys, params);
+}
+
 export const splatDensityOp: OpType = {
   name: "splatDensity",
   label: "KDE splat",
@@ -65,18 +97,23 @@ export const splatDensityOp: OpType = {
   inferShapes(_inputs, params) {
     return [{ kind: "grid", width: param<number>(params, this.params[0]!), height: param<number>(params, this.params[1]!) }];
   },
-  async execute(_ctx, inputs, params) {
-    const { xs, ys } = unpackXY(inputs[0]!);
+  resident: true,
+  async execute(ctx, inputs, params) {
+    const inField = inputs[0]!;
+    const src = inField.buffer;
+    if (!src) throw new Error("splatDensity: resident op received a non-resident input");
     const width = params.width as number,
       height = params.height as number;
-    const field = await splatDensityGpu(xs, ys, {
+
+    const dst = await ctx.backend.lease(width * height * 4);
+    await splatDensityResident(src.buffer, pointCount(inField.shape), dst.buffer, {
       width,
       height,
       sigma: params.sigma as number,
       radiusSigma: params.radiusSigma as number,
-      bbox: resolveBbox(xs, ys, params),
+      bbox: residentBbox(inField, params),
     });
-    return [{ shape: { kind: "grid", width, height }, dtype: "f32", data: field.data }];
+    return [{ shape: { kind: "grid", width, height }, dtype: "f32", buffer: dst }];
   },
   cpuGolden(inputs, params) {
     const { xs, ys } = unpackXY(inputs[0]!);

@@ -1,6 +1,10 @@
-// Tier-1 graph node wrapping `convolveSeparableGpu` (grid -> grid windowing).
-import { boxKernel, convolveSeparableGpu, gaussianKernel } from "../../spatial/convolveSeparable";
-import type { FieldValue, Shape } from "../handle";
+// Tier-2 graph node wrapping `convolveSeparableResident` (grid -> grid windowing).
+//
+// One of the two ADR-0017 pilot conversions. `execute` now takes a GPU-resident input and leases
+// a resident output, so a convolve sandwiched between other resident ops moves no bytes across
+// the bus at all. `cpuGolden` is unchanged and remains the host-side reference oracle.
+import { boxKernel, convolveSeparableResident, gaussianKernel } from "../../spatial/convolveSeparable";
+import type { Shape } from "../handle";
 import type { OpType, Params } from "../op";
 
 function gridShape(s: Shape): { width: number; height: number } {
@@ -28,10 +32,17 @@ export const convolveSeparableOp: OpType = {
   inferShapes(inputs) {
     return [inputs[0]!];
   },
-  async execute(_ctx, inputs, params) {
-    const { width, height } = gridShape(inputs[0]!.shape);
-    const out = await convolveSeparableGpu(inputs[0]!.data!, width, height, kernelFor(params));
-    return [{ shape: { kind: "grid", width, height }, dtype: "f32", data: out }];
+  resident: true,
+  async execute(ctx, inputs, params) {
+    const inField = inputs[0]!;
+    const { width, height } = gridShape(inField.shape);
+    const src = inField.buffer;
+    if (!src) throw new Error("convolveSeparable: resident op received a non-resident input");
+    // Lease the output rather than reusing module scratch: the executor owns this buffer's
+    // lifetime and returns it to the pool once the last consumer has read it.
+    const dst = await ctx.backend.lease(width * height * 4);
+    await convolveSeparableResident(src.buffer, dst.buffer, width, height, kernelFor(params));
+    return [{ shape: { kind: "grid", width, height }, dtype: "f32", buffer: dst }];
   },
   cpuGolden(inputs, params) {
     const { width, height } = gridShape(inputs[0]!.shape);

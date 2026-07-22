@@ -55,6 +55,18 @@ executor enforces *sequencing*.
 
 ## Invariants the executor must hold
 
+> **Implementation status (2026-07-20).** Invariants 1, 3 and 4 are implemented for Tier-2
+> resident ops per ADR-0017 stages 1–3: `src/gpu/graph/pool.ts` is the liveness pool
+> (`lease`/`release`, never `destroy`), the executor refcounts consumers per produced port and
+> bridges host↔GPU only where a representation change is genuinely required, and a resident
+> `feedback` state ping-pongs two leases. Ops opt in with `resident: true`; ops without it keep
+> Tier-1 behaviour unchanged. The measured effect is in
+> [ADR-0017](decisions/0017-tier2-resident-buffer-edges.md) and is ratcheted by
+> `src/gpu/graph/readbackBudget.gpu.test.ts`. Invariant 5 as revised is now what the code does:
+> `runNode` runs `execute` and lets failures propagate — the `sanity → cpuGolden` fallback and
+> the per-output `allFinite` scan are gone, and `OpType.sanity` with them. `cpuGolden` remains
+> the test oracle and the `mode: "cpu"` implementation.
+
 1. **Single writer per resource per submit.** Within one submitted batch, a resource
    has at most one writer, and every reader of it is ordered after that writer by an
    explicit barrier or a submit boundary. If an op needs to both read and write a
@@ -75,11 +87,21 @@ executor enforces *sequencing*.
 4. **Boundary-only transfer.** `upload` at sources, `download` at sinks; interior
    edges stay on-GPU. Download is the slow + Dawn-on-Node-fragile op (readback ceiling
    ~512² there) — minimise it and isolate it to sinks.
-5. **Validate + fall back per node.** Each node has a CPU golden (bit-exact for int,
-   bounded error for float). In production, a cheap output sanity check (finite,
-   plausible range) gates a CPU fallback — the pattern already used for the demo's GPU
-   field. Backends are **non-uniform** (Dawn vs WebKit/Metal differ in strictness and
-   timing); never trust a result blindly.
+5. **Validate in tests; GPU failure is a fail-state.** *(Revised 2026-07-13, ADR-0017 — the
+   earlier version of this invariant mandated a runtime CPU fallback. That was overstated:
+   this project's focus is GPU compute, and the per-node validate-and-fall-back it prescribed
+   is incompatible with invariant 4, because scanning every output element forces a download.)*
+
+   Each node has a CPU golden (bit-exact for int, bounded error for float), and it is a
+   **test-time reference oracle** — the thing that makes a kernel trustworthy — **not** a
+   production fallback. At runtime, an op that cannot execute on the GPU is a **fail-state**:
+   the executor throws rather than silently degrading. **CPU fallback is not guaranteed by the
+   system.** `mode: "cpu"` remains an explicit, opt-in execution mode for testing and
+   reference — a deliberate request, never an automatic recovery path.
+
+   Backends are still **non-uniform** (Dawn vs WebKit/Metal differ in strictness and timing),
+   so results are never trusted blindly — but that trust is established by the golden tests,
+   not by a runtime scan of every value.
 
 ## Throughput: batch only what's independent
 

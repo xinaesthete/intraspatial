@@ -4,7 +4,7 @@
 import type { Edge, Node } from "@xyflow/react";
 import type { FeedbackHandle, FieldValue, GpuField, GraphMemo, SimState } from "../../src/gpu/graph";
 import { advance, createSimState, Graph, pull } from "../../src/gpu/graph";
-import { browserBackend } from "./backend.browser";
+import { browserBackend } from "../../src/gpu/graph/backend.browser";
 import { isOpNode, resolveSource } from "./grouping";
 import { getSource, isSource } from "./sources";
 import { getSpec } from "./specs";

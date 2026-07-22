@@ -14,6 +14,8 @@
 import tgpu from "typegpu";
 import * as d from "typegpu/data";
 import type { GpuBackend, Root } from "../graph/backend";
+import type { ResidentBuffer } from "../graph/handle";
+import { BufferPool, type PoolStats, residentUsage } from "../graph/pool";
 
 /** Wrap an externally-owned device as a `GpuBackend` bound to it. `kind` is a diagnostic
  *  tag for the host ("three" | "deck" | …). The returned backend caches its root so all
@@ -21,6 +23,9 @@ import type { GpuBackend, Root } from "../graph/backend";
 export function adoptDevice(device: GPUDevice, kind = "adopted"): GpuBackend {
   let root: Root | undefined;
   const getRoot = (): Root => (root ??= tgpu.initFromDevice({ device }));
+  // Tier-2 leases are allocated on the *host's* device, which is the point: a buffer leased
+  // here can be bound straight into the host renderer's pass with no transfer at all.
+  const pool = new BufferPool(device);
   return {
     kind,
     async getDevice() {
@@ -37,6 +42,21 @@ export function adoptDevice(device: GPUDevice, kind = "adopted"): GpuBackend {
       const wrap = getRoot().createBuffer(d.arrayOf(d.f32, Math.max(1, n)), buffer);
       const got = (await wrap.read()) as ArrayLike<number>;
       return Float32Array.from({ length: n }, (_, i) => got[i] ?? 0);
+    },
+    async lease(byteLength: number, usage: number = residentUsage()): Promise<ResidentBuffer> {
+      return pool.lease(byteLength, usage);
+    },
+    release(b: ResidentBuffer): void {
+      pool.release(b);
+    },
+    async upload(data: ArrayBufferView, usage: number = residentUsage()): Promise<ResidentBuffer> {
+      const res = pool.lease(data.byteLength, usage);
+      // dataOffset/size are in view *elements*, not bytes — omit them and write the whole view.
+      device.queue.writeBuffer(res.buffer, 0, data as BufferSource);
+      return res;
+    },
+    poolStats(): PoolStats {
+      return pool.stats();
     },
   };
 }
