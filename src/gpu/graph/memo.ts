@@ -75,7 +75,13 @@ function identityTag(v: FieldValue): string {
 export function hashSource(v: FieldValue): string {
   const shape = stableJSON(v.shape);
   const body = v.data ? hashBytes(v.data) : v.payload !== undefined ? stableJSON(v.payload) : v.buffer ? identityTag(v) : "empty";
-  return "src:" + hashString(shape + "|" + body);
+  // Fold placement into source identity (ADR-0018): the same bytes at a different `system` /
+  // `worldFromArray` are a *different* field, so keying without it would let a re-placed source
+  // (or a large/resident source loaded at a new extent) collide with its old self and serve a
+  // wrong memo hit. An absent placement appends nothing, so an unplaced (array-space) source
+  // keys byte-for-byte as it did before — fully additive.
+  const placement = v.placement ? "|pl:" + stableJSON(v.placement) : "";
+  return "src:" + hashString(shape + "|" + body + placement);
 }
 
 export interface GraphMemo {
