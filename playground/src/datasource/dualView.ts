@@ -24,6 +24,7 @@ import {
   sub,
   type Vec3,
   worldAabbOfArrayBox,
+  worldFromArrayOf,
 } from "../../../src/datasource";
 import type { GpuBackend } from "../../../src/gpu/graph/backend";
 import { type LatencyModel, mandelbulbBrickSource, slowBrickSource } from "./brickSource";
@@ -129,7 +130,7 @@ export class DualView {
     this.renderer = renderer;
     this.renderer.autoClear = false;
 
-    const b = worldAabbOfArrayBox(ms.worldFromArray, [0, 0, 0], [ms.voxelDims0[0], ms.voxelDims0[1], ms.voxelDims0[2]]);
+    const b = worldAabbOfArrayBox(worldFromArrayOf(ms), [0, 0, 0], [ms.voxelDims0[0], ms.voxelDims0[1], ms.voxelDims0[2]]);
     this.bounds = b;
     this.isPlane = ms.voxelDims0[2] === 1;
     this.center = new THREE.Vector3((b.min[0] + b.max[0]) / 2, (b.min[1] + b.max[1]) / 2, (b.min[2] + b.max[2]) / 2);
@@ -140,7 +141,7 @@ export class DualView {
     // App camera: front-on for a plane, outside-diagonal for a volume.
     this.appCamera = new THREE.PerspectiveCamera(50, 1, s * 0.002, s * 30);
     if (this.isPlane) {
-      const ax = ms.worldFromArray.axes;
+      const ax = worldFromArrayOf(ms).axes;
       const normal = normalize(cross([ax[0][0], ax[0][1], ax[0][2]], [ax[1][0], ax[1][1], ax[1][2]]));
       this.appCamera.position.set(c.x - normal[0] * s * 1.25 + s * 0.12, c.y + s * 0.18, c.z - normal[2] * s * 1.25 - s * 0.6);
     } else {
@@ -342,7 +343,10 @@ export class DualView {
     const ds = cameraFromThree(this.appCamera, this.height || 600);
     // Use the volume's live placement (base ∘ gizmo) so select + overlays follow the gizmo.
     // (Only the brick-page VolumeRenderer tracks a transform; the naive baseline stays at base.)
-    const ms = this.volume instanceof VolumeRenderer ? { ...this.ms, worldFromArray: this.volume.effectiveWorldFromArray() } : this.ms;
+    const ms =
+      this.volume instanceof VolumeRenderer
+        ? { ...this.ms, placements: [{ system: "global", worldFromArray: this.volume.effectiveWorldFromArray() }] }
+        : this.ms;
     const sel = select(ms, ds, { q: this.q });
 
     disposeGroup(this.overlays);

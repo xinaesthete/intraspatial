@@ -4,9 +4,11 @@
 // Re-export the shared memory-reporting utilities (the datasource already builds on the
 // op-graph's field model) so consumers report resident memory through one interface.
 export { fieldBytes, formatBytes, type MemoryReporting, memoryBytes } from "../gpu/graph/memory";
+export * from "./imageFacets";
 export * from "./math";
 export * from "./multiscale";
 export * from "./select";
 export * from "./syntheticLoader";
 export * from "./tileCache";
+export * from "./tileToField";
 export * from "./types";

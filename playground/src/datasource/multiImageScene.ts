@@ -27,7 +27,7 @@ import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { TransformControls } from "three/examples/jsm/controls/TransformControls.js";
 import type { WebGPURenderer } from "three/webgpu";
-import { type Affine3, type Camera, type Multiscale, select, worldAabbOfArrayBox } from "../../../src/datasource";
+import { type Affine3, type Camera, type Multiscale, select, worldAabbOfArrayBox, worldFromArrayOf } from "../../../src/datasource";
 import type { SpatialDataImage } from "./spatialDataLoader";
 import { type BlendMode, ChannelComposite, type ChannelSettings } from "./tileChannelMaterial";
 import { TileRenderer } from "./tileRenderer";
@@ -274,13 +274,13 @@ export class MultiImageScene {
     } else {
       // Fallback: the loader's demo-normalised, axis-aligned placement, staggered along +X so
       // images don't overlap and are individually pickable.
-      baseAffine = src.ms.worldFromArray;
+      baseAffine = worldFromArrayOf(src.ms);
       const wb = worldAabbOfArrayBox(baseAffine, [0, 0, 0], [dims[0], dims[1], 1]);
       const spanX = (wb.max[0] - wb.min[0]) * 1.15 || 300;
       xform.position.set(this.images.length * spanX, 0, 0);
     }
 
-    const ms: Multiscale = { ...src.ms, worldFromArray: baseAffine };
+    const ms: Multiscale = { ...src.ms, placements: [{ system: "global", worldFromArray: baseAffine }] };
     // The base layer is opaque (keeps depth on → intra-image LOD); overlays are transparent and
     // composited over it depth-test-off, in add order.
     const opacity = isBase ? 1 : OVERLAY_OPACITY;
@@ -324,7 +324,7 @@ export class MultiImageScene {
   /** A full-extent, render-invisible-but-raycastable quad in the image's local (array→local) space,
    *  so clicks land on the image even before any tiles have streamed in. */
   private makePickPlane(ms: Multiscale, name: string): THREE.Mesh {
-    const box = worldAabbOfArrayBox(ms.worldFromArray, [0, 0, 0], [ms.voxelDims0[0], ms.voxelDims0[1], 1]);
+    const box = worldAabbOfArrayBox(worldFromArrayOf(ms), [0, 0, 0], [ms.voxelDims0[0], ms.voxelDims0[1], 1]);
     const w = box.max[0] - box.min[0];
     const h = box.max[1] - box.min[1];
     const geo = new THREE.PlaneGeometry(w || 1, h || 1);
@@ -497,7 +497,7 @@ export class MultiImageScene {
       for (const img of this.images) {
         if (!img.xform.visible) continue;
         const eff = matrixToAffine(this.effectiveMatrix(img));
-        img.tiles.update(select({ ...img.ms, worldFromArray: eff }, cam, { q: this.q }));
+        img.tiles.update(select({ ...img.ms, placements: [{ system: "global", worldFromArray: eff }] }, cam, { q: this.q }));
       }
       this.dirty = false;
     }

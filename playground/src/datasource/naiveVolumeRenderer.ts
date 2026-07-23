@@ -32,6 +32,7 @@ import {
   type Multiscale,
   type Selection,
   type Tile,
+  worldFromArrayOf,
 } from "../../../src/datasource";
 
 const STEPS = 48; // per chunk — each box is small, so fewer steps than the whole-volume march
@@ -58,7 +59,7 @@ export class NaiveVolumeRenderer implements MemoryReporting {
   constructor(ms: Multiscale, loader: Loader) {
     this.ms = ms;
     this.loader = loader;
-    const { axes, origin } = ms.worldFromArray;
+    const { axes, origin } = worldFromArrayOf(ms);
     const [ax0, ax1, ax2] = axes;
     this.M = new THREE.Matrix4()
       .makeBasis(

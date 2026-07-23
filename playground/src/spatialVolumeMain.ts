@@ -10,7 +10,7 @@ import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import Stats from "three/examples/jsm/libs/stats.module.js";
 import { WebGPURenderer } from "three/webgpu";
-import { type Camera, formatBytes, selectWithinBudget, worldAabbOfArrayBox } from "../../src/datasource";
+import { type Camera, formatBytes, selectWithinBudget, worldAabbOfArrayBox, worldFromArrayOf } from "../../src/datasource";
 import { NaiveVolumeRenderer } from "./datasource/naiveVolumeRenderer";
 import { openSpatialDataVolume, type SpatialDataVolume, type SpatialDataVolumeHandle } from "./datasource/spatialDataVolume";
 
@@ -168,7 +168,7 @@ async function mountVolume(): Promise<void> {
 
   const ms = vol.ms;
   const scene = new THREE.Scene();
-  const b = worldAabbOfArrayBox(ms.worldFromArray, [0, 0, 0], [ms.voxelDims0[0], ms.voxelDims0[1], ms.voxelDims0[2]]);
+  const b = worldAabbOfArrayBox(worldFromArrayOf(ms), [0, 0, 0], [ms.voxelDims0[0], ms.voxelDims0[1], ms.voxelDims0[2]]);
   const centre = new THREE.Vector3((b.min[0] + b.max[0]) / 2, (b.min[1] + b.max[1]) / 2, (b.min[2] + b.max[2]) / 2);
   const size = Math.max(b.max[0] - b.min[0], b.max[1] - b.min[1], b.max[2] - b.min[2]) || 1;
 

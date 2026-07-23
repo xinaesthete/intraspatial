@@ -3,7 +3,7 @@
 // selected chunks as level-tinted wireframe boxes plus a faint dataset bound — the
 // receding-resolution gradient made visible, driven entirely by the pure `select()`.
 import * as THREE from "three";
-import { type Affine3, applyAffine, chunkArrayBox, chunkKey, type Multiscale, type Selection, type Vec3 } from "../../../src/datasource";
+import { type Affine3, applyAffine, chunkArrayBox, chunkKey, type Multiscale, type Selection, type Vec3, worldFromArrayOf } from "../../../src/datasource";
 
 /** okLCH-ish ramp by level: fine = warm & bright, coarse = cool & dim. */
 export function levelColor(level: number, maxLevel: number): THREE.Color {
@@ -89,7 +89,7 @@ export function chunkOverlays(ms: Multiscale, sel: Selection, stateOf?: (key: st
       groups.set(gkey, g);
     }
     const [lo, hi] = chunkArrayBox(ms, c.id);
-    pushBoxEdges(g.positions, orientedCorners(ms.worldFromArray, lo, hi));
+    pushBoxEdges(g.positions, orientedCorners(worldFromArrayOf(ms), lo, hi));
   }
   for (const { level, state, positions } of groups.values()) {
     const geo = new THREE.BufferGeometry();
@@ -109,7 +109,7 @@ export function chunkOverlays(ms: Multiscale, sel: Selection, stateOf?: (key: st
 /** A faint outline of the whole dataset extent, for context. */
 export function boundsOverlay(ms: Multiscale): THREE.LineSegments {
   const positions: number[] = [];
-  pushBoxEdges(positions, orientedCorners(ms.worldFromArray, [0, 0, 0], [ms.voxelDims0[0], ms.voxelDims0[1], ms.voxelDims0[2]]));
+  pushBoxEdges(positions, orientedCorners(worldFromArrayOf(ms), [0, 0, 0], [ms.voxelDims0[0], ms.voxelDims0[1], ms.voxelDims0[2]]));
   const geo = new THREE.BufferGeometry();
   geo.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
   return new THREE.LineSegments(geo, new THREE.LineBasicMaterial({ color: 0x334155, transparent: true, opacity: 0.5 }));

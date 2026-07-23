@@ -222,7 +222,9 @@ async function buildImage(
     chunkShape: [tile, tile, 1],
     levelCount: sources.length,
     levelDims,
-    worldFromArray,
+    // The demo-normalised, axis-aligned `global` placement (1a). The REAL sd.js affine is exposed
+    // separately as `globalFromArray` and mapped to a placement on the graph side (1b/imageToGraph).
+    placements: [{ system: "global", worldFromArray }],
     element,
     dtype: "f32",
   };
