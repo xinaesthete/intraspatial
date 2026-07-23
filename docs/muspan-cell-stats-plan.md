@@ -75,24 +75,49 @@ as the existing `fuzzyAdjacency`/`cKNN` pairwise ops (or a density-autocorrelati
   geometric piece; needed by *both* stats.
 - **`crossPCF`** — the binned cross pairwise-distance histogram with the annulus normalization. New pairwise op.
 
-## 5. Cross-cutting prerequisites the papers surface (decisions needed)
+## 5. ROI, edge-effects, and units — resolved approach (2026-07-23)
 
-These are why the ADR-0018 placement/extent work is a real prerequisite, not polish:
+The papers' edge correction is a missing-data artifact of treating the **ROI boundary as the data boundary**
+(a fixed annotation polygon = "all the cells there are"). Our view-driven, tiled datasource (ADR-0008) lets us
+do better, so we build **two modes over one grid substrate** — a quadrat grid *is* a coarse splat, a KDE splat
+*is* a smooth quadrat; same grid, bandwidth = smoothing; the viewport sets the extent, the resolution sets the
+quadrat size.
 
-- **ROI / extent.** ρ_B (= N_B/|ROI|) and every edge-correction area need a concrete ROI. Options: the tissue
-  **bounding box** (simplest, biased near a ragged tissue edge), a **convex hull**, or the actual
-  **`annot_region` / segmentation polygon**. Faithfulness of the edge correction scales with this choice.
-  → This is ADR-0018 `extent`. **Decision needed.**
-- **World units (µm).** σ=50, 100, and the 10 µm bins are **world lengths**. They only mean anything if we know
-  µm-per-coordinate-unit for Leap034 — i.e. the placement's `worldFromArray` scale, and the ADR-0018
-  `ParamSpec.units: "world"` path (slice 4). Are the `obsm['spatial']` IMC centroids already in µm, and at what
-  scale? → **Decision / datum needed.**
-- **Which cell-type pairs**, and whether ρ_B / edge correction are per-`annot_region` or whole-slide.
+- **Mode 1 — MuSpAn-faithful (the parity oracle; build first).** Fixed ROI = a **regular quadrat grid**
+  (MuSpAn's common default) *or* an **annotation polygon** (`annot_region`), both just a mask over the grid.
+  Full clipped-area edge correction `A_r(x_a)`. **`ρ_B` global** (whole-ROI `N_B/|ROI|`). Reproduces eqs (8)–(14)
+  exactly; validated against a SpOOx/MuSpAn run.
+- **Mode 2 — viewport-apron (the new, GPU-native mode; build second).** The viewport is a window into a larger
+  resident dataset, so load an **r_max apron** (ADR-0008 halo) beyond the visible window. Then for every
+  *interior* anchor the clipped area `A_r(x_a)` collapses to the **constant** full disk/annulus area — the
+  fiddly per-point polygon-clip op disappears; `m_ab = (B within 100µm)/(ρ_B·π·100²)`, PCF annulus term is a
+  per-bin constant. Correction is retained **only at the true tissue/slide edge** (no apron there). `ρ_B`
+  **window-local** here (heterogeneity-aware; deliberately *not* the same number as Mode 1 — that's the point).
+  Must prove **interior agreement** with Mode 1 where they overlap.
+
+**`ρ_B` decision (settled):** global first for parity (Mode 1), window-local as the second mode (Mode 2).
+
+**The payoff worth being different for:** because it is per-viewport and on the GPU, recompute the **CSR /
+permutation envelope live** as the user pans/zooms — interactive significance, not a static point estimate.
+This is the honest inference (permutation is the real test, compute-bound → argues for the GPU graph) and no
+fixed-ROI CPU tool does it live. The paper's own null (QCM 1000-shuffle; PCF bootstrap CIs) becomes a live
+per-viewport GPU pass.
+
+**World units (µm) — deduce from metadata, do not hard-code.** σ=50, r=100, the 10 µm bins are world lengths.
+Resolve µm-per-unit from the **spatialdata/NGFF coordinate-system axis units + the `worldFromArray` scale**
+(the placement facet + ADR-0018 `ParamSpec.units:"world"`, slice 4). Fall back to unitless/array space only when
+the store genuinely carries no unit. Wire the B2 ingestion to read this.
+
+**Still open (minor):** which cell-type-id pairs to demo on Leap034 (pick 2–3 once ingestion enumerates them).
 
 ## 6. Sequencing
 
-1. (in flight) stream-B2 centroid ingestion — per-`cell_type_id` clouds + placement.
-2. **TCM first** — it reuses `splatDensity` heavily; the increments are per-point weights + `sampleAtPoints` +
-   `markToM` + the disk edge-correction area. Ship a Γ_ab(x) map for a chosen A/B pair on Leap034.
-3. **cross-PCF** — the pairwise histogram + annulus edge-correction; ship g_AB(r) curves for the same pairs.
-4. Validate both against a MuSpAn/SpOOx run on the same ROI (external oracle), like the TopACT box-pool plan.
+1. (in flight) stream-B2 centroid ingestion — per-`cell_type_id` clouds + placement; **also read µm-per-unit
+   from the coordinate metadata** (§5).
+2. **TCM, Mode 1 (faithful, global ρ_B) first** — reuses `splatDensity` heavily; increments are per-point
+   weights + kernel choice + `sampleAtPoints` + `markToM` + the disk edge-correction area (fixed ROI). Ship a
+   Γ_ab(x) map for a chosen A/B pair on Leap034; validate against a SpOOx/MuSpAn run (external oracle).
+3. **cross-PCF, Mode 1** — the pairwise histogram + annulus edge-correction; ship g_AB(r) curves for the same
+   pairs; validate.
+4. **Mode 2 (viewport-apron)** for both — constant-area interior normalisation via the ADR-0008 halo,
+   window-local ρ_B, and the **live per-viewport permutation envelope**. Prove interior agreement with Mode 1.
