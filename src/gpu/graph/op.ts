@@ -10,7 +10,7 @@
 // them.
 
 import type { GpuBackend } from "./backend";
-import type { Basis, Dtype, ElementType, FieldValue, Shape, ShapeKind } from "./handle";
+import type { Basis, Dtype, ElementType, FieldRole, FieldValue, ResolvedPlacement, Shape, ShapeKind, TensorAxis } from "./handle";
 
 export interface PortSpec {
   name: string;
@@ -81,6 +81,28 @@ export interface OpType {
    *  field). The executor then stamps the inferred basis onto runtime values, so
    *  generic ops carry a wavelet field through to `idwt` without knowing about it. */
   inferBasis?(inputs: Basis[], params: Params): Basis[];
+  /** Derive output open-axes from input axes + params (ADR-0004/0015). Absent ⇒ the output
+   *  passes through the first input's axes (or none for a source). Runs at graph-build time,
+   *  mirroring `inferBasis`, so an axis-aware op can reject or reshape a channel axis here. The
+   *  executor stamps the inferred axes onto runtime values, so generic ops carry a channel field
+   *  through without knowing about it. Positional inputs match `inputs`; a `undefined` entry means
+   *  "that output has no axes". */
+  inferAxes?(inputs: (readonly TensorAxis[] | undefined)[], params: Params): (readonly TensorAxis[] | undefined)[];
+  /** Derive output polarity (intensity vs label) from input roles + params (ADR-0015). Absent ⇒
+   *  the output passes through the first input's role (or `intensity` for a source). Runs at
+   *  graph-build time, mirroring `inferBasis`, so an op can reject a label at build time. The
+   *  executor stamps the inferred role onto runtime values. Positional inputs match `inputs`; a
+   *  `undefined` entry means "that output is intensity (the default)". */
+  inferRole?(inputs: (FieldRole | undefined)[], params: Params): (FieldRole | undefined)[];
+  /** Derive output world placement from input placements + params (ADR-0018). Absent ⇒ the output
+   *  passes through the first input's placement (or none for a source) — the "a convolve does not
+   *  move the grid" default, correct for pointwise and neighbourhood ops. Runs at graph-build time,
+   *  mirroring `inferBasis`: a binary op asserts `systemsAgree` here (rejecting `add` across
+   *  systems), a resample op composes a scale, and a *source* constructs a placement from a
+   *  bbox + resolution. The executor stamps the inferred placement onto runtime values, so
+   *  placement survives generic ops that know nothing about coordinates. Positional inputs match
+   *  `inputs`; a `undefined` entry means "that output is array-space (unplaced)". */
+  inferPlacement?(inputs: (ResolvedPlacement | undefined)[], params: Params): (ResolvedPlacement | undefined)[];
   /** Tier-2 opt-in (ADR-0017). When true, `execute` accepts inputs carrying `buffer` instead
    *  of host `data` and is expected to return outputs that do the same — so an edge between two
    *  resident ops never touches the host (invariant 4). Absent ⇒ host-only (Tier-1), today's

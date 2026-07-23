@@ -12,7 +12,26 @@
 // shared by both fronts (grid for the image side, points/matrix for the spatial
 // side) plus scalar and an opaque payload (e.g. a persistence diagram).
 
+import type { Affine3 } from "../../coords";
+
 export type Dtype = "f32" | "i32" | "u32";
+
+/** Where a field's samples sit in world space (ADR-0015 §3, ADR-0018). A **resolved**
+ *  placement handed across the `Loader` — sd.js owns the transform algebra and collapses
+ *  Sequence/Affine/Rotation into `worldFromArray`; this repo only *consumes* the matrix,
+ *  never composes it. `system` names the target coordinate-system (default `"global"`) and
+ *  is the string binary-op agreement checks against; `worldFromArray` maps array space
+ *  (level-0 voxel/cell units) to world.
+ *
+ *  Absent on a field ⇒ **array space**: the field is unitless and cell-indexed, exactly as
+ *  every field is today. Note this is distinct from an *identity* placement, which asserts
+ *  "already in system S" — do not conflate the two (see `placementOf`). */
+export interface ResolvedPlacement {
+  /** Target coordinate-system name (default `"global"`). */
+  system: string;
+  /** sd.js-composed array→world matrix (Sequence/Affine/Rotation already collapsed). */
+  worldFromArray: Affine3;
+}
 
 /** The algebraic type of a single sample's value (ADR-0004). A *closed* set of small
  *  algebras, each with its own arithmetic (complex multiply, Hamilton product, dot) —
@@ -175,6 +194,9 @@ export interface GpuField {
   readonly axes?: readonly TensorAxis[];
   /** Field polarity (ADR-0015). Absent ⇒ `intensity`. */
   readonly role?: FieldRole;
+  /** Where this field's samples sit in world space (ADR-0015/0018). Absent ⇒ array space:
+   *  the field is unitless and cell-indexed, exactly as every field is today. */
+  readonly placement?: ResolvedPlacement;
   /** The node that writes this value. */
   readonly producer: NodeId;
   /** Which output port of that node. */
@@ -196,6 +218,9 @@ export interface FieldValue {
   axes?: readonly TensorAxis[];
   /** Field polarity (ADR-0015). Absent ⇒ `intensity`. */
   role?: FieldRole;
+  /** Where this field's samples sit in world space (ADR-0015/0018). Absent ⇒ array space:
+   *  the field is unitless and cell-indexed, exactly as every field is today. */
+  placement?: ResolvedPlacement;
   /** Host data for numeric shapes (grid/points/matrix/scalar). Length is
    *  `numCells(shape) * elementLanes(element) * axesProduct(axes)`. Element lanes are
    *  interleaved (lane-major); open axes are **planar** (outermost, per-index contiguous —
@@ -226,6 +251,32 @@ export function basisOf(v: { basis?: Basis }): Basis {
 /** The polarity of a field or value, defaulting to `intensity` when undeclared. */
 export function roleOf(v: { role?: FieldRole }): FieldRole {
   return v.role ?? INTENSITY;
+}
+
+/** The placement of a field or value, or `undefined` when it has none (ADR-0018).
+ *
+ *  Deliberately does **not** default to an identity placement: array-space (absent) and
+ *  placed-at-identity-in-system-S are *distinct* states, and conflating them would claim every
+ *  bare test grid lives in `global`. Absent means unitless/cell-indexed; identity means "already
+ *  in system S". Callers that need to tell them apart must see the `undefined`. */
+export function placementOf(v: { placement?: ResolvedPlacement }): ResolvedPlacement | undefined {
+  return v.placement;
+}
+
+/** Whether two placements may combine in a binary op (ADR-0018 decision 3): the build-time
+ *  "reject `add` across systems" check, on the `system` name (always statically known).
+ *
+ *  - both absent ⇒ `true` (two array-space fields combine, today's behaviour);
+ *  - both present ⇒ `a.system === b.system` (same system ⇒ ok);
+ *  - exactly one present ⇒ **throws** (a placed field and an unplaced one can't combine — one is
+ *    in world space, the other is unitless, and there is no transform to reconcile them).
+ *
+ *  Agreement is only on the system string; the matrices are not compared (two levels of one
+ *  pyramid share a system but differ in `worldFromArray`, and both are correct). */
+export function systemsAgree(a?: ResolvedPlacement, b?: ResolvedPlacement): boolean {
+  if (a === undefined && b === undefined) return true;
+  if (a !== undefined && b !== undefined) return a.system === b.system;
+  throw new Error("placement mismatch: cannot combine a placed field with an unplaced (array-space) one");
 }
 
 /** Enforce the ADR-0015 label invariants (integer dtype, no channel axis); throws on violation.

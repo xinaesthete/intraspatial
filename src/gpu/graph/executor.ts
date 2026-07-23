@@ -364,6 +364,15 @@ async function runTick(graph: Graph, field: GpuField, o: TickOptions): Promise<M
       // that don't set it themselves (e.g. editing wavelet coefficients then idwt).
       const b = node.outBases?.[i];
       if (b && v.basis === undefined) v.basis = b;
+      // Axes/role/placement propagate the same way (ADR-0015 known gap + ADR-0018): stamp the
+      // inferred facet only when the op left it unset, so a constructing op (splat, centroid
+      // extract) that sets its own placement wins, while a generic op carries it through.
+      const ax = node.outAxes?.[i];
+      if (ax !== undefined && v.axes === undefined) v.axes = ax;
+      const rl = node.outRoles?.[i];
+      if (rl !== undefined && v.role === undefined) v.role = rl;
+      const pl = node.outPlacements?.[i];
+      if (pl !== undefined && v.placement === undefined) v.placement = pl;
       if (memo && ck) memo.set(`${ck}#${out.name}`, v);
       // A memoised value outlives the tick, so the tick must not reclaim its buffer. Not
       // owning it pins it — correct, but it means resident values accumulate in the memo until
