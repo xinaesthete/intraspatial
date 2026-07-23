@@ -6,7 +6,7 @@
 //
 // Edges are *derived* from each node's `inputs` map (a RAW dependency on the
 // referenced producer); they are never hand-declared.
-import type { Basis, ElementType, FieldRole, FieldValue, GpuField, NodeId, ResolvedPlacement, Shape, TensorAxis } from "./handle";
+import type { Basis, ElementType, FieldProvenance, FieldRole, FieldValue, GpuField, NodeId, ResolvedPlacement, Shape, TensorAxis } from "./handle";
 import { SCALAR, SPATIAL } from "./handle";
 import type { Params } from "./op";
 import { getOp } from "./registry";
@@ -95,6 +95,7 @@ export class Graph {
       value.axes,
       value.role,
       value.placement,
+      value.provenance,
     );
   }
 
@@ -285,8 +286,10 @@ function makeField(
   axes?: readonly TensorAxis[],
   role?: FieldRole,
   placement?: ResolvedPlacement,
+  provenance?: FieldProvenance,
 ): GpuField {
-  // `axes`/`role`/`placement` are threaded exactly like `element`/`basis`: absent ⇒ the
-  // field-level default (no axes / intensity / array-space), so an existing op is untouched.
-  return { id: fieldSeq++, shape, dtype, element, basis, axes, role, placement, producer, outPort, version: 0 };
+  // `axes`/`role`/`placement`/`provenance` are threaded exactly like `element`/`basis`: absent ⇒
+  // the field-level default (no axes / intensity / array-space / no provenance), so an existing op
+  // is untouched.
+  return { id: fieldSeq++, shape, dtype, element, basis, axes, role, placement, provenance, producer, outPort, version: 0 };
 }

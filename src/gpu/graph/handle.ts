@@ -33,6 +33,23 @@ export interface ResolvedPlacement {
   worldFromArray: Affine3;
 }
 
+/** Lightweight, additive provenance for a field's samples — where they came from in the source
+ *  store, so a downstream op / the UI can label a cloud without re-reading the table. ADR-0018 keys
+ *  a points cloud per `(table, region, cell_type)`; this carries exactly that origin. Absent on a
+ *  field ⇒ no provenance recorded (unchanged behaviour). It is an *open* bag: the two structural
+ *  keys below are the common ones, and new ingestion paths may add more (index signature). It is
+ *  metadata only — never read by op arithmetic — so it propagates but never participates in a
+ *  binary-op agreement check. */
+export interface FieldProvenance {
+  /** SpatialData annotated region the samples belong to (NGFF `region`). */
+  region?: string;
+  /** The annotating table's instance-key column (NGFF `instance_key`). */
+  instanceKey?: string;
+  /** For a per-cell-type centroid cloud (B2): the `cell_type_id` this cloud was split on. */
+  cellTypeId?: number;
+  [k: string]: unknown;
+}
+
 /** The algebraic type of a single sample's value (ADR-0004). A *closed* set of small
  *  algebras, each with its own arithmetic (complex multiply, Hamilton product, dot) —
  *  deliberately distinct from an *open* tensor axis (e.g. genes), which is bulk data
@@ -197,6 +214,8 @@ export interface GpuField {
   /** Where this field's samples sit in world space (ADR-0015/0018). Absent ⇒ array space:
    *  the field is unitless and cell-indexed, exactly as every field is today. */
   readonly placement?: ResolvedPlacement;
+  /** Origin of this field's samples (ADR-0018 provenance). Absent ⇒ none recorded. Metadata only. */
+  readonly provenance?: FieldProvenance;
   /** The node that writes this value. */
   readonly producer: NodeId;
   /** Which output port of that node. */
@@ -221,6 +240,8 @@ export interface FieldValue {
   /** Where this field's samples sit in world space (ADR-0015/0018). Absent ⇒ array space:
    *  the field is unitless and cell-indexed, exactly as every field is today. */
   placement?: ResolvedPlacement;
+  /** Origin of this value's samples (ADR-0018 provenance). Absent ⇒ none recorded. Metadata only. */
+  provenance?: FieldProvenance;
   /** Host data for numeric shapes (grid/points/matrix/scalar). Length is
    *  `numCells(shape) * elementLanes(element) * axesProduct(axes)`. Element lanes are
    *  interleaved (lane-major); open axes are **planar** (outermost, per-index contiguous —
