@@ -121,3 +121,38 @@ the store genuinely carries no unit. Wire the B2 ingestion to read this.
    pairs; validate.
 4. **Mode 2 (viewport-apron)** for both — constant-area interior normalisation via the ADR-0008 halo,
    window-local ρ_B, and the **live per-viewport permutation envelope**. Prove interior agreement with Mode 1.
+
+## 7. N-way extension + visualising the high-D output (direction — specifics pending external notes)
+
+Pairwise A→B generalises to **all N cell types at once**, and the GPU makes this nearly free: one splat per
+type gives N density grids; the cross-PCF's pairwise-distance accumulation is naturally a 3-D histogram
+`[type_a][type_b][r_bin]`; TCM extends to N×N maps. The paper already lives here (its QCM is an N×N cell-type
+association matrix; the cross-PCF network at g(r=20) is N×N with a permutation null).
+
+**The key structuring choice: emit the N-way output as an *open-axis tensor field*, not a bespoke N×N array.**
+So the value at each location is a vector over a `pair` (or `type × scale`) **open axis** — the ADR-0004/0015
+`axes` facet: `{ domain: grid, axes: [{ name:"pair", length: N·N }] }` (or `type × r`). Cheap to honour when we
+build the stats; expensive to retrofit. This is what lets the two visualisation reductions below drop straight
+on, because both are **metric-linear-algebra over that open axis** — the ADR-0015 amendment to ADR-0004 (whose
+*first* consumer was the deleted magic-wand's channel-weighted `dist2`). The wand was not a one-off; it was the
+first instance of a viz primitive we reuse here.
+
+- **Distance-from-a-reference = the generalised magic wand.** Pick a reference location / co-location profile,
+  colour or select every other location by its metric distance across the pair-axis: *"where else does the
+  cell-type interaction structure look like it does here?"* — the wand's `dist2`, moved from image channels to a
+  stats tensor.
+- **Eigenvector / spectral projection = PCA of the stats field.** Covariance over the pair-axis (a
+  reduce/matmul across locations) → top eigenvectors → project each location onto the leading 2–3 → RGB or a 2-D
+  embedding ("spatial map coloured by dominant co-location mode"). New op: **open-axis eigen-decomposition** —
+  cheap (small N; host or GPU-Jacobi on the N×N covariance), and the projection step is the same
+  `matmul-over-axis` as the TopACT SVM ([[topact-collaboration-target]]).
+
+**Interactive GUI (firm requirement):** the demo enumerates the `cell_type_id`s (labels + counts) and lets the
+user pick — pairwise A/B to start, an N×N matrix / cell-type network (edges = g(r=20), à la the paper's Fig 4)
+and the two reductions above once they exist. r is a slider; a selected pair drills down to its g(r) curve / Γ map.
+
+**Status:** direction, not spec. The metric family (dot/distance/projection/matmul over an open axis) is
+*specified* in ADR-0015 but unbuilt; open-axis eigen-decomposition is new. Spectral specifics (which covariance,
+whitening, sign conventions) await the user's external notes — a reference will save guessing, as the PCF one
+did. Does **not** block stream-B2 ingestion or TCM Mode 1; it only dictates that the N-way stats emit an
+open-axis tensor field so these reductions compose.
