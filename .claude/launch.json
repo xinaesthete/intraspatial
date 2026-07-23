@@ -5,8 +5,8 @@
     {
       "name": "playground",
       "runtimeExecutable": "bash",
-      "runtimeArgs": ["-lc", "cd playground && volta run --node 22 node node_modules/vite/bin/vite.js --port 5188 --strictPort"],
-      "port": 5188
+      "runtimeArgs": ["-lc", "cd playground && volta run --node 22 node node_modules/vite/bin/vite.js --port ${PORT:-5189} --strictPort"],
+      "port": 5189
     },
     {
       "name": "docs-site",

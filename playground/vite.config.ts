@@ -82,6 +82,7 @@ export default defineConfig({
         raymarch: fileURLToPath(new URL("./raymarch.html", import.meta.url)),
         spatialscene: fileURLToPath(new URL("./spatialscene.html", import.meta.url)),
         spatialvolume: fileURLToPath(new URL("./spatialvolume.html", import.meta.url)),
+        r3fspike: fileURLToPath(new URL("./r3fspike.html", import.meta.url)),
       },
     },
   },
