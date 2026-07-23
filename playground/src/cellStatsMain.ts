@@ -17,7 +17,7 @@ import { type CellTable, DEFAULT_CELL_TABLE, readCellTable, syntheticCellTable }
 
 /** The live Leap034 SpatialData store (zarr v3, CORS `*`). Configurable — not hard-coded downstream. */
 const DEFAULT_STORE = "http://localhost:5055/project/289/spatial/leap034_layers.zarr/";
-const SPLAT = { width: 128, height: 128, sigma: 3, radiusSigma: 4 } as const;
+const SPLAT = { width: 384, height: 384, sigma: 3, radiusSigma: 4 } as const;
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const storeInput = $<HTMLInputElement>("store");
@@ -83,7 +83,7 @@ function tableBounds(t: CellTable): [number, number, number, number] {
 
 /** Scatter of every centroid, coloured by cell_type_id; the selected type is drawn brighter/larger. */
 function drawScatter(t: CellTable, bbox: [number, number, number, number], selectedId: number | null): void {
-  const W = 480, H = 480;
+  const W = 900, H = 900;
   scatterCanvas.width = W;
   scatterCanvas.height = H;
   const ctx = scatterCanvas.getContext("2d")!;
