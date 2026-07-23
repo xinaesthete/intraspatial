@@ -3,14 +3,14 @@
 // `Shape`: a Tile carries its own 3-D `dims` so a plane (dims[2] === 1) and a
 // volume are one type. The op-graph `Tileset` shape is wired in Milestone 1.
 
-import type { Dtype, ElementType } from "../gpu/graph/handle";
+import type { Dtype, ElementType, ResolvedPlacement } from "../gpu/graph/handle";
 import type { Affine3 } from "./math";
 
-export type { Dtype, ElementType } from "../gpu/graph/handle";
+export type { Dtype, ElementType, ResolvedPlacement } from "../gpu/graph/handle";
 
 /** A `Multiscale` handle: cheap metadata for an addressable pyramid, no samples.
  *  Level L downsamples every axis by `~2^L`; chunks hold a constant voxel count per
- *  level (`chunkShape`). `worldFromArray` places level-0 voxels into world. */
+ *  level (`chunkShape`). `placements` place level-0 voxels into world. */
 export interface Multiscale {
   /** Full-resolution voxel dimensions `[W, H, D]`; `D === 1` for a plane. */
   readonly voxelDims0: readonly [number, number, number];
@@ -23,10 +23,23 @@ export interface Multiscale {
    *  Used so every level's chunks map to the *same* world extent — cross-level tiles then align
    *  exactly, instead of drifting by the accumulated 2^L-vs-actual error toward the far edge. */
   readonly levelDims?: readonly (readonly [number, number, number])[];
-  /** Array space (level-0 voxel units) → world. */
-  readonly worldFromArray: Affine3;
+  /** Resolved placements of level-0 array space (voxel units) into world (ADR-0015 §3, ADR-0018).
+   *  **One `global` placement this pass** (ADR-0015 §3 scope); the array is the forward-compat seam
+   *  for a field living in several coordinate systems. `placements[0]` is the primary/only one — use
+   *  `worldFromArrayOf(ms)` to read its matrix. sd.js owns the transform algebra; this repo consumes
+   *  the resolved matrices only, never composes them. */
+  readonly placements: readonly ResolvedPlacement[];
   readonly element: ElementType;
   readonly dtype: Dtype;
+}
+
+/** The primary (this pass: only) placement's array→world matrix. Most geometry consumers predate
+ *  multi-placement and want the single affine; this is their accessor. Throws if the multiscale
+ *  carries no placement — every `Multiscale` produced today has exactly one `global` placement. */
+export function worldFromArrayOf(ms: Multiscale): Affine3 {
+  const p = ms.placements[0];
+  if (!p) throw new Error("Multiscale has no placement");
+  return p.worldFromArray;
 }
 
 /** Names one chunk of one Level: the atom of I/O and caching. */

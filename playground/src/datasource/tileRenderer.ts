@@ -18,6 +18,7 @@ import {
   type Tile,
   TileCache,
   type Vec3,
+  worldFromArrayOf,
 } from "../../../src/datasource";
 import { greyscaleMaterial } from "./tileChannelMaterial";
 
@@ -191,7 +192,7 @@ export class TileRenderer implements MemoryReporting {
 
   private addMesh(k: string, id: Tile["id"], tex: THREE.Texture): void {
     const [lo, hi] = chunkArrayBox(this.ms, id);
-    const a = this.ms.worldFromArray;
+    const a = worldFromArrayOf(this.ms);
     // Sit coarser levels a hair farther along the plane normal (+array-z), so where a coarse
     // fallback and a finer tile briefly coexist the finer one wins the depth test — no z-fighting —
     // while every tile still depth-tests AND writes depth against the rest of the scene.

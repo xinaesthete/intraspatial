@@ -69,14 +69,19 @@ export function axisAlignedMultiscale(opts: {
     voxelDims0: d,
     chunkShape: opts.chunkShape,
     levelCount: opts.levelCount,
-    worldFromArray: {
-      origin,
-      axes: [
-        [s, 0, 0],
-        [0, s, 0],
-        [0, 0, s],
-      ],
-    },
+    placements: [
+      {
+        system: "global",
+        worldFromArray: {
+          origin,
+          axes: [
+            [s, 0, 0],
+            [0, s, 0],
+            [0, 0, s],
+          ],
+        },
+      },
+    ],
     element: { kind: "scalar" },
     dtype: "f32",
   };

@@ -277,7 +277,7 @@ async function buildVolume(
     chunkShape,
     levelCount: levels.length,
     levelDims,
-    worldFromArray: volumePlacement(voxelDims0, voxelSize, opts.worldSpan ?? 256),
+    placements: [{ system: "global", worldFromArray: volumePlacement(voxelDims0, voxelSize, opts.worldSpan ?? 256) }],
     element: { kind: "scalar" },
     dtype: "f32",
   };

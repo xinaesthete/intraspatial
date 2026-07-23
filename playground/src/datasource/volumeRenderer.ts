@@ -47,6 +47,7 @@ import {
   type MemoryReporting,
   type Multiscale,
   type Selection,
+  worldFromArrayOf,
 } from "../../../src/datasource";
 
 const bufferBytes = (t: THREE.Data3DTexture): number => (t.image.data as ArrayBufferView | undefined)?.byteLength ?? 0;
@@ -458,7 +459,7 @@ export class VolumeRenderer implements MemoryReporting {
 
   /** The base array→world affine as a Matrix4 (columns = array axes, translation = origin). */
   private baseMatrix(): THREE.Matrix4 {
-    const { axes, origin } = this.ms.worldFromArray;
+    const { axes, origin } = worldFromArrayOf(this.ms);
     const [ax0, ax1, ax2] = axes;
     return new THREE.Matrix4()
       .makeBasis(
