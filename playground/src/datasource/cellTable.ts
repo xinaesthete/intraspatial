@@ -96,7 +96,7 @@ const IDENTITY_AFFINE: Affine3 = {
  *  Handles int64 (`BigInt64Array` → `Number`) as well as float dtypes. */
 async function readArray1D(arr: ZarrArrayLike): Promise<number[]> {
   const n = arr.shape[0] ?? 0;
-  const cn = arr.chunks[0] ?? n || 1;
+  const cn = arr.chunks[0] ?? (n || 1);
   const out = new Array<number>(n);
   const nChunks = Math.ceil(n / cn);
   for (let ci = 0; ci < nChunks; ci++) {
@@ -116,8 +116,8 @@ async function readCentroids2D(arr: ZarrArrayLike): Promise<{ xs: number[]; ys: 
   const rows = arr.shape[0] ?? 0;
   const cols = arr.shape[1] ?? 0;
   if (cols < 2) throw new Error(`cellTable: obsm/spatial has ${cols} columns, expected >= 2 (x,y)`);
-  const cr = arr.chunks[0] ?? rows || 1;
-  const cc = arr.chunks[1] ?? cols || 1;
+  const cr = arr.chunks[0] ?? (rows || 1);
+  const cc = arr.chunks[1] ?? (cols || 1);
   const xs = new Array<number>(rows);
   const ys = new Array<number>(rows);
   const nR = Math.ceil(rows / cr);
