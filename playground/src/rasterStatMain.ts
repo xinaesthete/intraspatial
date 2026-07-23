@@ -125,7 +125,12 @@ async function runLive(): Promise<void> {
     // Coarsest level → a small, whole-image tile (fast, and the hot-spot map is legible).
     const level = img.ms.levelCount - 1;
     const [nx, ny] = chunkCounts(img.ms, level);
-    const cx = Math.floor(nx / 2), cy = Math.floor(ny / 2);
+    // Prefer an INTERIOR chunk. Only the trailing chunk in each axis can be a thin partial
+    // sliver (the level's dims aren't a multiple of the chunk size), so the naive "centre"
+    // index `floor(n/2)` can land on e.g. a 1024×44 edge strip. Clamping away from the last
+    // index guarantees a full, square-ish chunk.
+    const interior = (n: number) => Math.min(Math.floor(n / 2), Math.max(0, n - 2));
+    const cx = interior(nx), cy = interior(ny);
     const tile = await img.loader.getChunk({ level, x: cx, y: cy, z: 0 });
 
     const g = new Graph();
