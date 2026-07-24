@@ -101,6 +101,15 @@
       </div>
       <div id="tcmReadout">select type A and type B, then “compute TCM”.</div>
     </div>
+
+    <div class="panel">
+      <div class="view">
+        <h2>cross-PCF g<sub>AB</sub>(r) — pair correlation of A around B (MuSpAn, eq 8)</h2>
+        <canvas id="pcf" style="image-rendering:auto"></canvas>
+        <div class="legend">g(r) vs radius; dashed line = g=1 (CSR). g&gt;1 = clustering of A at range r from B, g&lt;1 = exclusion · Mode 1 (global ρ<sub>B</sub>, edge correction deferred)</div>
+      </div>
+      <div id="pcfReadout">—</div>
+    </div>
   </div>
   <script type="module" src="/src/cellStatsMain.ts"></script>
 </body>

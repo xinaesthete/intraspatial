@@ -13,6 +13,7 @@
 import { Graph, pull, registerBuiltinOps } from "../../src/gpu/graph";
 import { browserBackend } from "../../src/gpu/graph/backend.browser";
 import type { FieldValue, GpuField } from "../../src/gpu/graph/handle";
+import { crossPCF } from "../../src/spatial/pcf";
 import { computeTcm } from "../../src/spatial/tcm";
 import { type CellTable, DEFAULT_CELL_TABLE, readCellTable, syntheticCellTable } from "./datasource/cellTable";
 
@@ -36,6 +37,9 @@ const sigmaInput = $<HTMLInputElement>("sigma");
 const tcmBtn = $<HTMLButtonElement>("tcmBtn");
 const tcmCanvas = $<HTMLCanvasElement>("tcm");
 const tcmReadoutEl = $<HTMLDivElement>("tcmReadout");
+const pcfCanvas = $<HTMLCanvasElement>("pcf");
+const pcfReadoutEl = $<HTMLDivElement>("pcfReadout");
+const PCF_BINS = 30;
 
 /** TCM grid resolution + world-unit defaults (α=5 is fixed; radius:σ ≈ 2:1 as in the paper). */
 const TCM_GRID = 384;
@@ -244,6 +248,73 @@ function computeTcmMap(): void {
   });
 }
 
+/** Line plot of g(r) vs r with a dashed g=1 (CSR) reference. */
+function drawPcfCurve(c: HTMLCanvasElement, r: number[], g: number[]): void {
+  const W = 760;
+  const H = 260;
+  const padL = 46;
+  const padB = 26;
+  const padT = 12;
+  const padR = 12;
+  c.width = W;
+  c.height = H;
+  const ctx = c.getContext("2d")!;
+  ctx.fillStyle = "#0f172a";
+  ctx.fillRect(0, 0, W, H);
+  const rMax = r[r.length - 1] ?? 1;
+  let gMax = 1.2;
+  for (const v of g) if (v > gMax) gMax = v;
+  gMax = Math.ceil(gMax * 1.1);
+  const px = (rv: number) => padL + (rv / rMax) * (W - padL - padR);
+  const py = (gv: number) => H - padB - (gv / gMax) * (H - padB - padT);
+  ctx.strokeStyle = "#475569";
+  ctx.setLineDash([4, 4]);
+  ctx.beginPath();
+  ctx.moveTo(padL, py(1));
+  ctx.lineTo(W - padR, py(1));
+  ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.strokeStyle = "#334155";
+  ctx.beginPath();
+  ctx.moveTo(padL, padT);
+  ctx.lineTo(padL, H - padB);
+  ctx.lineTo(W - padR, H - padB);
+  ctx.stroke();
+  ctx.strokeStyle = "#38bdf8";
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  for (let i = 0; i < r.length; i++) {
+    const X = px(r[i]!);
+    const Y = py(g[i]!);
+    if (i === 0) ctx.moveTo(X, Y);
+    else ctx.lineTo(X, Y);
+  }
+  ctx.stroke();
+  ctx.fillStyle = "#94a3b8";
+  ctx.font = "10px ui-sans-serif, system-ui, sans-serif";
+  ctx.fillText("g=1", padL + 4, py(1) - 3);
+  ctx.fillText(`g (0…${gMax})`, 4, padT + 8);
+  ctx.fillText(`r → ${rMax.toPrecision(3)} (world units)`, W - padR - 150, H - 8);
+}
+
+/** Compute + render the cross-PCF g_ab(r) curve for the selected pair (CPU, Mode 1). */
+function computePcf(): void {
+  const t = current;
+  if (!t) return;
+  const idA = Number(typeSelect.value);
+  const idB = Number(typeSelectB.value);
+  const A = t.types.find((x) => x.id === idA);
+  const B = t.types.find((x) => x.id === idB);
+  if (!A || !B) return;
+  const bbox = tableBounds(t);
+  const rMax = spanOf(bbox) / 8;
+  const res = crossPCF({ xs: A.xs, ys: A.ys }, { xs: B.xs, ys: B.ys }, { bbox, rMax, nBins: PCF_BINS });
+  drawPcfCurve(pcfCanvas, res.r, res.g);
+  pcfReadoutEl.innerHTML =
+    `<b>g<sub>AB</sub>(r)</b> — A = type ${idA} (${A.n} cells), B = type ${idB} (${B.n} cells)<br>` +
+    `rMax ${rMax.toPrecision(3)} (world units), ${PCF_BINS} bins · g(r→0) = ${(res.g[0] ?? 0).toFixed(2)} · g&gt;1 clustering, g&lt;1 exclusion`;
+}
+
 /** Populate the type dropdown + counts and draw the full scatter. */
 function present(t: CellTable): void {
   current = t;
@@ -269,9 +340,10 @@ function present(t: CellTable): void {
   radiusInput.value = defaultRadius(bbox).toPrecision(3);
   sigmaInput.value = defaultSigma(bbox).toPrecision(3);
   drawScatter(t, bbox, biggest ? biggest.id : null);
-  setStatus(`read ${t.totalCells} cells in ${t.types.length} types — select types; A splats, A→B gives the TCM.`);
+  setStatus(`read ${t.totalCells} cells in ${t.types.length} types — select types; A splats, A→B gives the TCM + cross-PCF.`);
   void splatSelected();
   computeTcmMap();
+  computePcf();
 }
 
 async function runLive(): Promise<void> {
@@ -296,8 +368,12 @@ fixtureBtn.addEventListener("click", () => runFixture());
 typeSelect.addEventListener("change", () => {
   void splatSelected();
   computeTcmMap();
+  computePcf();
 });
-typeSelectB.addEventListener("change", () => computeTcmMap());
+typeSelectB.addEventListener("change", () => {
+  computeTcmMap();
+  computePcf();
+});
 tcmBtn.addEventListener("click", () => computeTcmMap());
 radiusInput.addEventListener("change", () => computeTcmMap());
 sigmaInput.addEventListener("change", () => computeTcmMap());
