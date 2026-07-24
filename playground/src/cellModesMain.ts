@@ -103,28 +103,50 @@ const DIVERGING_LUT = ((): Uint8Array => {
   return out;
 })();
 
-function tableBounds(t: CellTable): [number, number, number, number] {
-  const xs = t.rowOrder?.xs ?? [];
-  const ys = t.rowOrder?.ys ?? [];
+/**
+ * Apply the table's array→world placement to a cloud, on the host.
+ *
+ * `gramMatrixGpu` has **no placement facet**: it splats raw `xs`/`ys` straight against the `bbox`,
+ * so points and bbox must already be in one space. (`splatDensity` does carry a placement and
+ * applies it on the GPU per ADR-0018 — the Gram splat does not, and conflating the two is exactly
+ * the bug this function exists to prevent: a world bbox with array-space points put the whole
+ * tissue in a corner covering 1/scale of each axis.)
+ *
+ * World is the right space to land in rather than array: the NGFF scale is real information, and
+ * every length the statistic takes is a world length.
+ */
+function placeCloud(t: CellTable, xs: readonly number[], ys: readonly number[]): { xs: number[]; ys: number[] } {
+  const m = t.placement.worldFromArray;
+  const n = xs.length;
+  const wx = new Array<number>(n);
+  const wy = new Array<number>(n);
+  for (let i = 0; i < n; i++) {
+    wx[i] = m.origin[0] + m.axes[0][0] * xs[i]! + m.axes[1][0] * ys[i]!;
+    wy[i] = m.origin[1] + m.axes[0][1] * xs[i]! + m.axes[1][1] * ys[i]!;
+  }
+  return { xs: wx, ys: wy };
+}
+
+function boundsOf(xs: readonly number[], ys: readonly number[]): [number, number, number, number] {
   let minX = Infinity;
   let minY = Infinity;
   let maxX = -Infinity;
   let maxY = -Infinity;
-  const m = t.placement.worldFromArray;
   for (let i = 0; i < xs.length; i++) {
-    // Apply the placement on the host for the BOUNDS only; the points themselves are carried and
-    // transformed on the GPU (ADR-0018), so this must match what splatDensity will do.
-    const x = m.origin[0] + m.axes[0][0] * xs[i]! + m.axes[1][0] * ys[i]!;
-    const y = m.origin[1] + m.axes[0][1] * xs[i]! + m.axes[1][1] * ys[i]!;
-    if (x < minX) minX = x;
-    if (x > maxX) maxX = x;
-    if (y < minY) minY = y;
-    if (y > maxY) maxY = y;
+    if (xs[i]! < minX) minX = xs[i]!;
+    if (xs[i]! > maxX) maxX = xs[i]!;
+    if (ys[i]! < minY) minY = ys[i]!;
+    if (ys[i]! > maxY) maxY = ys[i]!;
   }
   if (!Number.isFinite(minX)) return [0, 0, 1, 1];
   const padX = (maxX - minX) * 0.02 || 1;
   const padY = (maxY - minY) * 0.02 || 1;
   return [minX - padX, minY - padY, maxX + padX, maxY + padY];
+}
+
+function tableBounds(t: CellTable): [number, number, number, number] {
+  const w = placeCloud(t, t.rowOrder?.xs ?? [], t.rowOrder?.ys ?? []);
+  return boundsOf(w.xs, w.ys);
 }
 
 /** Raster dims on an AREA budget, so a non-square ROI is not stretched and world cells stay square. */
@@ -245,7 +267,7 @@ async function buildChannels(t: CellTable): Promise<{ channels: ChannelCloud[]; 
       .filter((ty) => ty.n > 0)
       .sort((a, b) => b.n - a.n)
       .slice(0, MAX_CHANNELS)
-      .map((ty) => ({ label: ty.label ?? `type ${ty.id}`, xs: ty.xs as number[], ys: ty.ys as number[] }));
+      .map((ty) => ({ label: ty.label ?? `type ${ty.id}`, ...placeCloud(t, ty.xs, ty.ys) }));
     const dropped = typed.types.length - channels.length;
     return {
       channels,
@@ -268,8 +290,9 @@ async function buildChannels(t: CellTable): Promise<{ channels: ChannelCloud[]; 
     throw new Error(`X has ${cols.nCells} rows but the table has ${t.rowOrder.xs.length} centroids`);
   }
   const thin = cols.stats.filter((s) => s.nonZero < 20).map((s) => `${s.label} (${s.nonZero})`);
+  const w = placeCloud(t, t.rowOrder.xs, t.rowOrder.ys);
   return {
-    channels: channelsFromExpression(t.rowOrder.xs, t.rowOrder.ys, cols.values, cols.names),
+    channels: channelsFromExpression(w.xs, w.ys, cols.values, cols.names),
     note: `${cols.names.length} vars from ${cols.matrix}${thin.length ? ` · sparse: ${thin.join(", ")}` : ""}`,
   };
 }
