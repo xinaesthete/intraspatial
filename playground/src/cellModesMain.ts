@@ -17,7 +17,7 @@ import { oklabToSrgb } from "../../src/color/oklab";
 import { cssRgb, deg, diverging, oklchToSrgbMapped, rgbBytes, type Srgb } from "../../src/color/ramps";
 import type { GramMatrixGpuResult } from "../../src/gpu/spatial/gramMatrix";
 import { gramMatrixGpu } from "../../src/gpu/spatial/gramMatrix";
-import { modeSwatch, paintGramModes } from "../../src/gpu/spatial/gramModes";
+import { type ModePaintInfo, modeSwatch, paintGramModes } from "../../src/gpu/spatial/gramModes";
 import {
   type ColourBy,
   type HeightSource,
@@ -429,13 +429,18 @@ function drawTerrain(): void {
 
 /** Repaint the flat mode map, carrying the crosshair. Cheap — one fullscreen fragment pass over
  *  rasters already on the device — which is what makes redrawing it on every drag step affordable. */
-function paintMap(): void {
-  if (!live) return;
-  void paintGramModes(modeCanvas, live.res, {
+async function paintMap(): Promise<ModePaintInfo | null> {
+  if (!live) return null;
+  return paintGramModes(modeCanvas, live.res, {
     vectors: live.vectors,
     saturate: Number(satInput.value) || 2.5,
     marker: wand ? { col: wand.col, row: wand.row } : undefined,
     image: imageOverlay(),
+    // The selection outline needs the same reference and metric the terrain's similarity uses, or
+    // the outline would enclose a different region than the colour shows.
+    reference: wand?.z,
+    modesUsed: Number(modesUsedSel.value) || live.res.labels.length,
+    tolerance: Number(dspanInput.value) || 1.2,
   });
 }
 
@@ -468,7 +473,7 @@ async function loadImage(): Promise<void> {
     ctxImage = null;
     imageNoteEl.innerHTML = `<span style="color:#f87171">image failed: ${err instanceof Error ? err.message : String(err)}</span>`;
   }
-  paintMap();
+  void paintMap();
   drawTerrain();
 }
 
@@ -495,7 +500,7 @@ async function sampleWandAt(clientX: number, clientY: number): Promise<void> {
   wandReadoutEl.innerHTML =
     `<b style="color:${swatch}">wand @ px ${wand.label}</b> — ${top}. Drag on the map to move the ` +
     `sample; rule lines mark it in both views.`;
-  paintMap();
+  void paintMap();
   drawTerrain();
 }
 
@@ -732,18 +737,20 @@ async function computeModes(): Promise<void> {
     const t0 = performance.now();
     const res = await gramMatrixGpu(channels, { bbox, width, height, radius, kernel: kernelOf() });
     const modes = coLocationModes(res);
-    const info = await paintGramModes(modeCanvas, res, {
-      vectors: modes.vectors,
-      saturate: Number(satInput.value) || 2.5,
-    });
-    const ms = performance.now() - t0;
 
     // A new splat invalidates the old wand: `z` was standardised against the previous window's
     // means, and the pixel it came from may not even exist now. Dropping it is the honest move —
     // silently reusing it would compare against a reference that no longer means what it says.
+    //
+    // `live` is set BEFORE painting, and the paint goes through `paintMap` rather than calling
+    // `paintGramModes` here. A second call site is how the image blend went missing on this path:
+    // every option added to the map afterwards had to be remembered in two places, and this one was
+    // not. One painter, one set of options.
     live = { res, vectors: modes.vectors };
     wand = null;
-    wandReadoutEl.textContent = "no sample — click the mode map to set the wand reference";
+    wandReadoutEl.textContent = "no sample — click or drag on the mode map to set the wand reference";
+    const info = await paintMap();
+    const ms = performance.now() - t0;
     drawTerrain();
 
     lastCorr = { labels: [...res.labels], corr: res.corr, g: res.g };
@@ -787,8 +794,8 @@ async function computeModes(): Promise<void> {
       `<b>PSD defect ${modes.psdDefect.toExponential(1)}</b> (0 = the eigenvalues are variances) · ${top}`;
     modeLegendEl.textContent =
       `L = mode 1, a = mode 2, b = mode 3, each saturating at ±${(Number(satInput.value) || 2.5).toFixed(1)}σ ` +
-      `(σ = ${info.sigmas.map((s) => s.toFixed(2)).join(", ")}). Equal perceived colour distance ≈ equal distance ` +
-      `between co-location profiles — that is what OKLab buys over three RGB ramps.`;
+      `(σ = ${(info?.sigmas ?? [0, 0, 0]).map((s: number) => s.toFixed(2)).join(", ")}). Equal perceived colour ` +
+      `distance ≈ equal distance between co-location profiles — that is what OKLab buys over three RGB ramps.`;
   } catch (err) {
     setStatus(`failed: ${err instanceof Error ? err.message : String(err)}`, true);
   }
@@ -932,11 +939,20 @@ attachWand();
 imageLoadBtn.addEventListener("click", () => void loadImage());
 imageMixInput.addEventListener("input", () => {
   // One control, both views — the blend is the shared state, not a per-view setting.
-  paintMap();
+  void paintMap();
   drawTerrain();
 });
-for (const el of [heightSel, colourBySel, modesUsedSel, stepSel]) el.addEventListener("change", drawTerrain);
-for (const el of [hscaleInput, dspanInput]) el.addEventListener("input", drawTerrain);
+// The metric controls drive BOTH views: they set the terrain's similarity shading and the map's
+// selection outline, which are the same level set seen two ways. Anything that only changes the
+// terrain's geometry stays on drawTerrain alone.
+const redrawBoth = () => {
+  void paintMap();
+  drawTerrain();
+};
+for (const el of [heightSel, colourBySel, stepSel]) el.addEventListener("change", drawTerrain);
+hscaleInput.addEventListener("input", drawTerrain);
+modesUsedSel.addEventListener("change", redrawBoth);
+dspanInput.addEventListener("input", redrawBoth);
 resetCamBtn.addEventListener("click", () => {
   cam = DEFAULT_CAM;
   drawTerrain();

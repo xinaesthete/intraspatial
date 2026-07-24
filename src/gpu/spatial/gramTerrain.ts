@@ -42,16 +42,13 @@ import { compileShader, getDevice } from "../device";
 import type { GramMatrixGpuResult } from "./gramMatrix";
 import { IMAGE_OVERLAY_WGSL, type ImageOverlay, overlayResources } from "./imageOverlayWgsl";
 import { MARKER_WGSL } from "./markerWgsl";
+import { SELECTION_L, SIM_A, SIM_B, SIMILARITY_WGSL } from "./similarityWgsl";
 
 /** Kept in step with `gramModes.ts` by being the same numbers — a mode map and its terrain must not
  *  disagree about what a colour means. */
 const MAX_CHROMA = 0.11;
 const BASE_L = 0.62;
 const SPAN_L = 0.3;
-/** Hue of the similarity ramp, in OKLab (a, b). Chosen away from the mode axes' typical directions
- *  so a similarity view is never mistaken for a mode view at a glance. */
-const SIM_A = 0.6;
-const SIM_B = -0.8;
 
 const UNI_FLOATS = 52; // 208 bytes: mat4 + 9 vec4-sized rows
 
@@ -63,7 +60,7 @@ struct Uni {
   heightScale: f32, heightSource: f32, colourBy: f32, m: f32,
   scaleL: f32, scaleA: f32, scaleB: f32, distScale: f32,
   markerX: f32, markerY: f32, markerOn: f32, lineW: f32,
-  imageMix: f32, pad0: f32, pad1: f32, pad2: f32,
+  imageMix: f32, selTol: f32, selOn: f32, pad0: f32,
   uv0: vec3f, pad3: f32,
   uv1: vec3f, pad4: f32,
 };
@@ -100,30 +97,7 @@ fn fetch(a: u32, col: u32, row: u32) -> f32 {
   return rasters[a * u32(U.rasterH) * u32(U.rowFloats) + row * u32(U.rowFloats) + col];
 }
 
-struct Sample { y: vec3f, d: f32 };
-
-/** Standardise the K channels at one pixel, project onto the leading three modes, and measure the
- *  whitened distance to the wand reference. One pass over the channels serves both. */
-fn sampleAt(col: u32, row: u32) -> Sample {
-  let K = u32(U.K);
-  let m = u32(U.m);
-  var y = vec3f(0.0);
-  var u: array<f32, 32>;               // MAX_CHANNELS; m <= K <= 32
-  for (var k = 0u; k < m; k = k + 1u) { u[k] = 0.0; }
-  for (var a = 0u; a < K; a = a + 1u) {
-    let z = (fetch(a, col, row) - chan[a * 5u]) * chan[a * 5u + 1u];
-    y = y + z * vec3f(chan[a * 5u + 2u], chan[a * 5u + 3u], chan[a * 5u + 4u]);
-    let dz = z - wand[a];
-    // u = A·Δz, accumulated channel-major so Δz is computed once for both uses.
-    for (var k = 0u; k < m; k = k + 1u) { u[k] = u[k] + wand[K + k * K + a] * dz; }
-  }
-  var d2 = 0.0;
-  for (var k = 0u; k < m; k = k + 1u) { d2 = d2 + u[k] * u[k]; }
-  var out: Sample;
-  out.y = y;
-  out.d = sqrt(d2);
-  return out;
-}
+${SIMILARITY_WGSL}
 
 struct VOut {
   @builtin(position) pos: vec4f,
@@ -134,13 +108,13 @@ struct VOut {
 
 /** Height in model units. heightSource 0-2 pick a mode; 3 is similarity, raised at the wand point
  *  rather than sunk, because a selection should read as a peak and not as a hole. */
-fn heightOf(s: Sample) -> f32 {
+fn heightOf(s: vec4f) -> f32 {
   let src = u32(U.heightSource);
   var h = 0.0;
-  if (src == 0u) { h = s.y.x * U.scaleL; }
-  else if (src == 1u) { h = s.y.y * U.scaleA; }
-  else if (src == 2u) { h = s.y.z * U.scaleB; }
-  else { h = 1.0 - clamp(s.d * U.distScale, 0.0, 1.0) * 2.0; }
+  if (src == 0u) { h = s.x * U.scaleL; }
+  else if (src == 1u) { h = s.y * U.scaleA; }
+  else if (src == 2u) { h = s.z * U.scaleB; }
+  else { h = 1.0 - clamp(s.w * U.distScale, 0.0, 1.0) * 2.0; }
   return clamp(h, -1.0, 1.0) * U.heightScale;
 }
 
@@ -159,7 +133,7 @@ fn vs(@builtin(vertex_index) vi: u32) -> VOut {
   let gx = qx + dx;
   let gy = qy + dy;
 
-  let s = sampleAt(gx * u32(U.step), gy * u32(U.step));
+  let s = sampleWhitened(gx * u32(U.step), gy * u32(U.step));
 
   // Model space: the window mapped to [-aspect/2, aspect/2] with its longer side 1, so the camera
   // is independent of both world units and raster resolution.
@@ -170,8 +144,8 @@ fn vs(@builtin(vertex_index) vi: u32) -> VOut {
   var o: VOut;
   o.pos = U.mvp * vec4f(model, 1.0);
   o.model = model;
-  o.y = s.y;
-  o.d = s.d;
+  o.y = s.xyz;
+  o.d = s.w;
   return o;
 }
 
@@ -203,7 +177,13 @@ fn fs(in: VOut) -> @location(0) vec4f {
 
   // Shade in OKLab's lightness rather than by scaling sRGB: multiplying linear RGB would drag the
   // hue of saturated colours, which is exactly the signal the map carries.
-  let rgb = oklabToSrgb(vec3f(lab.x * lit, lab.y, lab.z));
+  var rgb = oklabToSrgb(vec3f(lab.x * lit, lab.y, lab.z));
+
+  // The selection boundary, in the similarity hue so it reads as "what got selected" against the
+  // marker's white "where you sampled". Unshaded and drawn over the image for the same reason the
+  // rule lines are: an annotation that dims in shadow is lost exactly where the relief is busiest.
+  let edge = selectionEdge(in.d, U.selTol, U.selOn);
+  rgb = mix(rgb, oklabToSrgb(vec3f(${SELECTION_L}, ${MAX_CHROMA} * ${SIM_A}, ${MAX_CHROMA} * ${SIM_B})), edge);
 
   // The two rule lines are loci in the surface's own XY, so each drapes over the relief as the
   // terrain's profile along one axis through the sample, and both stay put as the camera moves.
@@ -579,8 +559,11 @@ export async function paintGramTerrain(canvas: HTMLCanvasElement, res: GramMatri
       // only bites where the screen-space derivative would make the line thinner than this.
       0.0012,
       ov.mix,
-      0,
-      0,
+      // The outline sits at exactly the distance where the similarity ramp reaches zero, so the
+      // boundary and the colour are two readings of one number rather than two settings to keep
+      // in step.
+      opts.distanceSpan ?? 1.2,
+      opts.reference ? 1 : 0,
       0,
       ov.uv[0]!,
       ov.uv[1]!,

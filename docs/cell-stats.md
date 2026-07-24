@@ -303,6 +303,15 @@ space the colour is drawn from, so "looks similar" and "is selected" agree by co
 ADR-0015's metric-over-an-open-axis at its full-metric end, and the Gram form is what makes the
 full-metric case computable at all.
 
+The selected region is **outlined in the flat map**, at the level set `d = tolerance` — the same
+distance where the terrain's similarity ramp reaches zero, so the boundary and the shading are two
+readings of one number rather than two settings to keep in step. The distance itself lives in
+`similarityWgsl.ts` and both shaders call it; this is the one snippet that *must* be shared rather
+than merely kept aligned, because if the two computed `d` even slightly differently the outline
+would enclose a region the colour disagrees with and the picture would give no clue which was wrong.
+Outline and rule lines are deliberately different colours: the outline is the similarity hue and
+means "what got selected", the lines are white and mean "where you sampled".
+
 The sample is **dragged, not clicked**: holding the pointer down on the map moves the reference and
 both views follow. Sampling is a dispatch plus a buffer map, so it cannot keep up one-to-one with
 pointer events and must not queue — fifty pending readbacks would land in order and repaint for
@@ -594,6 +603,7 @@ src/gpu/spatial/gramMatrix.ts  GPU Gram form: one splat per channel + one reduct
 src/gpu/spatial/gramModes.ts   the flat OKLab mode map, one fragment pass, no readback
 src/gpu/spatial/gramTerrain.ts the displaced surface, the orbit camera, and the wand's metric
 src/gpu/spatial/markerWgsl.ts  the sample rule lines in WGSL, shared by the map and the terrain
+src/gpu/spatial/similarityWgsl.ts  the wand distance + selection boundary, shared (must be, not just aligned)
 src/gpu/spatial/imageOverlayWgsl.ts  the OKLab image blend, shared by the map and the terrain
 playground/src/datasource/imageContext.ts  one pyramid level -> one RGBA texture + world->UV
 src/gpu/spatial/kernelWgsl.ts  the kernel family in WGSL, shared by tcmRender and gramMatrix

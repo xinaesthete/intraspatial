@@ -34,18 +34,29 @@
 import type { Oklab } from "../../color/oklab";
 import { compileShader, getDevice } from "../device";
 import type { GramMatrixGpuResult } from "./gramMatrix";
+import { whiteningMatrix } from "./gramTerrain";
 import { IMAGE_OVERLAY_WGSL, type ImageOverlay, overlayResources } from "./imageOverlayWgsl";
 import { MARKER_WGSL } from "./markerWgsl";
+import { SELECTION_L, SIM_A, SIM_B, SIMILARITY_WGSL } from "./similarityWgsl";
+
+/** Chroma radius in OKLab units. 0.11 keeps `a`/`b` inside the sRGB gamut across the whole
+ *  lightness range used below, so the shader's clamp is a corner case rather than a routine
+ *  distortion — clipping would move hue and lightness, i.e. corrupt exactly the two dimensions
+ *  carrying the mode signal. */
+const MAX_CHROMA = 0.11;
+const BASE_L = 0.62;
+const SPAN_L = 0.3;
 
 /** Fragment shader constants: the OKLab→linear-sRGB matrices, matching `src/color/oklab.ts`. */
 const PAINT_SHADER = /* wgsl */ `
 struct Uni {
-  width: f32, height: f32, rowFloats: f32, k: f32,
+  width: f32, height: f32, rowFloats: f32, K: f32,
   scaleL: f32, scaleA: f32, scaleB: f32, baseL: f32,
   spanL: f32, chroma: f32, markerX: f32, markerY: f32,
-  markerOn: f32, lineW: f32, imageMix: f32, pad0: f32,
+  markerOn: f32, lineW: f32, imageMix: f32, m: f32,
   uv0: vec3f, pad1: f32,
   uv1: vec3f, pad2: f32,
+  selTol: f32, selOn: f32, pad3: f32, pad4: f32,
 };
 @group(0) @binding(0) var<uniform> U: Uni;
 @group(0) @binding(1) var<storage, read> rasters: array<f32>;
@@ -54,9 +65,16 @@ struct Uni {
 @group(0) @binding(2) var<storage, read> chan: array<f32>;
 @group(0) @binding(3) var ctxImage: texture_2d<f32>;
 @group(0) @binding(4) var ctxSampler: sampler;
+/** K floats of reference z, then m*K of the whitening matrix — see similarityWgsl. */
+@group(0) @binding(5) var<storage, read> wand: array<f32>;
+
+fn fetch(a: u32, col: u32, row: u32) -> f32 {
+  return rasters[a * u32(U.height) * u32(U.rowFloats) + row * u32(U.rowFloats) + col];
+}
 
 ${MARKER_WGSL}
 ${IMAGE_OVERLAY_WGSL}
+${SIMILARITY_WGSL}
 
 fn oklabToSrgb(lab: vec3f) -> vec3f {
   let l_ = lab.x + 0.3963377774 * lab.y + 0.2158037573 * lab.z;
@@ -93,24 +111,16 @@ fn vs(@builtin(vertex_index) vi: u32) -> VOut {
 
 @fragment
 fn fs(in: VOut) -> @location(0) vec4f {
-  let W = u32(U.width);
-  let H = u32(U.height);
-  let rowFloats = u32(U.rowFloats);
-  let col = min(W - 1u, u32(in.uv.x * U.width));
-  let row = min(H - 1u, u32(in.uv.y * U.height));
-  let K = u32(U.k);
+  let col = min(u32(U.width) - 1u, u32(in.uv.x * U.width));
+  let row = min(u32(U.height) - 1u, u32(in.uv.y * U.height));
 
-  var y = vec3f(0.0);
-  for (var a = 0u; a < K; a = a + 1u) {
-    let mu = chan[a * 5u];
-    let inv = chan[a * 5u + 1u];          // 1/sd, precomputed on the host (sd == 0 -> 0)
-    let z = (rasters[a * H * rowFloats + row * rowFloats + col] - mu) * inv;
-    y = y + z * vec3f(chan[a * 5u + 2u], chan[a * 5u + 3u], chan[a * 5u + 4u]);
-  }
+  // Mode coordinates and the wand distance in one pass — the SAME function the terrain uses, so
+  // the outline below cannot enclose a region the terrain colours differently.
+  let s = sampleWhitened(col, row);
 
   // Each mode is scaled by its OWN robust spread: eigenvalues fall off fast, so a shared scale
   // would flatten modes 2-3 to grey.
-  let t = clamp(y * vec3f(U.scaleL, U.scaleA, U.scaleB), vec3f(-1.0), vec3f(1.0));
+  let t = clamp(s.xyz * vec3f(U.scaleL, U.scaleA, U.scaleB), vec3f(-1.0), vec3f(1.0));
   var lab = vec3f(U.baseL + U.spanL * t.x, U.chroma * t.y, U.chroma * t.z);
 
   // Blend the context image in OKLab, before the sRGB conversion — see imageOverlayWgsl. The
@@ -120,22 +130,22 @@ fn fs(in: VOut) -> @location(0) vec4f {
   let ctxRgb = textureSample(ctxImage, ctxSampler, uv).rgb;
   lab = mix(lab, srgbToOklab(ctxRgb), uvWeight(uv, U.imageMix));
 
-  // The rule lines go on AFTER the OKLab conversion, in sRGB. Putting them in OKLab would let the
+  // Annotations go on AFTER the OKLab conversion, in sRGB. Putting them in OKLab would let the
   // gamut clamp move them, and a mark whose colour depends on what is under it is not a mark.
+  //
+  // Two marks, two meanings, deliberately different colours: the outline is the similarity hue and
+  // encloses "what got selected"; the rule lines are white and say "where you sampled". The lines
+  // are composited last so the sample point stays legible where it sits on its own boundary.
+  var rgb = oklabToSrgb(lab);
+  let edge = selectionEdge(s.w, U.selTol, U.selOn);
+  rgb = mix(rgb, oklabToSrgb(vec3f(${SELECTION_L}, ${MAX_CHROMA} * ${SIM_A}, ${MAX_CHROMA} * ${SIM_B})), edge);
+
   let mp = vec2f(f32(col) - U.markerX, f32(row) - U.markerY);
-  return vec4f(markerOver(oklabToSrgb(lab), mp, vec2f(U.lineW), U.markerOn), 1.0);
+  return vec4f(markerOver(rgb, mp, vec2f(U.lineW), U.markerOn), 1.0);
 }
 `;
 
-/** Chroma radius in OKLab units. 0.11 keeps `a`/`b` inside the sRGB gamut across the whole
- *  lightness range used below, so the shader's clamp is a corner case rather than a routine
- *  distortion — clipping would move hue and lightness, i.e. corrupt exactly the two dimensions
- *  carrying the mode signal. */
-const MAX_CHROMA = 0.11;
-const BASE_L = 0.62;
-const SPAN_L = 0.3;
-
-const UNI_FLOATS = 24; // 96 bytes; the two vec3 UV rows sit at 16-byte alignment from float 16
+const UNI_FLOATS = 28; // 112 bytes; the two vec3 UV rows sit at 16-byte alignment from float 16
 
 interface Ctx {
   device: GPUDevice;
@@ -164,6 +174,8 @@ const surfaces = new WeakMap<HTMLCanvasElement, GPUCanvasContext>();
 let uniBuf: GPUBuffer | undefined;
 let chanBuf: GPUBuffer | undefined;
 let chanCap = 0;
+let wandBuf: GPUBuffer | undefined;
+let wandCap = 0;
 
 export interface ModePaintOptions {
   /** Mode-major eigenvectors from `coLocationModes` — `vectors[k*K + a]`. */
@@ -175,6 +187,13 @@ export interface ModePaintOptions {
   readonly marker?: { readonly col: number; readonly row: number };
   /** Context image to blend under the modes. `uv` maps **raster pixel centres** to image UV. */
   readonly image?: ImageOverlay;
+  /** The wand's standardised channel vector. Present ⇒ the selection boundary is outlined. */
+  readonly reference?: Float64Array;
+  /** How many leading modes the metric keeps; defaults to 3. See `similarityWgsl`. */
+  readonly modesUsed?: number;
+  /** Whitened distance at the boundary — the same number the terrain's similarity ramp reaches 0
+   *  at, so the outline and the shading are two readings of one setting. */
+  readonly tolerance?: number;
 }
 
 /** What the map is showing, for a legend that states the mapping rather than leaving it implicit. */
@@ -220,6 +239,25 @@ export async function paintGramModes(canvas: HTMLCanvasElement, res: GramMatrixG
   }
   const scales = sigmas.map((s) => (s > 0 ? 1 / (saturate * s) : 0)) as [number, number, number];
 
+  // The wand buffer, in the layout `similarityWgsl` expects: K floats of reference z, then the m×K
+  // whitening matrix. `sigmas` above is √λ for the leading three; the metric needs λ for however
+  // many modes it keeps, so `whiteningMatrix` recomputes them from the same vᵀ·corr·v identity.
+  const m = Math.max(1, Math.min(opts.modesUsed ?? 3, K, 32));
+  const wandData = new Float32Array(K + m * K);
+  if (opts.reference) {
+    const lambda = new Float64Array(K);
+    for (let k = 0; k < K; k++) {
+      let q = 0;
+      for (let a = 0; a < K; a++) {
+        for (let b = 0; b < K; b++) q += (opts.vectors[k * K + a] ?? 0) * res.corr[a * K + b]! * (opts.vectors[k * K + b] ?? 0);
+      }
+      lambda[k] = Math.max(q, 0);
+    }
+    const A = whiteningMatrix(opts.vectors, lambda, K, m);
+    for (let a = 0; a < K; a++) wandData[a] = opts.reference[a] ?? 0;
+    for (let i = 0; i < m * K; i++) wandData[K + i] = A[i] ?? 0;
+  }
+
   let ctx = surfaces.get(canvas);
   if (!ctx) {
     ctx = canvas.getContext("webgpu") as GPUCanvasContext;
@@ -238,6 +276,10 @@ export async function paintGramModes(canvas: HTMLCanvasElement, res: GramMatrixG
   if (!chanBuf || chanCap < chan.length) {
     chanCap = Math.max(chan.length, chanCap * 2, 16);
     chanBuf = device.createBuffer({ size: chanCap * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+  }
+  if (!wandBuf || wandCap < wandData.length) {
+    wandCap = Math.max(wandData.length, wandCap * 2, 16);
+    wandBuf = device.createBuffer({ size: wandCap * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
   }
   device.queue.writeBuffer(
     uniBuf,
@@ -260,7 +302,7 @@ export async function paintGramModes(canvas: HTMLCanvasElement, res: GramMatrixG
       opts.marker ? 1 : 0,
       0.75,
       ov.mix,
-      0,
+      m,
       ov.uv[0]!,
       ov.uv[1]!,
       ov.uv[2]!,
@@ -269,9 +311,14 @@ export async function paintGramModes(canvas: HTMLCanvasElement, res: GramMatrixG
       ov.uv[4]!,
       ov.uv[5]!,
       0,
+      opts.tolerance ?? 1.2,
+      opts.reference ? 1 : 0,
+      0,
+      0,
     ]),
   );
   device.queue.writeBuffer(chanBuf, 0, chan);
+  device.queue.writeBuffer(wandBuf, 0, wandData);
 
   const bind = device.createBindGroup({
     layout: pipeline.getBindGroupLayout(0),
@@ -281,6 +328,7 @@ export async function paintGramModes(canvas: HTMLCanvasElement, res: GramMatrixG
       { binding: 2, resource: { buffer: chanBuf } },
       { binding: 3, resource: ov.view },
       { binding: 4, resource: ov.sampler },
+      { binding: 5, resource: { buffer: wandBuf } },
     ],
   });
 
