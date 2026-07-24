@@ -24,10 +24,11 @@
 // `src/spatial/tcmKernel.ts` is the continuous f64 oracle this is measured against.
 import tgpu from "typegpu";
 import * as d from "typegpu/data";
-import { GAUSS_TRUNC, type KernelSpec, kernelCode, TOPHAT } from "../../spatial/kernels";
+import { type KernelSpec, kernelCode, TOPHAT } from "../../spatial/kernels";
 import type { CellCloud } from "../../spatial/tcm";
 import type { TcmKernelParams } from "../../spatial/tcmKernel";
 import { getDevice } from "../device";
+import { KERNEL_WGSL } from "./kernelWgsl";
 
 // Uniform block shared by both passes: one flat Float32Array, no std140 padding puzzles.
 const UNI_FLOATS = 12;
@@ -43,23 +44,7 @@ struct Uni {
 @group(0) @binding(0) var<uniform> U: Uni;
 @group(0) @binding(1) var<storage, read> pts: array<f32>;   // packed [x0,y0,x1,y1,...]
 
-const PI = 3.14159265358979;
-const E_HALF = 0.011108996538242306;   // exp(-GAUSS_TRUNC^2 / 2), the truncated Gaussian's lost mass
-const T2 = ${(GAUSS_TRUNC * GAUSS_TRUNC).toFixed(1)};
-
-// Unit-mass radial kernels, matching src/spatial/kernels.ts exactly.
-//   code >= 0 : polynomial order n, K = (n+1)/(pi r^2) (1 - d^2/r^2)^n
-//   code <  0 : gaussian truncated at r = GAUSS_TRUNC * sigma
-fn kernelAt(d2: f32, r: f32, code: f32) -> f32 {
-  let r2 = r * r;
-  let t = d2 / r2;
-  if (t >= 1.0) { return 0.0; }
-  if (code < 0.0) {
-    let s2 = r2 / T2;
-    return exp(-d2 / (2.0 * s2)) / (2.0 * PI * s2 * (1.0 - E_HALF));
-  }
-  return ((code + 1.0) / (PI * r2)) * pow(1.0 - t, code);
-}
+${KERNEL_WGSL}
 
 // eqs 10-13. Kept branch-for-branch identical to markToM() in src/spatial/tcm.ts, including the
 // reciprocal form below CSR (which is NOT a linear mirror).

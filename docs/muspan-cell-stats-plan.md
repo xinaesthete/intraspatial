@@ -147,12 +147,36 @@ first instance of a viz primitive we reuse here.
   cheap (small N; host or GPU-Jacobi on the N×N covariance), and the projection step is the same
   `matmul-over-axis` as the TopACT SVM ([[topact-collaboration-target]]).
 
+> **Correction (2026-07-24), now that the global case is built.** This section said the modes are
+> "eigenvectors of the symmetrised g-matrix". That is wrong twice over, and `docs/cell-stats.md` §4
+> carries the worked version. Symmetrising is not the missing ingredient — `crossPCFMatrix`'s `g`
+> is *already* exactly symmetric — and symmetry does not confer positive semi-definiteness, without
+> which the eigenvalues are not variances and the projection has no reading. `g` is genuinely
+> indefinite on interdigitated populations (measured: `[[0, 2.09], [2.09, 0]]`, eigenvalues ±2.09).
+> The modes must come from the **Gram** matrix `C = M Mᵀ`, or its standardised form, which is PSD
+> by construction. Separately, `C = R K Rᵀ` inherits the *kernel's* definiteness, and no kernel in
+> `kernels.ts` is positive-definite in 2-D (top-hat −13.2%, triweight −1.6%) — so the Gram form is
+> not an optimisation of the eigen-projection, it is its precondition.
+>
+> The **global** K×K case is built (`src/spatial/gram.ts`, `src/gpu/spatial/gramMatrix.ts`). The
+> **open-axis tensor field** this section is really about — a K×K matrix *per pixel*, from
+> convolving the products `M_a·M_b` rather than integrating them — is still unbuilt, and remains
+> the prerequisite for the distance-from-a-reference reduction and for the quadrat-vs-swept
+> comparison.
+
 **Interactive GUI (firm requirement):** the demo enumerates the `cell_type_id`s (labels + counts) and lets the
 user pick — pairwise A/B to start, an N×N matrix / cell-type network (edges = g(r=20), à la the paper's Fig 4)
 and the two reductions above once they exist. r is a slider; a selected pair drills down to its g(r) curve / Γ map.
 
-**Status:** direction, not spec. The metric family (dot/distance/projection/matmul over an open axis) is
-*specified* in ADR-0015 but unbuilt; open-axis eigen-decomposition is new. Spectral specifics (which covariance,
-whitening, sign conventions) await the user's external notes — a reference will save guessing, as the PCF one
-did. Does **not** block stream-B2 ingestion or TCM Mode 1; it only dictates that the N-way stats emit an
-open-axis tensor field so these reductions compose.
+**Status:** the global K×K case is **built and tested**; the per-location open-axis field is not. The metric
+family (dot/distance/projection/matmul over an open axis) is *specified* in ADR-0015 and still unbuilt, and no op
+implements `inferAxes` yet, so a windowed Gram op would be the first.
+
+The spectral specifics that "await the user's external notes" are now settled by construction rather than by
+guessing, and the reasons are in `docs/cell-stats.md` §4 — **which covariance**: the centred, standardised
+correlation of the smoothed channel densities, because it is a Gram matrix of real vectors and therefore PSD,
+with an exact unit diagonal so `λ_k/K` is a true variance share; **whitening**: standardising per channel, so
+rare cell types are not drowned by abundant ones (the uncentred alternative makes mode 1 an abundance map);
+**sign**: canonicalised so each mode's largest-magnitude loading is positive, since an eigenvector's sign is
+arbitrary and re-analysis must not flip a mode map's colours. A reference would still be welcome, but these are
+now falsifiable choices with tests attached rather than open questions.

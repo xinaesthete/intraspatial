@@ -207,10 +207,78 @@ C_AB(r) = Σ_a Σ_b 1[|x_a−x_b| < r] = ⟨ α , T_r ⊛ β ⟩
 separate calls; `crossPCFMatrixGpu` is the same statistic with the counting on the GPU (integer
 atomics, so it is exact parity with the CPU, not an approximation).
 
-The rasterised form generalises further and is not yet implemented: with `R` the N×P matrix of
-per-type count rasters and `S = T_r ⊛ R`, the entire matrix is `C = R Sᵀ` — one matmul, multi-radius
-for free, and the natural home for the eigen-projection idea (eigenvectors of the symmetrised
-g-matrix are co-localisation modes). See plan §7.
+### The Gram form
+
+The rasterised form is `src/spatial/gram.ts` (f64 reference) and `src/gpu/spatial/gramMatrix.ts`
+(render + matmul). Splat each of the K channels through a unit-mass kernel `J` to get `M = J ⊛ R`,
+and the whole K×K matrix is one product:
+
+```
+C = M Mᵀ,     C_ab = ∫ M_a M_b = Σ_{i∈a} Σ_{j∈b} w_i w_j · (J ⊛ J)(x_i − x_j)
+```
+
+— the same pairwise sum, with the hard `1[d < r]` replaced by the smooth `(J ⊛ J)(d)`, whose
+support is **2r**, not r. Normalisation is kernel-agnostic and has no `πr²` in it at all:
+`g_ab = C_ab · |ROI| / (W_a · W_b)`, where `W` is total mark mass. CSR gives exactly 1 (tested for
+every kernel).
+
+**The cost argument.** The bucket-grid path walks every neighbour inside `r`, so it is
+`O(n · ρ · πr²)` — *quadratic in the radius*. The raster path is `O(K·P)` to splat and `O(K²·P)` to
+multiply, and **neither term contains r**: a bigger radius only spreads each quad further. There is
+therefore a crossover past which the raster form wins outright, and the paper's regime (r = 100 µm,
+bins to 300 µm) is on the far side of it. The trade is exactness — the counting path is integer
+arithmetic and so is *exactly* the CPU statistic, whereas this is a quadrature accumulated in f32,
+measured at **< 2e-3** relative against the f64 oracle.
+
+**Cell types are the one-hot case of a general mark.** Nothing in the derivation uses the fact that
+a cell has exactly one type; `R`'s rows are arbitrary non-negative per-cell weights. Hand it a gene
+column from an AnnData `X` instead and the identical code computes a spatially-smoothed gene–gene
+co-expression matrix. This is the mark cross-correlation function of point-process theory, of which
+the cell-type cross-PCF is a special case. See §12.
+
+### Why the eigen-projection needs the Gram form
+
+An eigendecomposition reads as a decomposition of variance only if the matrix is positive
+semi-definite, and **symmetry is not definiteness**. This is worth stating plainly because the
+plan's §7 proposed "eigenvectors of the symmetrised g-matrix", and symmetrising is not the missing
+ingredient — `crossPCFMatrix`'s `g` is *already* exactly symmetric.
+
+Two separate things cost definiteness:
+
+1. **The mark kernel.** In operator form the matrix is `C = R K Rᵀ`, which is PSD iff the kernel is
+   positive-definite — iff its Fourier transform is non-negative (Bochner). `kernelSpectrum.ts`
+   measures the 2-D radial transform of the whole family and **none of them qualifies**:
+
+   | kernel | min `K̂(z)/K̂(0)` | at `z = kr` |
+   |---|---|---|
+   | top-hat (the paper's) | **−13.2%** | 5.14 |
+   | Epanechnikov | −5.9% | 6.38 |
+   | quartic | −2.9% | 7.58 |
+   | triweight | −1.6% | 8.78 |
+   | gaussian (3σ) | −0.13% | 12.5 |
+
+   Smoothness shrinks the violation monotonically and never removes it; the truncated Gaussian is
+   near-PD and would be exactly PD untruncated, so what that row measures is the cost of compact
+   support, not of shape. The Gram form escapes this for free: its effective kernel is `J ⊛ J`,
+   whose transform is `|Ĵ|² ≥ 0`, positive-definite whatever `J` was.
+
+2. **The normalisation — and this is the one that actually bites.** `g` divides by per-channel mass
+   and drops self-pairs, removing exactly the diagonal dominance that would otherwise carry the
+   matrix. On self-clustering populations it usually stays PSD *by accident*. Interdigitated ones
+   destroy it: two types alternating on a lattice give `g = [[0, 2.09], [2.09, 0]]` at the pitch
+   radius — eigenvalues ±2.09, maximally indefinite. That is `crossPCFMatrix`, the published
+   statistic, with no Gram form involved.
+
+So the modes are taken from **`corr`**, the centred and standardised spatial correlation of the
+smoothed channel densities — a Gram matrix of real vectors, hence PSD *structurally*: exactly, for
+any kernel, and even in f32 (asserted on the GPU path). Its diagonal is exactly 1 and its trace
+exactly K, so `λ_k / K` is a genuine variance share. `g` remains the right thing to report and to
+draw a network from; its spectrum simply is not a variance decomposition.
+
+Mode `k` is a signed weighting over channels, and `projectMode` renders it as a pixel field
+`y_k(p) = Σ_a v_ka (M_a(p) − μ_a)/σ_a` — a recombination of rasters already in hand, so the map
+costs no re-splatting and no second neighbour search. An exact identity pins the three pieces
+together: **the spatial variance of the projected field equals its eigenvalue**.
 
 ### ROI and edge effects
 
@@ -414,6 +482,9 @@ src/spatial/tcm.ts             eq 9-14 exact (reference oracle + bucket-grid pat
 src/spatial/tcmKernel.ts       continuous generalisation over any kernel (f64)
 src/spatial/kernelAnalysis.ts  ground-truth scene, AUC / tie / stability scoring
 src/spatial/pcf.ts             cross-PCF and the N-way matrix
+src/spatial/gram.ts            the Gram form C = MMᵀ, g, corr, modes and mode maps (f64 reference)
+src/spatial/eigenSym.ts        Jacobi symmetric eigensolver + psdDefect
+src/spatial/kernelSpectrum.ts  the kernels' 2-D Fourier transforms — the positive-definiteness table
 src/spatial/bucketGrid.ts      CSR neighbourhood index (counting sort)
 src/spatial/cellCsv.ts         CSV parsing / inspection / grouping
 src/spatial/ngffTransform.ts   NGFF coordinateTransformations → 2-D affine + physical unit
@@ -422,6 +493,8 @@ src/gpu/spatial/tcmRender.ts   the two render passes  ← the interactive path
 src/gpu/spatial/paintField.ts  texture → canvas through a LUT; the single display path
 src/gpu/spatial/tcm.ts         exact compute path (TGSL), the GPU parity oracle
 src/gpu/spatial/crossPcf.ts    GPU cross-PCF + N-way matrix (WGSL, integer atomics)
+src/gpu/spatial/gramMatrix.ts  GPU Gram form: one splat per channel + one reduction dispatch
+src/gpu/spatial/kernelWgsl.ts  the kernel family in WGSL, shared by tcmRender and gramMatrix
 src/color/ramps.ts             OKLCh diverging / sequential ramps
 
 playground/cellstats.html      the demo
@@ -448,7 +521,54 @@ playground/src/datasource/cellCsv.ts     CSV → CellTable
 - **Mode 2 is unbuilt** — no window-local `ρ_B`, no edge correction, no permutation envelopes.
 - **`crossPCFMatrixGpu` is not wired into the demo**; the matrix still runs on the CPU (one batched
   pass, fast enough at Leap034 scale).
-- **The Gram-matrix / eigen-projection formulation of §4 is a plan, not code.**
+- **The Gram form is global, not swept.** `C = MMᵀ` integrates over the whole raster, so it is one
+  K×K matrix per view, exactly as the pair-counting path is. The *windowed* version — replace the
+  integral with a convolution of the products `M_a·M_b` and you get a K×K matrix **per pixel**, an
+  open-axis tensor field — is the thing plan §7 asks for and is not built. It is what would make
+  the quadrat-vs-swept comparison below runnable, and what the "distance from a reference
+  co-location profile" reduction needs.
+- **The Gram path is not wired into the demo**, and there is no mode-map panel yet: `projectMode`
+  returns the field, nothing paints it.
+- **Any substantial CPU work in a `*.gpu.test.ts` process crashes the Dawn fork before vitest
+  flushes results.** Bisected while building `gramMatrix.gpu.test.ts`: a bare `Float64Array` churn
+  loop with no GPU code involved kills it just as reliably as running the CPU oracle, while the
+  same GPU calls with trivial assertions pass repeatedly. The budget is severe — a CPU oracle at a
+  32² raster survives, 48² does not. This is the same fragility as the `tcmRender` entry above, but
+  the trigger is *host* allocation churn rather than render/readback cycles. The workaround is to
+  bake oracle values in as constants (see that file's header); the general rule is that GPU test
+  files must stay GPU-only. Not root-caused.
 - **Quadrats vs swept windows is UNTESTED.** The association statistics are global, so the
   comparison the toolbox's windowing argument rests on has not been run here — see *Scope* at the
   top. Do not cite §2's kernel measurements as evidence for it: they are a different axis.
+
+---
+
+## 12. Weighted marks: gene expression as a channel
+
+The Gram form takes per-cell weights, so a gene's expression column substitutes directly for a
+one-hot type indicator — `channelsFromExpression` builds the channels, everything downstream is
+unchanged, and the GPU splat already carries the weight per instance. This is tested both ways: a
+one-hot `X` reproduces the cell-type matrix exactly, and doubling a channel's weights scales `C` by
+4 while leaving `g` invariant.
+
+**The confound that makes this non-trivial.** The pair sum includes `i = j`. For disjoint cell-type
+channels that self term only touches the diagonal, but when every cell carries a weight in *every*
+channel it lands in every entry, contributing `(J⊛J)(0) · Σ_i w_a(i) w_b(i)` — within-cell
+co-expression with no spatial content at all, wearing the costume of co-location. Two genes
+perfectly co-expressed in cells spread far apart still produce a large raw `C_ab`. It is reported
+as `selfTerm` and subtracted in `g` (which is what `crossPCFMatrix`'s `j != i` does); `corr` cannot
+subtract it and stay PSD, so for the *modes* the honest control is a permutation null — shuffle the
+marks among cells and keep the positions — which is the same machinery Mode 2 needs.
+
+**Scale.** Cost is `O(G·P)` to splat and `O(G²·P)` to reduce, so this is a *selected genes*
+feature, not an all-genes one: ~50 genes at 512² is fine, 2000 is not. That matches ADR-0005's
+existing position (sparse gene columns are a selection mechanism; never densify the full matrix).
+
+**What is missing is only the loading.** Nothing in the repo reads `X`, `var` or `layers` today —
+`playground/src/datasource/cellTable.ts` reads `obsm/spatial` and one `obs` column, and that is
+all. The cheapest route needs no new dependency: the `zarrextra` tree the table reader already
+holds contains `tables/<name>/X`, either as a dense array or as the `X/{data,indices,indptr}` CSR
+triple (with `encoding-type` and `shape` in the group attrs, reachable via the existing
+`symbolAttrs` helper), and `var/_index` gives the gene names through the existing `readStrings1D`.
+The alternative is `@spatialdata/core`'s `getAnnDataJS()`, which exposes a `SparseArray` with a
+slicing API — already a transitive dependency, but not currently imported for tables.
