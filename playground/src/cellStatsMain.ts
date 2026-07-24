@@ -25,11 +25,12 @@
 // ramp cannot do that — its arms differ by >0.15 in perceived lightness.
 
 import { cssRgb, deg, diverging, oklchToSrgbMapped, rgbBytes, type Srgb, sequential } from "../../src/color/ramps";
-import { Graph, pull, registerBuiltinOps } from "../../src/gpu/graph";
+import { Graph, registerBuiltinOps } from "../../src/gpu/graph";
 import { browserBackend } from "../../src/gpu/graph/backend.browser";
 import type { FieldValue, GpuField } from "../../src/gpu/graph/handle";
-import { computeTcmRender } from "../../src/gpu/spatial/tcmRender";
-import { equivalentRadius, KERNELS, type KernelSpec, kernelLabel } from "../../src/spatial/kernels";
+import { paintFieldTexture } from "../../src/gpu/spatial/paintField";
+import { computeTcmRender, renderKernelDensity, renderTcm, type TcmRenderParams } from "../../src/gpu/spatial/tcmRender";
+import { equivalentRadius, GAUSS_TRUNC, GAUSSIAN, KERNELS, type KernelSpec, kernelLabel } from "../../src/spatial/kernels";
 import { crossPCF, crossPCFMatrix, type LabelledCells } from "../../src/spatial/pcf";
 import { tcmKernelField } from "../../src/spatial/tcmKernel";
 import { csvToCellTable, inspectCsv, parseCsv } from "./datasource/cellCsv";
@@ -49,7 +50,10 @@ const DEFAULT_STORE = "http://localhost:5055/project/289/spatial/leap034_layers.
  *  cells stay square. A fixed square raster over a non-square ROI stretches every spatial view and
  *  — worse than ugly — makes the mark raster anisotropic, so the kernel is sampled at different
  *  resolutions in x and y. */
-const SPLAT_TARGET = 384;
+// 256, not 384: the tiles display at ~330 px wide under a 440 px height cap, so a 384-budget raster
+// (181×814 on Leap034) is about twice the resolution anything can show — and every one of those
+// pixels is paid for twice, in the de-pad loop and again in the ImageData write.
+const SPLAT_TARGET = 256;
 const SPLAT_RADIUS_SIGMA = 4;
 const TCM_TARGET = 256;
 /** The B-density raster the mark is sampled from. Finer than Γ on purpose: this is the one
@@ -120,15 +124,6 @@ const DIVERGING_LUT = rampLut((u) => diverging(2 * u - 1, { centreL: 0.19, endL:
 const SEQ_A_LUT = rampLut((u) => sequential(u, A_HUE));
 const SEQ_B_LUT = rampLut((u) => sequential(u, B_HUE));
 
-/** Write `t ∈ [0,1]` through a LUT into an ImageData pixel. */
-function putLut(img: ImageData, i: number, lut: Uint8Array, t: number): void {
-  const k = Math.max(0, Math.min(255, Math.round(t * 255))) * 3;
-  img.data[i * 4] = lut[k]!;
-  img.data[i * 4 + 1] = lut[k + 1]!;
-  img.data[i * 4 + 2] = lut[k + 2]!;
-  img.data[i * 4 + 3] = 255;
-}
-
 // ---- state -------------------------------------------------------------------------------------
 
 let current: CellTable | null = null;
@@ -136,13 +131,14 @@ let lastMatrix: { types: number[]; counts: number[]; g: Float64Array } | null = 
 let hoverCell: { a: number; b: number } | null = null;
 /** The last CLICKED cell — the view returns to this pair when the mouse leaves the matrix. */
 let pinnedCell: { a: number; b: number } | null = null;
-let tcmTimer: ReturnType<typeof setTimeout> | undefined;
+/** Wall time of the last KDE pair splat, for the throughput readout. */
+let lastKdeMs = 0;
 /** Discovery result for the current store, so picking a table can repopulate the column list. */
 let storeTables: TableInfo[] = [];
 /** Left/top gutter used by the last matrix draw (0 when there are no names to show). */
 let matrixGutter = 0;
 /** The most recent Γ, kept so the CPU-oracle check can compare against exactly what is on screen. */
-let lastGamma: { grid: Float32Array; idA: number; idB: number; ms: number; dims: { width: number; height: number } } | null = null;
+let lastGamma: { idA: number; idB: number; ms: number; dims: { width: number; height: number }; params: TcmRenderParams } | null = null;
 
 const kernelOf = (): KernelSpec => KERNELS[Number(kernelSelect.value)] ?? KERNELS[0]!;
 
@@ -155,16 +151,6 @@ const hasNames = (t: CellTable | null): boolean => !!t?.types.some((x) => x.labe
 function setStatus(msg: string, err = false): void {
   statusEl.textContent = msg;
   statusEl.style.color = err ? "#fca5a5" : "#94a3b8";
-}
-
-interface GridValue {
-  width: number;
-  height: number;
-  data: Float32Array;
-}
-function asGrid(v: FieldValue): GridValue {
-  if (v.shape.kind !== "grid") throw new Error("expected a grid");
-  return { width: v.shape.width, height: v.shape.height, data: v.data as Float32Array };
 }
 
 /** Flatten the per-type clouds back into one labelled cell set for the N-way pass. */
@@ -309,42 +295,6 @@ function drawScatterPair(t: CellTable, bbox: [number, number, number, number], i
   if (A) draw(A.xs, A.ys, A_CSS, 1.8);
 }
 
-/** Sequential OKLCh render of a KDE grid, auto-scaled to [0, max]. */
-function drawKde(c: HTMLCanvasElement, g: GridValue, lut: Uint8Array): { max: number } {
-  c.width = g.width;
-  c.height = g.height;
-  let hi = 0;
-  for (const v of g.data) if (v > hi) hi = v;
-  const span = hi || 1;
-  const img = new ImageData(g.width, g.height);
-  for (let i = 0; i < g.data.length; i++) {
-    // sqrt gamma lifts the low tail into view; lightness is monotone in the LUT, so this stays a
-    // faithful (if compressed) reading of density rather than a hue trick.
-    putLut(img, i, lut, Math.sqrt(Math.max(0, g.data[i]! / span)));
-  }
-  c.getContext("2d")!.putImageData(img, 0, 0);
-  return { max: hi };
-}
-
-/** Diverging OKLCh render of a Γ grid, symmetric about 0 (so ±x are equally prominent). */
-function drawTcm(c: HTMLCanvasElement, g: GridValue): { min: number; max: number } {
-  c.width = g.width;
-  c.height = g.height;
-  let lo = Infinity;
-  let hi = -Infinity;
-  for (const v of g.data) {
-    if (v < lo) lo = v;
-    if (v > hi) hi = v;
-  }
-  const scale = Math.max(Math.abs(lo), Math.abs(hi)) || 1;
-  const img = new ImageData(g.width, g.height);
-  for (let i = 0; i < g.data.length; i++) {
-    putLut(img, i, DIVERGING_LUT, (g.data[i]! / scale + 1) / 2); // [-1,1] → [0,1]
-  }
-  c.getContext("2d")!.putImageData(img, 0, 0);
-  return { min: lo, max: hi };
-}
-
 /** Line plot of g(r) vs r with a dashed g=1 (CSR) reference. */
 function drawPcfCurve(c: HTMLCanvasElement, r: number[], g: number[]): void {
   const W = 760;
@@ -459,53 +409,72 @@ function drawMatrix(
 // ---- computations ------------------------------------------------------------------------------
 
 /** Splat ONE type's cloud through the graph into its canvas. */
+/** One graph for the whole session. Nothing is EXECUTED through it here — it exists so the demo can
+ *  read back `splatDensity`'s inferred output placement, which is build-time information. */
+const graph = new Graph();
+registerBuiltinOps();
+/** Points sources are per (type, table) and immutable — build each at most once. */
+const sourceCache = new Map<string, GpuField>();
+
 async function splatOne(
   t: CellTable,
   id: number,
   canvas: HTMLCanvasElement,
   lut: Uint8Array,
   bbox: [number, number, number, number],
-): Promise<{ n: number; peak: number; outSystem?: string } | null> {
+): Promise<{ n: number; outSystem?: string } | null> {
   const ty = t.types.find((x) => x.id === id);
   if (!ty) return null;
-  const g = new Graph();
-  registerBuiltinOps();
-  const src: GpuField = ty.source(g);
+  const g = graph;
+  const key = `${t.tableName}/${t.typeColumn}/${id}`;
+  let src = sourceCache.get(key);
+  if (!src) {
+    src = ty.source(g);
+    sourceCache.set(key, src);
+  }
   const dims = viewDims(bbox, SPLAT_TARGET);
-  const density = g.op1("splatDensity", { points: src }, { ...dims, radiusSigma: SPLAT_RADIUS_SIGMA, sigma: kdeSigma(bbox), bbox });
-  const dv = await pull(g, density, { ctx: { backend: browserBackend } });
-  const stats = drawKde(canvas, asGrid(dv), lut);
-  return { n: ty.n, peak: stats.max, outSystem: density.placement?.system };
+  const sigma = kdeSigma(bbox);
+  // The graph node is still BUILT — placement inference is build-time, so this costs nothing and
+  // keeps the ADR-0018 facet propagation honest in the readout — but it is not executed. The pixels
+  // come from the same render-then-paint path as Γ.
+  const density = g.op1("splatDensity", { points: src }, { ...dims, radiusSigma: SPLAT_RADIUS_SIGMA, sigma, bbox });
+  const tex = await renderKernelDensity(ty.xs, ty.ys, {
+    ...dims,
+    bbox,
+    kernel: GAUSSIAN,
+    radius: GAUSS_TRUNC * sigma, // the family's Gaussian is truncated at 3σ, so radius IS 3σ
+    key: canvas.id, // A and B are on screen together: distinct pool keys, or one overwrites the other
+  });
+  await paintFieldTexture(canvas, tex.tex, dims.width, dims.height, { lut });
+  return { n: ty.n, outSystem: density.placement?.system };
 }
 
 /** Splat BOTH types of the current pair — same op, same world frame, so A and B are directly
  *  comparable side by side (and share a lightness ramp, so brightness means density, not identity). */
-async function splatPair(): Promise<void> {
+async function splatPair(idA: number, idB: number): Promise<number> {
   const t = current;
-  if (!t) return;
-  const idA = Number(typeSelect.value);
-  const idB = Number(typeSelectB.value);
+  if (!t) return 0;
   const bbox = tableBounds(t);
+  const t0 = performance.now();
   try {
     const A = await splatOne(t, idA, kdeACanvas, SEQ_A_LUT, bbox); // sequential: one GPU pull at a time
     const B = await splatOne(t, idB, kdeBCanvas, SEQ_B_LUT, bbox);
     readoutEl.innerHTML =
       `<b>${t.label}</b><br>` +
-      `<span class="chipA">A = ${labelOfId(idA)}</span>: ${A?.n ?? "—"} cells, peak ${A ? A.peak.toFixed(3) : "—"} &nbsp;·&nbsp; ` +
-      `<span class="chipB">B = ${labelOfId(idB)}</span>: ${B?.n ?? "—"} cells, peak ${B ? B.peak.toFixed(3) : "—"}<br>` +
+      `<span class="chipA">A = ${labelOfId(idA)}</span>: ${A?.n ?? "—"} cells &nbsp;·&nbsp; ` +
+      `<span class="chipB">B = ${labelOfId(idB)}</span>: ${B?.n ?? "—"} cells · each panel auto-scaled by a GPU max reduction<br>` +
       `placement <b>${t.system}</b> (region "${t.provenance.region || "—"}", instance_key "${t.provenance.instanceKey}") · ` +
       `splatDensity output: ${A?.outSystem ? `system="${A.outSystem}"` : "absent"} (facet propagated) · KDE ${viewDims(bbox, SPLAT_TARGET).width}×${viewDims(bbox, SPLAT_TARGET).height}, σ=${toUm(kdeSigma(bbox)).toPrecision(3)}${unitSuffix()}`;
   } catch (e) {
     setStatus(`splat failed: ${(e as Error).message}`, true);
   }
+  return performance.now() - t0;
 }
 
 /** Compute Γ_AB by the two-pass GPU render formulation and draw it. */
-async function computeTcmMap(): Promise<void> {
+async function computeTcmMap(idA = Number(typeSelect.value), idB = Number(typeSelectB.value)): Promise<void> {
   const t = current;
   if (!t) return;
-  const idA = Number(typeSelect.value);
-  const idB = Number(typeSelectB.value);
   const A = t.types.find((x) => x.id === idA);
   const B = t.types.find((x) => x.id === idB);
   if (!A || !B) return;
@@ -517,24 +486,23 @@ async function computeTcmMap(): Promise<void> {
   const mark = viewDims(bbox, MARK_TARGET);
   setStatus(`rendering Γ(${labelOfId(idA)} → ${labelOfId(idB)}) …`);
   try {
+    const params = {
+      ...dims,
+      bbox,
+      radius: effective,
+      sigma,
+      alpha: 5,
+      kernel,
+      markWidth: mark.width,
+      markHeight: mark.height,
+    };
     const t0 = performance.now();
-    const grid = await computeTcmRender(
-      { xs: A.xs, ys: A.ys },
-      { xs: B.xs, ys: B.ys },
-      {
-        ...dims,
-        bbox,
-        radius: effective,
-        sigma,
-        alpha: 5,
-        kernel,
-        markWidth: mark.width,
-        markHeight: mark.height,
-      },
-    );
+    // Two render passes, then a paint straight from the target texture — Γ never crosses to the
+    // host on the interactive path. The oracle button downloads on demand.
+    const tex = await renderTcm({ xs: A.xs, ys: A.ys }, { xs: B.xs, ys: B.ys }, params);
+    await paintFieldTexture(tcmCanvas, tex.tex, dims.width, dims.height, { lut: DIVERGING_LUT, signed: true });
     const ms = performance.now() - t0;
-    lastGamma = { grid, idA, idB, ms, dims };
-    const stats = drawTcm(tcmCanvas, { ...dims, data: grid });
+    lastGamma = { idA, idB, ms, dims, params };
     const u = unitSuffix();
     const scaleNote =
       kernel.kind === "poly" && kernel.order === 0
@@ -542,8 +510,11 @@ async function computeTcmMap(): Promise<void> {
         : `radius ${baseUm.toPrecision(3)}${u} → ${toUm(effective).toPrecision(3)}${u} (matched μ₂)`;
     tcmReadoutEl.innerHTML =
       `<b>Γ<sub>AB</sub></b> — A = ${labelOfId(idA)} (${A.n} cells), B = ${labelOfId(idB)} (${B.n} cells)<br>` +
-      `${kernelLabel(kernel)} kernel, ${scaleNote}, σ ${sigmaUm(bbox).toPrecision(3)}${u}, α=5 · Γ ${dims.width}×${dims.height}, mark ${mark.width}×${mark.height} · <b>${ms.toFixed(0)} ms</b> (GPU, 2 render passes)<br>` +
-      `Γ range [${stats.min.toFixed(3)}, ${stats.max.toFixed(3)}] · red = A associated with B here, blue = excluded`;
+      `${kernelLabel(kernel)} kernel, ${scaleNote}, σ ${sigmaUm(bbox).toPrecision(3)}${u}, α=5 · Γ ${dims.width}×${dims.height}, mark ${mark.width}×${mark.height} · 2 GPU render passes<br>` +
+      `red = A associated with B here, blue = excluded; symmetric about 0, auto-scaled on the GPU` +
+      `<br>live on hover: the whole pair — 2 KDE splats + Γ — <b>submitted in ${(lastKdeMs + ms).toFixed(1)} ms</b> of main-thread time. ` +
+      `Nothing is read back, so this is submission, not GPU completion: the point is that the UI never blocks on the GPU. ` +
+      `No debounce; requests coalesce.`;
     setStatus(`done — Γ rendered in ${ms.toFixed(0)} ms.`);
   } catch (e) {
     setStatus(`Γ render failed: ${(e as Error).message}`, true);
@@ -565,31 +536,32 @@ function checkAgainstOracle(): void {
   const A = t.types.find((x) => x.id === got.idA);
   const B = t.types.find((x) => x.id === got.idB);
   if (!A || !B) return;
-  const bbox = tableBounds(t);
-  const { effective } = markRadius(bbox);
-  const sigma = toWorld(sigmaUm(bbox));
   setStatus("computing the exact CPU oracle …");
-  requestAnimationFrame(() => {
+  void (async () => {
+    // The interactive path never downloads Γ, so the comparison re-runs the render with the SAME
+    // params and takes the download here — the one place the numbers are actually consumed.
+    // Time the DOWNLOADING variant here: it is the like-for-like comparison, since both sides have
+    // to produce a host-side grid for the difference to be computable at all.
+    const gpu0 = performance.now();
+    const grid = await computeTcmRender({ xs: A.xs, ys: A.ys }, { xs: B.xs, ys: B.ys }, got.params);
+    const gpuMs = performance.now() - gpu0;
+    await new Promise((r) => requestAnimationFrame(() => r(null))); // let the status paint
     const t0 = performance.now();
-    const { gamma } = tcmKernelField(
-      { xs: A.xs, ys: A.ys },
-      { xs: B.xs, ys: B.ys },
-      { ...got.dims, bbox, radius: effective, sigma, alpha: 5, kernel: kernelOf(), radiusSigma: 4 },
-    );
+    const { gamma } = tcmKernelField({ xs: A.xs, ys: A.ys }, { xs: B.xs, ys: B.ys }, { ...got.params, radiusSigma: 4 });
     const ms = performance.now() - t0;
     let peak = 0;
     let err = 0;
     for (let i = 0; i < gamma.length; i++) {
       peak = Math.max(peak, Math.abs(gamma[i]!));
-      err = Math.max(err, Math.abs(got.grid[i]! - gamma[i]!));
+      err = Math.max(err, Math.abs(grid[i]! - gamma[i]!));
     }
     const rel = err / Math.max(peak, 1e-30);
     tcmReadoutEl.innerHTML +=
-      `<br><b>oracle check</b>: CPU exact ${ms.toFixed(0)} ms vs GPU ${got.ms.toFixed(0)} ms ` +
-      `(<b>${(ms / Math.max(got.ms, 0.01)).toFixed(1)}×</b>) · max |Δ| / peak = <b>${(100 * rel).toFixed(3)}%</b> ` +
+      `<br><b>oracle check</b>: CPU exact ${ms.toFixed(0)} ms vs GPU ${gpuMs.toFixed(0)} ms including the download ` +
+      `(<b>${(ms / Math.max(gpuMs, 0.01)).toFixed(1)}×</b>) · max |Δ| / peak = <b>${(100 * rel).toFixed(3)}%</b> ` +
       "— the render path samples the mark from a raster; the oracle evaluates it at each cell in f64.";
     setStatus(`oracle agreement ${(100 * rel).toFixed(3)}% of peak (CPU ${ms.toFixed(0)} ms, GPU ${got.ms.toFixed(0)} ms).`);
-  });
+  })();
 }
 
 /** Compute + render the cross-PCF g_ab(r) curve for the selected pair (CPU, Mode 1). */
@@ -634,19 +606,43 @@ function setPair(idA: number, idB: number, doTcm: boolean): void {
   if (!t) return;
   drawScatterPair(t, tableBounds(t), idA, idB);
   computePcf();
-  if (doTcm) {
-    void splatPair();
-    void computeTcmMap();
-  }
+  if (doTcm) requestGpuViews(idA, idB);
 }
 
-/** Debounce the expensive views (KDE splats + Γ) so they recompute only when the mouse settles. */
-function scheduleTcm(): void {
-  if (tcmTimer) clearTimeout(tcmTimer);
-  tcmTimer = setTimeout(() => {
-    void splatPair();
-    void computeTcmMap();
-  }, 250);
+/**
+ * Drive the GPU views (KDE splats + Γ) at hover speed, without a debounce.
+ *
+ * The debounce this replaces existed because Γ used to be CPU work — seconds for the dominant cell
+ * type. The render formulation put it at single-digit milliseconds, so waiting for the mouse to
+ * settle now costs more than the compute does, and the coordinated view stops feeling coordinated.
+ *
+ * What replaces it is COALESCING rather than queueing: `wantedPair` holds the newest request, and
+ * the drain loop repeats until what has been drawn is what was last asked for. Mousemove fires far
+ * faster than a GPU round-trip completes, so a queue would spend all its time rendering pairs the
+ * mouse left long ago; dropping the intermediates is both faster and more correct. WebGPU offers no
+ * cancellation, so a request already in flight is allowed to finish — at worst one stale frame.
+ */
+let wantedPair: { idA: number; idB: number } | null = null;
+let draining = false;
+
+function requestGpuViews(idA: number, idB: number): void {
+  wantedPair = { idA, idB };
+  if (!draining) void drainGpuViews();
+}
+
+async function drainGpuViews(): Promise<void> {
+  draining = true;
+  try {
+    while (wantedPair) {
+      const { idA, idB } = wantedPair;
+      wantedPair = null; // anything arriving from here on schedules another lap
+      const kdeMs = await splatPair(idA, idB);
+      await computeTcmMap(idA, idB);
+      lastKdeMs = kdeMs;
+    }
+  } finally {
+    draining = false;
+  }
 }
 
 /** Map a mouse event on the matrix canvas to a `(row a, col b)` cell, or null if outside.
@@ -692,6 +688,7 @@ function fillTypeSelects(t: CellTable): { idA: number; idB: number } {
 function present(t: CellTable): void {
   current = t;
   lastGamma = null;
+  sourceCache.clear(); // type ids are only unique within a table
   const { idA, idB } = fillTypeSelects(t);
   applyUnits(t);
   const bbox = tableBounds(t);
@@ -878,8 +875,7 @@ matrixCanvas.addEventListener("mousemove", (e) => {
     `<span class="chipA"><b>A = ${labelOfId(idA)}</b></span> (${res.counts[cell.a]} cells) → ` +
     `<span class="chipB"><b>B = ${labelOfId(idB)}</b></span> (${res.counts[cell.b]} cells) · ` +
     `g = ${g.toFixed(3)} — ${rel} · scatter + cross-PCF live · Γ on settle · click to pin`;
-  setPair(idA, idB, false);
-  scheduleTcm();
+  setPair(idA, idB, true);
 });
 matrixCanvas.addEventListener("mouseleave", () => {
   hoverCell = null;
@@ -896,13 +892,11 @@ matrixCanvas.addEventListener("mouseleave", () => {
   matrixReadoutEl.innerHTML =
     `<b>pinned</b> — <span class="chipA">A = ${labelOfId(idA)}</span> (${res.counts[pinnedCell.a]} cells) → ` +
     `<span class="chipB">B = ${labelOfId(idB)}</span> (${res.counts[pinnedCell.b]} cells) · g = ${g.toFixed(3)} · hover to explore, click to re-pin`;
-  setPair(idA, idB, false);
-  scheduleTcm();
+  setPair(idA, idB, true);
 });
 matrixCanvas.addEventListener("click", (e) => {
   const cell = matrixCellFromEvent(e);
   if (!cell || !lastMatrix) return;
-  if (tcmTimer) clearTimeout(tcmTimer);
   pinnedCell = cell;
   drawMatrix(matrixCanvas, lastMatrix, hoverCell, pinnedCell);
   setPair(lastMatrix.types[cell.a]!, lastMatrix.types[cell.b]!, true);

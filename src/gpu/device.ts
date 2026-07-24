@@ -19,7 +19,14 @@ export function getDevice(): Promise<GPUDevice> {
     // blend density into an r32float render target (the no-atomics splat path).
     // Harmless for the compute kernels; falls back cleanly if unsupported.
     const requiredFeatures = (["float32-blendable"] as GPUFeatureName[]).filter((f) => adapter.features.has(f));
-    return adapter.requestDevice({ requiredFeatures });
+    const device = await adapter.requestDevice({ requiredFeatures });
+    // WebGPU validation errors are NOT exceptions and do not reach the console on their own: an
+    // invalid pipeline or bind group simply produces nothing. That failure mode is a blank canvas
+    // with no diagnostic, which is the worst kind to debug, so surface them.
+    device.addEventListener?.("uncapturederror", (e) => {
+      console.error("[webgpu]", (e as GPUUncapturedErrorEvent).error?.message ?? e);
+    });
+    return device;
   })();
   return devicePromise;
 }

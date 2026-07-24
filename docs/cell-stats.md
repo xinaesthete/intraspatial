@@ -265,7 +265,43 @@ with `object-fit: contain` so a tall-thin ROI is letterboxed rather than squashe
 
 ---
 
-## 8. Getting data in
+## 8. Presenting: one path, no readback
+
+Every field on screen arrives the same way: **the pass that computes it leaves it in an r32float
+texture, and `paintFieldTexture` paints that texture to the canvas through a colour LUT.** Nothing is
+downloaded. This is ADR-0017 invariant 4 applied to display — a field that is computed on the GPU
+and then *looked at* never needs to reach the host.
+
+The alternative, which this replaced, costs per panel per frame: the GPU→CPU round trip (a pipeline
+flush, not a memcpy), a JS loop over every pixel to strip the 256-byte row padding, and another JS
+loop to write an `ImageData`. Measured on this demo, that was **~55 ms for a pair of KDE panels
+against ~4 ms for the Γ render** — the display path cost more than ten times the statistics.
+
+Auto-scaling stays on-device too: an atomic max over |v|, using `atomicMax` on the *bit pattern*.
+That is exact rather than approximate, because for non-negative floats IEEE-754 bit order is numeric
+order. Only the finished 256-entry LUT crosses to the GPU; building the ramp (OKLCh, with a gamut
+bisection) stays on the host where it belongs.
+
+With the readback gone the hover path costs **under a millisecond of main-thread time per pair**, so
+the debounce that used to gate it — a relic of when Γ was seconds of CPU work — is gone. Requests
+**coalesce** rather than queue: the newest pair wins and the intermediates are dropped, since
+mousemove fires far faster than a GPU round trip and a queue would spend its time rendering pairs
+the mouse left long ago. WebGPU has no cancellation, so a request already in flight finishes; at
+worst that is one stale frame.
+
+> **A bug worth recording.** The KDEs first went through the op-graph's `pullResident` *with a memo*,
+> releasing the lease after painting. A later cache hit then returned a `ResidentBuffer` whose
+> pooled buffer had been recycled — so Γ updated correctly on hover while the KDE panels showed
+> stale content. Two ownership models for the same job is what made it possible; one path removed
+> the class of bug along with the fork. If a resident buffer is ever cached, the memo must own the
+> lease.
+
+Note that these timings are **submission**, not GPU completion: the point is that the UI never
+blocks on the GPU, and the readout says so rather than quoting a flattering number.
+
+---
+
+## 9. Getting data in
 
 Three sources, all producing the same `CellTable`, so nothing downstream knows the difference.
 
@@ -309,7 +345,7 @@ array-space and placed-at-identity are distinct states).
 
 ---
 
-## 9. Where things are
+## 10. Where things are
 
 ```
 src/spatial/kernels.ts         radial kernel family; closed forms validated against quadrature
@@ -322,6 +358,7 @@ src/spatial/cellCsv.ts         CSV parsing / inspection / grouping
 src/spatial/ngffTransform.ts   NGFF coordinateTransformations → 2-D affine + physical unit
 
 src/gpu/spatial/tcmRender.ts   the two render passes  ← the interactive path
+src/gpu/spatial/paintField.ts  texture → canvas through a LUT; the single display path
 src/gpu/spatial/tcm.ts         exact compute path (TGSL), the GPU parity oracle
 src/gpu/spatial/crossPcf.ts    GPU cross-PCF + N-way matrix (WGSL, integer atomics)
 src/color/ramps.ts             OKLCh diverging / sequential ramps
@@ -334,7 +371,7 @@ playground/src/datasource/cellCsv.ts     CSV → CellTable
 
 ---
 
-## 10. Known limits
+## 11. Known limits
 
 - **`src/gpu/spatial/tcmRender.ts` segfaults Dawn-on-Node's `atexit`** after a couple of
   render-plus-readback cycles in one test file. The assertions pass first — measured relMax 1.8e-4

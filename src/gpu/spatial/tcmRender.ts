@@ -315,24 +315,42 @@ export interface KernelDensityOptions {
   /** Default `TOPHAT` — the paper's disk. */
   kernel?: KernelSpec;
   bbox: readonly [number, number, number, number];
+  /** Pool key for the render target. Callers that keep two densities on screen at once (an A/B
+   *  pair, say) must pass distinct keys, or the second render overwrites the first's texture. */
+  key?: string;
 }
 
 /** Render a point cloud through a unit-mass radial kernel: ρ̂(x) = (K_r ⊛ points)(x).
  *
  *  This is the reusable half of the TCM — it is also what the Gram-matrix form of the N-way
  *  cross-PCF needs (one of these per cell type). Row 0 of the result is at `bbox` minY. */
-export async function kernelDensityGpu(xs: ArrayLike<number>, ys: ArrayLike<number>, opts: KernelDensityOptions): Promise<Float32Array> {
-  const { device, root, kernelPipe } = await getCtx();
+export async function renderKernelDensity(xs: ArrayLike<number>, ys: ArrayLike<number>, opts: KernelDensityOptions): Promise<Tex> {
+  const { device, kernelPipe } = await getCtx();
   const { width: w, height: h } = opts;
-  const tex = ensureTex(device, "solo", w, h, GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC);
-  const bytesPerRow = align256(w * 4);
-  ensureReadback(device, root, (bytesPerRow / 4) * h);
-
+  const tex = ensureTex(
+    device,
+    opts.key ?? "solo",
+    w,
+    h,
+    GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC | GPUTextureUsage.TEXTURE_BINDING,
+  );
   const enc = device.createCommandEncoder();
   drawKernel(device, enc, kernelPipe, tex, xs, ys, opts.radius, opts.kernel ?? TOPHAT, opts.bbox);
+  device.queue.submit([enc.finish()]);
+  return tex;
+}
+
+/** As `renderKernelDensity`, but downloaded. For callers that consume the numbers; for display,
+ *  render and paint (`paintFieldTexture`) so the field never leaves the device. */
+export async function kernelDensityGpu(xs: ArrayLike<number>, ys: ArrayLike<number>, opts: KernelDensityOptions): Promise<Float32Array> {
+  const { device, root } = await getCtx();
+  const { width: w, height: h } = opts;
+  const tex = await renderKernelDensity(xs, ys, opts);
+  const bytesPerRow = align256(w * 4);
+  ensureReadback(device, root, (bytesPerRow / 4) * h);
+  const enc = device.createCommandEncoder();
   enc.copyTextureToBuffer({ texture: tex.tex }, { buffer: rbRaw!, bytesPerRow }, { width: w, height: h });
   device.queue.submit([enc.finish()]);
-
   return unpad((await rbWrap!.read()) as ArrayLike<number>, w, h, bytesPerRow / 4);
 }
 
@@ -373,9 +391,30 @@ export interface TcmRenderParams extends TcmKernelParams {
 }
 
 /** Γ_ab(x) by the two-pass render formulation — the interactive path, and a drop-in for
- *  `computeTcm` / `computeTcmKernel`. Row 0 is at minY. */
+ *  `computeTcm` / `computeTcmKernel`. Row 0 is at minY.
+ *
+ *  This form DOWNLOADS the result. For display, prefer `renderTcm` + `paintFieldTexture`: the field
+ *  is then read where the render pass left it and never crosses to the host (ADR-0017 invariant 4).
+ *  The download is for callers that genuinely consume the numbers — the oracle comparison, tests. */
 export async function computeTcmRender(a: CellCloud, b: CellCloud, p: TcmRenderParams): Promise<Float32Array> {
-  const { device, root, kernelPipe, tcmPipe } = await getCtx();
+  const { device, root } = await getCtx();
+  const { width: w, height: h } = p;
+  const outTex = await renderTcm(a, b, p);
+  const bytesPerRow = align256(w * 4);
+  ensureReadback(device, root, (bytesPerRow / 4) * h);
+  const enc = device.createCommandEncoder();
+  enc.copyTextureToBuffer({ texture: outTex.tex }, { buffer: rbRaw!, bytesPerRow }, { width: w, height: h });
+  device.queue.submit([enc.finish()]);
+  return unpad((await rbWrap!.read()) as ArrayLike<number>, w, h, bytesPerRow / 4);
+}
+
+/** The two render passes alone, leaving Γ in its r32float target.
+ *
+ *  The texture is POOLED and is overwritten by the next call — paint or copy it before then, and do
+ *  not hold on to it. Row 0 is at maxY (the render's own orientation), which is also the canvas's,
+ *  so a paint needs no flip; `computeTcmRender`'s `unpad` is what re-orients for the host. */
+export async function renderTcm(a: CellCloud, b: CellCloud, p: TcmRenderParams): Promise<Tex> {
+  const { device, kernelPipe, tcmPipe } = await getCtx();
   const { width: w, height: h, sigma } = p;
   const [minX, minY, maxX, maxY] = p.bbox;
   const roiArea = Math.max((maxX - minX) * (maxY - minY), 1e-12);
@@ -384,9 +423,13 @@ export async function computeTcmRender(a: CellCloud, b: CellCloud, p: TcmRenderP
   const mh = p.markHeight ?? h;
 
   const markTex = ensureTex(device, "mark", mw, mh, GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING);
-  const outTex = ensureTex(device, "gamma", w, h, GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC);
-  const bytesPerRow = align256(w * 4);
-  ensureReadback(device, root, (bytesPerRow / 4) * h);
+  const outTex = ensureTex(
+    device,
+    "gamma",
+    w,
+    h,
+    GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC | GPUTextureUsage.TEXTURE_BINDING,
+  );
 
   // Pass 1 — B through the mark kernel. Encoded and SUBMITTED on its own: pass 2 samples this
   // texture, and the point/uniform buffers are pooled, so the two passes cannot share an encoder
@@ -424,8 +467,6 @@ export async function computeTcmRender(a: CellCloud, b: CellCloud, p: TcmRenderP
   pass.setBindGroup(0, tcmBindGroup(device, tcmPipe, ub, pb, markTex));
   if (a.xs.length > 0) pass.draw(4, a.xs.length);
   pass.end();
-  enc2.copyTextureToBuffer({ texture: outTex.tex }, { buffer: rbRaw!, bytesPerRow }, { width: w, height: h });
   device.queue.submit([enc2.finish()]);
-
-  return unpad((await rbWrap!.read()) as ArrayLike<number>, w, h, bytesPerRow / 4);
+  return outTex;
 }
