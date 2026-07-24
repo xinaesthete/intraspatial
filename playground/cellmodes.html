@@ -138,10 +138,49 @@
 
     <div class="grid">
       <div class="tile wide">
-        <h2>mode map — OKLab eigen-projection</h2>
-        <canvas id="modemap"></canvas>
+        <h2>mode map — OKLab eigen-projection · <span style="color:#94a3b8;text-transform:none;letter-spacing:0">click to sample a co-location profile (the wand reference)</span></h2>
+        <canvas id="modemap" style="cursor:crosshair"></canvas>
         <div class="legend" id="modeLegend">L = mode 1, a = mode 2, b = mode 3 · each scaled by its own σ, so
           modes 2–3 are visible rather than flattened by mode 1's larger eigenvalue</div>
+      </div>
+
+      <div class="tile wide">
+        <h2>mode terrain — displaced surface, and the metric over the mode axis</h2>
+        <div class="row">
+          <label for="height">height</label>
+          <select id="height">
+            <option value="mode1" selected>mode 1</option>
+            <option value="mode2">mode 2</option>
+            <option value="mode3">mode 3</option>
+            <option value="similarity">similarity to sample</option>
+          </select>
+          <label for="colourBy">colour</label>
+          <select id="colourBy">
+            <option value="modes" selected>OKLab modes</option>
+            <option value="similarity">similarity to sample</option>
+          </select>
+          <label for="hscale">relief</label>
+          <input id="hscale" type="range" min="0" max="0.6" step="0.01" value="0.22" style="flex:0 1 110px" />
+          <label for="modesUsed">metric modes</label>
+          <select id="modesUsed">
+            <option value="3" selected>3 — the space you can see</option>
+            <option value="0">all — full Mahalanobis</option>
+          </select>
+          <!-- A whitened distance is in units of mode σ, so a span of 1 means "within one standard
+               deviation on every mode kept". Much above 2 and most of the tissue reads as similar. -->
+          <label for="dspan">span</label>
+          <input id="dspan" type="range" min="0.25" max="5" step="0.05" value="1.2" style="flex:0 1 110px" />
+          <label for="stepSel">grid</label>
+          <select id="stepSel">
+            <option value="1" selected>1:1</option>
+            <option value="2">1:2</option>
+            <option value="4">1:4</option>
+          </select>
+          <button id="resetCam">reset view</button>
+        </div>
+        <canvas id="terrain" style="cursor:grab;max-height:none;aspect-ratio:16/9"></canvas>
+        <div class="legend" id="terrainLegend">drag to orbit · shift-drag to pan · wheel to dolly. Height is a
+          fourth channel that costs none of the three the colour carries.</div>
       </div>
       <div class="tile">
         <h2>channel × channel spatial correlation</h2>
@@ -167,6 +206,7 @@
       <div class="readouts">
         <div id="modeReadout">—</div>
         <div id="corrReadout">—</div>
+        <div id="wandReadout">no sample — click the mode map to set the wand reference</div>
       </div>
     </div>
   </div>

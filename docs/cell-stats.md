@@ -280,6 +280,36 @@ Mode `k` is a signed weighting over channels, and `projectMode` renders it as a 
 costs no re-splatting and no second neighbour search. An exact identity pins the three pieces
 together: **the spatial variance of the projected field equals its eigenvalue**.
 
+### The terrain, and the metric over the mode axis
+
+`gramTerrain.ts` draws the same resident rasters as a lit, displaced surface. Height is a fourth
+channel that costs none of the three the colour carries — the eye reads a shaded surface as geometry
+rather than as colour — and it is driven by a mode, or by similarity to a sampled point. Nothing is
+re-splatted and nothing is read back: the grid mesh samples the buffer the matrix was reduced from
+in its *vertex* shader, so a camera move is a redraw of data already on the device.
+
+The **wand** is where the eigen-decomposition pays for itself twice. Click a pixel and its
+standardised channel vector `z_ref` becomes a reference; "where else looks like this?" is then a
+distance in channel space, and the honest one is Mahalanobis, because two channels that always
+co-occur should not count as two independent pieces of evidence. With `corr = V Λ Vᵀ`,
+
+    d²(x) = Δzᵀ corr⁻¹ Δz = Σ_k (Δy_k)² / λ_k,      Δy = Vᵀ Δz
+
+— project onto the co-location modes, then divide each by its own variance. The shader takes the
+whitening matrix `A = Λ^{-1/2} Vᵀ` truncated to the leading `m` modes and computes `d = |A Δz|`, so
+one uniform spans both ends: `m = K` is exact Mahalanobis and noisy (the trailing modes have tiny
+`λ`, and dividing by them amplifies whatever they hold), while `m = 3` is distance in precisely the
+space the colour is drawn from, so "looks similar" and "is selected" agree by construction. That is
+ADR-0015's metric-over-an-open-axis at its full-metric end, and the Gram form is what makes the
+full-metric case computable at all.
+
+Two things this surfaced that are worth keeping. **A whitened distance is in units of mode σ**, so
+the useful saturation span is ~1, not the 3 the first version defaulted to — above 2 nearly all
+tissue reads as similar. And the mode views make **under-resolution** visible: if the splat radius
+is fewer than about two raster pixels, the map and the terrain show aliasing rather than the
+smoothed field, while the statistic itself stays perfectly well defined. `cellmodes.html` reports
+pixels-per-radius and warns below 2, because nothing else in the numbers gives it away.
+
 ### ROI and edge effects
 
 `crossPcf.ts` and `tcm.ts` still run **Mode 1**: a fixed ROI, a *global* `ρ_B`, and full-disk /
@@ -519,6 +549,8 @@ src/gpu/spatial/paintField.ts  texture → canvas through a LUT; the single disp
 src/gpu/spatial/tcm.ts         exact compute path (TGSL), the GPU parity oracle
 src/gpu/spatial/crossPcf.ts    GPU cross-PCF + N-way matrix (WGSL, integer atomics)
 src/gpu/spatial/gramMatrix.ts  GPU Gram form: one splat per channel + one reduction dispatch
+src/gpu/spatial/gramModes.ts   the flat OKLab mode map, one fragment pass, no readback
+src/gpu/spatial/gramTerrain.ts the displaced surface, the orbit camera, and the wand's metric
 src/gpu/spatial/kernelWgsl.ts  the kernel family in WGSL, shared by tcmRender and gramMatrix
 src/color/ramps.ts             OKLCh diverging / sequential ramps
 
@@ -554,8 +586,10 @@ playground/src/datasource/cellCsv.ts     CSV → CellTable
   open-axis tensor field — is the thing plan §7 asks for and is not built. It is what would make
   the quadrat-vs-swept comparison below runnable, and what the "distance from a reference
   co-location profile" reduction needs.
-- **The Gram path is not wired into the demo**, and there is no mode-map panel yet: `projectMode`
-  returns the field, nothing paints it.
+- **No image overlay on the mode views.** `cellmodes.html` draws the mode field alone; putting the
+  H&E or DAPI behind it means going through the pyramid loader `spatialscene.html` already uses, and
+  that has not been done. The terrain's camera is its own orbit, not a shared scene camera, so the
+  two viewers cannot yet be locked together.
 - **Any substantial CPU work in a `*.gpu.test.ts` process crashes the Dawn fork before vitest
   flushes results.** Bisected while building `gramMatrix.gpu.test.ts`: a bare `Float64Array` churn
   loop with no GPU code involved kills it just as reliably as running the CPU oracle, while the

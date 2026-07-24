@@ -15,8 +15,18 @@
 
 import { oklabToSrgb } from "../../src/color/oklab";
 import { cssRgb, deg, diverging, oklchToSrgbMapped, rgbBytes, type Srgb } from "../../src/color/ramps";
+import type { GramMatrixGpuResult } from "../../src/gpu/spatial/gramMatrix";
 import { gramMatrixGpu } from "../../src/gpu/spatial/gramMatrix";
 import { modeSwatch, paintGramModes } from "../../src/gpu/spatial/gramModes";
+import {
+  type ColourBy,
+  type HeightSource,
+  type OrbitCamera,
+  paintGramTerrain,
+  probeChannels,
+  similaritySwatch,
+  standardise,
+} from "../../src/gpu/spatial/gramTerrain";
 import { apronCoverage, type ChannelCloud, channelsFromExpression, coLocationModes } from "../../src/spatial/gram";
 import { equivalentRadius, KERNELS, type KernelSpec, kernelLabel } from "../../src/spatial/kernels";
 import {
@@ -57,6 +67,16 @@ const scaleInput = $<HTMLInputElement>("scale");
 const resSelect = $<HTMLSelectElement>("res");
 const satInput = $<HTMLInputElement>("sat");
 const windowSel = $<HTMLSelectElement>("windowSel");
+const heightSel = $<HTMLSelectElement>("height");
+const colourBySel = $<HTMLSelectElement>("colourBy");
+const hscaleInput = $<HTMLInputElement>("hscale");
+const modesUsedSel = $<HTMLSelectElement>("modesUsed");
+const dspanInput = $<HTMLInputElement>("dspan");
+const stepSel = $<HTMLSelectElement>("stepSel");
+const resetCamBtn = $<HTMLButtonElement>("resetCam");
+const terrainCanvas = $<HTMLCanvasElement>("terrain");
+const terrainLegendEl = $<HTMLDivElement>("terrainLegend");
+const wandReadoutEl = $<HTMLDivElement>("wandReadout");
 const computeBtn = $<HTMLButtonElement>("compute");
 const statusEl = $<HTMLDivElement>("status");
 const modeCanvas = $<HTMLCanvasElement>("modemap");
@@ -82,6 +102,16 @@ let source: "obs" | "x" = "obs";
  *  standardised one the modes come from, `g` the association normalised so CSR reads 1 — and `g` is
  *  the one the viewport apron actually moves, since the apron changes `mass`, not the rasters. */
 let lastCorr: { labels: string[]; corr: Float64Array; g: Float64Array } | null = null;
+
+/** The live Gram result, kept so the terrain can redraw on a camera move without re-splatting.
+ *  Its `resident` rasters are valid only until the next `gramMatrixGpu` — which is exactly why the
+ *  terrain redraws from this handle rather than caching anything of its own. */
+let live: { res: GramMatrixGpuResult; vectors: Float64Array } | null = null;
+/** The wand: a standardised channel vector sampled from a pixel, and where it came from. */
+let wand: { z: Float64Array; col: number; row: number; label: string } | null = null;
+
+const DEFAULT_CAM: OrbitCamera = { azimuth: 0, elevation: 0.55, distance: 1.35, target: [0, 0, 0] };
+let cam: OrbitCamera = DEFAULT_CAM;
 
 const setStatus = (msg: string, err = false): void => {
   statusEl.textContent = msg;
@@ -340,6 +370,129 @@ async function buildChannels(t: CellTable): Promise<{ channels: ChannelCloud[]; 
   };
 }
 
+// ---- the terrain and the wand --------------------------------------------------------------------
+
+/** Redraw the displaced surface from rasters already on the device. No re-splat, no readback — so
+ *  this is what every camera move, slider drag and colour change calls, at frame rate. */
+function drawTerrain(): void {
+  if (!live) return;
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const cssW = terrainCanvas.clientWidth || 900;
+  const cssH = Math.round((cssW * 9) / 16);
+  terrainCanvas.width = Math.round(cssW * dpr);
+  terrainCanvas.height = Math.round(cssH * dpr);
+  const K = live.res.labels.length;
+  void paintGramTerrain(terrainCanvas, live.res, {
+    vectors: live.vectors,
+    camera: cam,
+    heightSource: heightSel.value as HeightSource,
+    colourBy: colourBySel.value as ColourBy,
+    heightScale: Number(hscaleInput.value) || 0,
+    saturate: Number(satInput.value) || 2.5,
+    step: Number(stepSel.value) || 1,
+    reference: wand?.z,
+    // "all" is stored as 0 so the option does not have to know K at authoring time.
+    modesUsed: Number(modesUsedSel.value) || K,
+    distanceSpan: Number(dspanInput.value) || 1.2,
+  }).then((info) => {
+    const m = Number(modesUsedSel.value) || K;
+    terrainLegendEl.innerHTML =
+      `drag to orbit · shift-drag to pan · wheel to dolly · ${info.gridW}×${info.gridH} grid, ` +
+      `${(info.triangles / 1000).toFixed(0)}k triangles from the resident rasters — no re-splat. ` +
+      (wand
+        ? `Similarity is the <b>whitened distance</b> |Λ<sup>−½</sup>Vᵀ Δz| over ${m === K ? `all ${K}` : m} mode${m === 1 ? "" : "s"} — ` +
+          `${m === K ? "full Mahalanobis in channel space" : "distance in exactly the space the colour shows"}, ` +
+          `saturating at ${(Number(dspanInput.value) || 1.2).toFixed(1)}.`
+        : `<span style="color:#fbbf24">No wand reference yet — click the mode map above; until then every similarity reads 0.</span>`);
+  });
+}
+
+/** Turn a click on the 2-D mode map into a wand reference: read the K channel densities at that
+ *  pixel off the device and standardise them the same way `corr` was built. */
+async function sampleWandAt(clientX: number, clientY: number): Promise<void> {
+  if (!live) return;
+  const rect = modeCanvas.getBoundingClientRect();
+  const col = ((clientX - rect.left) / rect.width) * live.res.width;
+  const row = ((clientY - rect.top) / rect.height) * live.res.height;
+  const raw = await probeChannels(live.res, col, row);
+  const z = standardise(raw, live.res.resident.mean, live.res.resident.sd);
+  wand = { z, col: Math.round(col), row: Math.round(row), label: `${Math.round(col)}, ${Math.round(row)}` };
+
+  // What the sampled profile IS, in the channels' own terms — the three channels furthest from
+  // typical, signed. A bare "you clicked here" tells the user nothing about what they selected.
+  const top = live.res.labels
+    .map((lab, a) => ({ lab, z: z[a]! }))
+    .sort((p, q) => Math.abs(q.z) - Math.abs(p.z))
+    .slice(0, 4)
+    .map((p) => `${p.z >= 0 ? "+" : "−"}${p.lab} ${Math.abs(p.z).toFixed(1)}σ`)
+    .join(" · ");
+  const swatch = cssRgb(oklabToSrgb(similaritySwatch(1)));
+  wandReadoutEl.innerHTML =
+    `<b style="color:${swatch}">wand @ px ${wand.label}</b> — ${top}. Switch colour or height to ` +
+    `"similarity to sample" to see where else the tissue reads like this.`;
+  drawTerrain();
+}
+
+/** Orbit / pan / dolly. Elevation is clamped short of the poles: at exactly ±π/2 the view direction
+ *  is parallel to the up vector and the basis degenerates. */
+function attachCamera(): void {
+  let dragging: "orbit" | "pan" | null = null;
+  let lastX = 0;
+  let lastY = 0;
+  terrainCanvas.addEventListener("pointerdown", (e) => {
+    dragging = e.shiftKey || e.button === 1 ? "pan" : "orbit";
+    lastX = e.clientX;
+    lastY = e.clientY;
+    terrainCanvas.setPointerCapture(e.pointerId);
+    terrainCanvas.style.cursor = "grabbing";
+  });
+  terrainCanvas.addEventListener("pointerup", (e) => {
+    dragging = null;
+    terrainCanvas.releasePointerCapture(e.pointerId);
+    terrainCanvas.style.cursor = "grab";
+  });
+  terrainCanvas.addEventListener("pointermove", (e) => {
+    if (!dragging) return;
+    const dx = e.clientX - lastX;
+    const dy = e.clientY - lastY;
+    lastX = e.clientX;
+    lastY = e.clientY;
+    if (dragging === "orbit") {
+      const lim = Math.PI / 2 - 0.02;
+      cam = {
+        ...cam,
+        azimuth: cam.azimuth + dx * 0.008,
+        elevation: Math.max(-lim, Math.min(lim, cam.elevation - dy * 0.008)),
+      };
+    } else {
+      // Pan in the camera's screen plane, scaled by distance so the grab point tracks the cursor at
+      // any zoom. Only the horizontal component rotates with azimuth; vertical pan is along model Z
+      // when looking down, which is what feels right on a terrain.
+      const s = cam.distance * 0.0016;
+      const ca = Math.cos(cam.azimuth);
+      const sa = Math.sin(cam.azimuth);
+      cam = {
+        ...cam,
+        target: [
+          cam.target[0] - dx * s * ca - dy * s * sa * Math.sin(cam.elevation),
+          cam.target[1] - dx * s * sa + dy * s * ca * Math.sin(cam.elevation),
+          cam.target[2] + dy * s * Math.cos(cam.elevation),
+        ],
+      };
+    }
+    drawTerrain();
+  });
+  terrainCanvas.addEventListener(
+    "wheel",
+    (e) => {
+      e.preventDefault();
+      cam = { ...cam, distance: Math.max(0.3, Math.min(12, cam.distance * Math.exp(e.deltaY * 0.0012))) };
+      drawTerrain();
+    },
+    { passive: false },
+  );
+}
+
 // ---- charts ------------------------------------------------------------------------------------
 
 const CELL = 20;
@@ -480,6 +633,14 @@ async function computeModes(): Promise<void> {
     });
     const ms = performance.now() - t0;
 
+    // A new splat invalidates the old wand: `z` was standardised against the previous window's
+    // means, and the pixel it came from may not even exist now. Dropping it is the honest move —
+    // silently reusing it would compare against a reference that no longer means what it says.
+    live = { res, vectors: modes.vectors };
+    wand = null;
+    wandReadoutEl.textContent = "no sample — click the mode map to set the wand reference";
+    drawTerrain();
+
     lastCorr = { labels: [...res.labels], corr: res.corr, g: res.g };
     drawCorr(lastCorr.labels, lastCorr.corr, null);
     drawScree(modes.explained);
@@ -505,10 +666,19 @@ async function computeModes(): Promise<void> {
         : `apron coverage ${covMean.toFixed(2)}` +
           (covMean < 0.5 ? ` <span style="color:#fbbf24">(thin — window is near the tissue edge)</span>` : "");
 
+    // Pixels per splat radius. Below ~2 the kernel is narrower than the sampling grid, so the map
+    // and the terrain show aliasing rather than the smoothed field — a real and easily-missed
+    // failure mode, since the statistic itself stays perfectly well defined.
+    const pxPerRadius = radius / ((bbox[2] - bbox[0]) / width);
+    const resNote =
+      pxPerRadius < 2
+        ? ` <span style="color:#fbbf24">kernel is ${pxPerRadius.toFixed(1)} px — under-resolved, widen the range or coarsen the raster</span>`
+        : ` kernel ${pxPerRadius.toFixed(1)} px`;
+
     setStatus(`done — ${note}, ${ms.toFixed(0)} ms (submission).`);
     modeReadoutEl.innerHTML =
       `<b>${res.labels.length} channels</b> · ${kernelLabel(kernelOf())}, range ${rangeUm.toPrecision(3)}${unitSuffix()} · ` +
-      `raster ${width}×${height} · window ${winLabel}, ${covNote} · ` +
+      `raster ${width}×${height},${resNote} · window ${winLabel}, ${covNote} · ` +
       `<b>PSD defect ${modes.psdDefect.toExponential(1)}</b> (0 = the eigenvalues are variances) · ${top}`;
     modeLegendEl.textContent =
       `L = mode 1, a = mode 2, b = mode 3, each saturating at ±${(Number(satInput.value) || 2.5).toFixed(1)}σ ` +
@@ -636,6 +806,16 @@ corrCanvas.addEventListener("mousemove", (e) => {
     ` · association g = ${g.toFixed(3)} (1 = complete spatial randomness) — <i>this</i> is the number the ` +
     `window's apron corrects; r and the modes never divide by mass, so they do not move with it.`;
 });
+
+modeCanvas.addEventListener("click", (e) => void sampleWandAt(e.clientX, e.clientY));
+for (const el of [heightSel, colourBySel, modesUsedSel, stepSel]) el.addEventListener("change", drawTerrain);
+for (const el of [hscaleInput, dspanInput]) el.addEventListener("input", drawTerrain);
+resetCamBtn.addEventListener("click", () => {
+  cam = DEFAULT_CAM;
+  drawTerrain();
+});
+window.addEventListener("resize", drawTerrain);
+attachCamera();
 
 // A swatch strip so the OKLab axes are readable without guessing.
 modeLegendEl.style.borderLeft = `3px solid ${cssRgb(oklchToSrgbMapped([0.7, 0.12, deg(250)]))}`;
