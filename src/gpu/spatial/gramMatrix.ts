@@ -58,13 +58,16 @@ fn vsSplat(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> 
   let w = pts[3u * ii + 2u];
   var o: KOut;
 
-  // Cull zero-weight marks by collapsing the quad to one clipped point. A zero weight adds exactly
-  // nothing to the raster, but without this it still rasterises its full kernel footprint to write
-  // zeros — and that is the dominant cost here, not any of the bookkeeping around it. Expression
-  // data is mostly zeros (a gene detected in a few percent of cells is normal), so a permutation
-  // run splats an order of magnitude more fragments than it needs to. Measured: the whole
-  // per-realisation fixed overhead — host packing, upload, both submits, all three readbacks — is
-  // 2.1 ms against 141 ms of splatting, so this is the only lever that matters.
+  // Cull zero-weight marks by collapsing the quad to one clipped point (NDC (2,2) is outside the
+  // frustum, so the rasteriser discards it before any fragment). A zero weight adds exactly nothing
+  // to the raster; expression data is mostly zeros, so most instances take this branch.
+  //
+  // The obvious "improvement" — don't draw the zeros at all; compact on the host and issue an exact
+  // non-zero instance count — was built and MEASURED, and it is **3× slower** here, sustained (see
+  // docs/cell-stats.md §11 for the numbers). On this tile-based GPU the cost is dominated by how
+  // scattered in-window coverage is processed, not by per-instance vertex work, and drawing the full
+  // instance list alongside the splats keeps the identical in-window fragments an order of magnitude
+  // cheaper. So the cull stays: it is the fast path, not a stopgap for a compaction that never came.
   if (w == 0.0) {
     o.pos = vec4f(2.0, 2.0, 0.0, 1.0);
     o.off = vec2f(0.0, 0.0);
@@ -291,7 +294,13 @@ function ensureReadback(device: GPUDevice, root: Root, key: string, floats: numb
 const align256 = (n: number) => Math.ceil(n / 256) * 256;
 
 /** Interleave every channel's points into one `[x, y, w, …]` buffer, recording where each starts
- *  so the draws can be issued with `firstInstance` instead of one upload per channel. */
+ *  so the draws can be issued with `firstInstance` instead of one upload per channel.
+ *
+ *  Every cell is packed, including zero-weight ones — they are culled in the vertex stage, not here.
+ *  Host-side compaction (packing only non-zero cells and drawing an exact count) was built and
+ *  measured at **3× slower** than the cull on the real workload, so it was reverted; the reason is
+ *  in docs/cell-stats.md §11 and the `vsSplat` comment. The mass/apron accounting spans all cells
+ *  regardless — a zero-mark cell adds 0 to either sum. */
 // The return type is inferred rather than annotated: a bare `Float32Array` annotation widens to
 // `Float32Array<ArrayBufferLike>`, which `queue.writeBuffer` rejects (it will not accept a possibly
 // SharedArrayBuffer-backed view). Inference keeps the precise `Float32Array<ArrayBuffer>`.

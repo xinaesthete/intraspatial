@@ -699,16 +699,40 @@ playground/src/datasource/cellCsv.ts     CSV → CellTable
     upload, both submits, all three readbacks — is **2.1 ms against 141 ms**. Adding a second input
     mode and shader variant to save part of 2.1 ms is not worth the two lifetime contracts it
     introduces.
+  - **Compaction — draw only the non-zero cells — was built, measured, and reverted: it is 3×
+    SLOWER here.** The reasoning that led to it was that a culled zero still costs a vertex
+    invocation and a primitive, so a run splats far more instances than it needs. That per-instance
+    cost is real and monotone in isolation (all-offscreen instances, no fragments: 1.3 M cost ~28 ms
+    over a ~4 ms floor). But it is not the bottleneck, and removing it makes things much worse. In a
+    controlled A/B at a realistic 5% occupancy — the same in-window splats either way, so identical
+    fragments — the cull (draw all 1.3 M, 95% collapse offscreen) and host compaction (draw only the
+    ~65 k in-window) run, sustained over 39 realisations:
 
-  Where the time actually goes is instances that produce no fragments. Culled or not, every cell
-  still costs a vertex invocation and a primitive per channel: at 5% non-zero the synthetic run
-  floors at 69 ms against 111 ms fully dense, so only about 40% of it was ever fragment work. The
-  lever is **compaction** — draw only the cells a channel actually has, via an indirect draw whose
-  count comes from a prefix sum — and *that* is where a resident mark matrix pays off, because the
-  compaction wants to happen on the device between realisations. The permutation itself should stay
-  on the host regardless: Fisher–Yates on 162k indices is ~1 ms, while the GPU-shaped alternatives
-  are a full sort or a keyed pseudorandom permutation, and the latter is **not** uniform over all
-  `n!` — which is the assumption the test's exactness rests on.
+    | path | 39× wall clock | per realisation |
+    |---|---|---|
+    | vertex cull (draw all, collapse zeros) | **1.3 s** | 33 ms |
+    | host compaction (draw non-zeros only) | **3.9 s** | 101 ms |
+
+    The mechanism is the tile-based GPU, not per-instance work: cost is dominated by how *scattered*
+    the in-window coverage is, and it is **non-monotone** in occupancy — 1.3 M dense instances splat
+    in 110 ms while 660 k scattered ones take 235 ms. Drawing the full instance list alongside the
+    splats keeps the identical in-window fragments roughly an order of magnitude cheaper (the ~1 ms
+    they add to the cull vs the ~80 ms they cost alone), consistent with a clock/batching regime that
+    the bulk draw triggers and the bare scattered draw does not. It is not fully root-caused, but the
+    direction is unambiguous and reproduced four ways (occupancy sweep, two offscreen-coordinate
+    A/Bs, and the sustained loop above), so the cull stays and there is no case for the device-side
+    prefix-sum + indirect-draw version either — it would only draw fewer scattered primitives, which
+    is the slow direction. Had it shipped, the permutation would still have stayed on the host
+    regardless: Fisher–Yates on 162k indices is ~1 ms, while the GPU-shaped alternatives are a full
+    sort or a keyed pseudorandom permutation, and the latter is **not** uniform over all `n!` — the
+    assumption the test's exactness rests on.
+
+  The earlier reading of these numbers credited GPU per-instance splatting with the whole 111 → 69 ms
+  occupancy swing and called compaction "the lever." That was wrong: isolated, host packing is ~10 ms
+  and the per-call fixed cost ~3 ms, the splat is insensitive to raster size, and the real cost is the
+  scattered-coverage term above — which neither the cull nor compaction moves. Chasing it means
+  changing the *raster*, not the instance list: a coarser splat, or a windowed formulation that
+  replaces the global integral (§ the Gram-form limit below).
 - **`crossPCFMatrixGpu` is not wired into the demo**; the matrix still runs on the CPU (one batched
   pass, fast enough at Leap034 scale).
 - **The Gram form is global, not swept.** `C = MMᵀ` integrates over the whole raster, so it is one
