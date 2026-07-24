@@ -282,10 +282,35 @@ together: **the spatial variance of the projected field equals its eigenvalue**.
 
 ### ROI and edge effects
 
-Both statistics currently run **Mode 1**: a fixed ROI, a *global* `ρ_B`, and full-disk / full-annulus
-areas. This is exact for anchors at least `r` inside the ROI and biased near the boundary. Mode 2 —
-a viewport apron with window-local `ρ_B` and live permutation envelopes — is designed
-(ADR-0018 §5) and not built.
+`crossPcf.ts` and `tcm.ts` still run **Mode 1**: a fixed ROI, a *global* `ρ_B`, and full-disk /
+full-annulus areas. This is exact for anchors at least `r` inside the ROI and biased near the
+boundary. Permutation envelopes remain unbuilt on every path.
+
+**The Gram path has the viewport apron** (`src/spatial/gram.ts`), and the shape of the fix is worth
+recording because it is smaller than it was designed to be. Two rectangles had been conflated: the
+**window** (`bbox` — what is integrated, standardised and drawn) and the set of points that reach
+it. `gramMatrix` now splats every point handed to it, wherever it lies, but counts `mass` only
+inside the window, so `ρ_a` is estimated window-locally as `W_a(A)/|A|`. That is the whole
+correction: under CSR on a window interior to the data, `g` is 1 at every radius, against the
+uncorrected ladder of 0.965 (r=5) → 0.892 (r=14) → 0.814 (r=25) on the same points measured over
+their own extent.
+
+The first implementation also dilated the *raster* by `r` and integrated over the interior. Measured
+against the plain version it changed nothing to four decimal places, at every radius, and it was
+removed. The reason: `M_a(x)` for `x` in the window depends on points within `r` of the window, and
+those points deposit onto the window's own pixels whether or not any pixels exist beyond them — the
+splat's footprint is clipped to the raster, never to the point set. **So the apron is a fact about
+which points you supply, not about how many pixels you rasterise**, which in a tiled reader is a
+halo-fetch requirement: to measure a window, read the points covering `bbox ⊕ radius`.
+
+What the apron cannot do is invent data. A window at the tissue edge has nothing outside it, so
+`apronCoverage` reports the ring density relative to the window's own — 1 means the correction had
+real cells to work with, 0 means this `g` still carries the full deficit. On the Xenium strip in
+`cellmodes.html` that reads 0 for the full extent, 0.07 for a window inset from the bounding box
+(whose margins are empty, because the section is not rectangular) and 1.49 for the centre 25%.
+
+Note also which numbers move: the apron changes `mass`, so it changes `g` alone. `corr` and the
+co-location modes never divide by mass and are untouched by it.
 
 **One global number per pair is also the limit of what is spatially resolved here.** Γ is a map;
 the cross-PCF and the N-way matrix are single values over the whole ROI. So the association
@@ -518,7 +543,9 @@ playground/src/datasource/cellCsv.ts     CSV → CellTable
   where it does not (Leap034), the µm/unit box is an assumption and everything is marked `µm*`.
   Nothing in the pipeline can tell the two apart for you.
 - **`byDimension` and non-linear transforms are unimplemented** — reported, not approximated.
-- **Mode 2 is unbuilt** — no window-local `ρ_B`, no edge correction, no permutation envelopes.
+- **Mode 2 is only half built.** The Gram path has window-local mass and the viewport apron (§4);
+  `crossPcf.ts` and `tcm.ts` still do not, and **permutation envelopes are unbuilt everywhere** —
+  which is the half that turns a number into an inference.
 - **`crossPCFMatrixGpu` is not wired into the demo**; the matrix still runs on the CPU (one batched
   pass, fast enough at Leap034 scale).
 - **The Gram form is global, not swept.** `C = MMᵀ` integrates over the whole raster, so it is one

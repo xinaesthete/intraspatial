@@ -17,7 +17,7 @@ import { oklabToSrgb } from "../../src/color/oklab";
 import { cssRgb, deg, diverging, oklchToSrgbMapped, rgbBytes, type Srgb } from "../../src/color/ramps";
 import { gramMatrixGpu } from "../../src/gpu/spatial/gramMatrix";
 import { modeSwatch, paintGramModes } from "../../src/gpu/spatial/gramModes";
-import { type ChannelCloud, channelsFromExpression, coLocationModes } from "../../src/spatial/gram";
+import { apronCoverage, type ChannelCloud, channelsFromExpression, coLocationModes } from "../../src/spatial/gram";
 import { equivalentRadius, KERNELS, type KernelSpec, kernelLabel } from "../../src/spatial/kernels";
 import {
   type CellTable,
@@ -56,6 +56,7 @@ const radiusInput = $<HTMLInputElement>("radius");
 const scaleInput = $<HTMLInputElement>("scale");
 const resSelect = $<HTMLSelectElement>("res");
 const satInput = $<HTMLInputElement>("sat");
+const windowSel = $<HTMLSelectElement>("windowSel");
 const computeBtn = $<HTMLButtonElement>("compute");
 const statusEl = $<HTMLDivElement>("status");
 const modeCanvas = $<HTMLCanvasElement>("modemap");
@@ -77,7 +78,10 @@ let base: CellTable | null = null;
 let varCatalog: VarCatalog | null = null;
 let chosenVars: number[] = [];
 let source: "obs" | "x" = "obs";
-let lastCorr: { labels: string[]; corr: Float64Array } | null = null;
+/** Both matrices, because they answer different questions and the hover shows both: `corr` is the
+ *  standardised one the modes come from, `g` the association normalised so CSR reads 1 — and `g` is
+ *  the one the viewport apron actually moves, since the apron changes `mass`, not the rasters. */
+let lastCorr: { labels: string[]; corr: Float64Array; g: Float64Array } | null = null;
 
 const setStatus = (msg: string, err = false): void => {
   statusEl.textContent = msg;
@@ -127,6 +131,10 @@ function placeCloud(t: CellTable, xs: readonly number[], ys: readonly number[]):
   return { xs: wx, ys: wy };
 }
 
+/** TIGHT bounds — deliberately unpadded. A cosmetic margin would be indistinguishable from tissue
+ *  that happens to be empty, and worse, it would silently swallow the window inset below: pad by 2%
+ *  and then inset by a radius smaller than that, and the "inset" window still contains every cell,
+ *  so the apron comes out empty while looking like it worked. */
 function boundsOf(xs: readonly number[], ys: readonly number[]): [number, number, number, number] {
   let minX = Infinity;
   let minY = Infinity;
@@ -139,14 +147,49 @@ function boundsOf(xs: readonly number[], ys: readonly number[]): [number, number
     if (ys[i]! > maxY) maxY = ys[i]!;
   }
   if (!Number.isFinite(minX)) return [0, 0, 1, 1];
-  const padX = (maxX - minX) * 0.02 || 1;
-  const padY = (maxY - minY) * 0.02 || 1;
-  return [minX - padX, minY - padY, maxX + padX, maxY + padY];
+  return [minX, minY, maxX, maxY];
 }
 
 function tableBounds(t: CellTable): [number, number, number, number] {
   const w = placeCloud(t, t.rowOrder?.xs ?? [], t.rowOrder?.ys ?? []);
   return boundsOf(w.xs, w.ys);
+}
+
+/**
+ * The analysis window — a sub-rectangle of the data extent, with the cells outside it as the apron.
+ *
+ * Insetting is not cosmetic. `gramMatrixGpu` splats every cell it is handed but counts mass only
+ * inside the `bbox`, so a window strictly inside the data gets an edge-corrected `g`; a window set
+ * to the data's own extent has nothing outside to correct with and carries the full deficit
+ * (0.97 at r=5 down to 0.82 at r=25 under CSR — `gram.test.ts`). An inset of one splat radius is
+ * all it takes, which is why that is the default.
+ *
+ * This is also the shape the interactive camera wants: the window becomes the viewport, and the
+ * apron becomes the cells just off-screen.
+ */
+function windowBbox(full: [number, number, number, number], radius: number): { bbox: [number, number, number, number]; label: string } {
+  const [x0, y0, x1, y1] = full;
+  const spanX = x1 - x0;
+  const spanY = y1 - y0;
+  const shrink = (fx: number, fy: number, label: string) => ({
+    bbox: [x0 + spanX * fx, y0 + spanY * fy, x1 - spanX * fx, y1 - spanY * fy] as [number, number, number, number],
+    label,
+  });
+  switch (windowSel.value) {
+    case "full":
+      return { bbox: full, label: "full extent (no apron)" };
+    case "half":
+      return shrink(0.25, 0.25, "centre 50%");
+    case "quarter":
+      return shrink(0.375, 0.375, "centre 25%");
+    default: {
+      // Inset by the splat radius on each side — the exact width of the halo the window's own
+      // pixels can reach. Clamped so a huge range on a small tissue cannot invert the rectangle.
+      const dx = Math.min(radius, spanX * 0.4);
+      const dy = Math.min(radius, spanY * 0.4);
+      return { bbox: [x0 + dx, y0 + dy, x1 - dx, y1 - dy], label: "inset by range" };
+    }
+  }
 }
 
 /** Raster dims on an AREA budget, so a non-square ROI is not stretched and world cells stay square. */
@@ -415,15 +458,17 @@ async function computeModes(): Promise<void> {
   try {
     const { channels, note } = await buildChannels(t);
     if (channels.length < 2) throw new Error("need at least two channels");
-    const bbox = tableBounds(t);
-    const target = Number(resSelect.value) || 384;
-    const { width, height } = viewDims(bbox, target);
+    const full = tableBounds(t);
     // The box is the EFFECTIVE range (support of J⊛J = 2·splat radius), so halve it for the splat,
     // then rescale per kernel so switching kernel holds the probed scale fixed rather than the
     // nominal radius (kernels.ts: μ₂ = r²/(n+2) shrinks with order).
-    const rangeUm = Number(radiusInput.value) || toUm(Math.max(bbox[2] - bbox[0], bbox[3] - bbox[1]) / 40);
+    const rangeUm = Number(radiusInput.value) || toUm(Math.max(full[2] - full[0], full[3] - full[1]) / 40);
     radiusInput.value = rangeUm.toPrecision(3);
     const radius = equivalentRadius(kernelOf(), toWorld(rangeUm) / 2);
+    // The window depends on the radius, and the raster on the window — so this order is forced.
+    const { bbox, label: winLabel } = windowBbox(full, radius);
+    const target = Number(resSelect.value) || 384;
+    const { width, height } = viewDims(bbox, target);
 
     setStatus(`splatting ${channels.length} channels at ${width}×${height} …`);
     const t0 = performance.now();
@@ -435,7 +480,7 @@ async function computeModes(): Promise<void> {
     });
     const ms = performance.now() - t0;
 
-    lastCorr = { labels: [...res.labels], corr: res.corr };
+    lastCorr = { labels: [...res.labels], corr: res.corr, g: res.g };
     drawCorr(lastCorr.labels, lastCorr.corr, null);
     drawScree(modes.explained);
     drawLoadings(res.labels, modes.vectors);
@@ -450,10 +495,21 @@ async function computeModes(): Promise<void> {
       return `mode ${k + 1} (${(modes.explained[k]! * 100).toFixed(0)}%): ${loads}`;
     }).join(" · ");
 
+    // Apron coverage: the ring density relative to the window's own. ~1 means the edge correction
+    // had real cells to work with; 0 means the window is at the tissue boundary and g is biased.
+    const cov = apronCoverage(res, radius);
+    const covMean = cov.length ? [...cov].reduce((a, b) => a + b, 0) / cov.length : 0;
+    const covNote =
+      windowSel.value === "full"
+        ? `<span style="color:#fbbf24">apron empty — g carries the ROI edge deficit</span>`
+        : `apron coverage ${covMean.toFixed(2)}` +
+          (covMean < 0.5 ? ` <span style="color:#fbbf24">(thin — window is near the tissue edge)</span>` : "");
+
     setStatus(`done — ${note}, ${ms.toFixed(0)} ms (submission).`);
     modeReadoutEl.innerHTML =
       `<b>${res.labels.length} channels</b> · ${kernelLabel(kernelOf())}, range ${rangeUm.toPrecision(3)}${unitSuffix()} · ` +
-      `raster ${width}×${height} · <b>PSD defect ${modes.psdDefect.toExponential(1)}</b> (0 = the eigenvalues are variances) · ${top}`;
+      `raster ${width}×${height} · window ${winLabel}, ${covNote} · ` +
+      `<b>PSD defect ${modes.psdDefect.toExponential(1)}</b> (0 = the eigenvalues are variances) · ${top}`;
     modeLegendEl.textContent =
       `L = mode 1, a = mode 2, b = mode 3, each saturating at ±${(Number(satInput.value) || 2.5).toFixed(1)}σ ` +
       `(σ = ${info.sigmas.map((s) => s.toFixed(2)).join(", ")}). Equal perceived colour distance ≈ equal distance ` +
@@ -573,9 +629,12 @@ corrCanvas.addEventListener("mousemove", (e) => {
   if (a < 0 || b < 0 || a >= N || b >= N) return;
   drawCorr(lastCorr.labels, lastCorr.corr, { a, b });
   const r = lastCorr.corr[a * N + b]!;
+  const g = lastCorr.g[a * N + b]!;
   corrReadoutEl.innerHTML =
     `<b>${lastCorr.labels[a]}</b> vs <b>${lastCorr.labels[b]}</b> · spatial correlation r = ${r.toFixed(3)} — ` +
-    (r > 0.2 ? "found in the same places" : r < -0.2 ? "spatially exclusive" : "little spatial relation");
+    (r > 0.2 ? "found in the same places" : r < -0.2 ? "spatially exclusive" : "little spatial relation") +
+    ` · association g = ${g.toFixed(3)} (1 = complete spatial randomness) — <i>this</i> is the number the ` +
+    `window's apron corrects; r and the modes never divide by mass, so they do not move with it.`;
 });
 
 // A swatch strip so the OKLab axes are readable without guessing.

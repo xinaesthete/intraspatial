@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { eigenSym, psdDefect } from "./eigenSym";
 import {
+  apronCoverage,
   type ChannelCloud,
   channelsFromExpression,
   channelsFromLabels,
@@ -147,7 +148,7 @@ describe("normalisation", () => {
     // NOT a defect in the normalisation — it is the missing-neighbour bias the plan's Mode 2 is
     // designed to remove. A cell near the ROI boundary has no neighbours beyond it, so E[M(x)]
     // there is ρ·κ(x) with κ < 1 the in-ROI kernel mass, and E[C] = ρ_aρ_b∫κ² < ρ_aρ_b|ROI|.
-    // Quantified here so that when Mode 2's apron lands, "interior agreement" has a baseline.
+    // Quantified here as the baseline the viewport apron below is measured against.
     const chans = [uniformCloud("a", 6000, 11), uniformCloud("b", 6000, 22)];
     const at = (radius: number, kernel = EPANECHNIKOV) => gramMatrix(chans, { bbox: BBOX, width: 300, height: 300, radius, kernel }).g[1]!;
     const ladder = [5, 8, 14, 25].map((r) => at(r));
@@ -169,12 +170,102 @@ describe("normalisation", () => {
     expect(gramMatrix([{ ...c, weights: w }], p).mass[0]!).toBeCloseTo(137 * 0.25, 10);
   });
 
+  it("mass is WINDOW-local — points outside the bbox are splatted but not counted", () => {
+    // The two halves of the apron, isolated. Same points either way; the bbox is half the width, so
+    // roughly half the cloud falls outside it. `mass` must track the window, or the CSR expectation
+    // would be built from an intensity the window does not have.
+    const c = uniformCloud("a", 4000, 77); // uniform on [0,200]²
+    const half: GramParams = { bbox: [0, 0, 100, 200], width: 128, height: 256, radius: 10 };
+    const res = gramMatrix([c], half);
+    const inside = c.xs.filter((x) => x <= 100).length;
+    expect(res.mass[0]!).toBe(inside);
+    expect(res.mass[0]!).toBeLessThan(c.xs.length);
+    // The apron tally counts only what is within `radius` of the window — the points that actually
+    // deposited mass onto window pixels, not everything beyond the edge.
+    const inApron = c.xs.filter((x, i) => x > 100 && x <= 110 && (c.ys[i] ?? 0) <= 210).length;
+    expect(res.apronMass[0]!).toBe(inApron);
+  });
+
   it("converges as the raster refines", () => {
     const chans = [blob("a", 600, 70, 70, 45, 31), blob("b", 600, 90, 90, 45, 32)];
     const base = { bbox: BBOX, radius: 16, kernel: EPANECHNIKOV } as const;
     const coarse = gramMatrix(chans, { ...base, width: 128, height: 128 });
     const fine = gramMatrix(chans, { ...base, width: 512, height: 512 });
     expect(Math.abs(coarse.g[1]! - fine.g[1]!) / fine.g[1]!).toBeLessThan(0.01);
+  });
+});
+
+describe("the viewport apron", () => {
+  /** An interior window: points fill [0,200]², the statistic is measured on the middle 150². */
+  const WIN = [25, 25, 175, 175] as const;
+  const chans = [uniformCloud("a", 6000, 11), uniformCloud("b", 6000, 22)];
+  const params = (radius: number) => ({ bbox: WIN, width: 225, height: 225, radius, kernel: EPANECHNIKOV }) as const;
+
+  /** The same clouds with every point outside the window thrown away — i.e. no apron supplied. */
+  const clipTo =
+    (b: readonly [number, number, number, number]) =>
+    (c: Cloud): Cloud => {
+      const xs: number[] = [];
+      const ys: number[] = [];
+      for (let i = 0; i < c.xs.length; i++) {
+        const x = c.xs[i]!;
+        const y = c.ys[i]!;
+        if (x >= b[0] && x <= b[2] && y >= b[1] && y <= b[3]) {
+          xs.push(x);
+          ys.push(y);
+        }
+      }
+      return { label: c.label, xs, ys };
+    };
+
+  it("removes the edge deficit outright — g = 1 under CSR at every radius", () => {
+    // Contrast with the ladder above, which on the same points measured over their own extent gives
+    // 0.966 / 0.940 / 0.897 / 0.822. Here there is no ladder at all: the deficit is gone, not
+    // reduced, because the window's M really is complete.
+    for (const radius of [5, 8, 14, 25]) {
+      const g = gramMatrix(chans, params(radius)).g[1]!;
+      expect(g, `r=${radius}`).toBeGreaterThan(0.97);
+      expect(g, `r=${radius}`).toBeLessThan(1.03);
+    }
+  });
+
+  it("and the correction lives in the POINT SET, not in extra raster pixels", () => {
+    // The load-bearing measurement. Clip the cloud to the window — identical raster, identical
+    // window, one fewer apron — and the full deficit ladder returns. Which is why there is no
+    // padded-raster machinery here: a point outside the bbox deposits onto the bbox's own edge
+    // pixels regardless, because the splat's footprint is clipped to the raster, not the point set.
+    const clipped = chans.map(clipTo(WIN));
+    const ladder = [5, 14, 25].map((r) => gramMatrix(clipped, params(r)).g[1]!);
+    for (let i = 1; i < ladder.length; i++) expect(ladder[i]!).toBeLessThan(ladder[i - 1]!);
+    expect(ladder[0]!).toBeLessThan(0.98);
+    expect(ladder[2]!).toBeLessThan(0.85);
+    // ... and every one of them is worse than the same radius WITH the apron.
+    for (const [i, r] of [5, 14, 25].entries()) expect(ladder[i]!).toBeLessThan(gramMatrix(chans, params(r)).g[1]!);
+  });
+
+  it("is stable under a shrinking window — which is what makes an interactive camera honest", () => {
+    // g must not move when the viewport does. Both C and the expectation are window-local, so a
+    // zoom changes the area measured but not the statistic measured over it.
+    for (const inset of [25, 50, 70]) {
+      const bbox = [inset, inset, 200 - inset, 200 - inset] as const;
+      const side = 200 - 2 * inset;
+      const g = gramMatrix(chans, { bbox, width: 1.5 * side, height: 1.5 * side, radius: 10, kernel: EPANECHNIKOV }).g[1]!;
+      expect(g, `inset=${inset}`).toBeGreaterThan(0.94);
+      expect(g, `inset=${inset}`).toBeLessThan(1.06);
+    }
+  });
+
+  it("apronCoverage says whether the window was interior at all", () => {
+    // The honest diagnostic: there is no way to correct a window at the edge of the data, so the
+    // code reports that rather than quietly returning a biased number.
+    const interior = gramMatrix(chans, params(14));
+    for (const v of apronCoverage(interior, 14)) expect(v).toBeGreaterThan(0.9);
+    for (const v of apronCoverage(interior, 14)) expect(v).toBeLessThan(1.1);
+
+    // Window = the data's own extent: nothing outside, coverage 0, and g carries the full deficit.
+    const edge = gramMatrix(chans, { bbox: BBOX, width: 300, height: 300, radius: 14, kernel: EPANECHNIKOV });
+    for (const v of apronCoverage(edge, 14)) expect(v).toBe(0);
+    expect(edge.g[1]!).toBeLessThan(0.95);
   });
 });
 

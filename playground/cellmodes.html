@@ -118,10 +118,20 @@
         </select>
         <label for="sat">saturate ±σ</label>
         <input id="sat" type="text" value="2.5" style="flex:0 1 60px" />
+        <label for="windowSel">analysis window</label>
+        <select id="windowSel">
+          <option value="apron" selected>inset by range — apron populated</option>
+          <option value="full">full extent — edge-biased</option>
+          <option value="half">centre 50%</option>
+          <option value="quarter">centre 25%</option>
+        </select>
         <button id="compute">compute modes</button>
       </div>
       <p class="note">The range is the support of the <b>effective</b> pair kernel <code>J ⊛ J</code>, which is
         twice the splat radius — so the box means what it says rather than the internal parameter.
+        The <b>window</b> is what gets measured and drawn; every cell is splatted regardless, so cells
+        outside it form the <b>apron</b> that makes the window's <code>g</code> unbiased. On the full extent
+        there is nothing outside to correct with, and <code>g</code> carries the edge deficit.
         ⚠ The store must be CORS-enabled.</p>
       <div id="status">idle</div>
     </div>

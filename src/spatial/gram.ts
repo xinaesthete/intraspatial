@@ -65,6 +65,40 @@
 // is the mark cross-correlation function of point-process theory (Stoyan & Stoyan), which the
 // cell-type cross-PCF is a special case of — not a new statistic.
 //
+// ## The viewport apron — an edge correction that costs nothing
+//
+// `C_ab = ∫_A M_a M_b` over an analysis window `A` is only comparable to its CSR expectation if
+// `M_a` is *complete* on `A`. A pixel within `r` of `A`'s boundary is missing the mass of every
+// point just outside, so `C` is biased down by roughly the fraction of `A` within `r` of its edge.
+// Under CSR with `A` set to the data's own extent, `g` should be 1 and instead falls monotonically
+// with radius — 0.965 at r=5, 0.892 at r=14, 0.814 at r=25 (`gram.test.ts`).
+//
+// The correction is to stop conflating two things this code previously assumed were one:
+//
+//   * the **window** `A` — the `bbox`: what the statistic is measured over, and what is displayed;
+//   * the **apron** — the points within `r` of `A` but outside it, which are splatted anyway.
+//
+// Splat every point handed in, wherever it lies; then integrate, centre, and **count mass** only
+// over `A`. That second half is the part that was missing: `λ_a` must be estimated window-locally
+// as `W_a(A)/|A|`, from points inside `A` only, even though points outside contributed to `C`.
+// With both halves in place `g → 1` under CSR at every radius, with no residual ladder — and it is
+// what makes the statistic stable under a moving viewport, since shrinking the window shrinks `C`
+// and the expectation together.
+//
+// **The apron needs no extra raster.** It is tempting to dilate the raster by `r` and integrate
+// over the interior — that was the first implementation here, and measuring it showed the padding
+// changes nothing to four decimal places. `M_a(x)` for `x ∈ A` depends on points within `r` of `A`,
+// and those points deposit onto `A`'s own pixels whether or not any pixels exist beyond them; the
+// splat's footprint is clipped to the raster, never the point set. So the apron is a fact about
+// which points you supply, not about how many pixels you rasterise. In a tiled or streaming reader
+// that is exactly a halo-fetch requirement: **to measure a window, read the points covering
+// `bbox ⊕ radius`.**
+//
+// **What the apron cannot fix** is a window at the edge of the data, where there is nothing outside
+// to correct with. `apronMass` and `apronCoverage` report that rather than letting it pass
+// silently: coverage ≈ 1 means the apron is populated at the window's own density, and 0 means this
+// window is at the boundary and its `g` still carries the full edge deficit.
+//
 // **One caveat is load-bearing in the weighted case.** The double sum includes `i = j`. For
 // one-hot types that self term only touches the diagonal, but when every cell carries a weight in
 // every channel it lands in *every* entry, contributing `(J⊛J)(0) · Σ_i w_a(i) w_b(i)` — pure
@@ -93,7 +127,9 @@ export interface ChannelCloud {
 }
 
 export interface GramParams {
-  /** World extent the raster spans, `[minX, minY, maxX, maxY]`. */
+  /** The **analysis window** `A`, `[minX, minY, maxX, maxY]` — what the statistic is measured over
+   *  and what is displayed. Points outside it are welcome and are the apron: they are splatted (so
+   *  `M` is complete near the edge) but excluded from `mass`. See the module header. */
   readonly bbox: readonly [number, number, number, number];
   readonly width: number;
   readonly height: number;
@@ -107,8 +143,14 @@ export interface GramParams {
 
 export interface GramResult {
   readonly labels: string[];
-  /** `W_a` — total mark mass per channel. Equals the cell count in the one-hot case. */
+  /** `W_a(A)` — mark mass per channel **inside the analysis window**, which is what the CSR
+   *  expectation is built from. Equals the cell count in the one-hot case. Points in the apron are
+   *  splatted but deliberately not counted here; they are in `apronMass`. */
   readonly mass: Float64Array;
+  /** Mark mass per channel in the **apron** — outside the window but within `radius` of it, i.e.
+   *  exactly the points that were splatted onto window pixels without being counted. Read it
+   *  through `apronCoverage`, which turns it into "is this window actually interior?". */
+  readonly apronMass: Float64Array;
   /** K×K raw Gram `∫ M_a M_b`, row-major. PSD by construction. */
   readonly c: Float64Array;
   /** K×K association matrix, normalised so complete spatial randomness gives **1**. The self-pair
@@ -150,6 +192,11 @@ function weightAt(c: ChannelCloud, i: number): number {
  *
  * The result is a **density** (mass per unit world area), so `Σ_p M(p)·A_pix ≈ W`. That is what
  * makes the normalisation below kernel-agnostic, exactly as in `kernels.ts`.
+ *
+ * Every point handed in is splatted, **wherever it lies**: the pixel window below is clipped to the
+ * raster, not the point set, so an apron point outside the bbox still deposits its share onto the
+ * edge pixels it reaches. That is the whole edge correction, and the GPU's scatter gets the same
+ * clipping for free from the rasteriser.
  */
 export function splatChannel(cloud: ChannelCloud, p: GramParams): Float64Array {
   const [minX, minY, maxX, maxY] = p.bbox;
@@ -202,14 +249,29 @@ export function gramMatrix(channels: readonly ChannelCloud[], p: GramParams): Gr
   const roiArea = Math.max((maxX - minX) * (maxY - minY), 1e-12);
   const pixelArea = roiArea / P;
   const kernel = p.kernel ?? EPANECHNIKOV;
+  const inWindow = (x: number, y: number) => x >= minX && x <= maxX && y >= minY && y <= maxY;
+  const inApron = (x: number, y: number) => x >= minX - p.radius && x <= maxX + p.radius && y >= minY - p.radius && y <= maxY + p.radius;
 
   const rasters = new Float64Array(K * P);
   const mass = new Float64Array(K);
+  const apronMass = new Float64Array(K);
   for (let a = 0; a < K; a++) {
-    rasters.set(splatChannel(channels[a]!, p), a * P);
+    const ch = channels[a]!;
+    rasters.set(splatChannel(ch, p), a * P);
+    // Window-local mass: the point is splatted either way, but only the ones inside the window set
+    // the intensity the CSR expectation is built from. This asymmetry IS the edge correction — see
+    // the module header — and it is what makes `g` stable under a moving viewport.
     let w = 0;
-    for (let i = 0; i < channels[a]!.xs.length; i++) w += weightAt(channels[a]!, i);
+    let wOut = 0;
+    for (let i = 0; i < ch.xs.length; i++) {
+      const wi = weightAt(ch, i);
+      const x = ch.xs[i] ?? 0;
+      const y = ch.ys[i] ?? 0;
+      if (inWindow(x, y)) w += wi;
+      else if (inApron(x, y)) wOut += wi;
+    }
     mass[a] = w;
+    apronMass[a] = wOut;
   }
 
   // `(J⊛J)(0) = ∫J²` — the kernel's roughness, already a closed form in kernels.ts.
@@ -219,12 +281,23 @@ export function gramMatrix(channels: readonly ChannelCloud[], p: GramParams): Gr
     for (let b = a; b < K; b++) {
       // Σ_i w_a(i)·w_b(i) — only meaningful when the channels index the SAME points. Channels that
       // partition the cells (one-hot types) share no point, so every off-diagonal entry is 0.
+      //
+      // Restricted to window points, and that is an approximation worth stating. A point's true
+      // self-contribution to `∫_A J²` is a fraction `f(s)` of `∫J²`, where `s` is its signed
+      // distance inside the window edge: 1 deep inside, 0 deep in the apron, ½ on the boundary. The
+      // indicator `1[s>0]` used here is wrong for every |s| < r — but for a straight edge `J²` is
+      // radially symmetric, so `f(−s) = 1 − f(s)`, and the indicator obeys the same antisymmetry.
+      // The over-count from interior edge points therefore cancels the under-count from apron
+      // points exactly in expectation under uniform density; only corners leave a residual. It
+      // affects `g` alone — `corr`, which the modes come from, never subtracts the self term.
       const ca = channels[a]!;
       const cb = channels[b]!;
       let s = 0;
       if (a === b || (ca.xs === cb.xs && ca.ys === cb.ys)) {
         const n = Math.min(ca.xs.length, cb.xs.length);
-        for (let i = 0; i < n; i++) s += weightAt(ca, i) * weightAt(cb, i);
+        for (let i = 0; i < n; i++) {
+          if (inWindow(ca.xs[i] ?? 0, ca.ys[i] ?? 0)) s += weightAt(ca, i) * weightAt(cb, i);
+        }
       }
       selfTerm[a * K + b] = selfAtZero * s;
       selfTerm[b * K + a] = selfAtZero * s;
@@ -281,6 +354,7 @@ export function gramMatrix(channels: readonly ChannelCloud[], p: GramParams): Gr
   return {
     labels: channels.map((ch) => ch.label),
     mass,
+    apronMass,
     c,
     g,
     corr,
@@ -293,6 +367,32 @@ export function gramMatrix(channels: readonly ChannelCloud[], p: GramParams): Gr
     bbox: p.bbox,
     pixelArea,
   };
+}
+
+/**
+ * Per-channel apron density relative to window density — "is this window actually interior?".
+ *
+ * 1 means the apron ring carries the same density as the window, so the edge correction had real
+ * data to work with and `g` is unbiased. 0 means the ring is empty: the window sits at the edge of
+ * the data (or the caller supplied no points beyond it) and `g` still carries the full edge
+ * deficit. Values between mean partial coverage — a window overlapping one boundary of the tissue.
+ *
+ * A diagnostic, not a correction. There is no way to recover mass that was never measured; the
+ * honest move is to report that the number is biased and let the caller move or shrink the window.
+ */
+export function apronCoverage(res: Pick<GramResult, "mass" | "apronMass" | "bbox">, radius: number): Float64Array {
+  const [minX, minY, maxX, maxY] = res.bbox;
+  const w = maxX - minX;
+  const h = maxY - minY;
+  const winArea = Math.max(w * h, 1e-12);
+  const ringArea = (w + 2 * radius) * (h + 2 * radius) - winArea;
+  const out = new Float64Array(res.mass.length);
+  if (ringArea <= 1e-12) return out;
+  for (let a = 0; a < res.mass.length; a++) {
+    const winDensity = res.mass[a]! / winArea;
+    out[a] = winDensity > 0 ? res.apronMass[a]! / ringArea / winDensity : 0;
+  }
+  return out;
 }
 
 export interface CoLocationModes {

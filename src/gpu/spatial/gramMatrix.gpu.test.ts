@@ -116,6 +116,56 @@ describe("gramMatrixGpu", () => {
     expect(two.g[0]! / one.g[0]!).toBeCloseTo(1, 2); // …and g, being normalised, is invariant
   });
 
+  it("counts mass window-locally and still splats the apron — the edge correction, on the GPU", async () => {
+    // A window that CUTS cloud `a`, so both halves of the apron are exercised at once. The
+    // arithmetic here is 360 iterations over the scene's own closed formula — nowhere near the CPU
+    // budget that kills the fork (a 32² raster oracle is the ceiling; see the header).
+    const { xs, ys, typeId } = scene();
+    const chans = channelsFromLabels(xs, ys, typeId);
+    const WIN = [0, 0, 50, 50] as const;
+    const params = { ...PARAMS, bbox: WIN, width: 96, height: 96 } as const;
+    const gpu = await gramMatrixGpu(chans, params);
+
+    const within = (c: ChannelCloud, pad: number) => {
+      let n = 0;
+      for (let i = 0; i < c.xs.length; i++) {
+        const x = c.xs[i] ?? 0;
+        const y = c.ys[i] ?? 0;
+        if (x >= -pad && x <= 50 + pad && y >= -pad && y <= 50 + pad) n++;
+      }
+      return n;
+    };
+    const inside = chans.map((c) => within(c, 0));
+    const apron = chans.map((c, k) => within(c, PARAMS.radius) - inside[k]!);
+    expect([...gpu.mass]).toEqual(inside);
+    expect([...gpu.apronMass]).toEqual(apron);
+    // The window really did cut: `a` is only partly inside, and its apron is not empty.
+    expect(inside[0]!).toBeGreaterThan(0);
+    expect(inside[0]!).toBeLessThan(120);
+    expect(apron[0]!).toBeGreaterThan(0);
+
+    // …and the apron points reach the raster. Clip the point set to the window — same window, same
+    // mass, one fewer apron — and C must fall, because the edge pixels lose the mass those outside
+    // points were depositing. This is the GPU's version of the CPU pin in gram.test.ts.
+    const clipped: ChannelCloud[] = chans.map((c) => {
+      const cx: number[] = [];
+      const cy: number[] = [];
+      for (let i = 0; i < c.xs.length; i++) {
+        const x = c.xs[i] ?? 0;
+        const y = c.ys[i] ?? 0;
+        if (x >= 0 && x <= 50 && y >= 0 && y <= 50) {
+          cx.push(x);
+          cy.push(y);
+        }
+      }
+      return { label: c.label, xs: cx, ys: cy };
+    });
+    const bare = await gramMatrixGpu(clipped, params);
+    expect([...bare.mass]).toEqual(inside); // identical normaliser…
+    expect(bare.c[0]!).toBeLessThan(gpu.c[0]!); // …so the deficit lands squarely on g
+    expect(bare.g[0]!).toBeLessThan(gpu.g[0]!);
+  });
+
   it("is symmetric by construction — both halves come from one accumulation", async () => {
     const { xs, ys, typeId } = scene();
     const gpu = await gramMatrixGpu(channelsFromLabels(xs, ys, typeId), PARAMS);

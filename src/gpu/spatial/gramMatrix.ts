@@ -279,27 +279,38 @@ const align256 = (n: number) => Math.ceil(n / 256) * 256;
 // The return type is inferred rather than annotated: a bare `Float32Array` annotation widens to
 // `Float32Array<ArrayBufferLike>`, which `queue.writeBuffer` rejects (it will not accept a possibly
 // SharedArrayBuffer-backed view). Inference keeps the precise `Float32Array<ArrayBuffer>`.
-function packChannels(channels: readonly ChannelCloud[]) {
+function packChannels(channels: readonly ChannelCloud[], p: GramParams) {
   const counts = channels.map((c) => c.xs.length);
   const total = counts.reduce((a, b) => a + b, 0);
   const data = new Float32Array(3 * Math.max(total, 1));
   const offsets: number[] = [];
   const mass = new Float64Array(channels.length);
+  const apronMass = new Float64Array(channels.length);
+  const [minX, minY, maxX, maxY] = p.bbox;
+  const r = p.radius;
   let at = 0;
   channels.forEach((c, k) => {
     offsets.push(at);
     let w = 0;
+    let wOut = 0;
     for (let i = 0; i < c.xs.length; i++) {
       const wi = c.weights ? (c.weights[i] ?? 0) : 1;
-      data[3 * at] = c.xs[i] ?? 0;
-      data[3 * at + 1] = c.ys[i] ?? 0;
+      const x = c.xs[i] ?? 0;
+      const y = c.ys[i] ?? 0;
+      data[3 * at] = x;
+      data[3 * at + 1] = y;
       data[3 * at + 2] = wi;
-      w += wi;
+      // Every point is splatted — the rasteriser clips its quad, not the point set — but only the
+      // ones inside the WINDOW set the intensity the CSR expectation is built from. That asymmetry
+      // IS the viewport apron; see the header of src/spatial/gram.ts.
+      if (x >= minX && x <= maxX && y >= minY && y <= maxY) w += wi;
+      else if (x >= minX - r && x <= maxX + r && y >= minY - r && y <= maxY + r) wOut += wi;
       at++;
     }
     mass[k] = w;
+    apronMass[k] = wOut;
   });
-  return { data, offsets, mass };
+  return { data, offsets, mass, apronMass };
 }
 
 /** The splatted channel rasters, left **on the device**.
@@ -324,7 +335,7 @@ export interface ResidentRasters {
  *  device handle rather than a host array. */
 export type GramMatrixGpuResult = Pick<
   GramResult,
-  "labels" | "mass" | "c" | "g" | "corr" | "selfTerm" | "width" | "height" | "bbox" | "pixelArea"
+  "labels" | "mass" | "apronMass" | "c" | "g" | "corr" | "selfTerm" | "width" | "height" | "bbox" | "pixelArea"
 > & { readonly resident: ResidentRasters };
 
 /**
@@ -341,7 +352,7 @@ export async function gramMatrixGpu(channels: readonly ChannelCloud[], p: GramPa
   const P = w * h;
   const pixelArea = roiArea / P;
 
-  const { data, offsets, mass } = packChannels(channels);
+  const { data, offsets, mass, apronMass } = packChannels(channels, p);
   const rowFloats = align256(w * 4) / 4;
 
   const ptsBuf = ensureBuf(device, "pts", data.length, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST);
@@ -452,7 +463,12 @@ export async function gramMatrixGpu(channels: readonly ChannelCloud[], p: GramPa
       let shared = 0;
       if (a === b || (ca.xs === cb.xs && ca.ys === cb.ys)) {
         const n = Math.min(ca.xs.length, cb.xs.length);
+        // Window points only, matching gram.ts — where the antisymmetry argument for why this
+        // indicator is the right approximation to the partial-kernel fraction is written out.
         for (let i = 0; i < n; i++) {
+          const x = ca.xs[i] ?? 0;
+          const y = ca.ys[i] ?? 0;
+          if (x < minX || x > maxX || y < minY || y > maxY) continue;
           shared += (ca.weights ? (ca.weights[i] ?? 0) : 1) * (cb.weights ? (cb.weights[i] ?? 0) : 1);
         }
       }
@@ -470,6 +486,7 @@ export async function gramMatrixGpu(channels: readonly ChannelCloud[], p: GramPa
   return {
     labels: channels.map((ch) => ch.label),
     mass,
+    apronMass,
     c,
     g,
     corr,
