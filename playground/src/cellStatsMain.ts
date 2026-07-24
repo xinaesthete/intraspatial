@@ -13,6 +13,7 @@
 import { Graph, pull, registerBuiltinOps } from "../../src/gpu/graph";
 import { browserBackend } from "../../src/gpu/graph/backend.browser";
 import type { FieldValue, GpuField } from "../../src/gpu/graph/handle";
+import { computeTcm } from "../../src/spatial/tcm";
 import { type CellTable, DEFAULT_CELL_TABLE, readCellTable, syntheticCellTable } from "./datasource/cellTable";
 
 /** The live Leap034 SpatialData store (zarr v3, CORS `*`). Configurable — not hard-coded downstream. */
@@ -29,6 +30,18 @@ const statusEl = $<HTMLDivElement>("status");
 const readoutEl = $<HTMLDivElement>("readout");
 const scatterCanvas = $<HTMLCanvasElement>("scatter");
 const kdeCanvas = $<HTMLCanvasElement>("kde");
+const typeSelectB = $<HTMLSelectElement>("typeB");
+const radiusInput = $<HTMLInputElement>("radius");
+const sigmaInput = $<HTMLInputElement>("sigma");
+const tcmBtn = $<HTMLButtonElement>("tcmBtn");
+const tcmCanvas = $<HTMLCanvasElement>("tcm");
+const tcmReadoutEl = $<HTMLDivElement>("tcmReadout");
+
+/** TCM grid resolution + world-unit defaults (α=5 is fixed; radius:σ ≈ 2:1 as in the paper). */
+const TCM_GRID = 384;
+const spanOf = (b: [number, number, number, number]) => Math.max(b[2] - b[0], b[3] - b[1], 1);
+const defaultRadius = (b: [number, number, number, number]) => spanOf(b) / 50;
+const defaultSigma = (b: [number, number, number, number]) => spanOf(b) / 100;
 
 storeInput.value = DEFAULT_STORE;
 tableInput.value = DEFAULT_CELL_TABLE;
@@ -167,22 +180,98 @@ async function splatSelected(): Promise<void> {
   }
 }
 
+/** Diverging blue–white–red render of a TCM Γ grid, symmetric about 0. */
+function drawTcm(c: HTMLCanvasElement, g: GridValue): { min: number; max: number } {
+  c.width = g.width;
+  c.height = g.height;
+  let lo = Infinity, hi = -Infinity;
+  for (const v of g.data) {
+    if (v < lo) lo = v;
+    if (v > hi) hi = v;
+  }
+  const scale = Math.max(Math.abs(lo), Math.abs(hi)) || 1;
+  const img = new ImageData(g.width, g.height);
+  for (let i = 0; i < g.data.length; i++) {
+    const t = g.data[i]! / scale; // [-1,1]
+    let r: number, gg: number, b: number;
+    if (t >= 0) {
+      r = 255;
+      gg = Math.round(255 * (1 - t));
+      b = Math.round(255 * (1 - t));
+    } else {
+      b = 255;
+      r = Math.round(255 * (1 + t));
+      gg = Math.round(255 * (1 + t));
+    }
+    img.data[i * 4] = r;
+    img.data[i * 4 + 1] = gg;
+    img.data[i * 4 + 2] = b;
+    img.data[i * 4 + 3] = 255;
+  }
+  c.getContext("2d")!.putImageData(img, 0, 0);
+  return { min: lo, max: hi };
+}
+
+/** Compute the TCM Γ_ab(x) for the selected (A, B) pair on the CPU (Mode 1, against the tested
+ *  reference oracle) and render it. Fast enough at Leap034 scale via the bucket-grid path. */
+function computeTcmMap(): void {
+  const t = current;
+  if (!t) return;
+  const idA = Number(typeSelect.value);
+  const idB = Number(typeSelectB.value);
+  const A = t.types.find((x) => x.id === idA);
+  const B = t.types.find((x) => x.id === idB);
+  if (!A || !B) return;
+  const bbox = tableBounds(t);
+  const radius = Number(radiusInput.value) || defaultRadius(bbox);
+  const sigma = Number(sigmaInput.value) || defaultSigma(bbox);
+  setStatus(`computing TCM Γ(${idA}→${idB}) …`);
+  // Yield a frame so the status paints before the (synchronous) compute.
+  requestAnimationFrame(() => {
+    const t0 = performance.now();
+    const grid = computeTcm(
+      { xs: A.xs, ys: A.ys },
+      { xs: B.xs, ys: B.ys },
+      { width: TCM_GRID, height: TCM_GRID, bbox, radius, sigma, alpha: 5 },
+    );
+    const ms = performance.now() - t0;
+    const stats = drawTcm(tcmCanvas, { width: TCM_GRID, height: TCM_GRID, data: grid });
+    tcmReadoutEl.innerHTML =
+      `<b>Γ<sub>AB</sub></b> — A = type ${idA} (${A.n} cells), B = type ${idB} (${B.n} cells)<br>` +
+      `radius ${radius.toPrecision(3)}, σ ${sigma.toPrecision(3)} (world units), α=5, grid ${TCM_GRID}² · ${ms.toFixed(0)} ms (CPU)<br>` +
+      `Γ range [${stats.min.toFixed(3)}, ${stats.max.toFixed(3)}] · red = A clusters around B, blue = A excludes B`;
+    setStatus(`done — TCM Γ(${idA}→${idB}) computed (Mode 1, faithful; validated against the reference oracle).`);
+  });
+}
+
 /** Populate the type dropdown + counts and draw the full scatter. */
 function present(t: CellTable): void {
   current = t;
   typeSelect.innerHTML = "";
+  typeSelectB.innerHTML = "";
   for (const ty of t.types) {
-    const opt = document.createElement("option");
-    opt.value = String(ty.id);
-    opt.textContent = `id ${ty.id} — ${ty.n} cells`;
-    typeSelect.appendChild(opt);
+    const label = `id ${ty.id} — ${ty.n} cells`;
+    for (const sel of [typeSelect, typeSelectB]) {
+      const opt = document.createElement("option");
+      opt.value = String(ty.id);
+      opt.textContent = label;
+      sel.appendChild(opt);
+    }
   }
-  // Default to the most populous type (skipping a degenerate n<=1 id) for a legible first splat.
-  const biggest = [...t.types].filter((x) => x.n > 1).sort((a, b) => b.n - a.n)[0] ?? t.types[0];
+  // Default A = most populous, B = second most populous (skipping degenerate n<=1 ids), for a
+  // legible first splat and a meaningful first TCM pair.
+  const ranked = [...t.types].filter((x) => x.n > 1).sort((a, b) => b.n - a.n);
+  const biggest = ranked[0] ?? t.types[0];
+  const second = ranked[1] ?? biggest;
   if (biggest) typeSelect.value = String(biggest.id);
-  drawScatter(t, tableBounds(t), biggest ? biggest.id : null);
-  setStatus(`read ${t.totalCells} cells in ${t.types.length} types — select a type and it splats.`);
+  if (second) typeSelectB.value = String(second.id);
+  const bbox = tableBounds(t);
+  radiusInput.value = defaultRadius(bbox).toPrecision(3);
+  sigmaInput.value = defaultSigma(bbox).toPrecision(3);
+  drawScatter(t, bbox, biggest ? biggest.id : null);
+  setStatus(`read ${t.totalCells} cells in ${t.types.length} types — select types; A splats, A→B gives the TCM.`);
   void splatSelected();
+  computeTcmMap();
 }
 
 async function runLive(): Promise<void> {
@@ -204,6 +293,13 @@ function runFixture(): void {
 
 runBtn.addEventListener("click", () => void runLive());
 fixtureBtn.addEventListener("click", () => runFixture());
-typeSelect.addEventListener("change", () => void splatSelected());
+typeSelect.addEventListener("change", () => {
+  void splatSelected();
+  computeTcmMap();
+});
+typeSelectB.addEventListener("change", () => computeTcmMap());
+tcmBtn.addEventListener("click", () => computeTcmMap());
+radiusInput.addEventListener("change", () => computeTcmMap());
+sigmaInput.addEventListener("change", () => computeTcmMap());
 // Auto-attempt the live store on load; the fixture button is always available offline.
 void runLive();
