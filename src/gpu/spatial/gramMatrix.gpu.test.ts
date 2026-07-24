@@ -166,6 +166,33 @@ describe("gramMatrixGpu", () => {
     expect(bare.g[0]!).toBeLessThan(gpu.g[0]!);
   });
 
+  it("a zero-weight mark is exactly a missing one — what the vertex-stage cull relies on", async () => {
+    // The splat culls zero-weight instances, because expression data is mostly zeros and each one
+    // otherwise rasterises a full kernel footprint to add nothing. That is only sound if a
+    // zero-weight cell is indistinguishable from an absent one in EVERY output: it contributes 0 to
+    // the raster, 0 to `mass`, and 0 to `selfTerm`. Pinning it against the explicitly-thinned scene
+    // is what makes the optimisation a no-op rather than an approximation.
+    const dense = cloud(200, 60, 60);
+    const keep = (i: number) => i % 3 !== 0;
+    const withZeros: ChannelCloud = {
+      label: "a",
+      ...dense,
+      weights: Array.from({ length: 200 }, (_, i) => (keep(i) ? 1 + (i % 5) * 0.25 : 0)),
+    };
+    const thinned: ChannelCloud = {
+      label: "a",
+      xs: dense.xs.filter((_, i) => keep(i)),
+      ys: dense.ys.filter((_, i) => keep(i)),
+      weights: Array.from({ length: 200 }, (_, i) => (keep(i) ? 1 + (i % 5) * 0.25 : 0)).filter((_, i) => keep(i)),
+    };
+    const a = await gramMatrixGpu([withZeros], PARAMS);
+    const b = await gramMatrixGpu([thinned], PARAMS);
+    expect(a.mass[0]!).toBeCloseTo(b.mass[0]!, 9);
+    expect(relMax(b.c, a.c)).toBeLessThan(1e-9);
+    expect(relMax(b.g, a.g)).toBeLessThan(1e-9);
+    expect(relMax(b.selfTerm, a.selfTerm)).toBeLessThan(1e-9);
+  });
+
   it("is symmetric by construction — both halves come from one accumulation", async () => {
     const { xs, ys, typeId } = scene();
     const gpu = await gramMatrixGpu(channelsFromLabels(xs, ys, typeId), PARAMS);

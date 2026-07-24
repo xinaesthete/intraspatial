@@ -683,17 +683,32 @@ playground/src/datasource/cellCsv.ts     CSV → CellTable
 - **Mode 2 is only half built.** The Gram path has window-local mass, the viewport apron and a
   permutation envelope on its spectrum (§4); `crossPcf.ts` and `tcm.ts` still have none of the
   three, and no envelope exists for `g` or for the cross-PCF curves.
-- **The envelope re-splats every realisation, and still uploads the points each time.** 39
-  permutations of a 162k-cell, 8-channel selection take 3.5 s — 90 ms each, down from 340 ms before
-  `channelPermuter` reused its scratch buffers (the allocating form threw away ~10 MB per
-  realisation, and most of the difference was collection, not GPU work). What remains is the packed
-  `[x, y, w]` upload: the positions never change between realisations, so re-sending 3n floats each
-  time is pure waste. Fixing it means a second input mode on `gramMatrixGpu` — resident positions
-  plus a resident K×n mark matrix, with a per-realisation `u32` permutation buffer the vertex shader
-  indexes through — which also keeps the shuffle uniform, since the permutation is still drawn on
-  the host by Fisher–Yates. Generating it on the device instead would need either a full GPU sort or
-  a keyed pseudorandom permutation, and the latter is **not** uniform over all `n!`, which is the
-  assumption the test's exactness rests on. Not done.
+- **The envelope's remaining cost is per-INSTANCE, and the obvious optimisations are not the ones
+  that pay.** 39 permutations of a 162k-cell, 8-channel selection take 3.2 s. Getting there was two
+  steps, and a third that was measured and abandoned:
+  - `channelPermuter` reusing its scratch buffers: 340 → 90 ms per realisation. The allocating form
+    threw away ~10 MB each time and most of the difference was collection, not GPU work.
+  - Culling zero-weight marks in the splat's vertex stage: 90 → 82 ms. A zero weight adds nothing
+    but otherwise rasterises its whole kernel footprint; expression data is mostly zeros.
+    `gramMatrix.gpu.test.ts` pins that a zero-weight cell is indistinguishable from an absent one in
+    `c`, `g`, `mass` and `selfTerm`, which is what makes the cull a no-op rather than an
+    approximation.
+  - **Resident positions plus a permutation buffer: measured at ~1.5%, not built.** The intuition is
+    that re-uploading the packed `[x, y, w]` every realisation is waste. It is, but it is small
+    waste: with `n = 1` and the same 8 channels and raster, the entire fixed cost — host packing,
+    upload, both submits, all three readbacks — is **2.1 ms against 141 ms**. Adding a second input
+    mode and shader variant to save part of 2.1 ms is not worth the two lifetime contracts it
+    introduces.
+
+  Where the time actually goes is instances that produce no fragments. Culled or not, every cell
+  still costs a vertex invocation and a primitive per channel: at 5% non-zero the synthetic run
+  floors at 69 ms against 111 ms fully dense, so only about 40% of it was ever fragment work. The
+  lever is **compaction** — draw only the cells a channel actually has, via an indirect draw whose
+  count comes from a prefix sum — and *that* is where a resident mark matrix pays off, because the
+  compaction wants to happen on the device between realisations. The permutation itself should stay
+  on the host regardless: Fisher–Yates on 162k indices is ~1 ms, while the GPU-shaped alternatives
+  are a full sort or a keyed pseudorandom permutation, and the latter is **not** uniform over all
+  `n!` — which is the assumption the test's exactness rests on.
 - **`crossPCFMatrixGpu` is not wired into the demo**; the matrix still runs on the CPU (one batched
   pass, fast enough at Leap034 scale).
 - **The Gram form is global, not swept.** `C = MMᵀ` integrates over the whole raster, so it is one

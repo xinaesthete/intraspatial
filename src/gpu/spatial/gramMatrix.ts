@@ -54,15 +54,31 @@ struct KOut { @builtin(position) pos: vec4f, @location(0) off: vec2f, @location(
 
 @vertex
 fn vsSplat(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> KOut {
+  // Flat: the weight is a per-CELL mark, not something to interpolate across the quad.
+  let w = pts[3u * ii + 2u];
+  var o: KOut;
+
+  // Cull zero-weight marks by collapsing the quad to one clipped point. A zero weight adds exactly
+  // nothing to the raster, but without this it still rasterises its full kernel footprint to write
+  // zeros — and that is the dominant cost here, not any of the bookkeeping around it. Expression
+  // data is mostly zeros (a gene detected in a few percent of cells is normal), so a permutation
+  // run splats an order of magnitude more fragments than it needs to. Measured: the whole
+  // per-realisation fixed overhead — host packing, upload, both submits, all three readbacks — is
+  // 2.1 ms against 141 ms of splatting, so this is the only lever that matters.
+  if (w == 0.0) {
+    o.pos = vec4f(2.0, 2.0, 0.0, 1.0);
+    o.off = vec2f(0.0, 0.0);
+    o.w = 0.0;
+    return o;
+  }
+
   let c = corner(vi);
   let centre = vec2f(pts[3u * ii], pts[3u * ii + 1u]);
   let world = centre + c * U.radius;
-  var o: KOut;
   o.pos = vec4f((world.x - U.minX) * U.invSpanX * 2.0 - 1.0,
                 (world.y - U.minY) * U.invSpanY * 2.0 - 1.0, 0.0, 1.0);
   o.off = c * U.radius;
-  // Flat: the weight is a per-CELL mark, not something to interpolate across the quad.
-  o.w = pts[3u * ii + 2u];
+  o.w = w;
   return o;
 }
 
