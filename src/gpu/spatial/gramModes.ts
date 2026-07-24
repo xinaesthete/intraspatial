@@ -32,8 +32,9 @@
 // so re-running the analysis cannot flip the map's colours (see that module).
 
 import type { Oklab } from "../../color/oklab";
-import { getDevice } from "../device";
+import { compileShader, getDevice } from "../device";
 import type { GramMatrixGpuResult } from "./gramMatrix";
+import { IMAGE_OVERLAY_WGSL, type ImageOverlay, overlayResources } from "./imageOverlayWgsl";
 import { MARKER_WGSL } from "./markerWgsl";
 
 /** Fragment shader constants: the OKLab→linear-sRGB matrices, matching `src/color/oklab.ts`. */
@@ -42,15 +43,20 @@ struct Uni {
   width: f32, height: f32, rowFloats: f32, k: f32,
   scaleL: f32, scaleA: f32, scaleB: f32, baseL: f32,
   spanL: f32, chroma: f32, markerX: f32, markerY: f32,
-  markerOn: f32, lineW: f32, pad0: f32, pad1: f32,
+  markerOn: f32, lineW: f32, imageMix: f32, pad0: f32,
+  uv0: vec3f, pad1: f32,
+  uv1: vec3f, pad2: f32,
 };
 @group(0) @binding(0) var<uniform> U: Uni;
 @group(0) @binding(1) var<storage, read> rasters: array<f32>;
 /** Per-channel mean, sd, and the three mode loadings: 5 floats per channel, interleaved so one
  *  channel's whole contribution is a single contiguous fetch. */
 @group(0) @binding(2) var<storage, read> chan: array<f32>;
+@group(0) @binding(3) var ctxImage: texture_2d<f32>;
+@group(0) @binding(4) var ctxSampler: sampler;
 
 ${MARKER_WGSL}
+${IMAGE_OVERLAY_WGSL}
 
 fn oklabToSrgb(lab: vec3f) -> vec3f {
   let l_ = lab.x + 0.3963377774 * lab.y + 0.2158037573 * lab.z;
@@ -105,7 +111,15 @@ fn fs(in: VOut) -> @location(0) vec4f {
   // Each mode is scaled by its OWN robust spread: eigenvalues fall off fast, so a shared scale
   // would flatten modes 2-3 to grey.
   let t = clamp(y * vec3f(U.scaleL, U.scaleA, U.scaleB), vec3f(-1.0), vec3f(1.0));
-  let lab = vec3f(U.baseL + U.spanL * t.x, U.chroma * t.y, U.chroma * t.z);
+  var lab = vec3f(U.baseL + U.spanL * t.x, U.chroma * t.y, U.chroma * t.z);
+
+  // Blend the context image in OKLab, before the sRGB conversion — see imageOverlayWgsl. The
+  // sample is unconditional and the weight carries the "is it on the image" test, because
+  // textureSample may not appear in non-uniform control flow.
+  let uv = uvAt(U.uv0, U.uv1, vec2f(f32(col) + 0.5, f32(row) + 0.5));
+  let ctxRgb = textureSample(ctxImage, ctxSampler, uv).rgb;
+  lab = mix(lab, srgbToOklab(ctxRgb), uvWeight(uv, U.imageMix));
+
   // The rule lines go on AFTER the OKLab conversion, in sRGB. Putting them in OKLab would let the
   // gamut clamp move them, and a mark whose colour depends on what is under it is not a mark.
   let mp = vec2f(f32(col) - U.markerX, f32(row) - U.markerY);
@@ -121,7 +135,7 @@ const MAX_CHROMA = 0.11;
 const BASE_L = 0.62;
 const SPAN_L = 0.3;
 
-const UNI_FLOATS = 16;
+const UNI_FLOATS = 24; // 96 bytes; the two vec3 UV rows sit at 16-byte alignment from float 16
 
 interface Ctx {
   device: GPUDevice;
@@ -134,7 +148,7 @@ function getCtx(): Promise<Ctx> {
   ctxCache ??= (async () => {
     const device = await getDevice();
     const format = navigator.gpu.getPreferredCanvasFormat();
-    const module = device.createShaderModule({ code: PAINT_SHADER });
+    const module = await compileShader(device, PAINT_SHADER, "gramModes.paint");
     const pipeline = device.createRenderPipeline({
       layout: "auto",
       vertex: { module, entryPoint: "vs" },
@@ -159,6 +173,8 @@ export interface ModePaintOptions {
   /** Where the wand sample was taken, in raster pixels. Drawn as haloed rule lines so the point a
    *  similarity field is measured *from* stays visible in the map it was picked on. */
   readonly marker?: { readonly col: number; readonly row: number };
+  /** Context image to blend under the modes. `uv` maps **raster pixel centres** to image UV. */
+  readonly image?: ImageOverlay;
 }
 
 /** What the map is showing, for a legend that states the mapping rather than leaving it implicit. */
@@ -214,6 +230,10 @@ export async function paintGramModes(canvas: HTMLCanvasElement, res: GramMatrixG
   canvas.height = res.height;
   ctx.configure({ device, format, alphaMode: "opaque" });
 
+  // Raster pixel centre -> world. The shader passes (col + 0.5, row + 0.5), and row 0 is the TOP of
+  // the bbox, hence the negative Y term.
+  const [minX, minY, maxX, maxY] = res.bbox;
+  const ov = overlayResources(device, opts.image, [(maxX - minX) / res.width, 0, minX, 0, -(maxY - minY) / res.height, maxY]);
   uniBuf ??= device.createBuffer({ size: UNI_FLOATS * 4, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
   if (!chanBuf || chanCap < chan.length) {
     chanCap = Math.max(chan.length, chanCap * 2, 16);
@@ -239,7 +259,15 @@ export async function paintGramModes(canvas: HTMLCanvasElement, res: GramMatrixG
       opts.marker?.row ?? 0,
       opts.marker ? 1 : 0,
       0.75,
+      ov.mix,
       0,
+      ov.uv[0]!,
+      ov.uv[1]!,
+      ov.uv[2]!,
+      0,
+      ov.uv[3]!,
+      ov.uv[4]!,
+      ov.uv[5]!,
       0,
     ]),
   );
@@ -251,6 +279,8 @@ export async function paintGramModes(canvas: HTMLCanvasElement, res: GramMatrixG
       { binding: 0, resource: { buffer: uniBuf, size: UNI_FLOATS * 4 } },
       { binding: 1, resource: { buffer } },
       { binding: 2, resource: { buffer: chanBuf } },
+      { binding: 3, resource: ov.view },
+      { binding: 4, resource: ov.sampler },
     ],
   });
 

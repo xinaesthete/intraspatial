@@ -38,8 +38,9 @@
 // gives a channel covariance. The Gram form is what makes the full case computable.
 
 import type { Oklab } from "../../color/oklab";
-import { getDevice } from "../device";
+import { compileShader, getDevice } from "../device";
 import type { GramMatrixGpuResult } from "./gramMatrix";
+import { IMAGE_OVERLAY_WGSL, type ImageOverlay, overlayResources } from "./imageOverlayWgsl";
 import { MARKER_WGSL } from "./markerWgsl";
 
 /** Kept in step with `gramModes.ts` by being the same numbers — a mode map and its terrain must not
@@ -52,7 +53,7 @@ const SPAN_L = 0.3;
 const SIM_A = 0.6;
 const SIM_B = -0.8;
 
-const UNI_FLOATS = 40; // 160 bytes: mat4 + 6 vec4s
+const UNI_FLOATS = 52; // 208 bytes: mat4 + 9 vec4-sized rows
 
 const TERRAIN_SHADER = /* wgsl */ `
 struct Uni {
@@ -62,6 +63,9 @@ struct Uni {
   heightScale: f32, heightSource: f32, colourBy: f32, m: f32,
   scaleL: f32, scaleA: f32, scaleB: f32, distScale: f32,
   markerX: f32, markerY: f32, markerOn: f32, lineW: f32,
+  imageMix: f32, pad0: f32, pad1: f32, pad2: f32,
+  uv0: vec3f, pad3: f32,
+  uv1: vec3f, pad4: f32,
 };
 @group(0) @binding(0) var<uniform> U: Uni;
 @group(0) @binding(1) var<storage, read> rasters: array<f32>;
@@ -69,6 +73,8 @@ struct Uni {
 @group(0) @binding(2) var<storage, read> chan: array<f32>;
 /** K floats of reference z, then m*K floats of the whitening matrix A (row-major, m rows of K). */
 @group(0) @binding(3) var<storage, read> wand: array<f32>;
+@group(0) @binding(4) var ctxImage: texture_2d<f32>;
+@group(0) @binding(5) var ctxSampler: sampler;
 
 fn oklabToSrgb(lab: vec3f) -> vec3f {
   let l_ = lab.x + 0.3963377774 * lab.y + 0.2158037573 * lab.z;
@@ -88,6 +94,7 @@ fn oklabToSrgb(lab: vec3f) -> vec3f {
 }
 
 ${MARKER_WGSL}
+${IMAGE_OVERLAY_WGSL}
 
 fn fetch(a: u32, col: u32, row: u32) -> f32 {
   return rasters[a * u32(U.rasterH) * u32(U.rowFloats) + row * u32(U.rowFloats) + col];
@@ -185,6 +192,15 @@ fn fs(in: VOut) -> @location(0) vec4f {
     let t = 1.0 - clamp(in.d * U.distScale, 0.0, 1.0);
     lab = vec3f(0.3 + 0.5 * t, ${MAX_CHROMA} * t * ${SIM_A}, ${MAX_CHROMA} * t * ${SIM_B});
   }
+  // The context image is DRAPED — sampled by the surface's own model XY, so it follows the relief
+  // instead of sitting on a flat plane under it. That is what makes one camera serve both: the
+  // anatomy and the statistic are the same surface, and no alignment can drift between them.
+  // Sampled unconditionally, weighted after: textureSample may not appear in non-uniform control
+  // flow (see imageOverlayWgsl).
+  let uv = uvAt(U.uv0, U.uv1, in.model.xy);
+  let ctxRgb = textureSample(ctxImage, ctxSampler, uv).rgb;
+  lab = mix(lab, srgbToOklab(ctxRgb), uvWeight(uv, U.imageMix));
+
   // Shade in OKLab's lightness rather than by scaling sRGB: multiplying linear RGB would drag the
   // hue of saturated colours, which is exactly the signal the map carries.
   let rgb = oklabToSrgb(vec3f(lab.x * lit, lab.y, lab.z));
@@ -251,6 +267,9 @@ export interface TerrainOptions {
   /** Where the wand sample was taken, in raster pixels — the same coordinates `paintGramModes`
    *  takes, so the caller does not have to know this module's model space. */
   readonly marker?: { readonly col: number; readonly row: number };
+  /** Context image draped over the surface. `uv` maps **model XY** to image UV; use
+   *  `modelFromRaster` to build it without knowing this module's model space. */
+  readonly image?: ImageOverlay;
 }
 
 export interface TerrainInfo {
@@ -272,7 +291,7 @@ function getCtx(): Promise<Ctx> {
   ctxCache ??= (async () => {
     const device = await getDevice();
     const format = navigator.gpu.getPreferredCanvasFormat();
-    const module = device.createShaderModule({ code: TERRAIN_SHADER });
+    const module = await compileShader(device, TERRAIN_SHADER, "gramTerrain.surface");
     const pipeline = device.createRenderPipeline({
       layout: "auto",
       vertex: { module, entryPoint: "vs" },
@@ -280,7 +299,7 @@ function getCtx(): Promise<Ctx> {
       primitive: { topology: "triangle-list", cullMode: "none" },
       depthStencil: { format: "depth24plus", depthWriteEnabled: true, depthCompare: "less" },
     });
-    const probeModule = device.createShaderModule({ code: PROBE_SHADER });
+    const probeModule = await compileShader(device, PROBE_SHADER, "gramTerrain.probe");
     const probe = device.createComputePipeline({ layout: "auto", compute: { module: probeModule, entryPoint: "probe" } });
     return { device, pipeline, probe, format };
   })();
@@ -505,6 +524,24 @@ export async function paintGramTerrain(canvas: HTMLCanvasElement, res: GramMatri
   const mvp = mvpOf(opts.camera, cw / Math.max(ch, 1));
   const srcCode = { mode1: 0, mode2: 1, mode3: 2, similarity: 3 }[opts.heightSource];
 
+  // Model XY -> world, the exact inverse of what the vertex shader does. `P`/`Q` are the raster
+  // spans the grid actually covers, which is `width - 1` only when `step` divides it evenly —
+  // deriving them from gridW/gridH instead keeps the overlay registered at any decimation.
+  const P = (gridW - 1) * step;
+  const Q = (gridH - 1) * step;
+  const [wMinX, wMinY, wMaxX, wMaxY] = res.bbox;
+  const spanX = wMaxX - wMinX;
+  const spanY = wMaxY - wMinY;
+  const worldFromModel = [
+    (spanX * P) / (res.width * aspectX),
+    0,
+    wMinX + (spanX * 0.5) / res.width + (spanX * P) / (2 * res.width),
+    0,
+    (spanY * Q) / (res.height * aspectY),
+    wMaxY - (spanY * 0.5) / res.height - (spanY * Q) / (2 * res.height),
+  ];
+  const ov = overlayResources(device, opts.image, worldFromModel);
+
   // Raster pixel -> model XY, using the SAME expression the vertex shader does, so the rule lines
   // land on the vertex they name rather than half a grid cell off when `step` > 1.
   const markerModel: [number, number] = [0, 0];
@@ -541,6 +578,18 @@ export async function paintGramTerrain(canvas: HTMLCanvasElement, res: GramMatri
       // Minimum half-width as a fraction of the model's long side, which is 1 by construction. It
       // only bites where the screen-space derivative would make the line thinner than this.
       0.0012,
+      ov.mix,
+      0,
+      0,
+      0,
+      ov.uv[0]!,
+      ov.uv[1]!,
+      ov.uv[2]!,
+      0,
+      ov.uv[3]!,
+      ov.uv[4]!,
+      ov.uv[5]!,
+      0,
     ],
     16,
   );
@@ -555,6 +604,8 @@ export async function paintGramTerrain(canvas: HTMLCanvasElement, res: GramMatri
       { binding: 1, resource: { buffer } },
       { binding: 2, resource: { buffer: chanBuf } },
       { binding: 3, resource: { buffer: wandBuf } },
+      { binding: 4, resource: ov.view },
+      { binding: 5, resource: ov.sampler },
     ],
   });
 

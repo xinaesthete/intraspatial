@@ -127,6 +127,15 @@
         </select>
         <button id="compute">compute modes</button>
       </div>
+
+      <div class="row">
+        <label for="imageSel">context image</label>
+        <select id="imageSel" style="flex:0 1 220px"></select>
+        <button id="imageLoad">load image</button>
+        <label for="imageMix">blend</label>
+        <input id="imageMix" type="range" min="0" max="1" step="0.02" value="0.5" style="flex:0 1 150px" />
+        <span class="legend" id="imageNote" style="margin:0">no image loaded</span>
+      </div>
       <p class="note">The range is the support of the <b>effective</b> pair kernel <code>J ⊛ J</code>, which is
         twice the splat radius — so the box means what it says rather than the internal parameter.
         The <b>window</b> is what gets measured and drawn; every cell is splatted regardless, so cells

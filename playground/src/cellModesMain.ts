@@ -27,6 +27,7 @@ import {
   similaritySwatch,
   standardise,
 } from "../../src/gpu/spatial/gramTerrain";
+import type { ImageOverlay } from "../../src/gpu/spatial/imageOverlayWgsl";
 import { apronCoverage, type ChannelCloud, channelsFromExpression, coLocationModes } from "../../src/spatial/gram";
 import { equivalentRadius, KERNELS, type KernelSpec, kernelLabel } from "../../src/spatial/kernels";
 import {
@@ -38,6 +39,7 @@ import {
   type TableInfo,
   TooManyTypesError,
 } from "./datasource/cellTable";
+import { type ContextImage, listImageElements, loadContextImage, uvFromWorld } from "./datasource/imageContext";
 import { listVars, readVarColumns, selectionCost, type VarCatalog } from "./datasource/varMatrix";
 
 const DEFAULT_STORE = "http://localhost:8080/xenium_2.q0.001.htj2k.index-permutations.zarr/";
@@ -77,6 +79,10 @@ const resetCamBtn = $<HTMLButtonElement>("resetCam");
 const terrainCanvas = $<HTMLCanvasElement>("terrain");
 const terrainLegendEl = $<HTMLDivElement>("terrainLegend");
 const wandReadoutEl = $<HTMLDivElement>("wandReadout");
+const imageSel = $<HTMLSelectElement>("imageSel");
+const imageLoadBtn = $<HTMLButtonElement>("imageLoad");
+const imageMixInput = $<HTMLInputElement>("imageMix");
+const imageNoteEl = $<HTMLSpanElement>("imageNote");
 const computeBtn = $<HTMLButtonElement>("compute");
 const statusEl = $<HTMLDivElement>("status");
 const modeCanvas = $<HTMLCanvasElement>("modemap");
@@ -112,6 +118,18 @@ let wand: { z: Float64Array; col: number; row: number; label: string } | null = 
 
 const DEFAULT_CAM: OrbitCamera = { azimuth: 0, elevation: 0.55, distance: 1.35, target: [0, 0, 0] };
 let cam: OrbitCamera = DEFAULT_CAM;
+
+/** The loaded context image and its world→UV affine. Held together because an image whose placement
+ *  could not be inverted must not be drawn at all — see `imageOverlay`. */
+let ctxImage: { img: ContextImage; uvFromWorld: Float64Array } | null = null;
+
+/** What both views pass to their shaders. One source, so the flat map and the terrain cannot
+ *  disagree about where the image is or how much of it is showing. */
+function imageOverlay(): ImageOverlay | undefined {
+  const mix = Number(imageMixInput.value);
+  if (!ctxImage || !(mix > 0)) return undefined;
+  return { texture: ctxImage.img.texture, uvFromWorld: ctxImage.uvFromWorld, mix };
+}
 
 const setStatus = (msg: string, err = false): void => {
   statusEl.textContent = msg;
@@ -395,6 +413,7 @@ function drawTerrain(): void {
     modesUsed: Number(modesUsedSel.value) || K,
     distanceSpan: Number(dspanInput.value) || 1.2,
     marker: wand ? { col: wand.col, row: wand.row } : undefined,
+    image: imageOverlay(),
   }).then((info) => {
     const m = Number(modesUsedSel.value) || K;
     terrainLegendEl.innerHTML =
@@ -416,7 +435,41 @@ function paintMap(): void {
     vectors: live.vectors,
     saturate: Number(satInput.value) || 2.5,
     marker: wand ? { col: wand.col, row: wand.row } : undefined,
+    image: imageOverlay(),
   });
+}
+
+/**
+ * Fetch one pyramid level of a store image and hold it as the context layer.
+ *
+ * The overlay is refused outright when the element carries no stored transform, or when the
+ * transform's 2×2 cannot be inverted. Both cases would otherwise draw the tissue somewhere
+ * plausible-looking and wrong, which is worse than drawing nothing — the whole value of the overlay
+ * is that you can trust what lines up with what.
+ */
+async function loadImage(): Promise<void> {
+  const element = imageSel.value;
+  if (!element) return;
+  imageNoteEl.textContent = `loading ${element} …`;
+  try {
+    const img = await loadContextImage(storeInput.value.trim(), element);
+    const uv = uvFromWorld(img);
+    if (!uv) {
+      ctxImage = null;
+      imageNoteEl.innerHTML = img.aligned
+        ? `<span style="color:#f87171">${element}: placement is not invertible in XY — cannot align.</span>`
+        : `<span style="color:#f87171">${element} carries no stored transform, so it cannot be put in the ` +
+          `same coordinate system as the centroids. Not overlaid.</span>`;
+    } else {
+      ctxImage = { img, uvFromWorld: uv };
+      imageNoteEl.textContent = `${img.label} · aligned via the store's own transform`;
+    }
+  } catch (err) {
+    ctxImage = null;
+    imageNoteEl.innerHTML = `<span style="color:#f87171">image failed: ${err instanceof Error ? err.message : String(err)}</span>`;
+  }
+  paintMap();
+  drawTerrain();
 }
 
 /** Turn a pointer position over the 2-D mode map into a wand reference: read the K channel
@@ -766,6 +819,22 @@ async function inspectStore(autoLoad: boolean): Promise<void> {
     tableSelect.value = usable[0]!.name;
     fillObsColumns(usable[0]);
     setStatus(`${usable.length} usable table${usable.length > 1 ? "s" : ""} — ${usable[0]!.name} selected.`);
+    // Image elements are listed but NOT fetched: naming them is metadata, and a level costs a
+    // dozen chunk requests, so it waits for an explicit click.
+    void listImageElements(url)
+      .then((names) => {
+        imageSel.innerHTML = "";
+        for (const n of names) {
+          const opt = document.createElement("option");
+          opt.value = n;
+          opt.textContent = n;
+          imageSel.appendChild(opt);
+        }
+        imageNoteEl.textContent = names.length ? `${names.length} image element(s) — pick one and load` : "store has no images";
+      })
+      .catch((err) => {
+        imageNoteEl.textContent = `image list failed: ${err instanceof Error ? err.message : String(err)}`;
+      });
     if (autoLoad) await loadTable();
   } catch (err) {
     setStatus(`inspect failed: ${err instanceof Error ? err.message : String(err)}`, true);
@@ -860,6 +929,12 @@ corrCanvas.addEventListener("mousemove", (e) => {
 });
 
 attachWand();
+imageLoadBtn.addEventListener("click", () => void loadImage());
+imageMixInput.addEventListener("input", () => {
+  // One control, both views — the blend is the shared state, not a per-view setting.
+  paintMap();
+  drawTerrain();
+});
 for (const el of [heightSel, colourBySel, modesUsedSel, stepSel]) el.addEventListener("change", drawTerrain);
 for (const el of [hscaleInput, dspanInput]) el.addEventListener("input", drawTerrain);
 resetCamBtn.addEventListener("click", () => {

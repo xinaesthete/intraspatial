@@ -320,6 +320,31 @@ is a feature — each is the surface's profile along one axis through the sample
 from the per-axis screen-space derivative, because a fixed model-space band smears across a wall
 where model XY barely changes per pixel.
 
+### The context image, and one camera for both
+
+The store's own image can be blended under either view. It is **draped**, not laid on a plane
+beneath the terrain: the surface samples it by its own model XY, so the anatomy and the statistic
+are literally the same geometry and no alignment can drift between them — which is what makes one
+orbit camera serve both without anything to synchronise. The flat map takes the identical blend
+through the identical shared snippet (`imageOverlayWgsl.ts`), so moving between the two views does
+not change what a given mix looks like.
+
+Two decisions in that are load-bearing. The blend happens in **OKLab**, before the sRGB conversion:
+mixing encoded sRGB darkens through the midpoint and drags hue, so a slider at 0.5 would not look
+halfway, and the mode colours' meaning — distance in the field ∝ perceived colour distance — would
+not survive partial blending. And the **coordinates** come from the element's stored transform, not
+from the loader's `ms.placements[0]`, which is a demo-normalised axis-aligned placement that centres
+each image on the origin for the scene editor's staggered layout. An element with no stored
+transform is refused rather than stretched to the window: an overlay that is silently in the wrong
+place is worse than no overlay.
+
+One WGSL trap is worth recording because its symptom is so unhelpful. `textureSample` takes implicit
+derivatives, so it may not appear in non-uniform control flow — wrapping it in an "is this pixel on
+the image?" test compiles to an invalid shader module, and the only evidence is a cascade of
+"invalid due to a previous error" with the actual message nowhere in it. Sample unconditionally and
+carry the test in the blend weight. `compileShader` in `src/gpu/device.ts` now asks for
+`getCompilationInfo()` and throws with the WGSL diagnostic, so the next one of these names itself.
+
 Two things this surfaced that are worth keeping. **A whitened distance is in units of mode σ**, so
 the useful saturation span is ~1, not the 3 the first version defaulted to — above 2 nearly all
 tissue reads as similar. And the mode views make **under-resolution** visible: if the splat radius
@@ -569,6 +594,8 @@ src/gpu/spatial/gramMatrix.ts  GPU Gram form: one splat per channel + one reduct
 src/gpu/spatial/gramModes.ts   the flat OKLab mode map, one fragment pass, no readback
 src/gpu/spatial/gramTerrain.ts the displaced surface, the orbit camera, and the wand's metric
 src/gpu/spatial/markerWgsl.ts  the sample rule lines in WGSL, shared by the map and the terrain
+src/gpu/spatial/imageOverlayWgsl.ts  the OKLab image blend, shared by the map and the terrain
+playground/src/datasource/imageContext.ts  one pyramid level -> one RGBA texture + world->UV
 src/gpu/spatial/kernelWgsl.ts  the kernel family in WGSL, shared by tcmRender and gramMatrix
 src/color/ramps.ts             OKLCh diverging / sequential ramps
 
@@ -604,10 +631,16 @@ playground/src/datasource/cellCsv.ts     CSV → CellTable
   open-axis tensor field — is the thing plan §7 asks for and is not built. It is what would make
   the quadrat-vs-swept comparison below runnable, and what the "distance from a reference
   co-location profile" reduction needs.
-- **No image overlay on the mode views.** `cellmodes.html` draws the mode field alone; putting the
-  H&E or DAPI behind it means going through the pyramid loader `spatialscene.html` already uses, and
-  that has not been done. The terrain's camera is its own orbit, not a shared scene camera, so the
-  two viewers cannot yet be locked together.
+- **The image overlay is one pyramid level, not a tiled pyramid.** `imageContext.ts` fetches the
+  finest level whose long side fits a 2048 budget and composites it once; zoom past that and the
+  overlay goes soft. `tileRenderer.ts` does proper LOD streaming for the scene editor and is not
+  wired in here — the mode views draw one fixed analysis window, so there is no camera-driven LOD
+  problem to solve, only a resolution ceiling.
+- **The overlay's registration has not been checked against a fiducial.** It uses the element's own
+  stored transform (element ∘ dataset, straight from sd.js) into the same coordinate system the
+  table resolves into, and the flat map and the terrain agree with each other by construction —
+  but "the two views agree" is not "the image is where the cells are". An element carrying no
+  stored transform is refused outright rather than stretched to fit.
 - **Any substantial CPU work in a `*.gpu.test.ts` process crashes the Dawn fork before vitest
   flushes results.** Bisected while building `gramMatrix.gpu.test.ts`: a bare `Float64Array` churn
   loop with no GPU code involved kills it just as reliably as running the CPU oracle, while the
