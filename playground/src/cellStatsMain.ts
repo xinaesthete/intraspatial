@@ -43,6 +43,15 @@ const matrixCanvas = $<HTMLCanvasElement>("matrix");
 const matrixReadoutEl = $<HTMLDivElement>("matrixReadout");
 const PCF_BINS = 30;
 
+// Coordinated-view state: the last N×N matrix (for hover lookup), the hovered cell, and a debounce
+// timer so the expensive TCM only recomputes when the mouse settles on a pair.
+let lastMatrix: { types: number[]; counts: number[]; g: Float64Array } | null = null;
+let hoverCell: { a: number; b: number } | null = null;
+let tcmTimer: ReturnType<typeof setTimeout> | undefined;
+/** Fixed emphasis colours for the hovered pair in the scatter. */
+const A_COLOR: [number, number, number] = [34, 211, 238]; // cyan
+const B_COLOR: [number, number, number] = [245, 158, 11]; // amber
+
 /** Flatten the per-type clouds back into one labelled cell set for the N-way pass. */
 function allCells(t: CellTable): LabelledCells {
   const xs: number[] = [];
@@ -58,8 +67,9 @@ function allCells(t: CellTable): LabelledCells {
   return { xs, ys, typeId };
 }
 
-/** TCM grid resolution + world-unit defaults (α=5 is fixed; radius:σ ≈ 2:1 as in the paper). */
-const TCM_GRID = 384;
+/** TCM grid resolution + world-unit defaults (α=5 is fixed; radius:σ ≈ 2:1 as in the paper).
+ *  256² keeps the smooth Γ field visually identical to 384² while staying interactive on hover. */
+const TCM_GRID = 256;
 const spanOf = (b: [number, number, number, number]) => Math.max(b[2] - b[0], b[3] - b[1], 1);
 const defaultRadius = (b: [number, number, number, number]) => spanOf(b) / 50;
 const defaultSigma = (b: [number, number, number, number]) => spanOf(b) / 100;
@@ -68,20 +78,6 @@ storeInput.value = DEFAULT_STORE;
 tableInput.value = DEFAULT_CELL_TABLE;
 
 let current: CellTable | null = null;
-
-/** A distinct-ish colour per integer id (golden-angle hue wheel). */
-function idColor(id: number): [number, number, number] {
-  const h = (id * 137.508) % 360;
-  return hslToRgb(h / 360, 0.65, 0.55);
-}
-function hslToRgb(h: number, s: number, l: number): [number, number, number] {
-  const f = (n: number) => {
-    const k = (n + h * 12) % 12;
-    const a = s * Math.min(l, 1 - l);
-    return l - a * Math.max(-1, Math.min(k - 3, 9 - k, 1));
-  };
-  return [Math.round(f(0) * 255), Math.round(f(8) * 255), Math.round(f(4) * 255)];
-}
 
 function setStatus(msg: string, err = false): void {
   statusEl.textContent = msg;
@@ -115,8 +111,9 @@ function tableBounds(t: CellTable): [number, number, number, number] {
   return [minX - pad, minY - pad, maxX + pad, maxY + pad];
 }
 
-/** Scatter of every centroid, coloured by cell_type_id; the selected type is drawn brighter/larger. */
-function drawScatter(t: CellTable, bbox: [number, number, number, number], selectedId: number | null): void {
+/** Scatter of every centroid, highlighting the current pair: type A in cyan, type B in amber, all
+ *  other cells faint grey — so the linked pair pops against the tissue as you hover the matrix. */
+function drawScatterPair(t: CellTable, bbox: [number, number, number, number], idA: number, idB: number): void {
   const W = 900, H = 900;
   scatterCanvas.width = W;
   scatterCanvas.height = H;
@@ -126,17 +123,22 @@ function drawScatter(t: CellTable, bbox: [number, number, number, number], selec
   const [minX, minY, maxX, maxY] = bbox;
   const sx = W / (maxX - minX || 1);
   const sy = H / (maxY - minY || 1);
-  for (const ty of t.types) {
-    const [r, g, b] = idColor(ty.id);
-    const sel = ty.id === selectedId;
-    ctx.fillStyle = sel ? `rgb(${r},${g},${b})` : `rgba(${r},${g},${b},0.45)`;
-    const rad = sel ? 1.7 : 1.0;
-    for (let i = 0; i < ty.xs.length; i++) {
-      const px = (ty.xs[i]! - minX) * sx;
-      const py = (ty.ys[i]! - minY) * sy;
+  const draw = (xs: readonly number[], ys: readonly number[], color: [number, number, number], alpha: number, rad: number) => {
+    ctx.fillStyle = `rgba(${color[0]},${color[1]},${color[2]},${alpha})`;
+    for (let i = 0; i < xs.length; i++) {
+      const px = (xs[i]! - minX) * sx;
+      const py = (ys[i]! - minY) * sy;
       ctx.fillRect(px - rad, py - rad, rad * 2, rad * 2);
     }
+  };
+  for (const ty of t.types) {
+    if (ty.id === idA || ty.id === idB) continue;
+    draw(ty.xs, ty.ys, [148, 163, 184], 0.16, 0.8); // context: faint grey
   }
+  const A = t.types.find((x) => x.id === idA);
+  const B = t.types.find((x) => x.id === idB);
+  if (B && idB !== idA) draw(B.xs, B.ys, B_COLOR, 0.9, 1.6);
+  if (A) draw(A.xs, A.ys, A_COLOR, 0.95, 1.8);
 }
 
 /** Viridis-ish render of a KDE density grid, auto-scaled to [0,max]. */
@@ -173,7 +175,6 @@ async function splatSelected(): Promise<void> {
   const ty = t.types.find((x) => x.id === id);
   if (!ty) return;
   const bbox = tableBounds(t);
-  drawScatter(t, bbox, id);
   setStatus(`splatting type ${id} (${ty.n} cells) on the GPU …`);
   try {
     const g = new Graph();
@@ -332,10 +333,13 @@ function computePcf(): void {
     `rMax ${rMax.toPrecision(3)} (world units), ${PCF_BINS} bins · g(r→0) = ${(res.g[0] ?? 0).toFixed(2)} · g&gt;1 clustering, g&lt;1 exclusion`;
 }
 
-/** N×N diverging heatmap of the cross-PCF matrix: log₂(g) mapped red (clustering) ↔ blue (exclusion). */
-function drawMatrix(c: HTMLCanvasElement, res: { types: number[]; g: Float64Array }): void {
+const MATRIX_CELL = 22;
+
+/** N×N diverging heatmap of the cross-PCF matrix: log₂(g) mapped red (clustering) ↔ blue (exclusion),
+ *  with an optional hovered-cell outline + row/col guides for the coordinated view. */
+function drawMatrix(c: HTMLCanvasElement, res: { types: number[]; g: Float64Array }, hover: { a: number; b: number } | null): void {
   const N = res.types.length;
-  const cell = 22;
+  const cell = MATRIX_CELL;
   c.width = N * cell;
   c.height = N * cell;
   const ctx = c.getContext("2d")!;
@@ -357,6 +361,14 @@ function drawMatrix(c: HTMLCanvasElement, res: { types: number[]; g: Float64Arra
       ctx.fillRect(b * cell, a * cell, cell, cell);
     }
   }
+  if (hover) {
+    ctx.fillStyle = "rgba(226,232,240,0.14)";
+    ctx.fillRect(0, hover.a * cell, N * cell, cell); // row A
+    ctx.fillRect(hover.b * cell, 0, cell, N * cell); // col B
+    ctx.strokeStyle = "#e2e8f0";
+    ctx.lineWidth = 2;
+    ctx.strokeRect(hover.b * cell + 1, hover.a * cell + 1, cell - 2, cell - 2);
+  }
 }
 
 /** Compute + render the N-way cross-PCF association matrix for all cell types (one batched pass). */
@@ -368,10 +380,47 @@ function computeMatrix(): void {
   const t0 = performance.now();
   const res = crossPCFMatrix(allCells(t), { bbox, radius });
   const ms = performance.now() - t0;
-  drawMatrix(matrixCanvas, res);
+  lastMatrix = res;
+  drawMatrix(matrixCanvas, res, hoverCell);
   matrixReadoutEl.innerHTML =
-    `<b>N-way cross-PCF</b> — ${res.types.length}×${res.types.length} matrix (all ordered pairs), contact radius ${radius.toPrecision(3)} (world units) · ${ms.toFixed(0)} ms (one batched pass)<br>` +
-    `rows = A, cols = B, type ids ascending: ${res.types.join(", ")} · red = clustering (g&gt;1), blue = exclusion (g&lt;1)`;
+    `<b>N-way cross-PCF</b> — ${res.types.length}×${res.types.length} (all ordered pairs), contact radius ${radius.toPrecision(3)} (world units) · ${ms.toFixed(0)} ms (one batched pass) · ` +
+    `<b>hover a cell</b> to link the scatter · cross-PCF · Γ below (Γ on settle/click).`;
+}
+
+/** Point the linked views (scatter pair, cross-PCF, and optionally the expensive TCM) at a pair. */
+function setPair(idA: number, idB: number, doTcm: boolean): void {
+  typeSelect.value = String(idA);
+  typeSelectB.value = String(idB);
+  const t = current;
+  if (!t) return;
+  drawScatterPair(t, tableBounds(t), idA, idB);
+  computePcf();
+  if (doTcm) {
+    void splatSelected();
+    computeTcmMap();
+  }
+}
+
+/** Debounce the expensive views (KDE-of-A splat + TCM) so they recompute only when the mouse
+ *  settles on a matrix cell. The cheap ones (scatter, cross-PCF) already updated on hover. */
+function scheduleTcm(): void {
+  if (tcmTimer) clearTimeout(tcmTimer);
+  tcmTimer = setTimeout(() => {
+    void splatSelected();
+    computeTcmMap();
+  }, 300);
+}
+
+/** Map a mouse event on the matrix canvas to a `(row a, col b)` cell, or null if outside. */
+function matrixCellFromEvent(e: MouseEvent): { a: number; b: number } | null {
+  const res = lastMatrix;
+  if (!res) return null;
+  const N = res.types.length;
+  const rect = matrixCanvas.getBoundingClientRect();
+  const b = Math.floor(((e.clientX - rect.left) / rect.width) * N);
+  const a = Math.floor(((e.clientY - rect.top) / rect.height) * N);
+  if (a < 0 || a >= N || b < 0 || b >= N) return null;
+  return { a, b };
 }
 
 /** Populate the type dropdown + counts and draw the full scatter. */
@@ -398,12 +447,11 @@ function present(t: CellTable): void {
   const bbox = tableBounds(t);
   radiusInput.value = defaultRadius(bbox).toPrecision(3);
   sigmaInput.value = defaultSigma(bbox).toPrecision(3);
-  drawScatter(t, bbox, biggest ? biggest.id : null);
-  setStatus(`read ${t.totalCells} cells in ${t.types.length} types — select types; A splats, A→B gives the TCM + cross-PCF.`);
-  void splatSelected();
-  computeTcmMap();
-  computePcf();
+  setStatus(`read ${t.totalCells} cells in ${t.types.length} types — hover the N-way matrix to link the scatter · cross-PCF · Γ for any pair.`);
   computeMatrix();
+  const idA = biggest ? biggest.id : (t.types[0]?.id ?? 0);
+  const idB = second ? second.id : idA;
+  setPair(idA, idB, true);
 }
 
 async function runLive(): Promise<void> {
@@ -425,17 +473,43 @@ function runFixture(): void {
 
 runBtn.addEventListener("click", () => void runLive());
 fixtureBtn.addEventListener("click", () => runFixture());
-typeSelect.addEventListener("change", () => {
-  void splatSelected();
-  computeTcmMap();
-  computePcf();
-});
-typeSelectB.addEventListener("change", () => {
-  computeTcmMap();
-  computePcf();
-});
+typeSelect.addEventListener("change", () => setPair(Number(typeSelect.value), Number(typeSelectB.value), true));
+typeSelectB.addEventListener("change", () => setPair(Number(typeSelect.value), Number(typeSelectB.value), true));
 tcmBtn.addEventListener("click", () => computeTcmMap());
 radiusInput.addEventListener("change", () => computeTcmMap());
 sigmaInput.addEventListener("change", () => computeTcmMap());
+
+// --- coordinated view: hover the N-way matrix to link the scatter, cross-PCF, and (on settle) Γ ---
+matrixCanvas.addEventListener("mousemove", (e) => {
+  const res = lastMatrix;
+  if (!res) return;
+  const cell = matrixCellFromEvent(e);
+  if (!cell) return;
+  if (hoverCell && hoverCell.a === cell.a && hoverCell.b === cell.b) return;
+  hoverCell = cell;
+  const N = res.types.length;
+  const idA = res.types[cell.a]!;
+  const idB = res.types[cell.b]!;
+  const g = res.g[cell.a * N + cell.b]!;
+  drawMatrix(matrixCanvas, res, hoverCell);
+  const rel = g > 1 ? `clustering (${g.toFixed(2)}×)` : g < 1 && g > 0 ? `exclusion (${g.toFixed(2)}×)` : "no co-location";
+  matrixReadoutEl.innerHTML =
+    `<b>A = type ${idA}</b> (${res.counts[cell.a]} cells, <span style="color:#22d3ee">cyan</span>) → ` +
+    `<b>B = type ${idB}</b> (${res.counts[cell.b]} cells, <span style="color:#f59e0b">amber</span>) · ` +
+    `g = ${g.toFixed(3)} — ${rel} · scatter + cross-PCF live; Γ on settle (or click)`;
+  setPair(idA, idB, false);
+  scheduleTcm();
+});
+matrixCanvas.addEventListener("mouseleave", () => {
+  hoverCell = null;
+  if (lastMatrix) drawMatrix(matrixCanvas, lastMatrix, null);
+});
+matrixCanvas.addEventListener("click", (e) => {
+  const cell = matrixCellFromEvent(e);
+  if (!cell || !lastMatrix) return;
+  if (tcmTimer) clearTimeout(tcmTimer);
+  setPair(lastMatrix.types[cell.a]!, lastMatrix.types[cell.b]!, true);
+});
+matrixCanvas.style.cursor = "crosshair";
 // Auto-attempt the live store on load; the fixture button is always available offline.
 void runLive();
