@@ -10,7 +10,7 @@
 
 import type { Affine3 } from "../../../coords";
 import { gaussianKdeField } from "../../../spatial/scalarField";
-import { splatDensityResident } from "../../spatial/splatDensity";
+import { splatDensityToTexture } from "../../spatial/splatDensity";
 import type { FieldValue, ResolvedPlacement, Shape } from "../handle";
 import type { OpType, Params } from "../op";
 import { param } from "../op";
@@ -142,6 +142,10 @@ export const splatDensityOp: OpType = {
     return [{ system: pl.system, worldFromArray: gridWorldFromArray(bbox, width, height) } satisfies ResolvedPlacement];
   },
   resident: true,
+  // Output stays a TEXTURE. The additive splat renders into one anyway, so handing that straight to
+  // the executor costs nothing, and a consumer that also renders — a paint to canvas, another pass
+  // — then reads it in place. The `copyTextureToBuffer` + de-pad this used to do unconditionally is
+  // now the executor's bridge, paid only when a buffer-binding op actually consumes the value.
   async execute(ctx, inputs, params) {
     const inField = inputs[0]!;
     const src = inField.buffer;
@@ -149,15 +153,15 @@ export const splatDensityOp: OpType = {
     const width = params.width as number,
       height = params.height as number;
 
-    const dst = await ctx.backend.lease(width * height * 4);
-    await splatDensityResident(src.buffer, pointCount(inField.shape), dst.buffer, {
+    const dst = await ctx.backend.leaseTexture(width, height);
+    await splatDensityToTexture(src.buffer, pointCount(inField.shape), dst.texture, {
       width,
       height,
       sigma: params.sigma as number,
       radiusSigma: params.radiusSigma as number,
       bbox: residentBbox(inField, params),
     });
-    return [{ shape: { kind: "grid", width, height }, dtype: "f32", buffer: dst }];
+    return [{ shape: { kind: "grid", width, height }, dtype: "f32", texture: dst }];
   },
   cpuGolden(inputs, params) {
     const { xs, ys } = unpackXY(inputs[0]!);

@@ -269,7 +269,9 @@ with `object-fit: contain` so a tall-thin ROI is letterboxed rather than squashe
 
 Every field on screen arrives the same way: **the pass that computes it leaves it in an r32float
 texture, and `paintFieldTexture` paints that texture to the canvas through a colour LUT.** Nothing is
-downloaded. This is ADR-0017 invariant 4 applied to display — a field that is computed on the GPU
+downloaded. That holds for the op-graph too: `splatDensity` is texture-resident (ADR-0017's 2026-07-24
+amendment), so `pullResident` hands the KDE panels a texture the paint pass consumes directly — the
+graph feeds the display path with no copy and no adapter in between. This is ADR-0017 invariant 4 applied to display — a field that is computed on the GPU
 and then *looked at* never needs to reach the host.
 
 The alternative, which this replaced, costs per panel per frame: the GPU→CPU round trip (a pipeline

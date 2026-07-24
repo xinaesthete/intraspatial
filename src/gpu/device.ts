@@ -23,9 +23,15 @@ export function getDevice(): Promise<GPUDevice> {
     // WebGPU validation errors are NOT exceptions and do not reach the console on their own: an
     // invalid pipeline or bind group simply produces nothing. That failure mode is a blank canvas
     // with no diagnostic, which is the worst kind to debug, so surface them.
-    device.addEventListener?.("uncapturederror", (e) => {
-      console.error("[webgpu]", (e as GPUUncapturedErrorEvent).error?.message ?? e);
-    });
+    const report = (err: unknown) => console.error("[webgpu]", (err as GPUError | undefined)?.message ?? err);
+    if (typeof device.addEventListener === "function") {
+      device.addEventListener("uncapturederror", (e) => report((e as GPUUncapturedErrorEvent).error));
+    } else {
+      // Dawn's Node binding is not an EventTarget, so the listener above silently never attaches —
+      // which is how a shader that failed to compile produced an all-zero field and no diagnostic
+      // at all. Fall back to the property form.
+      (device as { onuncapturederror?: (e: GPUUncapturedErrorEvent) => void }).onuncapturederror = (e) => report(e.error);
+    }
     return device;
   })();
   return devicePromise;

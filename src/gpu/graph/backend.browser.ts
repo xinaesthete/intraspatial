@@ -7,8 +7,8 @@ import tgpu from "typegpu";
 import * as d from "typegpu/data";
 import { getDevice } from "../device";
 import type { GpuBackend, Root } from "./backend";
-import type { ResidentBuffer } from "./handle";
-import { BufferPool, type PoolStats, residentUsage } from "./pool";
+import type { ResidentBuffer, ResidentTexture } from "./handle";
+import { BufferPool, type PoolStats, residentTextureUsage, residentUsage, TexturePool } from "./pool";
 
 let rootP: Promise<Root> | undefined;
 function getRoot(): Promise<Root> {
@@ -26,6 +26,14 @@ function getPool(): Promise<BufferPool> {
   return poolP;
 }
 let poolRef: BufferPool | undefined;
+
+// The texture half of the Tier-2 pool, resolved lazily for the same reason.
+let texPoolP: Promise<TexturePool> | undefined;
+let texPoolRef: TexturePool | undefined;
+function getTexPool(): Promise<TexturePool> {
+  texPoolP ??= getDevice().then((device) => new TexturePool(device));
+  return texPoolP;
+}
 
 /** One readback wrapper per raw buffer — see backend.node.ts for why this must not be per-call:
  *  wrapping makes the TypeGPU root a second owner of a pooled buffer, and a recycling pool would
@@ -72,7 +80,28 @@ export const browserBackend: GpuBackend = {
     return res;
   },
 
+  async leaseTexture(
+    width: number,
+    height: number,
+    format: GPUTextureFormat = "r32float",
+    usage: number = residentTextureUsage(),
+  ): Promise<ResidentTexture> {
+    const pool = await getTexPool();
+    texPoolRef = pool;
+    return pool.lease(width, height, format, usage);
+  },
+
+  releaseTexture(t: ResidentTexture): void {
+    if (!texPoolRef) throw new Error("browserBackend.releaseTexture: no pool — release without a preceding lease");
+    texPoolRef.release(t);
+  },
+
   poolStats(): PoolStats {
-    return poolRef?.stats() ?? { live: 0, free: 0, created: 0, bytes: 0 };
+    const b = poolRef?.stats() ?? { live: 0, free: 0, created: 0, bytes: 0 };
+    const t = texPoolRef?.stats();
+    if (!t) return b;
+    // Textures and buffers share one figure: callers want "how much is the graph holding", not a
+    // breakdown by resource kind.
+    return { live: b.live + t.live, free: b.free + t.free, created: b.created + t.created, bytes: b.bytes + t.bytes };
   },
 };

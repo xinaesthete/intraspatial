@@ -183,6 +183,39 @@ export interface ResidentBuffer {
   readonly lease: LeaseToken;
 }
 
+/** Pool identity of a leased texture. Textures are bucketed on their whole descriptor rather than
+ *  on a size class: unlike buffers, a texture of the wrong format or extent is not merely
+ *  oversized, it is unusable. */
+export interface TextureLeaseToken {
+  readonly id: number;
+  readonly usage: number;
+  readonly format: GPUTextureFormat;
+  readonly width: number;
+  readonly height: number;
+}
+
+/** A GPU-resident field payload held as a TEXTURE rather than a buffer (ADR-0017, Tier-2).
+ *
+ *  Some producers are render passes — the density splat is an additive blend into an r32float
+ *  target — and some consumers are too, notably anything that paints to a canvas. Forcing those
+ *  through a buffer means a `copyTextureToBuffer` plus a de-padding compute pass on the way out and
+ *  a re-upload on the way in, for a value that was already in exactly the right form. Carrying the
+ *  texture lets a render→render edge cost nothing at all, which is invariant 4 applied to the shape
+ *  of the payload and not just to its residency. */
+export interface ResidentTexture {
+  readonly texture: GPUTexture;
+  readonly width: number;
+  readonly height: number;
+  readonly format: GPUTextureFormat;
+  readonly lease: TextureLeaseToken;
+}
+
+/** Either resident payload. */
+export type ResidentPayload = ResidentBuffer | ResidentTexture;
+
+/** Narrow a resident payload. Textures carry `texture`, buffers carry `buffer`. */
+export const isResidentTexture = (p: ResidentPayload): p is ResidentTexture => "texture" in p;
+
 export type ShapeKind = "grid" | "points" | "matrix" | "scalar" | "opaque";
 
 export type Shape =
@@ -252,9 +285,14 @@ export interface FieldValue {
    *  (invariant 4). The executor bridges the two representations on demand: it downloads into
    *  `data` before a non-resident op and uploads into `buffer` before a resident one.
    *
-   *  INVARIANT: at least one of `data` / `buffer` / `payload` is present. A value may carry
-   *  both transiently — immediately after a bridge in either direction. */
+   *  INVARIANT: at least one of `data` / `buffer` / `texture` / `payload` is present. A value may
+   *  carry more than one transiently — immediately after a bridge in either direction. */
   buffer?: ResidentBuffer;
+  /** GPU-resident payload held as a texture rather than a buffer — what a render-producing op
+   *  leaves behind (ADR-0017). A consumer that needs a storage buffer gets one from the executor's
+   *  bridge; a consumer that wants a texture (a paint pass, another render) uses it directly and
+   *  no copy happens at all. */
+  texture?: ResidentTexture;
   /** Arbitrary payload for `opaque` shapes. */
   payload?: unknown;
 }

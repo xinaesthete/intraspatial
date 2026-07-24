@@ -25,12 +25,12 @@
 // ramp cannot do that — its arms differ by >0.15 in perceived lightness.
 
 import { cssRgb, deg, diverging, oklchToSrgbMapped, rgbBytes, type Srgb, sequential } from "../../src/color/ramps";
-import { Graph, registerBuiltinOps } from "../../src/gpu/graph";
+import { Graph, pullResident, registerBuiltinOps } from "../../src/gpu/graph";
 import { browserBackend } from "../../src/gpu/graph/backend.browser";
 import type { FieldValue, GpuField } from "../../src/gpu/graph/handle";
 import { paintFieldTexture } from "../../src/gpu/spatial/paintField";
-import { computeTcmRender, renderKernelDensity, renderTcm, type TcmRenderParams } from "../../src/gpu/spatial/tcmRender";
-import { equivalentRadius, GAUSS_TRUNC, GAUSSIAN, KERNELS, type KernelSpec, kernelLabel } from "../../src/spatial/kernels";
+import { computeTcmRender, renderTcm, type TcmRenderParams } from "../../src/gpu/spatial/tcmRender";
+import { equivalentRadius, KERNELS, type KernelSpec, kernelLabel } from "../../src/spatial/kernels";
 import { crossPCF, crossPCFMatrix, type LabelledCells } from "../../src/spatial/pcf";
 import { tcmKernelField } from "../../src/spatial/tcmKernel";
 import { csvToCellTable, inspectCsv, parseCsv } from "./datasource/cellCsv";
@@ -434,18 +434,15 @@ async function splatOne(
   }
   const dims = viewDims(bbox, SPLAT_TARGET);
   const sigma = kdeSigma(bbox);
-  // The graph node is still BUILT — placement inference is build-time, so this costs nothing and
-  // keeps the ADR-0018 facet propagation honest in the readout — but it is not executed. The pixels
-  // come from the same render-then-paint path as Γ.
   const density = g.op1("splatDensity", { points: src }, { ...dims, radiusSigma: SPLAT_RADIUS_SIGMA, sigma, bbox });
-  const tex = await renderKernelDensity(ty.xs, ty.ys, {
-    ...dims,
-    bbox,
-    kernel: GAUSSIAN,
-    radius: GAUSS_TRUNC * sigma, // the family's Gaussian is truncated at 3σ, so radius IS 3σ
-    key: canvas.id, // A and B are on screen together: distinct pool keys, or one overwrites the other
-  });
-  await paintFieldTexture(canvas, tex.tex, dims.width, dims.height, { lut });
+  // The graph produces a TEXTURE-resident value, which is exactly what the paint pass consumes —
+  // so the op-graph feeds the display path with no copy, no readback and no adapter in between.
+  const v = await pullResident(g, density, { ctx: { backend: browserBackend } });
+  if (!v.texture) throw new Error("splatDensity did not return a texture-resident value");
+  await paintFieldTexture(canvas, v.texture.texture, v.texture.width, v.texture.height, { lut });
+  // The lease is the caller's (ADR-0017). Returning it AFTER submitting the paint is safe: queue
+  // order means the paint reads the texture before anything the pool hands it to next writes it.
+  browserBackend.releaseTexture(v.texture);
   return { n: ty.n, outSystem: density.placement?.system };
 }
 

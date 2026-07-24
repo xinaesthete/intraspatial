@@ -25,7 +25,7 @@
 //     pools it — which is what TypeGPU's `.read()` already does internally, and what
 //     splatDensity.ts:111-114 records crashing the vitest worker when done by hand.
 
-import type { LeaseToken, ResidentBuffer } from "./handle";
+import type { LeaseToken, ResidentBuffer, ResidentTexture, TextureLeaseToken } from "./handle";
 
 /** Smallest lease. Buckets are powers of two from here up, so a pool holds at most ~log2(max)
  *  distinct sizes per usage class and fragmentation stays bounded. */
@@ -120,6 +120,65 @@ export class BufferPool {
     const list = this.free.get(slot);
     if (list) list.push(b.buffer);
     else this.free.set(slot, [b.buffer]);
+  }
+
+  stats(): PoolStats {
+    let free = 0;
+    for (const list of this.free.values()) free += list.length;
+    return { live: this.live.size, free, created: this.created, bytes: this.bytes };
+  }
+}
+
+/** The default usage class for a resident texture: renderable, readable by a later pass, and
+ *  copyable out for the buffer bridge or a host download. */
+export const residentTextureUsage = (): number =>
+  GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_SRC;
+
+/** A liveness-based texture pool, the texture half of `BufferPool`.
+ *
+ *  Bucketed on the WHOLE descriptor (format, usage, extent) rather than on a size class: an
+ *  oversized buffer is still usable, an oversized or differently-formatted texture is not. Like the
+ *  buffer pool it never destroys — mid-process destruction segfaults Dawn-on-Node (ADR-0002/0003) —
+ *  so a texture returns to the free list of exactly the slot it came from. */
+export class TexturePool {
+  private readonly free = new Map<string, GPUTexture[]>();
+  private readonly live = new Set<number>();
+  private seq = 0;
+  private created = 0;
+  private bytes = 0;
+
+  constructor(private readonly device: GPUDevice) {}
+
+  private static slot(usage: number, format: GPUTextureFormat, w: number, h: number): string {
+    return `${usage}:${format}:${w}x${h}`;
+  }
+
+  lease(width: number, height: number, format: GPUTextureFormat = "r32float", usage: number = residentTextureUsage()): ResidentTexture {
+    const w = Math.max(1, width);
+    const h = Math.max(1, height);
+    const slot = TexturePool.slot(usage, format, w, h);
+    const list = this.free.get(slot);
+    let texture = list?.pop();
+    if (!texture) {
+      texture = this.device.createTexture({ size: { width: w, height: h }, format, usage });
+      this.created++;
+      this.bytes += w * h * 4; // r32float and friends; a coarse figure for the overlay
+    }
+    const lease: TextureLeaseToken = { id: this.seq++, usage, format, width: w, height: h };
+    this.live.add(lease.id);
+    return { texture, width: w, height: h, format, lease };
+  }
+
+  /** Return a leased texture to its free list. Double release is a liveness bug in the caller —
+   *  it would hand one texture to two live values — so it throws rather than corrupting the pool. */
+  release(t: ResidentTexture): void {
+    if (!this.live.delete(t.lease.id)) {
+      throw new Error(`TexturePool.release: lease ${t.lease.id} is not live (double release?)`);
+    }
+    const slot = TexturePool.slot(t.lease.usage, t.lease.format, t.lease.width, t.lease.height);
+    const list = this.free.get(slot);
+    if (list) list.push(t.texture);
+    else this.free.set(slot, [t.texture]);
   }
 
   stats(): PoolStats {
