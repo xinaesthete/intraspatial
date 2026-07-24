@@ -110,6 +110,15 @@
       </div>
       <div id="pcfReadout">—</div>
     </div>
+
+    <div class="panel">
+      <div class="view">
+        <h2>N-way cross-PCF matrix — g<sub>AB</sub>(r<sub>contact</sub>) for all cell types at once</h2>
+        <canvas id="matrix" style="image-rendering:pixelated; max-width:560px"></canvas>
+        <div class="legend">rows = A, cols = B (type ids ascending) · diverging log₂(g): red = clustering (g&gt;1), blue = exclusion (g&lt;1), white = CSR · one batched pass — the cell-type association matrix behind the paper's network</div>
+      </div>
+      <div id="matrixReadout">—</div>
+    </div>
   </div>
   <script type="module" src="/src/cellStatsMain.ts"></script>
 </body>

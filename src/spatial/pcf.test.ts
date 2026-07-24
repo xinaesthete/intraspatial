@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { crossPCF } from "./pcf";
+import { crossPCF, crossPCFMatrix, type LabelledCells } from "./pcf";
 import type { CellCloud } from "./tcm";
 
 describe("crossPCF (eq 8, Mode 1)", () => {
@@ -64,5 +64,49 @@ describe("crossPCF (eq 8, Mode 1)", () => {
     const cloud: CellCloud = { xs, ys };
     const res = crossPCF(cloud, cloud, { bbox: [0, 0, 500, 500], rMax: 20, nBins: 10 });
     expect(res.g[0]!).toBeGreaterThan(3); // strongly clustered at the shortest range
+  });
+});
+
+describe("crossPCFMatrix (N-way, all ordered pairs)", () => {
+  it("off-diagonal entries match a single-bin crossPCF for the same pair", () => {
+    let a = 12345;
+    const rnd = () => {
+      a = (a + 0x6d2b79f5) | 0;
+      let t = Math.imul(a ^ (a >>> 15), 1 | a);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+    // Three types over a 300² ROI.
+    const xs: number[] = [];
+    const ys: number[] = [];
+    const typeId: number[] = [];
+    const clouds: Record<number, CellCloud> = { 1: { xs: [], ys: [] }, 2: { xs: [], ys: [] }, 3: { xs: [], ys: [] } };
+    for (const [id, n, cx, cy] of [
+      [1, 300, 120, 150],
+      [2, 200, 180, 150],
+      [3, 150, 150, 220],
+    ] as const) {
+      for (let i = 0; i < n; i++) {
+        const x = cx + (rnd() - 0.5) * 120;
+        const y = cy + (rnd() - 0.5) * 120;
+        xs.push(x);
+        ys.push(y);
+        typeId.push(id);
+        (clouds[id]!.xs as number[]).push(x);
+        (clouds[id]!.ys as number[]).push(y);
+      }
+    }
+    const cells: LabelledCells = { xs, ys, typeId };
+    const bbox: [number, number, number, number] = [0, 0, 300, 300];
+    const radius = 25;
+    const m = crossPCFMatrix(cells, { bbox, radius });
+    const N = m.types.length;
+    expect(m.types).toEqual([1, 2, 3]);
+
+    // g_{1→2} from the matrix equals a one-bin crossPCF(type1, type2).
+    const single = crossPCF(clouds[1]!, clouds[2]!, { bbox, rMax: radius, nBins: 1 });
+    const iA = m.types.indexOf(1);
+    const iB = m.types.indexOf(2);
+    expect(m.g[iA * N + iB]!).toBeCloseTo(single.g[0]!, 9);
   });
 });

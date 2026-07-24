@@ -13,7 +13,7 @@
 import { Graph, pull, registerBuiltinOps } from "../../src/gpu/graph";
 import { browserBackend } from "../../src/gpu/graph/backend.browser";
 import type { FieldValue, GpuField } from "../../src/gpu/graph/handle";
-import { crossPCF } from "../../src/spatial/pcf";
+import { crossPCF, crossPCFMatrix, type LabelledCells } from "../../src/spatial/pcf";
 import { computeTcm } from "../../src/spatial/tcm";
 import { type CellTable, DEFAULT_CELL_TABLE, readCellTable, syntheticCellTable } from "./datasource/cellTable";
 
@@ -39,7 +39,24 @@ const tcmCanvas = $<HTMLCanvasElement>("tcm");
 const tcmReadoutEl = $<HTMLDivElement>("tcmReadout");
 const pcfCanvas = $<HTMLCanvasElement>("pcf");
 const pcfReadoutEl = $<HTMLDivElement>("pcfReadout");
+const matrixCanvas = $<HTMLCanvasElement>("matrix");
+const matrixReadoutEl = $<HTMLDivElement>("matrixReadout");
 const PCF_BINS = 30;
+
+/** Flatten the per-type clouds back into one labelled cell set for the N-way pass. */
+function allCells(t: CellTable): LabelledCells {
+  const xs: number[] = [];
+  const ys: number[] = [];
+  const typeId: number[] = [];
+  for (const ty of t.types) {
+    for (let i = 0; i < ty.xs.length; i++) {
+      xs.push(ty.xs[i]!);
+      ys.push(ty.ys[i]!);
+      typeId.push(ty.id);
+    }
+  }
+  return { xs, ys, typeId };
+}
 
 /** TCM grid resolution + world-unit defaults (α=5 is fixed; radius:σ ≈ 2:1 as in the paper). */
 const TCM_GRID = 384;
@@ -315,6 +332,48 @@ function computePcf(): void {
     `rMax ${rMax.toPrecision(3)} (world units), ${PCF_BINS} bins · g(r→0) = ${(res.g[0] ?? 0).toFixed(2)} · g&gt;1 clustering, g&lt;1 exclusion`;
 }
 
+/** N×N diverging heatmap of the cross-PCF matrix: log₂(g) mapped red (clustering) ↔ blue (exclusion). */
+function drawMatrix(c: HTMLCanvasElement, res: { types: number[]; g: Float64Array }): void {
+  const N = res.types.length;
+  const cell = 22;
+  c.width = N * cell;
+  c.height = N * cell;
+  const ctx = c.getContext("2d")!;
+  for (let a = 0; a < N; a++) {
+    for (let b = 0; b < N; b++) {
+      const g = res.g[a * N + b]!;
+      const l = g > 0 ? Math.max(-2, Math.min(2, Math.log2(g))) / 2 : -1; // [-1,1], 0 = CSR
+      let r: number, gg: number, bl: number;
+      if (l >= 0) {
+        r = 255;
+        gg = Math.round(255 * (1 - l));
+        bl = Math.round(255 * (1 - l));
+      } else {
+        bl = 255;
+        r = Math.round(255 * (1 + l));
+        gg = Math.round(255 * (1 + l));
+      }
+      ctx.fillStyle = `rgb(${r},${gg},${bl})`;
+      ctx.fillRect(b * cell, a * cell, cell, cell);
+    }
+  }
+}
+
+/** Compute + render the N-way cross-PCF association matrix for all cell types (one batched pass). */
+function computeMatrix(): void {
+  const t = current;
+  if (!t) return;
+  const bbox = tableBounds(t);
+  const radius = defaultRadius(bbox);
+  const t0 = performance.now();
+  const res = crossPCFMatrix(allCells(t), { bbox, radius });
+  const ms = performance.now() - t0;
+  drawMatrix(matrixCanvas, res);
+  matrixReadoutEl.innerHTML =
+    `<b>N-way cross-PCF</b> — ${res.types.length}×${res.types.length} matrix (all ordered pairs), contact radius ${radius.toPrecision(3)} (world units) · ${ms.toFixed(0)} ms (one batched pass)<br>` +
+    `rows = A, cols = B, type ids ascending: ${res.types.join(", ")} · red = clustering (g&gt;1), blue = exclusion (g&lt;1)`;
+}
+
 /** Populate the type dropdown + counts and draw the full scatter. */
 function present(t: CellTable): void {
   current = t;
@@ -344,6 +403,7 @@ function present(t: CellTable): void {
   void splatSelected();
   computeTcmMap();
   computePcf();
+  computeMatrix();
 }
 
 async function runLive(): Promise<void> {

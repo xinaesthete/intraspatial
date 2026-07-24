@@ -99,3 +99,92 @@ export function crossPCF(a: CellCloud, b: CellCloud, p: PcfParams): PcfResult {
   }
   return { r, g, counts: out };
 }
+
+export interface LabelledCells {
+  readonly xs: readonly number[];
+  readonly ys: readonly number[];
+  /** Per-cell type id, index-aligned to xs/ys. */
+  readonly typeId: readonly number[];
+}
+
+export interface PcfMatrixParams {
+  readonly bbox: readonly [number, number, number, number];
+  /** Contact radius (world units): g_AB is the disk cross-PCF over `[0, radius)`. */
+  readonly radius: number;
+}
+
+export interface PcfMatrixResult {
+  /** Sorted unique type ids — the matrix's row/column order. */
+  readonly types: number[];
+  /** Cell count per type, index-aligned to `types`. */
+  readonly counts: number[];
+  /** N×N row-major cross-PCF `g[a*N + b] = g_{types[a]→types[b]}(r<radius)`. Asymmetric. */
+  readonly g: Float64Array;
+}
+
+/** N-way cross-PCF: g_AB(r<radius) for **all** ordered type pairs at once, in a single batched
+ *  bucket-grid pass over every cell (self-pairs excluded), instead of N² separate `crossPCF` calls.
+ *  This is the paper's cell-type association matrix (its Fig-4 network is a threshold of it); it is
+ *  also the natural producer of an open-axis "pair" tensor (docs/muspan-cell-stats-plan.md §7). */
+export function crossPCFMatrix(cells: LabelledCells, p: PcfMatrixParams): PcfMatrixResult {
+  const [minX, minY, maxX, maxY] = p.bbox;
+  const roiArea = Math.max((maxX - minX) * (maxY - minY), 1e-12);
+  const n = cells.xs.length;
+  const r = p.radius;
+  const r2 = r * r;
+
+  // Type id → dense index.
+  const types = [...new Set(cells.typeId)].sort((a, b) => a - b);
+  const idx = new Map<number, number>();
+  types.forEach((t, i) => idx.set(t, i));
+  const N = types.length;
+  const nPer = new Array<number>(N).fill(0);
+  const ti = new Int32Array(n);
+  for (let i = 0; i < n; i++) {
+    const k = idx.get(cells.typeId[i]!)!;
+    ti[i] = k;
+    nPer[k]!++;
+  }
+
+  // Bucket grid over all cells, cell size = radius (in-radius neighbours lie in the 3×3 neighbourhood).
+  const cols = Math.max(1, Math.ceil((maxX - minX) / r) + 1);
+  const rows = Math.max(1, Math.ceil((maxY - minY) / r) + 1);
+  const buckets: number[][] = Array.from({ length: cols * rows }, () => []);
+  const colOf = (x: number) => Math.min(cols - 1, Math.max(0, Math.floor((x - minX) / r)));
+  const rowOf = (y: number) => Math.min(rows - 1, Math.max(0, Math.floor((y - minY) / r)));
+  for (let i = 0; i < n; i++) buckets[rowOf(cells.ys[i]!) * cols + colOf(cells.xs[i]!)]!.push(i);
+
+  const count = new Float64Array(N * N); // count[a*N + b] = ordered pairs (a-cell, b-cell) within r
+  for (let i = 0; i < n; i++) {
+    const ax = cells.xs[i]!;
+    const ay = cells.ys[i]!;
+    const a = ti[i]!;
+    const c0 = colOf(ax);
+    const r0 = rowOf(ay);
+    for (let dRow = -1; dRow <= 1; dRow++) {
+      const rr = r0 + dRow;
+      if (rr < 0 || rr >= rows) continue;
+      for (let dCol = -1; dCol <= 1; dCol++) {
+        const cc = c0 + dCol;
+        if (cc < 0 || cc >= cols) continue;
+        for (const j of buckets[rr * cols + cc]!) {
+          if (j === i) continue; // exclude self-pairs
+          const dx = cells.xs[j]! - ax;
+          const dy = cells.ys[j]! - ay;
+          if (dx * dx + dy * dy < r2) count[a * N + ti[j]!]! += 1;
+        }
+      }
+    }
+  }
+
+  const diskArea = Math.PI * r2;
+  const g = new Float64Array(N * N);
+  for (let a = 0; a < N; a++) {
+    for (let b = 0; b < N; b++) {
+      const rhoB = nPer[b]! / roiArea;
+      const expected = nPer[a]! * rhoB * diskArea;
+      g[a * N + b] = expected > 0 ? count[a * N + b]! / expected : 0;
+    }
+  }
+  return { types, counts: nPer, g };
+}
