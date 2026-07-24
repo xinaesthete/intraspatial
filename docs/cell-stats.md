@@ -207,7 +207,65 @@ Two conventions worth knowing:
 
 ---
 
-## 6. Getting data in
+## 6. Physical units
+
+Every parameter these statistics take is a **length**. The paper's TCM uses a 100 µm neighbourhood
+radius and a 50 µm bandwidth. Typing `100` against a store whose coordinates are camera pixels is a
+silent error that changes the answer and looks perfectly fine, so the unit has to come from the data
+where the data states it — and be visibly *unstated* where it does not.
+
+A table is not a spatial element and carries no transform. What it carries is `region`: the name of
+the element its rows annotate. That element **is** placed, and `obsm/spatial` centroids live in its
+space, so its transform is the table's transform. `resolveTableSpace` performs that annotation walk
+(the same one `MDV/python/mdvtools/spatial/conversion.py` does on the Python side), then
+`resolveNgffXY` (`src/spatial/ngffTransform.ts`) reduces the element's `coordinateTransformations`
+to a 2-D affine and reads the unit off the output axes.
+
+Supported transform types: `identity`, `scale`, `translation`, `sequence`, `affine` (rotation and
+shear included — a rotated element is not flattened to a scale). Axes are matched by **name**, not
+position: a `c,y,x` scale of `[1, 0.5, 0.25]` must not read the channel scale as x. Anything else
+(`byDimension`, the non-linear types) is recorded in `unsupported` and surfaced in the HUD rather
+than silently approximated.
+
+### "Unknown" is not "1"
+
+`micrometresPer` returns `undefined` — never a default of 1 — for anything that does not name a
+physical length. Two cases matter in practice:
+
+- **`"unit"`** is what SpatialData writes when no unit was specified. It looks like a unit and is
+  not one.
+- **`"pixel"`** is a legitimate NGFF unit but not a physical length.
+
+Conflating either with micrometres is exactly how a length gets reported in the wrong unit with full
+confidence.
+
+The demo therefore takes lengths in µm and shows a **µm/unit** box. When the store states a unit the
+box is filled from it and readouts say `µm`. When it does not, the box is the user's *declaration*,
+defaults to 1, and every readout says **`µm*`** — the asterisk is not decoration.
+
+> **Leap034 states no scale.** Its axes read `unit: "unit"` throughout and every transform is
+> identity, so `shapes/Leap034_imc_cell_shapes` resolves to identity with no physical unit. IMC is
+> conventionally 1 µm/pixel, which would make the declaration correct — but the store does not say
+> so, and the code will not say so on its behalf. This is a question for whoever produced the data.
+
+---
+
+## 7. Aspect ratio
+
+Rasters are sized from the world box on an **area budget**, not as fixed squares (`viewDims`). A
+square raster over a non-square ROI does two things, one cosmetic and one not: it stretches every
+spatial view, and it makes world cells non-square, so the mark kernel is sampled at different
+resolutions in x and y.
+
+Leap034's ROI is **0.22 aspect** — three IMC blocks stacked vertically — so the square rasters were
+stretching it by about 4.5×. Sizing the *longer* axis to the target is the obvious fix and a poor
+one: it leaves 57 px across the short axis. Spending the same pixel count proportionally gives
+121×542 for the same cost. Canvases then carry their own aspect, and the CSS caps display height
+with `object-fit: contain` so a tall-thin ROI is letterboxed rather than squashed back.
+
+---
+
+## 8. Getting data in
 
 Three sources, all producing the same `CellTable`, so nothing downstream knows the difference.
 
@@ -251,7 +309,7 @@ array-space and placed-at-identity are distinct states).
 
 ---
 
-## 7. Where things are
+## 9. Where things are
 
 ```
 src/spatial/kernels.ts         radial kernel family; closed forms validated against quadrature
@@ -261,6 +319,7 @@ src/spatial/kernelAnalysis.ts  ground-truth scene, AUC / tie / stability scoring
 src/spatial/pcf.ts             cross-PCF and the N-way matrix
 src/spatial/bucketGrid.ts      CSR neighbourhood index (counting sort)
 src/spatial/cellCsv.ts         CSV parsing / inspection / grouping
+src/spatial/ngffTransform.ts   NGFF coordinateTransformations → 2-D affine + physical unit
 
 src/gpu/spatial/tcmRender.ts   the two render passes  ← the interactive path
 src/gpu/spatial/tcm.ts         exact compute path (TGSL), the GPU parity oracle
@@ -275,7 +334,7 @@ playground/src/datasource/cellCsv.ts     CSV → CellTable
 
 ---
 
-## 8. Known limits
+## 10. Known limits
 
 - **`src/gpu/spatial/tcmRender.ts` segfaults Dawn-on-Node's `atexit`** after a couple of
   render-plus-readback cycles in one test file. The assertions pass first — measured relMax 1.8e-4
@@ -284,9 +343,10 @@ playground/src/datasource/cellCsv.ts     CSV → CellTable
   CI therefore keeps two smoke tests with teeth (mass conservation pins pass 1's normalisation and
   world mapping; sign structure pins pass 2), and the full parity sweep runs in the browser via the
   demo's oracle button. Not root-caused.
-- **Units are the store's, not µm.** Placement is identity-in-the-named-system; the annotated
-  shape's `coordinateTransformations` are not yet composed in, so `radius` and `σ` are in whatever
-  units the table's centroids use.
+- **A declared scale is not a measured one.** Where a store states its unit, lengths are real µm;
+  where it does not (Leap034), the µm/unit box is an assumption and everything is marked `µm*`.
+  Nothing in the pipeline can tell the two apart for you.
+- **`byDimension` and non-linear transforms are unimplemented** — reported, not approximated.
 - **Mode 2 is unbuilt** — no window-local `ρ_B`, no edge correction, no permutation envelopes.
 - **`crossPCFMatrixGpu` is not wired into the demo**; the matrix still runs on the CPU (one batched
   pass, fast enough at Leap034 scale).

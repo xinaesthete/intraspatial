@@ -19,6 +19,7 @@ import type { Affine3 } from "../../../src/datasource";
 import { centroidsToField } from "../../../src/datasource";
 import type { Graph } from "../../../src/gpu/graph/graph";
 import type { FieldProvenance, GpuField, ResolvedPlacement } from "../../../src/gpu/graph/handle";
+import { type Affine2, IDENTITY2, type NgffAxis, resolveNgffXY } from "../../../src/spatial/ngffTransform";
 
 /** Default target table on the Leap034 store. */
 export const DEFAULT_CELL_TABLE = "Leap034_imc_cells";
@@ -57,6 +58,26 @@ export interface CellTable {
   readonly system: string;
   /** Human label for the HUD. */
   readonly label: string;
+  /** What the store says about physical scale. See `resolveTableSpace`. */
+  readonly units: TableUnits;
+}
+
+/** The physical-scale story for a table, deduced where the metadata states it and left explicitly
+ *  UNKNOWN where it does not. Every statistic here takes a length (the paper: a 100 µm radius, a
+ *  50 µm bandwidth), so the difference between "1 world unit is 1 µm" and "we have no idea" has to
+ *  survive all the way to the UI rather than being papered over with a default of 1. */
+export interface TableUnits {
+  /** The unit string the store gave, verbatim — e.g. "micrometer", or SpatialData's placeholder
+   *  "unit". Absent when no axis metadata was found at all. */
+  readonly raw?: string;
+  /** Micrometres per world unit, when `raw` names a physical length. `undefined` means the store
+   *  did not say — NOT that the scale is 1. */
+  readonly micrometres?: number;
+  /** Which spatial element the transform and unit came from (the table's annotated `region`). */
+  readonly via?: string;
+  /** Transform types present that the resolver does not implement; non-empty means the placement
+   *  is an approximation. */
+  readonly unsupported?: string[];
 }
 
 // ---- structural zarr shapes (zarrita is zarrextra's dep, not ours — no value import) ---------------
@@ -242,6 +263,19 @@ export async function listCellTables(url: string): Promise<TableInfo[]> {
   );
 }
 
+/** Lift a resolved 2-D mapping into the graph's `Affine3` (z left identity — this is a 2-D front).
+ *  `axes[0]` is the image of x̂ and `axes[1]` of ŷ, matching `splatDensity`'s grid placement. */
+function affine3From(m: Affine2): Affine3 {
+  return {
+    origin: [m.tx, m.ty, 0],
+    axes: [
+      [m.a, m.b, 0],
+      [m.c, m.d, 0],
+      [0, 0, 1],
+    ],
+  };
+}
+
 const IDENTITY_AFFINE: Affine3 = {
   origin: [0, 0, 0],
   axes: [
@@ -313,23 +347,77 @@ function readTableAttrs(tableNode: unknown): { region: string; instanceKey: stri
 /** zarrextra stashes a node's zarr.json attributes under a Symbol key; pull the first symbol-keyed
  *  object that looks like NGFF regions-table attrs. */
 function collectAttrs(node: unknown): Record<string, unknown> | undefined {
+  return symbolAttrs(node, (v) => "region" in v || "instance_key" in v);
+}
+
+/** The generic form: the first symbol-keyed plain object on a tree node satisfying `want`. */
+function symbolAttrs(node: unknown, want: (v: Record<string, unknown>) => boolean): Record<string, unknown> | undefined {
   if (!node || typeof node !== "object") return undefined;
   for (const sym of Object.getOwnPropertySymbols(node)) {
     const v = (node as Record<symbol, unknown>)[sym];
-    if (v && typeof v === "object" && ("region" in v || "instance_key" in v)) return v as Record<string, unknown>;
+    if (v && typeof v === "object" && !Array.isArray(v) && want(v as Record<string, unknown>)) {
+      return v as Record<string, unknown>;
+    }
   }
   return undefined;
 }
 
 /**
+ * Resolve a table's physical space: find the spatial element it annotates, read that element's
+ * `coordinateTransformations`, and take the unit off the output axes.
+ *
+ * A table is not itself a spatial element and carries no transform — SpatialData does not relate
+ * table coordinates to a coordinate system directly. What it does carry is `region`: the name of
+ * the element the rows annotate. That element (shapes, labels or an image) IS placed, and
+ * `obsm/spatial` centroids live in its space, so its transform is the table's transform. This is
+ * the annotation-walk that `MDV/python/mdvtools/spatial/conversion.py` performs on the Python side.
+ *
+ * Returns identity with `raw: undefined` when nothing can be found — which is a real answer
+ * ("unplaced, scale unknown") and deliberately distinct from a resolved identity in µm.
+ */
+function resolveTableSpace(
+  tree: Record<string, unknown>,
+  region: string,
+  target: string | undefined,
+): { affine: Affine2; units: TableUnits } {
+  for (const kind of ["shapes", "labels", "points", "images"] as const) {
+    const group = tree[kind];
+    const node = group && typeof group === "object" ? (group as Record<string, unknown>)[region] : undefined;
+    if (!node) continue;
+    // Shapes/points put `coordinateTransformations` at the top of their attrs; images and labels
+    // nest theirs inside the OME multiscales block, alongside the axes the transforms index.
+    const flat = symbolAttrs(node, (v) => "coordinateTransformations" in v);
+    const ome = symbolAttrs(node, (v) => "ome" in v || "multiscales" in v);
+    let cts: unknown = flat?.coordinateTransformations;
+    let axes: NgffAxis[] | undefined;
+    if (!cts && ome) {
+      const block = (ome.ome as Record<string, unknown> | undefined) ?? ome;
+      const ms = (block.multiscales as Array<Record<string, unknown>> | undefined)?.[0];
+      cts = ms?.coordinateTransformations;
+      axes = ms?.axes as NgffAxis[] | undefined;
+    }
+    const got = resolveNgffXY(cts, { target, axes });
+    if (!got) continue;
+    return {
+      affine: got.affine,
+      units: {
+        raw: got.unit,
+        micrometres: got.micrometres,
+        via: `${kind}/${region}`,
+        unsupported: got.unsupported.length ? got.unsupported : undefined,
+      },
+    };
+  }
+  return { affine: IDENTITY2, units: {} };
+}
+
+/**
  * Read a SpatialData regions table and group its centroids into per-`cell_type_id` clouds.
  *
- * Placement: the demo has NO image overlay, so the cloud is placed at **identity** in the store's
- * named coordinate system (`Leap034` here) — an honest "already in system S" rather than a
- * fabricated transform. The real array→world affine for the annotated shape (`shapes/<region>`'s
- * coordinateTransformations) is a straightforward future upgrade; wiring it here is deferred.
- * TODO(stream-B): compose the annotated shape's transform into `worldFromArray` once an image is
- * co-displayed; until then identity-in-system is correct for a standalone splat.
+ * Placement and units come from the element the table ANNOTATES (`resolveTableSpace`): a table is
+ * not a spatial element and carries no transform of its own, but its `region` names one that does.
+ * The centroids are carried, not host-transformed — the placement rides along on each cloud and is
+ * applied on the GPU.
  *
  * ADR-0018: never merges the clouds — one points source per `cell_type_id`, each carrying the
  * shared placement + its own provenance `{ region, instanceKey, cellTypeId }`.
@@ -378,10 +466,12 @@ export async function readCellTable(url: string, opts: { table?: string; typeCol
   const attrs = readTableAttrs(tableNode);
   const region = attrs.region || opts.system || "";
   const instanceKey = attrs.instanceKey || "cell_id";
-  const system = opts.system ?? "Leap034";
+  // The target coordinate system: the store's own declared one unless the caller overrides.
+  const rootAttrs = symbolAttrs(tree, (v) => "coordinate_system" in v || "spatialdata_attrs" in v);
+  const system = opts.system ?? (typeof rootAttrs?.coordinate_system === "string" ? rootAttrs.coordinate_system : "Leap034");
 
-  // Identity in the named system (no image overlay in this demo — see the TODO above).
-  const placement: ResolvedPlacement = { system, worldFromArray: IDENTITY_AFFINE };
+  const space = resolveTableSpace(tree as Record<string, unknown>, region, system);
+  const placement: ResolvedPlacement = { system, worldFromArray: affine3From(space.affine) };
 
   // Group by cell_type_id into separate clouds (ADR-0018 — never one merged cloud).
   const byId = new Map<number, { xs: number[]; ys: number[] }>();
@@ -421,6 +511,7 @@ export async function readCellTable(url: string, opts: { table?: string; typeCol
     typeColumn,
     totalCells: rows,
     system,
+    units: space.units,
     label: `${tableName} · ${typeColumn} · ${rows} cells · ${types.length} types`,
   };
 }
@@ -469,6 +560,7 @@ export function syntheticCellTable(opts: { perType?: number; system?: string } =
     system,
     tableName: "synthetic",
     typeColumn: "cell_type_id",
+    units: {},
     label: `synthetic · ${perType * clouds.length} cells · 2 types`,
   };
 }

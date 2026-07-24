@@ -62,6 +62,8 @@ export function csvToCellTable(rows: string[][], opts: CsvReadOptions): CellTabl
     provenance: { region: system, instanceKey: "row" },
     tableName: opts.label ?? "csv",
     typeColumn: opts.typeColumn,
+    // A CSV states no unit. Anything else would be a guess dressed up as metadata.
+    units: {},
     totalCells: total,
     system,
     label: `${opts.label ?? "csv"} · ${opts.typeColumn} · ${total} cells · ${types.length} types${

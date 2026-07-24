@@ -45,11 +45,17 @@ import {
 
 /** The live Leap034 SpatialData store (zarr v3, CORS `*`). Configurable — not hard-coded downstream. */
 const DEFAULT_STORE = "http://localhost:5055/project/289/spatial/leap034_layers.zarr/";
-const SPLAT = { width: 384, height: 384, radiusSigma: 4 } as const;
-const TCM_GRID = 256;
+/** Raster sizes are given for the LONGER axis; the other follows the world box's aspect, so world
+ *  cells stay square. A fixed square raster over a non-square ROI stretches every spatial view and
+ *  — worse than ugly — makes the mark raster anisotropic, so the kernel is sampled at different
+ *  resolutions in x and y. */
+const SPLAT_TARGET = 384;
+const SPLAT_RADIUS_SIGMA = 4;
+const TCM_TARGET = 256;
 /** The B-density raster the mark is sampled from. Finer than Γ on purpose: this is the one
  *  approximation the render formulation makes, and it is the knob that closes it. */
-const MARK_GRID = 512;
+const MARK_TARGET = 512;
+const SCATTER_TARGET = 900;
 const PCF_BINS = 30;
 const MATRIX_CELL = 22;
 
@@ -66,6 +72,8 @@ const typeSelectB = $<HTMLSelectElement>("typeB");
 const kernelSelect = $<HTMLSelectElement>("kernel");
 const radiusInput = $<HTMLInputElement>("radius");
 const sigmaInput = $<HTMLInputElement>("sigma");
+const scaleInput = $<HTMLInputElement>("scale");
+const unitsEl = $<HTMLSpanElement>("units");
 const tcmBtn = $<HTMLButtonElement>("tcmBtn");
 const oracleBtn = $<HTMLButtonElement>("oracleBtn");
 const statusEl = $<HTMLDivElement>("status");
@@ -134,7 +142,7 @@ let storeTables: TableInfo[] = [];
 /** Left/top gutter used by the last matrix draw (0 when there are no names to show). */
 let matrixGutter = 0;
 /** The most recent Γ, kept so the CPU-oracle check can compare against exactly what is on screen. */
-let lastGamma: { grid: Float32Array; idA: number; idB: number; ms: number } | null = null;
+let lastGamma: { grid: Float32Array; idA: number; idB: number; ms: number; dims: { width: number; height: number } } | null = null;
 
 const kernelOf = (): KernelSpec => KERNELS[Number(kernelSelect.value)] ?? KERNELS[0]!;
 
@@ -181,6 +189,63 @@ const defaultSigma = (b: [number, number, number, number]) => spanOf(b) / 100;
  *  extent, which renders as sparse dots rather than a density. */
 const kdeSigma = (b: [number, number, number, number]) => spanOf(b) / 150;
 
+/** Pixel dimensions whose aspect matches the world box, on an AREA budget of `target²`.
+ *
+ *  Square world cells, and canvases that carry their own aspect so CSS `width:100%` cannot stretch
+ *  them. The budget is on area rather than the longer axis because Leap034's ROI is 0.22 aspect:
+ *  sizing the long axis to 256 leaves 57 px across the short one, whereas the same pixel count
+ *  spent proportionally gives 121×542. Clamped so a pathological aspect cannot ask for a texture
+ *  the device will refuse. */
+function viewDims(b: [number, number, number, number], target: number): { width: number; height: number } {
+  const w = b[2] - b[0];
+  const h = b[3] - b[1];
+  if (!(w > 0) || !(h > 0)) return { width: target, height: target };
+  const root = Math.sqrt(w / h);
+  const clamp = (v: number) => Math.max(16, Math.min(4096, Math.round(v)));
+  return { width: clamp(target * root), height: clamp(target / root) };
+}
+
+// ---- physical units ------------------------------------------------------------------------------
+
+/** Micrometres per world unit currently in force. The store's value when it stated one; otherwise
+ *  whatever the user has declared, defaulting to 1 and flagged in the HUD as an assumption. */
+function umPerUnit(): number {
+  const v = Number(scaleInput.value);
+  return Number.isFinite(v) && v > 0 ? v : 1;
+}
+/** Lengths are ENTERED in µm (the paper speaks in µm: r = 100, σ = 50) and used in world units. */
+const toWorld = (um: number) => um / umPerUnit();
+const toUm = (world: number) => world * umPerUnit();
+
+/** " µm" when the scale is trustworthy, " µm*" when it is the user's declaration rather than the
+ *  store's. The asterisk is not decoration: a length reported in µm off an assumed scale is exactly
+ *  the error this whole path exists to avoid, so it stays visible at every readout. */
+const unitSuffix = () => (current?.units.micrometres !== undefined ? " µm" : " µm*");
+
+/** Describe what the store did and did not say about scale, and set up the µm/unit box. */
+function applyUnits(t: CellTable): void {
+  const u = t.units;
+  if (u.micrometres !== undefined) {
+    scaleInput.value = String(u.micrometres);
+    unitsEl.innerHTML = `<b>${u.raw}</b> — ${u.micrometres} µm per unit, from <code>${u.via}</code>. Lengths below are µm.`;
+    unitsEl.style.color = "#86efac";
+  } else {
+    // Do NOT silently default to 1 µm/unit: "unknown scale" and "one micrometre" are different
+    // states, and the second is a claim the store never made.
+    scaleInput.value = scaleInput.value || "1";
+    const said = u.raw ? `axes say "<b>${u.raw}</b>"` : "no axis metadata found";
+    const via = u.via ? ` (<code>${u.via}</code>)` : "";
+    unitsEl.innerHTML =
+      `${said}${via} — <b>no physical scale stated</b>. Lengths are marked µm* and use the declared ` +
+      `${scaleInput.value} µm/unit, which is an assumption, not metadata.`;
+    unitsEl.style.color = "#fcd34d";
+  }
+  if (u.unsupported?.length) {
+    unitsEl.innerHTML += ` ⚠ unhandled transform(s): ${u.unsupported.join(", ")} — placement approximate.`;
+    unitsEl.style.color = "#fca5a5";
+  }
+}
+
 /** World-bounds over ALL types (so scatter + every KDE + Γ share one frame). */
 function tableBounds(t: CellTable): [number, number, number, number] {
   let minX = Infinity;
@@ -205,17 +270,19 @@ function tableBounds(t: CellTable): [number, number, number, number] {
 /** The mark radius actually used: the input is a TOP-HAT-equivalent radius, rescaled per kernel so
  *  the probed spatial scale (μ₂) is held fixed. Without this, switching to a smoother kernel would
  *  quietly shrink the neighbourhood and look like a change in the biology. */
-function markRadius(bbox: [number, number, number, number]): { base: number; effective: number } {
-  const base = Number(radiusInput.value) || defaultRadius(bbox);
-  return { base, effective: equivalentRadius(kernelOf(), base) };
+function markRadius(bbox: [number, number, number, number]): { baseUm: number; base: number; effective: number } {
+  const baseUm = Number(radiusInput.value) || toUm(defaultRadius(bbox));
+  const base = toWorld(baseUm);
+  return { baseUm, base, effective: equivalentRadius(kernelOf(), base) };
 }
+/** Γ bandwidth, entered in µm. */
+const sigmaUm = (bbox: [number, number, number, number]) => Number(sigmaInput.value) || toUm(defaultSigma(bbox));
 
 // ---- views -------------------------------------------------------------------------------------
 
 /** Scatter of every centroid, highlighting the current pair; all other cells faint. */
 function drawScatterPair(t: CellTable, bbox: [number, number, number, number], idA: number, idB: number): void {
-  const W = 900;
-  const H = 900;
+  const { width: W, height: H } = viewDims(bbox, SCATTER_TARGET);
   scatterCanvas.width = W;
   scatterCanvas.height = H;
   const ctx = scatterCanvas.getContext("2d")!;
@@ -404,7 +471,8 @@ async function splatOne(
   const g = new Graph();
   registerBuiltinOps();
   const src: GpuField = ty.source(g);
-  const density = g.op1("splatDensity", { points: src }, { ...SPLAT, sigma: kdeSigma(bbox), bbox });
+  const dims = viewDims(bbox, SPLAT_TARGET);
+  const density = g.op1("splatDensity", { points: src }, { ...dims, radiusSigma: SPLAT_RADIUS_SIGMA, sigma: kdeSigma(bbox), bbox });
   const dv = await pull(g, density, { ctx: { backend: browserBackend } });
   const stats = drawKde(canvas, asGrid(dv), lut);
   return { n: ty.n, peak: stats.max, outSystem: density.placement?.system };
@@ -426,7 +494,7 @@ async function splatPair(): Promise<void> {
       `<span class="chipA">A = ${labelOfId(idA)}</span>: ${A?.n ?? "—"} cells, peak ${A ? A.peak.toFixed(3) : "—"} &nbsp;·&nbsp; ` +
       `<span class="chipB">B = ${labelOfId(idB)}</span>: ${B?.n ?? "—"} cells, peak ${B ? B.peak.toFixed(3) : "—"}<br>` +
       `placement <b>${t.system}</b> (region "${t.provenance.region || "—"}", instance_key "${t.provenance.instanceKey}") · ` +
-      `splatDensity output: ${A?.outSystem ? `system="${A.outSystem}"` : "absent"} (facet propagated) · KDE ${SPLAT.width}², σ=${kdeSigma(bbox).toPrecision(3)}`;
+      `splatDensity output: ${A?.outSystem ? `system="${A.outSystem}"` : "absent"} (facet propagated) · KDE ${viewDims(bbox, SPLAT_TARGET).width}×${viewDims(bbox, SPLAT_TARGET).height}, σ=${toUm(kdeSigma(bbox)).toPrecision(3)}${unitSuffix()}`;
   } catch (e) {
     setStatus(`splat failed: ${(e as Error).message}`, true);
   }
@@ -442,9 +510,11 @@ async function computeTcmMap(): Promise<void> {
   const B = t.types.find((x) => x.id === idB);
   if (!A || !B) return;
   const bbox = tableBounds(t);
-  const { base, effective } = markRadius(bbox);
-  const sigma = Number(sigmaInput.value) || defaultSigma(bbox);
+  const { baseUm, effective } = markRadius(bbox);
+  const sigma = toWorld(sigmaUm(bbox));
   const kernel = kernelOf();
+  const dims = viewDims(bbox, TCM_TARGET);
+  const mark = viewDims(bbox, MARK_TARGET);
   setStatus(`rendering Γ(${labelOfId(idA)} → ${labelOfId(idB)}) …`);
   try {
     const t0 = performance.now();
@@ -452,27 +522,27 @@ async function computeTcmMap(): Promise<void> {
       { xs: A.xs, ys: A.ys },
       { xs: B.xs, ys: B.ys },
       {
-        width: TCM_GRID,
-        height: TCM_GRID,
+        ...dims,
         bbox,
         radius: effective,
         sigma,
         alpha: 5,
         kernel,
-        markWidth: MARK_GRID,
-        markHeight: MARK_GRID,
+        markWidth: mark.width,
+        markHeight: mark.height,
       },
     );
     const ms = performance.now() - t0;
-    lastGamma = { grid, idA, idB, ms };
-    const stats = drawTcm(tcmCanvas, { width: TCM_GRID, height: TCM_GRID, data: grid });
+    lastGamma = { grid, idA, idB, ms, dims };
+    const stats = drawTcm(tcmCanvas, { ...dims, data: grid });
+    const u = unitSuffix();
     const scaleNote =
       kernel.kind === "poly" && kernel.order === 0
-        ? `radius ${base.toPrecision(3)}`
-        : `radius ${base.toPrecision(3)} → ${effective.toPrecision(3)} (matched μ₂)`;
+        ? `radius ${baseUm.toPrecision(3)}${u}`
+        : `radius ${baseUm.toPrecision(3)}${u} → ${toUm(effective).toPrecision(3)}${u} (matched μ₂)`;
     tcmReadoutEl.innerHTML =
       `<b>Γ<sub>AB</sub></b> — A = ${labelOfId(idA)} (${A.n} cells), B = ${labelOfId(idB)} (${B.n} cells)<br>` +
-      `${kernelLabel(kernel)} kernel, ${scaleNote}, σ ${sigma.toPrecision(3)}, α=5 · Γ ${TCM_GRID}², mark ${MARK_GRID}² · <b>${ms.toFixed(0)} ms</b> (GPU, 2 render passes)<br>` +
+      `${kernelLabel(kernel)} kernel, ${scaleNote}, σ ${sigmaUm(bbox).toPrecision(3)}${u}, α=5 · Γ ${dims.width}×${dims.height}, mark ${mark.width}×${mark.height} · <b>${ms.toFixed(0)} ms</b> (GPU, 2 render passes)<br>` +
       `Γ range [${stats.min.toFixed(3)}, ${stats.max.toFixed(3)}] · red = A associated with B here, blue = excluded`;
     setStatus(`done — Γ rendered in ${ms.toFixed(0)} ms.`);
   } catch (e) {
@@ -497,14 +567,14 @@ function checkAgainstOracle(): void {
   if (!A || !B) return;
   const bbox = tableBounds(t);
   const { effective } = markRadius(bbox);
-  const sigma = Number(sigmaInput.value) || defaultSigma(bbox);
+  const sigma = toWorld(sigmaUm(bbox));
   setStatus("computing the exact CPU oracle …");
   requestAnimationFrame(() => {
     const t0 = performance.now();
     const { gamma } = tcmKernelField(
       { xs: A.xs, ys: A.ys },
       { xs: B.xs, ys: B.ys },
-      { width: TCM_GRID, height: TCM_GRID, bbox, radius: effective, sigma, alpha: 5, kernel: kernelOf(), radiusSigma: 4 },
+      { ...got.dims, bbox, radius: effective, sigma, alpha: 5, kernel: kernelOf(), radiusSigma: 4 },
     );
     const ms = performance.now() - t0;
     let peak = 0;
@@ -517,7 +587,7 @@ function checkAgainstOracle(): void {
     tcmReadoutEl.innerHTML +=
       `<br><b>oracle check</b>: CPU exact ${ms.toFixed(0)} ms vs GPU ${got.ms.toFixed(0)} ms ` +
       `(<b>${(ms / Math.max(got.ms, 0.01)).toFixed(1)}×</b>) · max |Δ| / peak = <b>${(100 * rel).toFixed(3)}%</b> ` +
-      `— the render path samples the mark from a ${MARK_GRID}² raster; the oracle evaluates it at each cell in f64.`;
+      "— the render path samples the mark from a raster; the oracle evaluates it at each cell in f64.";
     setStatus(`oracle agreement ${(100 * rel).toFixed(3)}% of peak (CPU ${ms.toFixed(0)} ms, GPU ${got.ms.toFixed(0)} ms).`);
   });
 }
@@ -623,9 +693,10 @@ function present(t: CellTable): void {
   current = t;
   lastGamma = null;
   const { idA, idB } = fillTypeSelects(t);
+  applyUnits(t);
   const bbox = tableBounds(t);
-  radiusInput.value = defaultRadius(bbox).toPrecision(3);
-  sigmaInput.value = defaultSigma(bbox).toPrecision(3);
+  radiusInput.value = toUm(defaultRadius(bbox)).toPrecision(3);
+  sigmaInput.value = toUm(defaultSigma(bbox)).toPrecision(3);
   setStatus(`read ${t.totalCells} cells in ${t.types.length} types — hover the N-way matrix to link every view.`);
   computeMatrix();
   // Pin the initial pair so leaving the matrix always has a home to return to.
@@ -777,6 +848,17 @@ oracleBtn.addEventListener("click", () => checkAgainstOracle());
 kernelSelect.addEventListener("change", () => void computeTcmMap());
 radiusInput.addEventListener("change", () => void computeTcmMap());
 sigmaInput.addEventListener("change", () => void computeTcmMap());
+scaleInput.addEventListener("change", () => {
+  // Re-declaring the scale re-labels every length; the world-unit values are unchanged, so only
+  // the entered µm figures need rescaling.
+  const t = current;
+  if (!t) return;
+  applyUnits(t);
+  const bbox = tableBounds(t);
+  radiusInput.value = toUm(defaultRadius(bbox)).toPrecision(3);
+  sigmaInput.value = toUm(defaultSigma(bbox)).toPrecision(3);
+  void computeTcmMap();
+});
 
 // --- coordinated view: hover the N-way matrix to link the scatter, cross-PCF, and (on settle) Γ ---
 matrixCanvas.addEventListener("mousemove", (e) => {
