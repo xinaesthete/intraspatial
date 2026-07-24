@@ -14,12 +14,14 @@
 import type { GpuBackend } from "./backend";
 import { nodeBackend } from "./backend.node";
 import type { Graph, GraphNode } from "./graph";
-import type { FieldValue, GpuField, ResidentBuffer } from "./handle";
+import type { FieldValue, GpuField, ResidentPayload } from "./handle";
+import { isResidentTexture } from "./handle";
 import type { GraphMemo } from "./memo";
 import { hashSource, hashString, stableJSON } from "./memo";
 import type { ExecCtx, OpType } from "./op";
 import { getOp } from "./registry";
 import { FieldRing } from "./ringBuffer";
+import { textureToBuffer } from "./textureBridge";
 
 export interface PullOptions {
   /** Which backend to run native ops on. Defaults to the Node (Dawn) backend. */
@@ -35,7 +37,7 @@ export interface PullOptions {
   /** Observe every executor-inserted host↔GPU transfer (ADR-0017). The `resident?` bridge can
    *  mask a regression — an op that quietly fell back to a host round-trip still produces the
    *  right numbers — so this makes the materialisations visible by node id. */
-  onBridge?: (key: string, direction: "download" | "upload") => void;
+  onBridge?: (key: string, direction: "download" | "upload" | "detexture") => void;
 }
 
 /** Per-node state persisted across ticks, keyed by stableKey: a `feedback` node stores its
@@ -51,7 +53,9 @@ export const createSimState = (): SimState => new Map();
  *  resetting or disposing of a state. `advance({reset: true})` does it for you. */
 export function disposeSimState(state: SimState, backend: GpuBackend): void {
   for (const v of state.values()) {
-    if (!(v instanceof FieldRing) && v.buffer) backend.release(v.buffer);
+    if (v instanceof FieldRing) continue;
+    if (v.buffer) backend.release(v.buffer);
+    if (v.texture) backend.releaseTexture(v.texture);
   }
   state.clear();
 }
@@ -62,7 +66,12 @@ export function disposeSimState(state: SimState, backend: GpuBackend): void {
 export function simStateBytes(state: SimState): number {
   let total = 0;
   for (const v of state.values()) {
-    total += v instanceof FieldRing ? v.byteLength : (v.data?.byteLength ?? v.buffer?.byteLength ?? 0);
+    if (v instanceof FieldRing) {
+      total += v.byteLength;
+    } else {
+      const tex = v.texture ? v.texture.width * v.texture.height * 4 : 0;
+      total += v.data?.byteLength ?? v.buffer?.byteLength ?? tex;
+    }
   }
   return total;
 }
@@ -133,7 +142,7 @@ interface TickOptions {
   /** Called for every executor-inserted representation change, with the port key and the
    *  direction. A resident op silently falling back to a host round-trip looks correct, so the
    *  bridge needs to be observable (ADR-0017, "the `resident?` bridge can mask regressions"). */
-  onBridge?: (key: string, direction: "download" | "upload") => void;
+  onBridge?: (key: string, direction: "download" | "upload" | "detexture") => void;
 }
 
 /** Bytes → f32 count. The bridge is f32-only for now: `readbackF32` converts element-wise
@@ -143,7 +152,9 @@ function residentF32Count(v: FieldValue): number {
   if (v.dtype !== "f32") {
     throw new Error(`executor: resident bridging is f32-only; got dtype "${v.dtype}" (ADR-0017 stage 1)`);
   }
-  return (v.buffer?.byteLength ?? 0) / 4;
+  if (v.buffer) return v.buffer.byteLength / 4;
+  // A texture-resident value's logical count is its extent — it has no byteLength of its own.
+  return v.texture ? v.texture.width * v.texture.height : 0;
 }
 
 /** Run one tick: execute the cut-DAG, then commit feedback `next` values into the
@@ -165,11 +176,23 @@ async function runTick(graph: Graph, field: GpuField, o: TickOptions): Promise<M
 
   // --- Tier-2 liveness bookkeeping (ADR-0017, invariant 3) ---
   //
-  // `owned` holds the leases this tick is responsible for returning: buffers produced by a
-  // resident op, plus any the bridge leased to upload a host value. Buffers arriving from
-  // elsewhere (a memo hit, a feedback store) are deliberately absent — the tick did not lease
-  // them, so it must not release them.
-  const owned = new Map<string, ResidentBuffer>();
+  // `owned` holds the leases this tick is responsible for returning: payloads produced by a
+  // resident op, plus any the bridge leased to upload a host value or to de-texture one. Payloads
+  // arriving from elsewhere (a memo hit, a feedback store) are deliberately absent — the tick did
+  // not lease them, so it must not release them.
+  //
+  // A LIST per key, not a single payload: once a texture-resident value is bridged for a buffer
+  // consumer, that one port legitimately owns both, and dropping either would strand it.
+  const owned = new Map<string, ResidentPayload[]>();
+  const own = (k: string, p: ResidentPayload) => {
+    const list = owned.get(k);
+    if (list) list.push(p);
+    else owned.set(k, [p]);
+  };
+  const releasePayload = (p: ResidentPayload) => {
+    if (isResidentTexture(p)) o.ctx.backend.releaseTexture(p);
+    else o.ctx.backend.release(p);
+  };
 
   // Consumers still to run for each produced port. Counting the same edges the topological
   // order walks (cut `next` back-edges excluded) means a port hits zero exactly when its last
@@ -199,14 +222,14 @@ async function runTick(graph: Graph, field: GpuField, o: TickOptions): Promise<M
 
   const releaseIfDead = (k: string) => {
     if (pinned.has(k) || adopted.has(k)) return;
-    const res = owned.get(k);
-    if (!res) return;
+    const list = owned.get(k);
+    if (!list) return;
     owned.delete(k);
-    o.ctx.backend.release(res);
-    // Drop the handle so a stale reader fails loudly instead of silently reading a buffer the
+    for (const p of list) releasePayload(p);
+    // Drop the handles so a stale reader fails loudly instead of silently reading a resource the
     // pool has already handed to someone else.
     const v = pulled.get(k);
-    if (v) pulled.set(k, { ...v, buffer: undefined });
+    if (v) pulled.set(k, { ...v, buffer: undefined, texture: undefined });
   };
 
   /** Record that a consumer of `k` has finished; recycle the value once its last one has. */
@@ -221,20 +244,23 @@ async function runTick(graph: Graph, field: GpuField, o: TickOptions): Promise<M
    *  is stranded: the input key's refcount drops to zero and releases a buffer the output key
    *  is still handing to downstream consumers. */
   const transferOwnership = (from: string, to: string) => {
-    const res = owned.get(from);
-    if (!res) return;
+    const list = owned.get(from);
+    if (!list) return;
     owned.delete(from);
-    owned.set(to, res);
+    for (const p of list) own(to, p);
   };
 
   /** Ensure the value at `k` has host `data`, downloading it if resident-only. */
   const hostAt = async (k: string): Promise<FieldValue> => {
     const v = pulled.get(k);
     if (!v) throw new Error(`executor (unexpected): no value at ${k}`);
-    if (v.data || v.payload !== undefined || !v.buffer) return v;
+    if (v.data || v.payload !== undefined) return v;
+    if (!v.buffer && !v.texture) return v;
+    // A texture cannot be read back directly by the f32 path; adapt first, then download once.
+    const res = v.buffer ? v : await residentAt(k);
     o.onBridge?.(k, "download");
-    const data = await o.ctx.backend.readbackF32(v.buffer.buffer, residentF32Count(v));
-    const bridged: FieldValue = { ...v, data };
+    const data = await o.ctx.backend.readbackF32(res.buffer!.buffer, residentF32Count(res));
+    const bridged: FieldValue = { ...res, data };
     pulled.set(k, bridged); // cache: a second consumer reuses the download
     return bridged;
   };
@@ -244,6 +270,18 @@ async function runTick(graph: Graph, field: GpuField, o: TickOptions): Promise<M
     const v = pulled.get(k);
     if (!v) throw new Error(`executor (unexpected): no value at ${k}`);
     if (v.buffer) return v;
+    // Texture-resident, but this consumer binds a storage buffer. Adapt on-device — the value stays
+    // GPU-resident throughout, so this is a copy, never a round trip. Paid only because a buffer
+    // consumer exists: a render→render edge never reaches here.
+    if (v.texture) {
+      o.onBridge?.(k, "detexture");
+      const res = await o.ctx.backend.lease(v.texture.width * v.texture.height * 4);
+      await textureToBuffer(v.texture, res.buffer);
+      const bridged: FieldValue = { ...v, buffer: res };
+      pulled.set(k, bridged);
+      own(k, res); // the tick leased it, so the tick returns it — alongside the texture
+      return bridged;
+    }
     if (!v.data) throw new Error(`executor: cannot make value at ${k} resident — it has no data`);
     o.onBridge?.(k, "upload");
     const res = await o.ctx.backend.upload(v.data);
@@ -252,7 +290,7 @@ async function runTick(graph: Graph, field: GpuField, o: TickOptions): Promise<M
     // tick, and attaching a pooled lease to it would let the refcounter recycle a buffer the
     // graph still points at.
     pulled.set(k, bridged);
-    owned.set(k, res); // the tick leased it, so the tick returns it
+    own(k, res); // the tick leased it, so the tick returns it
     return bridged;
   };
 
@@ -364,11 +402,21 @@ async function runTick(graph: Graph, field: GpuField, o: TickOptions): Promise<M
       // that don't set it themselves (e.g. editing wavelet coefficients then idwt).
       const b = node.outBases?.[i];
       if (b && v.basis === undefined) v.basis = b;
+      // Axes/role/placement propagate the same way (ADR-0015 known gap + ADR-0018): stamp the
+      // inferred facet only when the op left it unset, so a constructing op (splat, centroid
+      // extract) that sets its own placement wins, while a generic op carries it through.
+      const ax = node.outAxes?.[i];
+      if (ax !== undefined && v.axes === undefined) v.axes = ax;
+      const rl = node.outRoles?.[i];
+      if (rl !== undefined && v.role === undefined) v.role = rl;
+      const pl = node.outPlacements?.[i];
+      if (pl !== undefined && v.placement === undefined) v.placement = pl;
       if (memo && ck) memo.set(`${ck}#${out.name}`, v);
       // A memoised value outlives the tick, so the tick must not reclaim its buffer. Not
       // owning it pins it — correct, but it means resident values accumulate in the memo until
       // eviction releases them (ADR-0017 leaves that coupling to a later stage).
-      else if (v.buffer) owned.set(key(node.id, out.name), v.buffer);
+      else if (v.texture) own(key(node.id, out.name), v.texture);
+      else if (v.buffer) own(key(node.id, out.name), v.buffer);
       emit(node.id, out.name, v);
     });
 
@@ -394,14 +442,15 @@ async function runTick(graph: Graph, field: GpuField, o: TickOptions): Promise<M
     const sk = storeKey(node);
     const prev = o.store.get(sk);
     o.store.set(sk, v);
-    if (v.buffer) {
+    if (v.buffer || v.texture) {
       adopted.add(k); // the store owns this lease now, not the tick
       owned.delete(k);
     }
     // Return the state we just superseded. Guarded against a self-loop, where the incoming and
-    // outgoing values are backed by the same buffer and releasing would be a double free.
-    if (prev && !(prev instanceof FieldRing) && prev.buffer && prev.buffer !== v.buffer) {
-      o.ctx.backend.release(prev.buffer);
+    // outgoing values are backed by the same resource and releasing would be a double free.
+    if (prev && !(prev instanceof FieldRing)) {
+      if (prev.buffer && prev.buffer !== v.buffer) o.ctx.backend.release(prev.buffer);
+      if (prev.texture && prev.texture !== v.texture) o.ctx.backend.releaseTexture(prev.texture);
     }
   }
   // Commit: push each delay node's fed value into its history ring. The ring is host-backed

@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Cell-type spatial stats — TCM · cross-PCF · N-way matrix (Stream B2)</title>
+  <style>
+    :root { color-scheme: dark; }
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0; min-height: 100%;
+      background: #0b1020; color: #e2e8f0;
+      font: 13px/1.5 ui-sans-serif, system-ui, sans-serif;
+    }
+    #wrap { max-width: 1720px; margin: 0 auto; padding: 18px 18px 40px; }
+    h1 { font-size: 17px; font-weight: 600; margin: 0 0 4px; }
+    .sub { color: #94a3b8; font-size: 12px; margin: 0 0 14px; max-width: 900px; }
+    .panel { background: rgba(15, 23, 42, 0.82); border: 1px solid #1e293b; border-radius: 10px; padding: 12px 14px; margin-bottom: 14px; }
+    .row { display: flex; align-items: center; gap: 8px; margin: 6px 0; flex-wrap: wrap; }
+    .row label { color: #cbd5e1; flex: 0 0 auto; }
+    input[type="text"] { flex: 1 1 260px; background: #0f172a; color: #cbd5e1; border: 1px solid #334155; border-radius: 6px; padding: 4px 7px; font-size: 12px; }
+    select { background: #0f172a; color: #cbd5e1; border: 1px solid #334155; border-radius: 6px; padding: 4px 7px; font-size: 12px; }
+    button { background: #1e293b; color: #e2e8f0; border: 1px solid #334155; border-radius: 6px; padding: 5px 12px; font-size: 12px; cursor: pointer; }
+    button:hover { background: #334155; }
+    .note { color: #fcd34d; font-size: 11px; line-height: 1.5; }
+    .note code { background: #0f172a; border: 1px solid #334155; border-radius: 3px; padding: 0 3px; }
+    #status { margin-top: 6px; font-size: 12px; white-space: pre-wrap; color: #94a3b8; }
+
+    /* Dense tile grid: as many stats on screen at once as the viewport allows. */
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(330px, 1fr)); gap: 12px; margin-bottom: 14px; }
+    .tile { background: rgba(15, 23, 42, 0.82); border: 1px solid #1e293b; border-radius: 10px; padding: 10px 12px; display: flex; flex-direction: column; }
+    .tile h2 { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.06em; color: #38bdf8; margin: 0 0 6px; }
+    /* `height:auto` keeps the canvas's own aspect (the rasters now match the ROI's), and
+       `object-fit:contain` under `max-height` letterboxes a tall-thin ROI instead of squashing it
+       back — the bug this whole change was about. */
+    .tile canvas { width: 100%; height: auto; max-height: 440px; object-fit: contain;
+      image-rendering: pixelated; border: 1px solid #334155; border-radius: 6px; background: #0f172a; }
+    .legend { font-size: 10px; color: #94a3b8; margin-top: 5px; }
+    #matrix { cursor: crosshair; }
+    .readouts { font-size: 11.5px; color: #cbd5e1; font-variant-numeric: tabular-nums; display: grid; grid-template-columns: repeat(auto-fit, minmax(330px, 1fr)); gap: 10px 18px; }
+    .readouts > div { min-width: 0; }
+    .chipA { color: #22d3ee; } .chipB { color: #f59e0b; }
+  </style>
+</head>
+
+<body>
+  <div id="wrap">
+    <h1>Cell-type spatial statistics — TCM · cross-PCF · N-way matrix (Stream B2)</h1>
+    <p class="sub">A SpatialData store is <b>inspected</b> for its tables and their candidate cell-type columns
+      (auto-selected when there is only one); <code>obsm/spatial</code> centroids are then grouped into
+      per-type clouds (ADR-0018 — never merged), each carrying a resolved <code>placement</code>. A CSV
+      export or the offline fixture take the identical path.
+      <b>Hover the N-way matrix</b> to link every view to that cell-type pair; <b>click to pin</b> it (leaving
+      the matrix returns to the pinned pair). MuSpAn eqs 8–14, Mode 1 (faithful, global ρ<sub>B</sub>).
+      Γ is rendered as two additive GPU passes — B through a radial kernel, then A splatted with the
+      transformed mark fetched per cell — with the exact CPU oracle one button away.
+      The derivation is in <code>docs/cell-stats.md</code>.</p>
+
+    <div class="panel">
+      <div class="row">
+        <label for="store">store url</label>
+        <input id="store" type="text" />
+        <button id="inspect">inspect</button>
+        <button id="fixture">fixture (offline)</button>
+        <label for="csvFile">or CSV</label>
+        <input id="csvFile" type="file" accept=".csv,text/csv" style="flex:0 1 210px" />
+      </div>
+      <div class="row">
+        <label for="tableSel">table</label>
+        <select id="tableSel" style="flex:1 1 240px"></select>
+        <label for="typeCol">cell-type column</label>
+        <select id="typeCol" style="flex:1 1 240px"></select>
+        <button id="run">load</button>
+      </div>
+      <div class="row">
+        <label for="type">type A</label>
+        <select id="type"></select>
+        <label for="typeB">type B</label>
+        <select id="typeB"></select>
+        <label for="kernel">mark kernel</label>
+        <select id="kernel"></select>
+        <label for="radius">radius µm</label>
+        <input id="radius" type="text" style="flex:0 1 80px" />
+        <label for="sigma">σ µm</label>
+        <input id="sigma" type="text" style="flex:0 1 80px" />
+        <label for="scale">µm/unit</label>
+        <input id="scale" type="text" value="1" style="flex:0 1 70px" />
+        <button id="tcmBtn">render Γ<sub>AB</sub></button>
+        <button id="oracleBtn">check vs CPU oracle</button>
+      </div>
+      <p class="note" id="units">—</p>
+      <p class="note">Radius is <b>top-hat-equivalent</b>: switching kernel rescales it to hold the probed
+        scale (μ₂) fixed, so "smoother" never quietly becomes "more local". α=5, world units.
+        ⚠ The store must be CORS-enabled (default: the local MDV server at <code>localhost:5055</code>);
+        if unreachable, use <b>fixture</b> or open a <b>CSV</b>.</p>
+      <div id="status">idle</div>
+    </div>
+
+    <div class="grid">
+      <div class="tile">
+        <h2>N-way cross-PCF matrix — hover to link · click to pin</h2>
+        <canvas id="matrix"></canvas>
+        <div class="legend">rows = A, cols = B (axes labelled when the store names its types) · diverging log₂(g): red = clustering, blue = exclusion, white = CSR · white box = hover, dashed = pinned</div>
+      </div>
+      <div class="tile">
+        <h2>centroids — pair highlighted</h2>
+        <canvas id="scatter"></canvas>
+        <div class="legend"><span class="chipA">■</span> type A · <span class="chipB">■</span> type B · other cells faint</div>
+      </div>
+      <div class="tile">
+        <h2>TCM Γ<sub>AB</sub>(x) — two GPU render passes</h2>
+        <canvas id="tcm"></canvas>
+        <div class="legend">OKLCh diverging ramp, lightness from |Γ| and hue from the sign — so equal clustering
+          and exclusion are equally prominent · red = A associated with B here, blue = excluded</div>
+      </div>
+      <div class="tile">
+        <h2><span class="chipA">KDE — type A</span></h2>
+        <canvas id="kdeA"></canvas>
+        <div class="legend">Gaussian density of type A, splatted on the GPU (<code>splatDensity</code> op)</div>
+      </div>
+      <div class="tile">
+        <h2><span class="chipB">KDE — type B</span></h2>
+        <canvas id="kdeB"></canvas>
+        <div class="legend">same op, same world frame, same lightness ramp — brightness means density, not identity</div>
+      </div>
+      <div class="tile">
+        <h2>cross-PCF g<sub>AB</sub>(r)</h2>
+        <canvas id="pcf" style="image-rendering:auto"></canvas>
+        <div class="legend">g(r) vs radius; dashed = g=1 (CSR). g&gt;1 clustering at range r, g&lt;1 exclusion</div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="readouts">
+        <div id="matrixReadout">—</div>
+        <div id="tcmReadout">—</div>
+        <div id="pcfReadout">—</div>
+        <div id="readout">—</div>
+      </div>
+    </div>
+  </div>
+  <script type="module" src="/src/cellStatsMain.ts"></script>
+</body>
+
+</html>

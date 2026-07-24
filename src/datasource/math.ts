@@ -9,7 +9,12 @@
 // can graduate cleanly (ADR-0008 §layering). No non-null assertions: fixed-length
 // tuples are statically complete, and the only buffer reads are bounds-checked.
 
-export type Vec3 = readonly [number, number, number];
+// `Vec3` and `Affine3` live in the leaf `src/coords.ts` so the op-graph value model can
+// share them without inverting the layer direction (see that file). Re-exported here so
+// every existing `datasource`/`../math` import keeps resolving them unchanged.
+import type { Affine3, Vec3 } from "../coords";
+
+export type { Affine3, Vec3 } from "../coords";
 
 export const sub = (a: Vec3, b: Vec3): Vec3 => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
 export const add = (a: Vec3, b: Vec3): Vec3 => [a[0] + b[0], a[1] + b[1], a[2] + b[2]];
@@ -33,19 +38,6 @@ export interface Aabb {
 export function closestPointOnAabb(box: Aabb, p: Vec3): Vec3 {
   const c = (lo: number, hi: number, x: number): number => (x < lo ? lo : x > hi ? hi : x);
   return [c(box.min[0], box.max[0], p[0]), c(box.min[1], box.max[1], p[1]), c(box.min[2], box.max[2], p[2])];
-}
-
-/**
- * An affine placement of *array space* into world. Array coordinates are in
- * **level-0 voxel units**; one voxel step along array axis i moves `axes[i]` in
- * world. So `|axes[i]|` is the world size of a level-0 voxel along axis i, and a
- * general (rotated/anisotropic) `axes` lets a plane sit obliquely in 3-D.
- *
- *   world = origin + a0·axes[0] + a1·axes[1] + a2·axes[2]
- */
-export interface Affine3 {
-  readonly origin: Vec3;
-  readonly axes: readonly [Vec3, Vec3, Vec3];
 }
 
 /** Map an array-space position (level-0 voxel units) to world. */

@@ -1,0 +1,10 @@
+{
+  // Type-check gate for the playground, run via the STABLE JS TypeScript 5.9.3 (see the root
+  // `typecheck:playground` script), NOT the 7.0.2 native compiler — 7.0.2 balloons to tens of GB on
+  // this project's type surface (see docs/decisions + the toolchain memory), while 5.9.3 finishes in
+  // ~6s. Extends the app tsconfig but excludes three files that carry PRE-EXISTING three.js-TSL /
+  // R3F node-typing debt unrelated to the datasource/stats work this gate protects. Fix those and
+  // remove them from this list; they are the only thing standing between here and a full-app gate.
+  "extends": "./tsconfig.json",
+  "exclude": ["src/raymarchMain.ts", "src/geometryMain.ts", "src/r3fSpikeMain.tsx", "src/R3fSpike.tsx"]
+}

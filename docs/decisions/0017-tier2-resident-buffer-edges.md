@@ -128,6 +128,39 @@ branches is an **optimisation for later**, and the per-stage path stays the gold
 batched variant must match on every fixture (the doc records a silent wrong-`ll0` from getting
 this wrong).
 
+## Amendment (2026-07-24): a resident value may be a TEXTURE
+
+The original design gave `FieldValue` one resident representation, a storage buffer. That is the
+right default — most compute ops bind `array<f32>` — but it silently taxes the ops at both ends of
+the pipeline that are RENDER passes.
+
+`splatDensity` is the case that forced it. The additive splat draws into an r32float target, so its
+output is already a texture; producing a buffer meant a `copyTextureToBuffer` into a row-padded
+staging buffer plus a de-padding compute pass, **unconditionally**. At the other end, painting a
+field to a canvas wants a texture. So a splat feeding a display — the entire cell-stats hover path —
+paid a texture→buffer conversion whose result was immediately converted back.
+
+So `FieldValue` now carries `texture?: ResidentTexture` alongside `buffer?: ResidentBuffer`, leased
+from a `TexturePool` with the same liveness contract (return, never destroy — Dawn again). An op
+returns whichever it naturally produces.
+
+**The bridge is what makes this cheap rather than viral.** `residentAt` already existed to upload a
+host value for a resident consumer; it now also adapts texture→buffer, using the same de-pad, moved
+out of `splatDensity` into `graph/textureBridge.ts`. Every existing buffer-binding op is unchanged
+and unaware. The copy is paid **only when a buffer consumer actually exists** — a render→render edge
+performs none at all, which is invariant 4 applied to the *shape* of the payload and not merely to
+its residency.
+
+Two details worth recording:
+
+- **Ownership is now a list per port.** A texture-resident value that gets bridged legitimately owns
+  both a texture and a buffer; releasing only one strands the other.
+- **This was invisible when it broke.** The bridge's first shader had a WGSL name collision and
+  failed to compile, so the field came back all zeros with no diagnostic — WebGPU validation errors
+  are not exceptions. `getDevice` now installs an uncaptured-error handler, and had to do it via
+  `onuncapturederror` as well as `addEventListener`, because Dawn's Node binding is not an
+  `EventTarget` and the listener form silently never attached.
+
 ## Invariant 5 is amended: GPU failure is a fail-state, not a CPU fallback
 
 **Invariant 5 as implemented is incompatible with invariant 4.** `runNode` runs

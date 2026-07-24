@@ -6,9 +6,20 @@
 // ops; element preconditions are checked at graph-build time in `inferElements`.
 
 import { addFields, crossFields, dotFields, mulFields, normalize, scaleField, subFields } from "../elementMath";
-import type { ElementType, FieldValue, Shape } from "../handle";
-import { elementLabel, elementsEqual, shapesEqual } from "../handle";
+import type { ElementType, FieldValue, ResolvedPlacement, Shape } from "../handle";
+import { elementLabel, elementsEqual, shapesEqual, systemsAgree } from "../handle";
 import type { OpType, Params } from "../op";
+
+/** Placement agreement for a pointwise binary op (ADR-0018 decision 3): reject combining two
+ *  fields in different coordinate systems (or a placed + an array-space one — `systemsAgree`
+ *  throws on that), then pass the first input's placement through (a pointwise op does not move
+ *  the field). Shared by add/sub/mul/dot/cross — their first uses of the agreement check. */
+function agreePlacement(op: string, inputs: (ResolvedPlacement | undefined)[]): (ResolvedPlacement | undefined)[] {
+  if (!systemsAgree(inputs[0], inputs[1])) {
+    throw new Error(`${op}: inputs are in different coordinate systems (cannot combine across systems)`);
+  }
+  return [inputs[0]];
+}
 
 const SCALAR: ElementType = { kind: "scalar" };
 
@@ -51,6 +62,7 @@ function binaryOp(
       validate?.(el);
       return [el];
     },
+    inferPlacement: (inputs) => agreePlacement(name, inputs),
     execute: async (_ctx, inputs) => body(inputs),
     cpuGolden: (inputs) => body(inputs),
   };
@@ -115,6 +127,7 @@ export const dotFieldsOp: OpType = {
     if (el.kind !== "vec") throw new Error(`dotFields: requires vec, got ${elementLabel(el)}`);
     return [SCALAR];
   },
+  inferPlacement: (inputs) => agreePlacement("dotFields", inputs),
   async execute(_ctx, inputs) {
     const el = inputs[0]!.element ?? SCALAR;
     return [{ shape: inputs[0]!.shape, dtype: "f32", element: SCALAR, data: dotFields(el, inputs[0]!.data!, inputs[1]!.data!) }];
@@ -142,6 +155,7 @@ export const crossFieldsOp: OpType = {
     if (el.kind !== "vec" || el.n !== 3) throw new Error(`crossFields: requires vec3, got ${elementLabel(el)}`);
     return [el];
   },
+  inferPlacement: (inputs) => agreePlacement("crossFields", inputs),
   async execute(_ctx, inputs) {
     const el = inputs[0]!.element ?? SCALAR;
     return [{ shape: inputs[0]!.shape, dtype: "f32", element: el, data: crossFields(el, inputs[0]!.data!, inputs[1]!.data!) }];

@@ -330,33 +330,60 @@ function renderToStaging(
   const spanX = maxX - minX || 1;
   const spanY = maxY - minY || 1;
 
-  const uni = new Float32Array([minX, minY, 1 / spanX, 1 / spanY, sigma, radiusSigma, pts.stride, pts.defaultWeight]);
-  uniBuf ??= device.createBuffer({ size: uni.byteLength, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
-  device.queue.writeBuffer(uniBuf, 0, uni);
-
   ensureTarget(device, w, h);
   const rowFloats = bytesPerRow / 4;
   ensureReadback(device, root, rowFloats * h);
-  const bind = device.createBindGroup({
-    layout: pipeline.getBindGroupLayout(0),
-    entries: [
-      { binding: 0, resource: { buffer: uniBuf } },
-      { binding: 1, resource: { buffer: pts.buffer } },
-    ],
-  });
 
   const enc = device.createCommandEncoder();
-  const pass = enc.beginRenderPass({
-    colorAttachments: [{ view: target!.createView(), clearValue: { r: 0, g: 0, b: 0, a: 0 }, loadOp: "clear", storeOp: "store" }],
-  });
-  pass.setPipeline(pipeline);
-  pass.setBindGroup(0, bind);
-  if (pts.n > 0) pass.draw(4, pts.n); // 4-vertex strip quad, one instance per point
-  pass.end();
+  renderPoints(device, enc, pipeline, target!.createView(), pts, sigma, radiusSigma, bbox);
   enc.copyTextureToBuffer({ texture: target! }, { buffer: rbRaw!, bytesPerRow }, { width: w, height: h });
   device.queue.submit([enc.finish()]);
 
   return rowFloats;
+}
+
+/** The additive splat itself: encode one render pass drawing `pts` into `view`. Factored out so
+ *  the texture path can target a caller-owned texture and stop, while the host path follows it
+ *  with a copy into staging. */
+function renderPoints(
+  device: GPUDevice,
+  enc: GPUCommandEncoder,
+  pipeline: GPURenderPipeline,
+  view: GPUTextureView,
+  pts: PointSource,
+  sigma: number,
+  radiusSigma: number,
+  bbox: [number, number, number, number],
+): void {
+  const [minX, minY, maxX, maxY] = bbox;
+  const uni = new Float32Array([
+    minX,
+    minY,
+    1 / (maxX - minX || 1),
+    1 / (maxY - minY || 1),
+    sigma,
+    radiusSigma,
+    pts.stride,
+    pts.defaultWeight,
+  ]);
+  uniBuf ??= device.createBuffer({ size: uni.byteLength, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+  device.queue.writeBuffer(uniBuf, 0, uni);
+  const pass = enc.beginRenderPass({
+    colorAttachments: [{ view, clearValue: { r: 0, g: 0, b: 0, a: 0 }, loadOp: "clear", storeOp: "store" }],
+  });
+  pass.setPipeline(pipeline);
+  pass.setBindGroup(
+    0,
+    device.createBindGroup({
+      layout: pipeline.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: { buffer: uniBuf } },
+        { binding: 1, resource: { buffer: pts.buffer } },
+      ],
+    }),
+  );
+  if (pts.n > 0) pass.draw(4, pts.n); // 4-vertex strip quad, one instance per point
+  pass.end();
 }
 
 export interface ResidentSplatOptions {
@@ -368,6 +395,32 @@ export interface ResidentSplatOptions {
    *  back, which is the transfer this whole path exists to avoid. Callers that want the
    *  points' own bounds compute them host-side (or, eventually, with a GPU reduction). */
   bbox: [number, number, number, number];
+}
+
+/** Tier-2 form, TEXTURE output (ADR-0017): splat a GPU-resident point cloud straight into a
+ *  caller-owned r32float texture, and stop there.
+ *
+ *  This is the render path's natural product — the additive blend already targets a texture — so
+ *  nothing further happens: no `copyTextureToBuffer`, no de-padding pass. A consumer that renders
+ *  (a paint to canvas, another pass) uses it as-is; one that needs a storage buffer gets the copy
+ *  from the executor's bridge, which runs only when such a consumer actually exists. */
+export async function splatDensityToTexture(points: GPUBuffer, n: number, target: GPUTexture, opts: ResidentSplatOptions): Promise<void> {
+  const { width: w, height: h, sigma } = opts;
+  if (w <= 0 || h <= 0) throw new Error("splatDensity: width/height must be > 0");
+  if (sigma <= 0) throw new Error("splatDensity: sigma must be > 0");
+  const { device, pipeline } = await getPipe();
+  const enc = device.createCommandEncoder();
+  renderPoints(
+    device,
+    enc,
+    pipeline,
+    target.createView(),
+    { buffer: points, n, stride: 2, defaultWeight: 1 },
+    sigma,
+    opts.radiusSigma ?? 4,
+    opts.bbox,
+  );
+  device.queue.submit([enc.finish()]);
 }
 
 /** Tier-2 form (ADR-0017): splat a GPU-resident point cloud into a GPU-resident density grid,

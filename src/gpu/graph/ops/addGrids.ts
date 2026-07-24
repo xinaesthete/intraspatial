@@ -3,6 +3,7 @@
 // multi-input nodes and ops that don't need the GPU at all, and gives the executor
 // a genuine fork-join (diamond) to dedup over.
 import type { Shape } from "../handle";
+import { systemsAgree } from "../handle";
 import type { OpType, Params } from "../op";
 
 function gridShape(s: Shape): { width: number; height: number } {
@@ -36,6 +37,17 @@ export const addGridsOp: OpType = {
       b = gridShape(inputs[1]!);
     if (a.width !== b.width || a.height !== b.height) throw new Error("addGrids: grid shapes differ");
     return [inputs[0]!];
+  },
+  // Placement agreement (ADR-0018 decision 3), sitting beside the shape check above: a binary op
+  // must reject combining fields that live in different coordinate systems. `systemsAgree` throws
+  // when exactly one input is placed (placed + array-space can't reconcile); we throw here on the
+  // both-placed-but-different-system case. Agreeing inputs pass the first input's placement through
+  // — a pointwise sum does not move the grid.
+  inferPlacement(inputs) {
+    if (!systemsAgree(inputs[0], inputs[1])) {
+      throw new Error("addGrids: inputs are in different coordinate systems (cannot combine across systems)");
+    }
+    return [inputs[0]];
   },
   async execute(_ctx, inputs, params) {
     return [{ shape: inputs[0]!.shape, dtype: "f32", data: combine(inputs[0]!.data!, inputs[1]!.data!, params) }];

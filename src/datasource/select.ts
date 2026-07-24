@@ -24,6 +24,7 @@ import {
 } from "./math";
 import { chunkApproxBytes, chunkArrayBox, chunkCounts, worldVoxelSize0 } from "./multiscale";
 import type { ChunkId, Multiscale, Result, SelectedChunk, Selection } from "./types";
+import { worldFromArrayOf } from "./types";
 
 export interface SelectOptions {
   /** Detail budget: `q = 1` ≈ one prefiltered sample per screen pixel; `q > 1`
@@ -75,7 +76,7 @@ export function select(ms: Multiscale, cam: Camera, opts: SelectOptions = {}): S
   const maxLevel = ms.levelCount - 1;
   const planes = frustumPlanes(cam);
   const { fwd } = cameraBasis(cam);
-  const wfa = ms.worldFromArray;
+  const wfa = worldFromArrayOf(ms);
   const worldToArray = invertAffine(wfa); // once — reused for every chunk's nearest-point
 
   const out: SelectedChunk[] = [];

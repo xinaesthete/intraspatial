@@ -8,9 +8,10 @@
 // The one thing still resolved host-side is the default `bbox`, which needs the points' own
 // bounds. See `resolveBbox` below.
 
+import type { Affine3 } from "../../../coords";
 import { gaussianKdeField } from "../../../spatial/scalarField";
-import { splatDensityResident } from "../../spatial/splatDensity";
-import type { FieldValue, Shape } from "../handle";
+import { splatDensityToTexture } from "../../spatial/splatDensity";
+import type { FieldValue, ResolvedPlacement, Shape } from "../handle";
 import type { OpType, Params } from "../op";
 import { param } from "../op";
 
@@ -28,6 +29,28 @@ function unpackXY(v: FieldValue): { xs: number[]; ys: number[] } {
 function bboxParam(params: Params): [number, number, number, number] | undefined {
   const b = params.bbox as number[] | undefined;
   return b && b.length === 4 ? [b[0]!, b[1]!, b[2]!, b[3]!] : undefined;
+}
+
+/** The output grid's array→world placement (ADR-0018): the axis-aligned scale+translate that
+ *  maps grid cell index (i, j) to its world position across `bbox` at `width`×`height`.
+ *
+ *    world = bbox.min + (i, j) · cellSize,   cellSize = (span / resolution)
+ *
+ *  i.e. cell (0,0) sits at (minX, minY) and one cell step moves one `cellSize` in world. This
+ *  records the world→cell relation on the output so a placed point cloud's coordinate system does
+ *  not vanish at the points→grid boundary. z is left identity (this is a 2-D splat). */
+function gridWorldFromArray(bbox: [number, number, number, number], width: number, height: number): Affine3 {
+  const [minX, minY, maxX, maxY] = bbox;
+  const cellX = (maxX - minX) / width;
+  const cellY = (maxY - minY) / height;
+  return {
+    origin: [minX, minY, 0],
+    axes: [
+      [cellX, 0, 0],
+      [0, cellY, 0],
+      [0, 0, 1],
+    ],
+  };
 }
 
 // World box for the grid. An explicit `bbox` wins; otherwise we use the points'
@@ -97,7 +120,32 @@ export const splatDensityOp: OpType = {
   inferShapes(_inputs, params) {
     return [{ kind: "grid", width: param<number>(params, this.params[0]!), height: param<number>(params, this.params[1]!) }];
   },
+  // A placement-constructing source (ADR-0018): the splat happens in the points' *own* system —
+  // no transform is applied to the points here — so the output grid carries that same `system`,
+  // with a fresh `worldFromArray` mapping grid cell → world across the region box. This overrides
+  // the pass-through default (which would wrongly copy the points' matrix onto the grid); the
+  // executor then stamps it because `execute` leaves `placement` unset, so this concrete placement
+  // wins. Two boundary cases, both deliberate:
+  //   - Unplaced points ⇒ `undefined`: array space in ⇒ array space out. Do NOT fabricate an
+  //     identity placement (array-space and placed-at-identity are distinct states, ADR-0018).
+  //   - Placed points but no explicit `bbox`: the world box is only known at execute time from the
+  //     points' own bounds, which build-time inference cannot see, so no concrete placement is
+  //     recorded. `bbox` is the region selector (until vector-`ParamType`, slice 4); supply it to
+  //     get a placed output grid.
+  inferPlacement(inputs, params) {
+    const pl = inputs[0];
+    if (pl === undefined) return [undefined];
+    const bbox = bboxParam(params);
+    if (bbox === undefined) return [undefined];
+    const width = param<number>(params, this.params[0]!);
+    const height = param<number>(params, this.params[1]!);
+    return [{ system: pl.system, worldFromArray: gridWorldFromArray(bbox, width, height) } satisfies ResolvedPlacement];
+  },
   resident: true,
+  // Output stays a TEXTURE. The additive splat renders into one anyway, so handing that straight to
+  // the executor costs nothing, and a consumer that also renders — a paint to canvas, another pass
+  // — then reads it in place. The `copyTextureToBuffer` + de-pad this used to do unconditionally is
+  // now the executor's bridge, paid only when a buffer-binding op actually consumes the value.
   async execute(ctx, inputs, params) {
     const inField = inputs[0]!;
     const src = inField.buffer;
@@ -105,15 +153,15 @@ export const splatDensityOp: OpType = {
     const width = params.width as number,
       height = params.height as number;
 
-    const dst = await ctx.backend.lease(width * height * 4);
-    await splatDensityResident(src.buffer, pointCount(inField.shape), dst.buffer, {
+    const dst = await ctx.backend.leaseTexture(width, height);
+    await splatDensityToTexture(src.buffer, pointCount(inField.shape), dst.texture, {
       width,
       height,
       sigma: params.sigma as number,
       radiusSigma: params.radiusSigma as number,
       bbox: residentBbox(inField, params),
     });
-    return [{ shape: { kind: "grid", width, height }, dtype: "f32", buffer: dst }];
+    return [{ shape: { kind: "grid", width, height }, dtype: "f32", texture: dst }];
   },
   cpuGolden(inputs, params) {
     const { xs, ys } = unpackXY(inputs[0]!);

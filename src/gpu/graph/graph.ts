@@ -6,7 +6,18 @@
 //
 // Edges are *derived* from each node's `inputs` map (a RAW dependency on the
 // referenced producer); they are never hand-declared.
-import type { Basis, ElementType, FieldValue, GpuField, NodeId, Shape } from "./handle";
+import type {
+  Basis,
+  ElementType,
+  FieldProvenance,
+  FieldRole,
+  FieldValue,
+  GpuField,
+  NodeId,
+  ResolvedPlacement,
+  Shape,
+  TensorAxis,
+} from "./handle";
 import { SCALAR, SPATIAL } from "./handle";
 import type { Params } from "./op";
 import { getOp } from "./registry";
@@ -32,6 +43,17 @@ export interface GraphNode {
   /** Inferred output bases (ADR-0006), positional by output port. The executor stamps
    *  these onto produced values so the basis propagates without each op setting it. */
   outBases?: Basis[];
+  /** Inferred output open-axes (ADR-0004/0015), positional by output port. Stamped by the
+   *  executor exactly like `outBases`, so a channel axis propagates without each op setting it.
+   *  A `undefined` entry ⇒ that output has no axes. */
+  outAxes?: (readonly TensorAxis[] | undefined)[];
+  /** Inferred output polarity (ADR-0015), positional by output port. Stamped by the executor
+   *  like `outBases`. A `undefined` entry ⇒ that output is `intensity` (the default). */
+  outRoles?: (FieldRole | undefined)[];
+  /** Inferred output world placement (ADR-0018), positional by output port. Stamped by the
+   *  executor like `outBases`, so placement survives generic ops. A `undefined` entry ⇒ that
+   *  output is array-space (unplaced). */
+  outPlacements?: (ResolvedPlacement | undefined)[];
 }
 
 /** Handle returned by `Graph.feedback`: the delayed `state` output, plus `close` to
@@ -61,8 +83,31 @@ export class Graph {
   /** Add a source node carrying a host value; returns its lazy handle. */
   source(value: FieldValue, label = "source"): GpuField {
     const id = this.nextNodeId(label);
-    this.nodes.set(id, { id, op: "source", params: {}, inputs: {}, source: value, outBases: [value.basis ?? SPATIAL] });
-    return makeField(id, "out", value.shape, value.dtype ?? "f32", value.element ?? SCALAR, value.basis ?? SPATIAL);
+    // Carry the source value's axes/role/placement onto the handle and node, exactly like basis —
+    // otherwise a source's coordinate facets are lost at build (the ADR-0015 known gap).
+    this.nodes.set(id, {
+      id,
+      op: "source",
+      params: {},
+      inputs: {},
+      source: value,
+      outBases: [value.basis ?? SPATIAL],
+      outAxes: [value.axes],
+      outRoles: [value.role],
+      outPlacements: [value.placement],
+    });
+    return makeField(
+      id,
+      "out",
+      value.shape,
+      value.dtype ?? "f32",
+      value.element ?? SCALAR,
+      value.basis ?? SPATIAL,
+      value.axes,
+      value.role,
+      value.placement,
+      value.provenance,
+    );
   }
 
   /** A points source from parallel x/y arrays, packed as [x0,y0,x1,y1,...]. */
@@ -95,9 +140,22 @@ export class Graph {
       inputs: { init: { node: init.producer, port: init.outPort } },
       stableKey: key ?? id,
       outBases: [init.basis ?? SPATIAL],
+      outAxes: [init.axes],
+      outRoles: [init.role],
+      outPlacements: [init.placement],
     };
     this.nodes.set(id, node);
-    const state = makeField(id, "state", init.shape, init.dtype, init.element ?? SCALAR, init.basis ?? SPATIAL);
+    const state = makeField(
+      id,
+      "state",
+      init.shape,
+      init.dtype,
+      init.element ?? SCALAR,
+      init.basis ?? SPATIAL,
+      init.axes,
+      init.role,
+      init.placement,
+    );
     return {
       state,
       close: (next: GpuField) => {
@@ -119,9 +177,22 @@ export class Graph {
       inputs: { init: { node: init.producer, port: init.outPort } },
       stableKey: key ?? id,
       outBases: [init.basis ?? SPATIAL],
+      outAxes: [init.axes],
+      outRoles: [init.role],
+      outPlacements: [init.placement],
     };
     this.nodes.set(id, node);
-    const out = makeField(id, "out", init.shape, init.dtype, init.element ?? SCALAR, init.basis ?? SPATIAL);
+    const out = makeField(
+      id,
+      "out",
+      init.shape,
+      init.dtype,
+      init.element ?? SCALAR,
+      init.basis ?? SPATIAL,
+      init.axes,
+      init.role,
+      init.placement,
+    );
     return {
       out,
       close: (next: GpuField) => {
@@ -137,6 +208,9 @@ export class Graph {
     const inShapes: Shape[] = [];
     const inElements: ElementType[] = [];
     const inBases: Basis[] = [];
+    const inAxes: (readonly TensorAxis[] | undefined)[] = [];
+    const inRoles: (FieldRole | undefined)[] = [];
+    const inPlacements: (ResolvedPlacement | undefined)[] = [];
     for (const spec of def.inputs) {
       const f = inputs[spec.name];
       if (!f) throw new Error(`graph.op(${name}): missing input "${spec.name}"`);
@@ -144,6 +218,9 @@ export class Graph {
       inShapes.push(f.shape);
       inElements.push(f.element ?? SCALAR);
       inBases.push(f.basis ?? SPATIAL);
+      inAxes.push(f.axes);
+      inRoles.push(f.role);
+      inPlacements.push(f.placement);
     }
     // Declared defaults first, then overlay everything the caller supplied — this
     // keeps undeclared pass-through params (e.g. an explicit `bbox`) that ops read
@@ -160,10 +237,26 @@ export class Graph {
     // idwt on a spatial field) happens in the op's inferBasis (ADR-0006).
     const passThrough = inBases[0] ?? SPATIAL;
     const outBases = def.inferBasis ? def.inferBasis(inBases, merged) : def.outputs.map(() => passThrough);
+    // Axes/role/placement thread through the identical mechanism as basis (ADR-0015 known gap +
+    // ADR-0018): opt-in hook, else pass through the first input's value to every output — the
+    // "a convolve does not move the grid" default. A source (no inputs) passes through `undefined`.
+    const outAxes = def.inferAxes ? def.inferAxes(inAxes, merged) : def.outputs.map(() => inAxes[0]);
+    const outRoles = def.inferRole ? def.inferRole(inRoles, merged) : def.outputs.map(() => inRoles[0]);
+    const outPlacements = def.inferPlacement ? def.inferPlacement(inPlacements, merged) : def.outputs.map(() => inPlacements[0]);
     const id = this.nextNodeId(name);
-    this.nodes.set(id, { id, op: name, params: merged, inputs: inputRefs, outBases });
+    this.nodes.set(id, { id, op: name, params: merged, inputs: inputRefs, outBases, outAxes, outRoles, outPlacements });
     return def.outputs.map((o, i) =>
-      makeField(id, o.name, outShapes[i]!, o.dtype ?? "f32", outElements[i] ?? SCALAR, outBases[i] ?? SPATIAL),
+      makeField(
+        id,
+        o.name,
+        outShapes[i]!,
+        o.dtype ?? "f32",
+        outElements[i] ?? SCALAR,
+        outBases[i] ?? SPATIAL,
+        outAxes[i],
+        outRoles[i],
+        outPlacements[i],
+      ),
     );
   }
 
@@ -201,6 +294,13 @@ function makeField(
   dtype: GpuField["dtype"],
   element: ElementType = SCALAR,
   basis: Basis = SPATIAL,
+  axes?: readonly TensorAxis[],
+  role?: FieldRole,
+  placement?: ResolvedPlacement,
+  provenance?: FieldProvenance,
 ): GpuField {
-  return { id: fieldSeq++, shape, dtype, element, basis, producer, outPort, version: 0 };
+  // `axes`/`role`/`placement`/`provenance` are threaded exactly like `element`/`basis`: absent ⇒
+  // the field-level default (no axes / intensity / array-space / no provenance), so an existing op
+  // is untouched.
+  return { id: fieldSeq++, shape, dtype, element, basis, axes, role, placement, provenance, producer, outPort, version: 0 };
 }

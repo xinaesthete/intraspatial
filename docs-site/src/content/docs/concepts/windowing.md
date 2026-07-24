@@ -46,6 +46,26 @@ principle reappears in connectivity: a hard "edge if within radius R" graph is a
 boxcar in distance, and [fuzzy adjacency](/primitives/fuzzy-adjacency/) is its
 tapered version — which is what makes [fuzzy TDA](/concepts/fuzzy-tda/) tick.
 
+## What we have actually measured
+
+This page is an **argument**, and it is worth being explicit about how much of it has been put to
+the test, because two different windowing questions live close together here.
+
+**Measured.** On the *neighbourhood weighting inside a statistic* — the kernel $K_r$ of a
+[topographical correlation map](/prototypes/) — replacing the hard disk with a smooth kernel at
+matched scale barely improves discrimination (all kernels within 0.0005 AUC on an easy scene), but
+removes almost all of the estimator's discretisation: **93–99.8 %** of cells share a mark value
+under the disk against ~0 % under any smooth kernel, and the disk is 2–5× more sensitive to the
+radius. So the boxcar's cost there is resolution and parameter sensitivity, not power.
+
+**Not yet measured.** Whether computing a statistic over a **grid of quadrat ROIs** differs
+materially from sweeping a window over the domain. That is the claim this page opens with, and it
+is a different axis — how the domain is *sampled*, rather than how a neighbourhood is *weighted*.
+Settling it needs a per-quadrat baseline, a swept counterpart, and a **grid-phase sweep**: slide the
+quadrat origin across its own unit cell and see whether any conclusion flips, not merely whether the
+spread is wider. Until that is run against published data, treat the opening claim as a position we
+hold, not a result we have.
+
 ## Two honest caveats
 
 - **The null must follow the window.** Significance tests defined on hard counts

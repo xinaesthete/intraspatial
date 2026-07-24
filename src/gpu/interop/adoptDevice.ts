@@ -14,8 +14,8 @@
 import tgpu from "typegpu";
 import * as d from "typegpu/data";
 import type { GpuBackend, Root } from "../graph/backend";
-import type { ResidentBuffer } from "../graph/handle";
-import { BufferPool, type PoolStats, residentUsage } from "../graph/pool";
+import type { ResidentBuffer, ResidentTexture } from "../graph/handle";
+import { BufferPool, type PoolStats, residentTextureUsage, residentUsage, TexturePool } from "../graph/pool";
 
 /** Wrap an externally-owned device as a `GpuBackend` bound to it. `kind` is a diagnostic
  *  tag for the host ("three" | "deck" | …). The returned backend caches its root so all
@@ -26,6 +26,9 @@ export function adoptDevice(device: GPUDevice, kind = "adopted"): GpuBackend {
   // Tier-2 leases are allocated on the *host's* device, which is the point: a buffer leased
   // here can be bound straight into the host renderer's pass with no transfer at all.
   const pool = new BufferPool(device);
+  // Same reasoning for textures: a render-produced field leased here is on the host's device, so
+  // the host can sample it directly instead of being handed a copy.
+  const texPool = new TexturePool(device);
   return {
     kind,
     async getDevice() {
@@ -55,8 +58,21 @@ export function adoptDevice(device: GPUDevice, kind = "adopted"): GpuBackend {
       device.queue.writeBuffer(res.buffer, 0, data as BufferSource);
       return res;
     },
+    async leaseTexture(
+      width: number,
+      height: number,
+      format: GPUTextureFormat = "r32float",
+      usage: number = residentTextureUsage(),
+    ): Promise<ResidentTexture> {
+      return texPool.lease(width, height, format, usage);
+    },
+    releaseTexture(t: ResidentTexture): void {
+      texPool.release(t);
+    },
     poolStats(): PoolStats {
-      return pool.stats();
+      const b = pool.stats();
+      const t = texPool.stats();
+      return { live: b.live + t.live, free: b.free + t.free, created: b.created + t.created, bytes: b.bytes + t.bytes };
     },
   };
 }

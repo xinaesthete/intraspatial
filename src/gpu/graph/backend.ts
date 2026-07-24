@@ -14,7 +14,7 @@
 // GPU-resident across a graph edge instead of round-tripping through the host.
 
 import type tgpu from "typegpu";
-import type { ResidentBuffer } from "./handle";
+import type { ResidentBuffer, ResidentTexture } from "./handle";
 import type { PoolStats } from "./pool";
 
 export type Root = ReturnType<typeof tgpu.initFromDevice>;
@@ -42,6 +42,11 @@ export interface GpuBackend {
   release(b: ResidentBuffer): void;
   /** Lease a buffer and upload `data` into it — the "upload at sources" half of invariant 4. */
   upload(data: ArrayBufferView, usage?: number): Promise<ResidentBuffer>;
+  /** Lease a resident TEXTURE — what a render-producing op writes into. Same liveness contract as
+   *  `lease`: the holder returns it, and the pool never destroys. */
+  leaseTexture(width: number, height: number, format?: GPUTextureFormat, usage?: number): Promise<ResidentTexture>;
+  /** Return a leased texture to the pool. */
+  releaseTexture(t: ResidentTexture): void;
   /** Pool occupancy, for tests and the debug overlay. */
   poolStats(): PoolStats;
 }

@@ -37,9 +37,7 @@ function protoOf(): Record<string, unknown> {
   const G = globalThis as unknown as { GPUBuffer?: { prototype: Record<string, unknown> } };
   const proto = G.GPUBuffer?.prototype;
   if (!proto) {
-    throw new Error(
-      "instrument: GPUBuffer is unavailable — acquire a device first (getDevice() installs the webgpu globals).",
-    );
+    throw new Error("instrument: GPUBuffer is unavailable — acquire a device first (getDevice() installs the webgpu globals).");
   }
   return proto;
 }

@@ -40,3 +40,8 @@ server to use them. A publicly-hosted sample dataset is still an open item.
 - **[Datasource decision view](/playground/datasource.html)** — the view-driven multiscale datasource
   against synthetic data: level selection, chunk residency, and the volume raymarch A/B.
 - **[HsPf — spatial selection/migration](/playground/hspf.html)** — the spatial GPU example.
+- **[Cell-type spatial statistics](/playground/cellstats.html)** — MuSpAn-style TCM, cross-PCF and the
+  N-way association matrix over cell centroids, as a coordinated view: hover the matrix to link every
+  panel to a cell-type pair. Γ is rendered as two additive GPU passes rather than a neighbour search
+  (the derivation lives in `docs/cell-stats.md` in the repo), with the
+  exact CPU oracle one button away. Reads a SpatialData store, a CSV export, or a built-in fixture.

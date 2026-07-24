@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Raster spatial-stat — SpatialData tile → Getis-Ord (B1)</title>
+  <style>
+    :root { color-scheme: dark; }
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0; min-height: 100%;
+      background: #0b1020; color: #e2e8f0;
+      font: 13px/1.5 ui-sans-serif, system-ui, sans-serif;
+    }
+    #wrap { max-width: 980px; margin: 0 auto; padding: 24px 20px 48px; }
+    h1 { font-size: 18px; font-weight: 600; margin: 0 0 4px; }
+    .sub { color: #94a3b8; font-size: 12px; margin: 0 0 18px; max-width: 760px; }
+    .panel { background: rgba(15, 23, 42, 0.82); border: 1px solid #1e293b; border-radius: 10px; padding: 14px 16px; margin-bottom: 16px; }
+    .row { display: flex; align-items: center; gap: 8px; margin: 8px 0; flex-wrap: wrap; }
+    .row label { color: #cbd5e1; flex: 0 0 auto; }
+    input[type="text"] { flex: 1 1 320px; background: #0f172a; color: #cbd5e1; border: 1px solid #334155; border-radius: 6px; padding: 4px 7px; font-size: 12px; }
+    button { background: #1e293b; color: #e2e8f0; border: 1px solid #334155; border-radius: 6px; padding: 5px 12px; font-size: 12px; cursor: pointer; }
+    button:hover { background: #334155; }
+    .note { color: #fcd34d; font-size: 11px; line-height: 1.5; }
+    .note code { background: #0f172a; border: 1px solid #334155; border-radius: 3px; padding: 0 3px; }
+    #status { margin-top: 8px; font-size: 12px; white-space: pre-wrap; color: #94a3b8; }
+    .views { display: flex; gap: 20px; flex-wrap: wrap; }
+    .view { flex: 1 1 300px; }
+    .view h2 { font-size: 11px; text-transform: uppercase; letter-spacing: 0.07em; color: #38bdf8; margin: 0 0 6px; }
+    canvas { width: 100%; image-rendering: pixelated; border: 1px solid #334155; border-radius: 6px; background: #0f172a; }
+    #readout { margin-top: 14px; padding-top: 12px; border-top: 1px solid #1e293b; font-size: 12px; color: #cbd5e1; font-variant-numeric: tabular-nums; }
+    .legend { font-size: 10px; color: #94a3b8; margin-top: 4px; }
+  </style>
+</head>
+
+<body>
+  <div id="wrap">
+    <h1>SpatialData raster tile → op-graph → Getis-Ord Gi* (Stream B1)</h1>
+    <p class="sub">A real HTJ2K morphology channel is decoded per-chunk through the datasource
+      <code>Loader</code>, converted to a graph grid field (<code>tileToField</code>), and run through
+      the registered <code>getisOrd</code> op on the GPU. The right panel is the Gi* hot-spot
+      z-score map (red = significantly high local density, blue = low). The same op is verified
+      against a CPU golden in the automated suite; this page runs it on <b>live bytes</b>.</p>
+
+    <div class="panel">
+      <div class="row">
+        <label for="store">store url</label>
+        <input id="store" type="text" />
+      </div>
+      <div class="row">
+        <label for="element">image element</label>
+        <input id="element" type="text" value="morphology_focus" style="flex:0 1 220px" />
+        <button id="run">run on live store</button>
+        <button id="fixture">run fixture (offline)</button>
+      </div>
+      <p class="note">⚠ Expects a CORS-enabled SpatialData / OME-Zarr store hosted <b>locally</b>
+        (default <code>localhost:8080</code>). If it is unreachable, use <b>run fixture</b> — it runs
+        the identical graph on a dep-free synthetic plane, so the pipeline is demonstrable offline.</p>
+      <div id="status">idle</div>
+    </div>
+
+    <div class="panel">
+      <div class="views">
+        <div class="view">
+          <h2>input channel (grayscale)</h2>
+          <canvas id="in"></canvas>
+          <div class="legend">auto-scaled intensity of the decoded morphology tile</div>
+        </div>
+        <div class="view">
+          <h2>Getis-Ord Gi* z-score</h2>
+          <canvas id="z"></canvas>
+          <div class="legend">diverging blue → white → red, symmetric about 0</div>
+        </div>
+      </div>
+      <div id="readout">—</div>
+    </div>
+  </div>
+  <script type="module" src="/src/rasterStatMain.ts"></script>
+</body>
+
+</html>

@@ -3,7 +3,7 @@
 // voxel size that the Nyquist selection compares against the projected pixel pitch.
 
 import { type Aabb, length, type Vec3, worldAabbOfArrayBox } from "./math";
-import { bytesPerSample, type Multiscale } from "./types";
+import { bytesPerSample, type Multiscale, worldFromArrayOf } from "./types";
 
 const ceilDiv = (a: number, b: number): number => Math.ceil(a / b);
 
@@ -55,14 +55,14 @@ export function chunkArrayBox(ms: Multiscale, id: { level: number; x: number; y:
 /** The world AABB of a chunk. */
 export function chunkWorldAabb(ms: Multiscale, id: { level: number; x: number; y: number; z: number }): Aabb {
   const [lo, hi] = chunkArrayBox(ms, id);
-  return worldAabbOfArrayBox(ms.worldFromArray, lo, hi);
+  return worldAabbOfArrayBox(worldFromArrayOf(ms), lo, hi);
 }
 
 /** World size of a level-0 voxel — the largest axis spacing (conservative; the
  *  coarsest-sampled axis governs, so the picked level never under-resolves it).
  *  Anisotropic per-axis LOD is deferred (ADR-0008 §4). */
 export function worldVoxelSize0(ms: Multiscale): number {
-  const a = ms.worldFromArray.axes;
+  const a = worldFromArrayOf(ms).axes;
   return Math.max(length(a[0]), length(a[1]), length(a[2]));
 }
 
