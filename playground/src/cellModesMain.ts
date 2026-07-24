@@ -394,6 +394,7 @@ function drawTerrain(): void {
     // "all" is stored as 0 so the option does not have to know K at authoring time.
     modesUsed: Number(modesUsedSel.value) || K,
     distanceSpan: Number(dspanInput.value) || 1.2,
+    marker: wand ? { col: wand.col, row: wand.row } : undefined,
   }).then((info) => {
     const m = Number(modesUsedSel.value) || K;
     terrainLegendEl.innerHTML =
@@ -403,12 +404,23 @@ function drawTerrain(): void {
         ? `Similarity is the <b>whitened distance</b> |Λ<sup>−½</sup>Vᵀ Δz| over ${m === K ? `all ${K}` : m} mode${m === 1 ? "" : "s"} — ` +
           `${m === K ? "full Mahalanobis in channel space" : "distance in exactly the space the colour shows"}, ` +
           `saturating at ${(Number(dspanInput.value) || 1.2).toFixed(1)}.`
-        : `<span style="color:#fbbf24">No wand reference yet — click the mode map above; until then every similarity reads 0.</span>`);
+        : `<span style="color:#fbbf24">No wand reference yet — click or drag on the mode map above; until then every similarity reads 0.</span>`);
   });
 }
 
-/** Turn a click on the 2-D mode map into a wand reference: read the K channel densities at that
- *  pixel off the device and standardise them the same way `corr` was built. */
+/** Repaint the flat mode map, carrying the crosshair. Cheap — one fullscreen fragment pass over
+ *  rasters already on the device — which is what makes redrawing it on every drag step affordable. */
+function paintMap(): void {
+  if (!live) return;
+  void paintGramModes(modeCanvas, live.res, {
+    vectors: live.vectors,
+    saturate: Number(satInput.value) || 2.5,
+    marker: wand ? { col: wand.col, row: wand.row } : undefined,
+  });
+}
+
+/** Turn a pointer position over the 2-D mode map into a wand reference: read the K channel
+ *  densities at that pixel off the device and standardise them the same way `corr` was built. */
 async function sampleWandAt(clientX: number, clientY: number): Promise<void> {
   if (!live) return;
   const rect = modeCanvas.getBoundingClientRect();
@@ -418,7 +430,7 @@ async function sampleWandAt(clientX: number, clientY: number): Promise<void> {
   const z = standardise(raw, live.res.resident.mean, live.res.resident.sd);
   wand = { z, col: Math.round(col), row: Math.round(row), label: `${Math.round(col)}, ${Math.round(row)}` };
 
-  // What the sampled profile IS, in the channels' own terms — the three channels furthest from
+  // What the sampled profile IS, in the channels' own terms — the four channels furthest from
   // typical, signed. A bare "you clicked here" tells the user nothing about what they selected.
   const top = live.res.labels
     .map((lab, a) => ({ lab, z: z[a]! }))
@@ -428,9 +440,49 @@ async function sampleWandAt(clientX: number, clientY: number): Promise<void> {
     .join(" · ");
   const swatch = cssRgb(oklabToSrgb(similaritySwatch(1)));
   wandReadoutEl.innerHTML =
-    `<b style="color:${swatch}">wand @ px ${wand.label}</b> — ${top}. Switch colour or height to ` +
-    `"similarity to sample" to see where else the tissue reads like this.`;
+    `<b style="color:${swatch}">wand @ px ${wand.label}</b> — ${top}. Drag on the map to move the ` +
+    `sample; rule lines mark it in both views.`;
+  paintMap();
   drawTerrain();
+}
+
+/**
+ * Drag the sample around the map, live.
+ *
+ * Sampling is a GPU dispatch plus a buffer map, so it cannot keep up with pointer events one-to-one
+ * and must not be allowed to queue: fifty pending readbacks would land in order and repaint the
+ * terrain fifty times for positions the pointer left long ago. Instead the latest position is held
+ * and one sample runs at a time — the classic coalescing loop, which drops intermediate positions
+ * rather than falling behind. The final pointer position is always sampled, because the loop
+ * re-checks after each readback.
+ */
+function attachWand(): void {
+  let queued: { x: number; y: number } | null = null;
+  let busy = false;
+  const pump = async (): Promise<void> => {
+    if (busy || !queued) return;
+    busy = true;
+    while (queued) {
+      const at = queued;
+      queued = null;
+      await sampleWandAt(at.x, at.y);
+    }
+    busy = false;
+  };
+  const track = (e: PointerEvent) => {
+    queued = { x: e.clientX, y: e.clientY };
+    void pump();
+  };
+  modeCanvas.addEventListener("pointerdown", (e) => {
+    modeCanvas.setPointerCapture(e.pointerId);
+    track(e);
+  });
+  modeCanvas.addEventListener("pointermove", (e) => {
+    // `buttons` rather than a flag of our own: pointer capture means we still see moves after the
+    // button is released outside the canvas, and this is the state that says whether it is a drag.
+    if (e.buttons & 1) track(e);
+  });
+  modeCanvas.addEventListener("pointerup", (e) => modeCanvas.releasePointerCapture(e.pointerId));
 }
 
 /** Orbit / pan / dolly. Elevation is clamped short of the poles: at exactly ±π/2 the view direction
@@ -807,7 +859,7 @@ corrCanvas.addEventListener("mousemove", (e) => {
     `window's apron corrects; r and the modes never divide by mass, so they do not move with it.`;
 });
 
-modeCanvas.addEventListener("click", (e) => void sampleWandAt(e.clientX, e.clientY));
+attachWand();
 for (const el of [heightSel, colourBySel, modesUsedSel, stepSel]) el.addEventListener("change", drawTerrain);
 for (const el of [hscaleInput, dspanInput]) el.addEventListener("input", drawTerrain);
 resetCamBtn.addEventListener("click", () => {

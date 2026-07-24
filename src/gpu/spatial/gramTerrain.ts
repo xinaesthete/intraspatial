@@ -40,6 +40,7 @@
 import type { Oklab } from "../../color/oklab";
 import { getDevice } from "../device";
 import type { GramMatrixGpuResult } from "./gramMatrix";
+import { MARKER_WGSL } from "./markerWgsl";
 
 /** Kept in step with `gramModes.ts` by being the same numbers — a mode map and its terrain must not
  *  disagree about what a colour means. */
@@ -51,7 +52,7 @@ const SPAN_L = 0.3;
 const SIM_A = 0.6;
 const SIM_B = -0.8;
 
-const UNI_FLOATS = 36; // 144 bytes: mat4 + 5 vec4s
+const UNI_FLOATS = 40; // 160 bytes: mat4 + 6 vec4s
 
 const TERRAIN_SHADER = /* wgsl */ `
 struct Uni {
@@ -60,6 +61,7 @@ struct Uni {
   rasterH: f32, K: f32, aspectX: f32, aspectY: f32,
   heightScale: f32, heightSource: f32, colourBy: f32, m: f32,
   scaleL: f32, scaleA: f32, scaleB: f32, distScale: f32,
+  markerX: f32, markerY: f32, markerOn: f32, lineW: f32,
 };
 @group(0) @binding(0) var<uniform> U: Uni;
 @group(0) @binding(1) var<storage, read> rasters: array<f32>;
@@ -84,6 +86,8 @@ fn oklabToSrgb(lab: vec3f) -> vec3f {
   let hi = 1.055 * pow(c, vec3f(1.0 / 2.4)) - 0.055;
   return select(hi, lo, c <= vec3f(0.0031308));
 }
+
+${MARKER_WGSL}
 
 fn fetch(a: u32, col: u32, row: u32) -> f32 {
   return rasters[a * u32(U.rasterH) * u32(U.rowFloats) + row * u32(U.rowFloats) + col];
@@ -183,7 +187,19 @@ fn fs(in: VOut) -> @location(0) vec4f {
   }
   // Shade in OKLab's lightness rather than by scaling sRGB: multiplying linear RGB would drag the
   // hue of saturated colours, which is exactly the signal the map carries.
-  return vec4f(oklabToSrgb(vec3f(lab.x * lit, lab.y, lab.z)), 1.0);
+  let rgb = oklabToSrgb(vec3f(lab.x * lit, lab.y, lab.z));
+
+  // The two rule lines are loci in the surface's own XY, so each drapes over the relief as the
+  // terrain's profile along one axis through the sample, and both stay put as the camera moves.
+  // Deliberately NOT shaded: a mark that dims on a shadowed slope is exactly where you lose it.
+  //
+  // Their WIDTH is screen-space, not model-space, via the per-axis screen derivative of mp. On a
+  // near-vertical face model XY barely changes per pixel, so a fixed model-space band smears across
+  // the whole wall; scaling by fwidth holds each line at a couple of pixels whatever the surface is
+  // doing underneath. The floor keeps it from vanishing on a face turned almost edge-on.
+  let mp = in.model.xy - vec2f(U.markerX, U.markerY);
+  let w = max(vec2f(U.lineW), fwidth(mp) * 1.6);
+  return vec4f(markerOver(rgb, mp, w, U.markerOn), 1.0);
 }
 `;
 
@@ -232,6 +248,9 @@ export interface TerrainOptions {
   readonly modesUsed?: number;
   /** Distance at which similarity reaches 0. */
   readonly distanceSpan?: number;
+  /** Where the wand sample was taken, in raster pixels — the same coordinates `paintGramModes`
+   *  takes, so the caller does not have to know this module's model space. */
+  readonly marker?: { readonly col: number; readonly row: number };
 }
 
 export interface TerrainInfo {
@@ -486,6 +505,16 @@ export async function paintGramTerrain(canvas: HTMLCanvasElement, res: GramMatri
   const mvp = mvpOf(opts.camera, cw / Math.max(ch, 1));
   const srcCode = { mode1: 0, mode2: 1, mode3: 2, similarity: 3 }[opts.heightSource];
 
+  // Raster pixel -> model XY, using the SAME expression the vertex shader does, so the rule lines
+  // land on the vertex they name rather than half a grid cell off when `step` > 1.
+  const markerModel: [number, number] = [0, 0];
+  if (opts.marker) {
+    const u = opts.marker.col / step / Math.max(gridW - 1, 1);
+    const v = opts.marker.row / step / Math.max(gridH - 1, 1);
+    markerModel[0] = (u - 0.5) * aspectX;
+    markerModel[1] = (0.5 - v) * aspectY;
+  }
+
   const uni = new Float32Array(UNI_FLOATS);
   uni.set(mvp, 0);
   uni.set(
@@ -506,6 +535,12 @@ export async function paintGramTerrain(canvas: HTMLCanvasElement, res: GramMatri
       scales[1],
       scales[2],
       distScale,
+      markerModel[0],
+      markerModel[1],
+      opts.marker ? 1 : 0,
+      // Minimum half-width as a fraction of the model's long side, which is 1 by construction. It
+      // only bites where the screen-space derivative would make the line thinner than this.
+      0.0012,
     ],
     16,
   );

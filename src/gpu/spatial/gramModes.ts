@@ -34,19 +34,23 @@
 import type { Oklab } from "../../color/oklab";
 import { getDevice } from "../device";
 import type { GramMatrixGpuResult } from "./gramMatrix";
+import { MARKER_WGSL } from "./markerWgsl";
 
 /** Fragment shader constants: the OKLab→linear-sRGB matrices, matching `src/color/oklab.ts`. */
 const PAINT_SHADER = /* wgsl */ `
 struct Uni {
   width: f32, height: f32, rowFloats: f32, k: f32,
   scaleL: f32, scaleA: f32, scaleB: f32, baseL: f32,
-  spanL: f32, chroma: f32, pad0: f32, pad1: f32,
+  spanL: f32, chroma: f32, markerX: f32, markerY: f32,
+  markerOn: f32, lineW: f32, pad0: f32, pad1: f32,
 };
 @group(0) @binding(0) var<uniform> U: Uni;
 @group(0) @binding(1) var<storage, read> rasters: array<f32>;
 /** Per-channel mean, sd, and the three mode loadings: 5 floats per channel, interleaved so one
  *  channel's whole contribution is a single contiguous fetch. */
 @group(0) @binding(2) var<storage, read> chan: array<f32>;
+
+${MARKER_WGSL}
 
 fn oklabToSrgb(lab: vec3f) -> vec3f {
   let l_ = lab.x + 0.3963377774 * lab.y + 0.2158037573 * lab.z;
@@ -102,7 +106,10 @@ fn fs(in: VOut) -> @location(0) vec4f {
   // would flatten modes 2-3 to grey.
   let t = clamp(y * vec3f(U.scaleL, U.scaleA, U.scaleB), vec3f(-1.0), vec3f(1.0));
   let lab = vec3f(U.baseL + U.spanL * t.x, U.chroma * t.y, U.chroma * t.z);
-  return vec4f(oklabToSrgb(lab), 1.0);
+  // The rule lines go on AFTER the OKLab conversion, in sRGB. Putting them in OKLab would let the
+  // gamut clamp move them, and a mark whose colour depends on what is under it is not a mark.
+  let mp = vec2f(f32(col) - U.markerX, f32(row) - U.markerY);
+  return vec4f(markerOver(oklabToSrgb(lab), mp, vec2f(U.lineW), U.markerOn), 1.0);
 }
 `;
 
@@ -114,7 +121,7 @@ const MAX_CHROMA = 0.11;
 const BASE_L = 0.62;
 const SPAN_L = 0.3;
 
-const UNI_FLOATS = 12;
+const UNI_FLOATS = 16;
 
 interface Ctx {
   device: GPUDevice;
@@ -149,6 +156,9 @@ export interface ModePaintOptions {
   readonly vectors: Float64Array;
   /** How many standard deviations of each mode's own spread saturate the ramp. Larger = flatter. */
   readonly saturate?: number;
+  /** Where the wand sample was taken, in raster pixels. Drawn as haloed rule lines so the point a
+   *  similarity field is measured *from* stays visible in the map it was picked on. */
+  readonly marker?: { readonly col: number; readonly row: number };
 }
 
 /** What the map is showing, for a legend that states the mapping rather than leaving it implicit. */
@@ -212,7 +222,26 @@ export async function paintGramModes(canvas: HTMLCanvasElement, res: GramMatrixG
   device.queue.writeBuffer(
     uniBuf,
     0,
-    new Float32Array([res.width, res.height, rowFloats, K, scales[0], scales[1], scales[2], BASE_L, SPAN_L, MAX_CHROMA, 0, 0]),
+    // Half-width in RASTER pixels. The canvas is displayed at close to one CSS pixel per raster
+    // pixel, so a hair under one keeps the lines thin without letting them alias into dashes.
+    new Float32Array([
+      res.width,
+      res.height,
+      rowFloats,
+      K,
+      scales[0],
+      scales[1],
+      scales[2],
+      BASE_L,
+      SPAN_L,
+      MAX_CHROMA,
+      opts.marker?.col ?? 0,
+      opts.marker?.row ?? 0,
+      opts.marker ? 1 : 0,
+      0.75,
+      0,
+      0,
+    ]),
   );
   device.queue.writeBuffer(chanBuf, 0, chan);
 

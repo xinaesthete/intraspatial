@@ -303,6 +303,23 @@ space the colour is drawn from, so "looks similar" and "is selected" agree by co
 ADR-0015's metric-over-an-open-axis at its full-metric end, and the Gram form is what makes the
 full-metric case computable at all.
 
+The sample is **dragged, not clicked**: holding the pointer down on the map moves the reference and
+both views follow. Sampling is a dispatch plus a buffer map, so it cannot keep up one-to-one with
+pointer events and must not queue — fifty pending readbacks would land in order and repaint for
+positions the pointer left long ago. The loop holds only the latest position and runs one sample at
+a time, dropping intermediate positions rather than falling behind, and re-checks after each
+readback so the final position is always the one sampled. That costs about 100 ms per
+sample-and-redraw at a 672×219 raster, which a drag absorbs.
+
+Where the sample came from is drawn in **both** views, by one shared WGSL snippet
+(`markerWgsl.ts`, on the same principle as `kernelWgsl.ts`) so the two marks cannot drift apart. It
+is a pair of full-span rule lines rather than a ring: a ring has to be found before it can be read,
+and on the terrain it is a locus in the surface's XY, so over steep relief it drapes down a
+near-vertical face and stops reading as a ring at all. Lines are found immediately, and draping them
+is a feature — each is the surface's profile along one axis through the sample. Their width is taken
+from the per-axis screen-space derivative, because a fixed model-space band smears across a wall
+where model XY barely changes per pixel.
+
 Two things this surfaced that are worth keeping. **A whitened distance is in units of mode σ**, so
 the useful saturation span is ~1, not the 3 the first version defaulted to — above 2 nearly all
 tissue reads as similar. And the mode views make **under-resolution** visible: if the splat radius
@@ -551,6 +568,7 @@ src/gpu/spatial/crossPcf.ts    GPU cross-PCF + N-way matrix (WGSL, integer atomi
 src/gpu/spatial/gramMatrix.ts  GPU Gram form: one splat per channel + one reduction dispatch
 src/gpu/spatial/gramModes.ts   the flat OKLab mode map, one fragment pass, no readback
 src/gpu/spatial/gramTerrain.ts the displaced surface, the orbit camera, and the wand's metric
+src/gpu/spatial/markerWgsl.ts  the sample rule lines in WGSL, shared by the map and the terrain
 src/gpu/spatial/kernelWgsl.ts  the kernel family in WGSL, shared by tcmRender and gramMatrix
 src/color/ramps.ts             OKLCh diverging / sequential ramps
 
