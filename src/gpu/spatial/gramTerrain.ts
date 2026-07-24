@@ -42,7 +42,7 @@ import { compileShader, getDevice } from "../device";
 import type { GramMatrixGpuResult } from "./gramMatrix";
 import { IMAGE_OVERLAY_WGSL, type ImageOverlay, overlayResources } from "./imageOverlayWgsl";
 import { MARKER_WGSL } from "./markerWgsl";
-import { SELECTION_L, SIM_A, SIM_B, SIMILARITY_WGSL } from "./similarityWgsl";
+import { SIM_A, SIM_B, SIMILARITY_WGSL } from "./similarityWgsl";
 
 /** Kept in step with `gramModes.ts` by being the same numbers — a mode map and its terrain must not
  *  disagree about what a colour means. */
@@ -177,13 +177,9 @@ fn fs(in: VOut) -> @location(0) vec4f {
 
   // Shade in OKLab's lightness rather than by scaling sRGB: multiplying linear RGB would drag the
   // hue of saturated colours, which is exactly the signal the map carries.
-  var rgb = oklabToSrgb(vec3f(lab.x * lit, lab.y, lab.z));
-
-  // The selection boundary, in the similarity hue so it reads as "what got selected" against the
-  // marker's white "where you sampled". Unshaded and drawn over the image for the same reason the
-  // rule lines are: an annotation that dims in shadow is lost exactly where the relief is busiest.
-  let edge = selectionEdge(in.d, U.selTol, U.selOn);
-  rgb = mix(rgb, oklabToSrgb(vec3f(${SELECTION_L}, ${MAX_CHROMA} * ${SIM_A}, ${MAX_CHROMA} * ${SIM_B})), edge);
+  // The selection boundary goes on unshaded, for the same reason the rule lines do: an annotation
+  // that dims in shadow is lost exactly where the relief is busiest.
+  let rgb = selectionOver(oklabToSrgb(vec3f(lab.x * lit, lab.y, lab.z)), in.d, U.selTol, U.selOn);
 
   // The two rule lines are loci in the surface's own XY, so each drapes over the relief as the
   // terrain's profile along one axis through the sample, and both stay put as the camera moves.

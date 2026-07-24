@@ -15,6 +15,7 @@
 
 import { oklabToSrgb } from "../../src/color/oklab";
 import { cssRgb, deg, diverging, oklchToSrgbMapped, rgbBytes, type Srgb } from "../../src/color/ramps";
+import { envelopeExcursions, type SpectrumEnvelopeResult, spectrumEnvelope } from "../../src/gpu/spatial/gramEnvelope";
 import type { GramMatrixGpuResult } from "../../src/gpu/spatial/gramMatrix";
 import { gramMatrixGpu } from "../../src/gpu/spatial/gramMatrix";
 import { type ModePaintInfo, modeSwatch, paintGramModes } from "../../src/gpu/spatial/gramModes";
@@ -83,6 +84,9 @@ const imageSel = $<HTMLSelectElement>("imageSel");
 const imageLoadBtn = $<HTMLButtonElement>("imageLoad");
 const imageMixInput = $<HTMLInputElement>("imageMix");
 const imageNoteEl = $<HTMLSpanElement>("imageNote");
+const simsSelect = $<HTMLSelectElement>("sims");
+const runEnvelopeBtn = $<HTMLButtonElement>("runEnvelope");
+const screeLegendEl = $<HTMLDivElement>("screeLegend");
 const computeBtn = $<HTMLButtonElement>("compute");
 const statusEl = $<HTMLDivElement>("status");
 const modeCanvas = $<HTMLCanvasElement>("modemap");
@@ -122,6 +126,10 @@ let cam: OrbitCamera = DEFAULT_CAM;
 /** The loaded context image and its world→UV affine. Held together because an image whose placement
  *  could not be inverted must not be drawn at all — see `imageOverlay`. */
 let ctxImage: { img: ContextImage; uvFromWorld: Float64Array } | null = null;
+
+/** The last simulated null, held so the scree chart can keep its band across repaints. Cleared by a
+ *  recompute: a band drawn against a different channel set or window would be a false claim. */
+let lastEnvelope: SpectrumEnvelopeResult | null = null;
 
 /** What both views pass to their shaders. One source, so the flat map and the terrain cannot
  *  disagree about where the image is or how much of it is showing. */
@@ -427,6 +435,64 @@ function drawTerrain(): void {
   });
 }
 
+/**
+ * Simulate the null spectrum and band the scree chart with it.
+ *
+ * Needs the CHANNELS, not the finished matrix — a permutation changes which cell carries which
+ * mark, so every realisation is a fresh splat. They are rebuilt here rather than cached from the
+ * last compute because the var selection may have moved since, and silently enveloping a spectrum
+ * against a different channel set would be worse than refusing.
+ */
+async function runEnvelope(): Promise<void> {
+  const t = base;
+  if (!t || !live) {
+    setStatus("compute modes first.", true);
+    return;
+  }
+  const sims = Number(simsSelect.value) || 99;
+  runEnvelopeBtn.disabled = true;
+  try {
+    const { channels } = await buildChannels(t);
+    const full = tableBounds(t);
+    const rangeUm = Number(radiusInput.value) || 1;
+    const radius = equivalentRadius(kernelOf(), toWorld(rangeUm) / 2);
+    const { bbox } = windowBbox(full, radius);
+    const { width, height } = viewDims(bbox, Number(resSelect.value) || 384);
+
+    const res = await spectrumEnvelope(
+      channels,
+      { bbox, width, height, radius, kernel: kernelOf() },
+      {
+        simulations: sims,
+        onProgress: async (done, total) => {
+          setStatus(`null spectrum — ${done}/${total} realisations …`);
+          // Yield so the status actually paints; without this the page freezes for the whole run.
+          await new Promise((r) => setTimeout(r, 0));
+        },
+      },
+    );
+    lastEnvelope = res;
+    drawScree(res.observed, res);
+
+    const out = envelopeExcursions(res);
+    const verdict = res.envelope.exits
+      ? `<b style="color:#86efac">outside the null band</b> — ${out
+          .map((e) => `mode ${e.mode} ${e.above ? "above" : "below"} (${(e.observed * 100).toFixed(0)}% vs ${(e.bound * 100).toFixed(0)}%)`)
+          .join(", ")}`
+      : `<b style="color:#fbbf24">inside the null band</b> — this spectrum is what random labelling of the same cells produces`;
+    screeLegendEl.innerHTML =
+      `Grey band: the ${((1 - res.envelope.alpha) * 100).toFixed(0)}% global rank envelope over ${sims} random ` +
+      `labellings — every cell kept in place, marks shuffled between them, one shuffle shared across all ` +
+      `channels so within-cell co-expression survives and only the geography is destroyed. ` +
+      `<b>p = ${res.envelope.p.toFixed(3)}</b> (smallest attainable ${(1 / (sims + 1)).toFixed(3)}) · ${verdict}.`;
+    setStatus(`null spectrum done — ${sims} permutations in ${(res.elapsedMs / 1000).toFixed(1)} s.`);
+  } catch (err) {
+    setStatus(`null spectrum failed: ${err instanceof Error ? err.message : String(err)}`, true);
+  } finally {
+    runEnvelopeBtn.disabled = false;
+  }
+}
+
 /** Repaint the flat mode map, carrying the crosshair. Cheap — one fullscreen fragment pass over
  *  rasters already on the device — which is what makes redrawing it on every drag step affordable. */
 async function paintMap(): Promise<ModePaintInfo | null> {
@@ -642,7 +708,7 @@ function drawCorr(labels: string[], corr: Float64Array, hover: { a: number; b: n
   }
 }
 
-function drawScree(explained: Float64Array): void {
+function drawScree(explained: Float64Array, env?: SpectrumEnvelopeResult | null): void {
   const n = Math.min(explained.length, 24);
   const W = 460;
   const H = 200;
@@ -653,14 +719,40 @@ function drawScree(explained: Float64Array): void {
   ctx.fillRect(0, 0, W, H);
   const pad = 28;
   const bw = (W - 2 * pad) / n;
-  const peak = Math.max(...Array.from({ length: n }, (_, i) => explained[i]!), 1e-9);
+  // The band has to share the bar scale, or "outside the envelope" would be a claim about the
+  // drawing rather than about the numbers.
+  const peak = Math.max(
+    ...Array.from({ length: n }, (_, i) => explained[i]!),
+    ...(env ? Array.from({ length: n }, (_, i) => env.envelope.hi[i] ?? 0) : []),
+    1e-9,
+  );
+  const yOf = (v: number) => H - pad - ((H - 2 * pad) * Math.max(0, v)) / peak;
+
+  // Null band first, so the observed bars read as sitting against it.
+  if (env) {
+    ctx.fillStyle = "rgba(148, 163, 184, 0.22)";
+    for (let i = 0; i < n; i++) {
+      const lo = yOf(env.envelope.lo[i] ?? 0);
+      const hi = yOf(env.envelope.hi[i] ?? 0);
+      ctx.fillRect(pad + i * bw + 1, hi, bw - 2, Math.max(lo - hi, 1));
+    }
+  }
   for (let i = 0; i < n; i++) {
-    const h = ((H - 2 * pad) * Math.max(0, explained[i]!)) / peak;
+    const y = yOf(explained[i]!);
     // Modes 1-3 are the ones the map uses; colour them as their OKLab axis so the chart and the
     // map are legible together rather than needing a mental key.
     const swatch: Srgb = i < 3 ? oklabToSrgb(modeSwatch([i === 0 ? 1 : 0, i === 1 ? 1 : 0, i === 2 ? 1 : 0])) : [0.35, 0.42, 0.53];
     ctx.fillStyle = cssRgb(swatch);
-    ctx.fillRect(pad + i * bw + 1, H - pad - h, bw - 2, h);
+    // Bars drawn narrow when there is a band, so the grey shows on both sides of each.
+    const inset = env ? 4 : 1;
+    ctx.fillRect(pad + i * bw + inset, y, bw - 2 * inset, H - pad - y);
+    // A mode outside the band is the finding; mark it rather than leaving it to be eyeballed.
+    if (env && (explained[i]! > (env.envelope.hi[i] ?? 0) || explained[i]! < (env.envelope.lo[i] ?? 0))) {
+      ctx.fillStyle = "#e2e8f0";
+      ctx.beginPath();
+      ctx.arc(pad + i * bw + bw / 2, y - 6, 2.5, 0, 2 * Math.PI);
+      ctx.fill();
+    }
   }
   ctx.strokeStyle = "#334155";
   ctx.beginPath();
@@ -673,6 +765,11 @@ function drawScree(explained: Float64Array): void {
   for (let i = 0; i < Math.min(n, 12); i++) ctx.fillText(String(i + 1), pad + i * bw + bw / 2, H - pad + 12);
   ctx.textAlign = "left";
   ctx.fillText(`top mode ${(explained[0]! * 100).toFixed(1)}% of variance`, pad, 16);
+  if (env) {
+    ctx.fillStyle = "#cbd5e1";
+    ctx.textAlign = "right";
+    ctx.fillText(`null band ${((1 - env.envelope.alpha) * 100).toFixed(0)}% · p = ${env.envelope.p.toFixed(3)}`, W - pad, 16);
+  }
 }
 
 function drawLoadings(labels: string[], vectors: Float64Array): void {
@@ -755,7 +852,8 @@ async function computeModes(): Promise<void> {
 
     lastCorr = { labels: [...res.labels], corr: res.corr, g: res.g };
     drawCorr(lastCorr.labels, lastCorr.corr, null);
-    drawScree(modes.explained);
+    lastEnvelope = null;
+    drawScree(modes.explained, null);
     drawLoadings(res.labels, modes.vectors);
 
     const top = Array.from({ length: Math.min(3, res.labels.length) }, (_, k) => {
@@ -936,6 +1034,7 @@ corrCanvas.addEventListener("mousemove", (e) => {
 });
 
 attachWand();
+runEnvelopeBtn.addEventListener("click", () => void runEnvelope());
 imageLoadBtn.addEventListener("click", () => void loadImage());
 imageMixInput.addEventListener("input", () => {
   // One control, both views — the blend is the shared state, not a per-view setting.

@@ -37,7 +37,7 @@ import type { GramMatrixGpuResult } from "./gramMatrix";
 import { whiteningMatrix } from "./gramTerrain";
 import { IMAGE_OVERLAY_WGSL, type ImageOverlay, overlayResources } from "./imageOverlayWgsl";
 import { MARKER_WGSL } from "./markerWgsl";
-import { SELECTION_L, SIM_A, SIM_B, SIMILARITY_WGSL } from "./similarityWgsl";
+import { SIMILARITY_WGSL } from "./similarityWgsl";
 
 /** Chroma radius in OKLab units. 0.11 keeps `a`/`b` inside the sRGB gamut across the whole
  *  lightness range used below, so the shader's clamp is a corner case rather than a routine
@@ -136,9 +136,7 @@ fn fs(in: VOut) -> @location(0) vec4f {
   // Two marks, two meanings, deliberately different colours: the outline is the similarity hue and
   // encloses "what got selected"; the rule lines are white and say "where you sampled". The lines
   // are composited last so the sample point stays legible where it sits on its own boundary.
-  var rgb = oklabToSrgb(lab);
-  let edge = selectionEdge(s.w, U.selTol, U.selOn);
-  rgb = mix(rgb, oklabToSrgb(vec3f(${SELECTION_L}, ${MAX_CHROMA} * ${SIM_A}, ${MAX_CHROMA} * ${SIM_B})), edge);
+  let rgb = selectionOver(oklabToSrgb(lab), s.w, U.selTol, U.selOn);
 
   let mp = vec2f(f32(col) - U.markerX, f32(row) - U.markerY);
   return vec4f(markerOver(rgb, mp, vec2f(U.lineW), U.markerOn), 1.0);

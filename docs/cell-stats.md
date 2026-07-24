@@ -329,6 +329,53 @@ is a feature — each is the surface's profile along one axis through the sample
 from the per-axis screen-space derivative, because a fixed model-space band smears across a wall
 where model XY barely changes per pixel.
 
+### Permutation envelopes: what the spectrum is worth
+
+`45% of the spatial variance in mode 1` is not a claim until you know what the same cells would give
+with no spatial arrangement at all. The null is **random labelling** — every cell stays exactly
+where it is, the marks are shuffled between them (`src/spatial/permute.ts`). CSR is the wrong null
+here and would be a straw man: tissue is nowhere near homogeneous, so a CSR test rejects for every
+pair and has detected only that the section has anatomy.
+
+**One permutation, shared across all channels.** Permuting each channel independently destroys
+within-cell co-expression as well as geography, so the test would reject on cells that co-express —
+which has no spatial content and is exactly the confound `selfTerm` documents. A single shuffle
+moves each cell's whole profile together, leaving co-expression exact and destroying only the
+geography. For one-hot types the two are the same; for `X` it is the whole ball game, and
+`permute.test.ts` pins it by comparing the multiset of per-cell profiles before and after.
+
+**The mean of the null is analytic and free.** Splitting `C_ab` at `i = j` and taking the
+expectation over a uniform permutation separates the marks from the geometry completely:
+
+    E[C_ab] = φ(0)·S_ab + Φ·(W_a·W_b − S_ab) / (n(n−1)),     φ = J ⊛ J
+
+where the only geometric term is `Φ = Σ_{i≠j} φ(x_i − x_j) = ∫(J⊛ρ)² − n·φ(0)` — one splat of all
+cells, whatever the simulation count. This is not an optimisation, it is the check that the shuffle
+is uniform: a Monte Carlo mean that misses it means the permutation is wrong, and a biased
+simulation produces a perfectly plausible envelope in the wrong place. Both are tested against each
+other to 3%, for one-hot and weighted channels.
+
+**The test is a global rank envelope, not pointwise quantiles.** Pointwise 2.5/97.5% bands are a 5%
+test at each mode applied at K modes at once; measured here on null data at `d = 8`, that rejects
+**20%** of the time at a nominal 5%. The global construction (Myllymäki et al. 2017) ranks whole
+curves, so the multiplicity is handled by construction. Two implementation traps were hit and are
+recorded in `envelope.ts` because both look correct: the paper's plain global rank `min_r R(r)` is
+too coarse — ties at rank 1 gave a curve that was most extreme at every point p = 0.06 instead of
+0.01, and shrank the band until it rejected 29% of the time — so the ERL refinement is not optional;
+and building the band from the hull of the *simulated* curves only, rather than pooling the observed
+in with them, over-rejects at 21%. The version that ships has a measured rejection rate inside
+[2.6%, 7.4%] at a nominal 5% over 1000 replicates, and that test is the reason to trust the band.
+
+**The first real result inverts the naive reading.** On the Xenium selection (8 genes, 900 µm range,
+centre-25% window, 39 permutations): the observed spectrum is *outside* the null band with the
+smallest attainable p, but mode 1 is **below** it — 45% observed against 66% under random labelling
+— and modes 2 through 7 are all above. Under random labelling every channel's smoothed density is
+essentially the total cell density, so all channels become the same field, `corr` goes nearly
+rank-1, and the null concentrates almost everything in mode 1. Real tissue *differentiates* the
+channels, so the variance spreads. Read alone, "mode 1 carries 45%" would have been quoted as
+evidence of strong structure; against its null it is the opposite of remarkable, and the finding is
+in modes 2–7.
+
 ### The context image, and one camera for both
 
 The store's own image can be blended under either view. It is **draped**, not laid on a plane
@@ -600,6 +647,9 @@ src/gpu/spatial/paintField.ts  texture → canvas through a LUT; the single disp
 src/gpu/spatial/tcm.ts         exact compute path (TGSL), the GPU parity oracle
 src/gpu/spatial/crossPcf.ts    GPU cross-PCF + N-way matrix (WGSL, integer atomics)
 src/gpu/spatial/gramMatrix.ts  GPU Gram form: one splat per channel + one reduction dispatch
+src/spatial/envelope.ts        global rank envelopes (ERL); the coverage test is the point
+src/spatial/permute.ts         the random-labelling null + its analytic mean
+src/gpu/spatial/gramEnvelope.ts  N permuted spectra -> a banded scree chart
 src/gpu/spatial/gramModes.ts   the flat OKLab mode map, one fragment pass, no readback
 src/gpu/spatial/gramTerrain.ts the displaced surface, the orbit camera, and the wand's metric
 src/gpu/spatial/markerWgsl.ts  the sample rule lines in WGSL, shared by the map and the terrain
@@ -630,9 +680,15 @@ playground/src/datasource/cellCsv.ts     CSV → CellTable
   where it does not (Leap034), the µm/unit box is an assumption and everything is marked `µm*`.
   Nothing in the pipeline can tell the two apart for you.
 - **`byDimension` and non-linear transforms are unimplemented** — reported, not approximated.
-- **Mode 2 is only half built.** The Gram path has window-local mass and the viewport apron (§4);
-  `crossPcf.ts` and `tcm.ts` still do not, and **permutation envelopes are unbuilt everywhere** —
-  which is the half that turns a number into an inference.
+- **Mode 2 is only half built.** The Gram path has window-local mass, the viewport apron and a
+  permutation envelope on its spectrum (§4); `crossPcf.ts` and `tcm.ts` still have none of the
+  three, and no envelope exists for `g` or for the cross-PCF curves.
+- **The envelope re-splats every realisation, and allocates while it does.** 39 permutations of a
+  162k-cell, 8-channel selection take 13 s — about 340 ms each against 140 ms for the observed
+  matrix alone. The gap is host-side: `permuteChannels` allocates K fresh weight arrays per
+  realisation (~10 MB a time here), so most of the extra is allocation and collection rather than
+  GPU work. Reusing scratch buffers, or permuting into the packed point buffer on the device, would
+  take it close to the 140 ms floor. Not done.
 - **`crossPCFMatrixGpu` is not wired into the demo**; the matrix still runs on the CPU (one batched
   pass, fast enough at Leap034 scale).
 - **The Gram form is global, not swept.** `C = MMᵀ` integrates over the whole raster, so it is one

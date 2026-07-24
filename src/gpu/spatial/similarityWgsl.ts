@@ -26,13 +26,10 @@
 // that computes it. Truncating to 3 makes the distance a distance in exactly the space the OKLab
 // map is painted from, so "looks similar" and "is inside the outline" agree by construction.
 
-/** The similarity direction in OKLab's (a, b) plane, and the lightness the selection outline is
- *  drawn at. Chosen away from the mode axes' typical directions so a similarity reading is never
- *  mistaken for a mode reading, and shared so the terrain's shading and the map's outline are
- *  visibly the same colour — one says "how similar", the other says "where the boundary is". */
+/** The similarity direction in OKLab's (a, b) plane, for the terrain's shading ramp. Chosen away
+ *  from the mode axes' typical directions so a similarity reading is never mistaken for a mode one. */
 export const SIM_A = 0.6;
 export const SIM_B = -0.8;
-export const SELECTION_L = 0.86;
 
 export const SIMILARITY_WGSL = /* wgsl */ `
 /** Mode coordinates (xyz) and whitened distance to the wand reference (w), at one raster pixel.
@@ -55,15 +52,25 @@ fn sampleWhitened(col: u32, row: u32) -> vec4f {
   return vec4f(y, sqrt(d2));
 }
 
-/** 1 on the boundary of the selected region, the level set d = tol.
+/** The selection boundary — the level set d = tol — composited over a colour already in sRGB.
  *
- *  The width is taken from the screen-space derivative of d, so the outline is a constant couple of
- *  pixels whether the similarity field is changing fast or slowly. A fixed threshold in d would
- *  draw a hairline through steep gradients and a broad smear through flat ones — which is the same
- *  argument the marker's rule lines make, for the same reason. Fragment-stage only: fwidth has no
- *  meaning in a vertex shader. */
-fn selectionEdge(d: f32, tol: f32, on: f32) -> f32 {
-  if (on < 0.5) { return 0.0; }
-  return step(abs(d - tol), fwidth(d) * 1.2);
+ *  Deliberately NEUTRAL. An earlier version drew it in the similarity hue so it matched the
+ *  terrain's shading, which made it a third coloured thing competing with the mode colours and the
+ *  image underneath. A boundary is an annotation, not a measurement: it should say *where* without
+ *  also saying *what*, and leave the hue channel entirely to the data.
+ *
+ *  Width comes from the screen-space derivative of d, so the line stays about a pixel whether the
+ *  similarity field is changing fast or slowly — a fixed threshold in d would draw a hairline
+ *  through steep gradients and a broad smear through flat ones. Same argument as the marker's rule
+ *  lines. Fragment-stage only: fwidth has no meaning in a vertex shader.
+ *
+ *  The faint dark halo is what lets a one-pixel white line survive a pale H&E background without
+ *  being thickened to compensate. */
+fn selectionOver(base: vec3f, d: f32, tol: f32, on: f32) -> vec3f {
+  if (on < 0.5) { return base; }
+  let w = fwidth(d);
+  let core = step(abs(d - tol), w * 0.55);
+  let halo = step(abs(d - tol), w * 1.4);
+  return mix(mix(base, vec3f(0.05), halo * 0.3), vec3f(0.97), core);
 }
 `;

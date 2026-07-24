@@ -200,8 +200,18 @@
       <div class="tile">
         <h2>eigenvalue spectrum</h2>
         <canvas id="scree"></canvas>
-        <div class="legend">λ<sub>k</sub>/K — the fraction of total spatial variance in each mode. They sum to 1;
-          a negative bar would mean the matrix was not PSD and the projection meaningless.</div>
+        <div class="row" style="margin:8px 0 0">
+          <label for="sims">permutations</label>
+          <select id="sims" style="flex:0 1 90px">
+            <option value="39">39</option>
+            <option value="99" selected>99</option>
+            <option value="199">199</option>
+          </select>
+          <button id="runEnvelope">run null</button>
+        </div>
+        <div class="legend" id="screeLegend">λ<sub>k</sub>/K — the fraction of total spatial variance in each mode.
+          They sum to 1; a negative bar would mean the matrix was not PSD and the projection meaningless.
+          <b>45% means nothing without a null</b> — run one to find out how much of it is inevitable.</div>
       </div>
       <div class="tile">
         <h2>mode loadings</h2>
