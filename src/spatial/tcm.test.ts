@@ -27,10 +27,11 @@ describe("crossMarks / computeTcmReference (Mode 1, global ρ_B)", () => {
   // ROI [0,20]², a tight B cluster (7×7 grid) around (5,5) so every B is within radius 5 of it.
   const bx: number[] = [];
   const by: number[] = [];
-  for (let i = 0; i < 7; i++) for (let j = 0; j < 7; j++) {
-    bx.push(4 + i / 3);
-    by.push(4 + j / 3);
-  }
+  for (let i = 0; i < 7; i++)
+    for (let j = 0; j < 7; j++) {
+      bx.push(4 + i / 3);
+      by.push(4 + j / 3);
+    }
   const B: CellCloud = { xs: bx, ys: by };
   const p: TcmParams = { width: 20, height: 20, bbox: [0, 0, 20, 20], radius: 5, sigma: 1, alpha: 5 };
 
@@ -54,7 +55,7 @@ describe("crossMarks / computeTcmReference (Mode 1, global ρ_B)", () => {
   it("grid-accelerated computeTcm reproduces the reference exactly", () => {
     // Deterministic pseudo-random two clouds over the ROI.
     let s = 987654321;
-    const rnd = () => ((s = (s * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff);
+    const rnd = () => (s = (s * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff;
     const cloud = (n: number, cx: number, cy: number, sp: number): CellCloud => {
       const xs: number[] = [];
       const ys: number[] = [];
