@@ -4,7 +4,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Cell centroids → per-type KDE splat (Stream B2)</title>
+  <title>Cell-type spatial stats — TCM · cross-PCF · N-way matrix (Stream B2)</title>
   <style>
     :root { color-scheme: dark; }
     * { box-sizing: border-box; }
@@ -13,47 +13,48 @@
       background: #0b1020; color: #e2e8f0;
       font: 13px/1.5 ui-sans-serif, system-ui, sans-serif;
     }
-    #wrap { max-width: 1040px; margin: 0 auto; padding: 24px 20px 48px; }
-    h1 { font-size: 18px; font-weight: 600; margin: 0 0 4px; }
-    .sub { color: #94a3b8; font-size: 12px; margin: 0 0 18px; max-width: 820px; }
-    .panel { background: rgba(15, 23, 42, 0.82); border: 1px solid #1e293b; border-radius: 10px; padding: 14px 16px; margin-bottom: 16px; }
-    .row { display: flex; align-items: center; gap: 8px; margin: 8px 0; flex-wrap: wrap; }
+    #wrap { max-width: 1720px; margin: 0 auto; padding: 18px 18px 40px; }
+    h1 { font-size: 17px; font-weight: 600; margin: 0 0 4px; }
+    .sub { color: #94a3b8; font-size: 12px; margin: 0 0 14px; max-width: 900px; }
+    .panel { background: rgba(15, 23, 42, 0.82); border: 1px solid #1e293b; border-radius: 10px; padding: 12px 14px; margin-bottom: 14px; }
+    .row { display: flex; align-items: center; gap: 8px; margin: 6px 0; flex-wrap: wrap; }
     .row label { color: #cbd5e1; flex: 0 0 auto; }
-    input[type="text"] { flex: 1 1 320px; background: #0f172a; color: #cbd5e1; border: 1px solid #334155; border-radius: 6px; padding: 4px 7px; font-size: 12px; }
+    input[type="text"] { flex: 1 1 260px; background: #0f172a; color: #cbd5e1; border: 1px solid #334155; border-radius: 6px; padding: 4px 7px; font-size: 12px; }
     select { background: #0f172a; color: #cbd5e1; border: 1px solid #334155; border-radius: 6px; padding: 4px 7px; font-size: 12px; }
     button { background: #1e293b; color: #e2e8f0; border: 1px solid #334155; border-radius: 6px; padding: 5px 12px; font-size: 12px; cursor: pointer; }
     button:hover { background: #334155; }
     .note { color: #fcd34d; font-size: 11px; line-height: 1.5; }
     .note code { background: #0f172a; border: 1px solid #334155; border-radius: 3px; padding: 0 3px; }
-    #status { margin-top: 8px; font-size: 12px; white-space: pre-wrap; color: #94a3b8; }
-    .views { display: flex; gap: 20px; flex-wrap: wrap; }
-    .view { flex: 1 1 320px; }
-    .view h2 { font-size: 11px; text-transform: uppercase; letter-spacing: 0.07em; color: #38bdf8; margin: 0 0 6px; }
-    canvas { width: 100%; image-rendering: pixelated; border: 1px solid #334155; border-radius: 6px; background: #0f172a; }
-    #readout { margin-top: 14px; padding-top: 12px; border-top: 1px solid #1e293b; font-size: 12px; color: #cbd5e1; font-variant-numeric: tabular-nums; }
-    .legend { font-size: 10px; color: #94a3b8; margin-top: 4px; }
+    #status { margin-top: 6px; font-size: 12px; white-space: pre-wrap; color: #94a3b8; }
+
+    /* Dense tile grid: as many stats on screen at once as the viewport allows. */
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(330px, 1fr)); gap: 12px; margin-bottom: 14px; }
+    .tile { background: rgba(15, 23, 42, 0.82); border: 1px solid #1e293b; border-radius: 10px; padding: 10px 12px; display: flex; flex-direction: column; }
+    .tile h2 { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.06em; color: #38bdf8; margin: 0 0 6px; }
+    .tile canvas { width: 100%; image-rendering: pixelated; border: 1px solid #334155; border-radius: 6px; background: #0f172a; }
+    .legend { font-size: 10px; color: #94a3b8; margin-top: 5px; }
+    #matrix { cursor: crosshair; }
+    .readouts { font-size: 11.5px; color: #cbd5e1; font-variant-numeric: tabular-nums; display: grid; grid-template-columns: repeat(auto-fit, minmax(330px, 1fr)); gap: 10px 18px; }
+    .readouts > div { min-width: 0; }
+    .chipA { color: #22d3ee; } .chipB { color: #f59e0b; }
   </style>
 </head>
 
 <body>
   <div id="wrap">
-    <h1>Cell centroids → op-graph → per-type KDE splat (Stream B2)</h1>
-    <p class="sub">A real SpatialData regions table (<code>tables/Leap034_imc_cells</code>) is read
-      through <code>zarrita</code>: its <code>obsm/spatial</code> centroids are grouped by
-      <code>obs/cell_type_id</code> into per-type point clouds (ADR-0018 — never merged), each carrying
-      a resolved <code>placement</code> + provenance. The left panel scatters all centroids coloured by
-      type; selecting a type runs the registered <code>splatDensity</code> KDE op on that cloud
-      <b>in the graph</b> (right panel). This is the ingestion prerequisite for the cell-type spatial
-      statistics (TCM, cross-PCF) to come.</p>
+    <h1>Cell-type spatial statistics — TCM · cross-PCF · N-way matrix (Stream B2)</h1>
+    <p class="sub">A real SpatialData regions table (<code>tables/Leap034_imc_cells</code>) is read through
+      <code>zarrita</code>; <code>obsm/spatial</code> centroids are grouped by <code>obs/cell_type_id</code>
+      into per-type clouds (ADR-0018 — never merged), each carrying a resolved <code>placement</code>.
+      <b>Hover the N-way matrix</b> to link every view to that cell-type pair; <b>click to pin</b> it (leaving
+      the matrix returns to the pinned pair). MuSpAn eqs 8–14, Mode 1 (faithful, global ρ<sub>B</sub>).</p>
 
     <div class="panel">
       <div class="row">
         <label for="store">store url</label>
         <input id="store" type="text" />
-      </div>
-      <div class="row">
         <label for="table">table</label>
-        <input id="table" type="text" style="flex:0 1 240px" />
+        <input id="table" type="text" style="flex:0 1 220px" />
         <button id="run">read live store</button>
         <button id="fixture">run fixture (offline)</button>
       </div>
@@ -62,62 +63,59 @@
         <select id="type"></select>
         <label for="typeB">type B</label>
         <select id="typeB"></select>
-        <button id="tcmBtn">compute TCM Γ<sub>AB</sub></button>
-      </div>
-      <div class="row">
+        <button id="tcmBtn">recompute Γ<sub>AB</sub></button>
         <label for="radius">radius (m<sub>ab</sub>)</label>
-        <input id="radius" type="text" style="flex:0 1 90px" />
+        <input id="radius" type="text" style="flex:0 1 80px" />
         <label for="sigma">σ (TCM)</label>
-        <input id="sigma" type="text" style="flex:0 1 90px" />
-        <span class="note" style="flex:1 1 auto">world units; α=5 · Mode 1 (faithful, global ρ<sub>B</sub>)</span>
+        <input id="sigma" type="text" style="flex:0 1 80px" />
+        <span class="note" style="flex:1 1 auto">world units; α=5</span>
       </div>
       <p class="note">⚠ Expects a CORS-enabled SpatialData store (default the local MDV server at
-        <code>localhost:5055</code>). If unreachable, use <b>run fixture</b> — it runs the identical
-        ingestion + splat path on a synthetic 2-type cloud, offline.</p>
+        <code>localhost:5055</code>). If unreachable, use <b>run fixture</b> — the identical path on a
+        synthetic 2-type cloud, offline.</p>
       <div id="status">idle</div>
     </div>
 
-    <div class="panel">
-      <div class="views">
-        <div class="view">
-          <h2>centroids — pair A/B highlighted</h2>
-          <canvas id="scatter"></canvas>
-          <div class="legend"><span style="color:#22d3ee">■</span> type A · <span style="color:#f59e0b">■</span> type B · other cells faint — reflects the hovered/selected matrix pair</div>
-        </div>
-        <div class="view">
-          <h2>selected type — KDE density (splatDensity op)</h2>
-          <canvas id="kde"></canvas>
-          <div class="legend">Gaussian density grid, splatted on the GPU in the points' own system</div>
-        </div>
+    <div class="grid">
+      <div class="tile">
+        <h2>N-way cross-PCF matrix — hover to link · click to pin</h2>
+        <canvas id="matrix"></canvas>
+        <div class="legend">rows = A, cols = B (type ids ascending) · diverging log₂(g): red = clustering, blue = exclusion, white = CSR · white box = hover, dashed = pinned</div>
       </div>
-      <div id="readout">—</div>
-    </div>
-
-    <div class="panel">
-      <div class="view">
-        <h2>TCM Γ<sub>AB</sub>(x) — topographical correlation of A around B (MuSpAn, eqs 9–14)</h2>
+      <div class="tile">
+        <h2>centroids — pair highlighted</h2>
+        <canvas id="scatter"></canvas>
+        <div class="legend"><span class="chipA">■</span> type A · <span class="chipB">■</span> type B · other cells faint</div>
+      </div>
+      <div class="tile">
+        <h2>TCM Γ<sub>AB</sub>(x) — topographical correlation</h2>
         <canvas id="tcm"></canvas>
-        <div class="legend">diverging blue → white → red, symmetric about 0 · red = A positively associated with B here (Γ≫0), blue = excluded (Γ≪0) · computed on CPU against the tested reference oracle</div>
+        <div class="legend">diverging blue → white → red, symmetric about 0 · red = A associated with B here, blue = excluded</div>
       </div>
-      <div id="tcmReadout">select type A and type B, then “compute TCM”.</div>
-    </div>
-
-    <div class="panel">
-      <div class="view">
-        <h2>cross-PCF g<sub>AB</sub>(r) — pair correlation of A around B (MuSpAn, eq 8)</h2>
+      <div class="tile">
+        <h2><span class="chipA">KDE — type A</span></h2>
+        <canvas id="kdeA"></canvas>
+        <div class="legend">Gaussian density of type A, splatted on the GPU (<code>splatDensity</code> op)</div>
+      </div>
+      <div class="tile">
+        <h2><span class="chipB">KDE — type B</span></h2>
+        <canvas id="kdeB"></canvas>
+        <div class="legend">same op, same world frame — directly comparable with A</div>
+      </div>
+      <div class="tile">
+        <h2>cross-PCF g<sub>AB</sub>(r)</h2>
         <canvas id="pcf" style="image-rendering:auto"></canvas>
-        <div class="legend">g(r) vs radius; dashed line = g=1 (CSR). g&gt;1 = clustering of A at range r from B, g&lt;1 = exclusion · Mode 1 (global ρ<sub>B</sub>, edge correction deferred)</div>
+        <div class="legend">g(r) vs radius; dashed = g=1 (CSR). g&gt;1 clustering at range r, g&lt;1 exclusion</div>
       </div>
-      <div id="pcfReadout">—</div>
     </div>
 
     <div class="panel">
-      <div class="view">
-        <h2>N-way cross-PCF matrix — g<sub>AB</sub>(r<sub>contact</sub>) for all cell types at once</h2>
-        <canvas id="matrix" style="image-rendering:pixelated; max-width:560px"></canvas>
-        <div class="legend">rows = A, cols = B (type ids ascending) · diverging log₂(g): red = clustering (g&gt;1), blue = exclusion (g&lt;1), white = CSR · one batched pass — the cell-type association matrix behind the paper's network</div>
+      <div class="readouts">
+        <div id="matrixReadout">—</div>
+        <div id="tcmReadout">—</div>
+        <div id="pcfReadout">—</div>
+        <div id="readout">—</div>
       </div>
-      <div id="matrixReadout">—</div>
     </div>
   </div>
   <script type="module" src="/src/cellStatsMain.ts"></script>

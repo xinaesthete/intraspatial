@@ -1,14 +1,17 @@
-// B2 demo — cell-centroid ingestion → per-cell-type KDE splat (docs/stream-b-bridge-plan.md).
+// Cell-type spatial statistics — a coordinated view over one SpatialData regions table
+// (docs/stream-b-bridge-plan.md, docs/muspan-cell-stats-plan.md).
 //
-// End-to-end: read a real SpatialData regions table (`cellTable.ts`, zarrita via zarrextra), group
-// the centroids into per-`cell_type_id` clouds (ADR-0018 — never merged), render ALL 49750
-// centroids as a scatter coloured by type, then run the registered `splatDensity` op on the
-// SELECTED type's cloud IN THE GRAPH (browserBackend, pull) and render its KDE density grid. A
-// synthetic 2-type fixture runs the identical path offline.
+// Ingestion: `cellTable.ts` reads the table (zarrita via zarrextra) and groups `obsm/spatial`
+// centroids into per-`cell_type_id` clouds (ADR-0018 — never merged), each carrying a resolved
+// placement + provenance. A synthetic 2-type fixture runs the identical path offline.
 //
-// This is the spec-independent prerequisite for the cell-type spatial statistics (TCM, cross-PCF)
-// that follow — it proves per-type centroid clouds flow into the op-graph, splat at real scale, and
-// carry their placement facet through to the output grid.
+// Views, all driven by ONE cell-type pair (A, B): the centroid scatter (A cyan / B amber), a KDE
+// splat of each type through the registered `splatDensity` op (browserBackend, pull) in a shared
+// world frame, the TCM Γ_AB(x), the cross-PCF g_AB(r), and the N-way cross-PCF matrix.
+//
+// The matrix is the driver: HOVER a cell to link every view to that pair (cheap views update live;
+// the expensive Γ + KDEs settle on a debounce), CLICK to pin it — leaving the matrix returns to the
+// pinned pair rather than stranding you on whatever cell the mouse exited over.
 
 import { Graph, pull, registerBuiltinOps } from "../../src/gpu/graph";
 import { browserBackend } from "../../src/gpu/graph/backend.browser";
@@ -19,7 +22,7 @@ import { type CellTable, DEFAULT_CELL_TABLE, readCellTable, syntheticCellTable }
 
 /** The live Leap034 SpatialData store (zarr v3, CORS `*`). Configurable — not hard-coded downstream. */
 const DEFAULT_STORE = "http://localhost:5055/project/289/spatial/leap034_layers.zarr/";
-const SPLAT = { width: 384, height: 384, sigma: 3, radiusSigma: 4 } as const;
+const SPLAT = { width: 384, height: 384, radiusSigma: 4 } as const;
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const storeInput = $<HTMLInputElement>("store");
@@ -30,7 +33,8 @@ const typeSelect = $<HTMLSelectElement>("type");
 const statusEl = $<HTMLDivElement>("status");
 const readoutEl = $<HTMLDivElement>("readout");
 const scatterCanvas = $<HTMLCanvasElement>("scatter");
-const kdeCanvas = $<HTMLCanvasElement>("kde");
+const kdeACanvas = $<HTMLCanvasElement>("kdeA");
+const kdeBCanvas = $<HTMLCanvasElement>("kdeB");
 const typeSelectB = $<HTMLSelectElement>("typeB");
 const radiusInput = $<HTMLInputElement>("radius");
 const sigmaInput = $<HTMLInputElement>("sigma");
@@ -47,6 +51,8 @@ const PCF_BINS = 30;
 // timer so the expensive TCM only recomputes when the mouse settles on a pair.
 let lastMatrix: { types: number[]; counts: number[]; g: Float64Array } | null = null;
 let hoverCell: { a: number; b: number } | null = null;
+/** The last CLICKED cell — the view returns to this pair when the mouse leaves the matrix. */
+let pinnedCell: { a: number; b: number } | null = null;
 let tcmTimer: ReturnType<typeof setTimeout> | undefined;
 /** Fixed emphasis colours for the hovered pair in the scatter. */
 const A_COLOR: [number, number, number] = [34, 211, 238]; // cyan
@@ -73,6 +79,9 @@ const TCM_GRID = 256;
 const spanOf = (b: [number, number, number, number]) => Math.max(b[2] - b[0], b[3] - b[1], 1);
 const defaultRadius = (b: [number, number, number, number]) => spanOf(b) / 50;
 const defaultSigma = (b: [number, number, number, number]) => spanOf(b) / 100;
+/** KDE bandwidth, scale-adaptive: a fixed small σ is a delta function against a ~10⁴-unit tissue
+ *  extent, which renders as sparse dots rather than a density. */
+const kdeSigma = (b: [number, number, number, number]) => spanOf(b) / 150;
 
 storeInput.value = DEFAULT_STORE;
 tableInput.value = DEFAULT_CELL_TABLE;
@@ -141,62 +150,63 @@ function drawScatterPair(t: CellTable, bbox: [number, number, number, number], i
   if (A) draw(A.xs, A.ys, A_COLOR, 0.95, 1.8);
 }
 
-/** Viridis-ish render of a KDE density grid, auto-scaled to [0,max]. */
-function drawKde(c: HTMLCanvasElement, g: GridValue): { max: number; sum: number } {
+/** Intensity ramp of a KDE grid in a base hue, auto-scaled to [0,max] — A and B match the scatter. */
+function drawKde(c: HTMLCanvasElement, g: GridValue, base: [number, number, number]): { max: number } {
   c.width = g.width;
   c.height = g.height;
-  let hi = 0, sum = 0;
-  for (const v of g.data) {
-    if (v > hi) hi = v;
-    sum += v;
-  }
+  let hi = 0;
+  for (const v of g.data) if (v > hi) hi = v;
   const span = hi || 1;
   const img = new ImageData(g.width, g.height);
   for (let i = 0; i < g.data.length; i++) {
-    const t = g.data[i]! / span; // [0,1]
-    // simple magma-ish ramp: black → purple → orange → white
-    const r = Math.round(255 * Math.min(1, t * 1.6));
-    const gg = Math.round(255 * Math.max(0, t * t));
-    const b = Math.round(255 * Math.max(0, 0.5 * t + 0.4 * (1 - Math.abs(t - 0.4) * 2)));
-    img.data[i * 4] = r;
-    img.data[i * 4 + 1] = gg;
-    img.data[i * 4 + 2] = b;
+    const k = Math.sqrt(Math.max(0, g.data[i]! / span)); // gamma — lifts the low tail into view
+    img.data[i * 4] = Math.round(base[0] * k);
+    img.data[i * 4 + 1] = Math.round(base[1] * k);
+    img.data[i * 4 + 2] = Math.round(base[2] * k);
     img.data[i * 4 + 3] = 255;
   }
   c.getContext("2d")!.putImageData(img, 0, 0);
-  return { max: hi, sum };
+  return { max: hi };
 }
 
-/** Run splatDensity on the selected type's cloud IN THE GRAPH, render + report. */
-async function splatSelected(): Promise<void> {
+/** Splat ONE type's cloud through the graph into its canvas; returns the facts for the readout. */
+async function splatOne(
+  t: CellTable,
+  id: number,
+  canvas: HTMLCanvasElement,
+  base: [number, number, number],
+  bbox: [number, number, number, number],
+): Promise<{ n: number; peak: number; outSystem?: string } | null> {
+  const ty = t.types.find((x) => x.id === id);
+  if (!ty) return null;
+  const g = new Graph();
+  registerBuiltinOps();
+  const src: GpuField = ty.source(g);
+  const density = g.op1("splatDensity", { points: src }, { ...SPLAT, sigma: kdeSigma(bbox), bbox });
+  const dv = await pull(g, density, { ctx: { backend: browserBackend } });
+  const stats = drawKde(canvas, asGrid(dv), base);
+  return { n: ty.n, peak: stats.max, outSystem: density.placement?.system };
+}
+
+/** Splat BOTH types of the current pair — same op, same world frame, so A and B are directly
+ *  comparable side by side (tinted to match the scatter). */
+async function splatPair(): Promise<void> {
   const t = current;
   if (!t) return;
-  const id = Number(typeSelect.value);
-  const ty = t.types.find((x) => x.id === id);
-  if (!ty) return;
+  const idA = Number(typeSelect.value);
+  const idB = Number(typeSelectB.value);
   const bbox = tableBounds(t);
-  setStatus(`splatting type ${id} (${ty.n} cells) on the GPU …`);
+  setStatus(`splatting types ${idA} + ${idB} on the GPU …`);
   try {
-    const g = new Graph();
-    registerBuiltinOps();
-    const src: GpuField = ty.source(g);
-    const density = g.op1("splatDensity", { points: src }, { ...SPLAT, bbox });
-    const dv = await pull(g, density, { ctx: { backend: browserBackend } });
-    const stats = drawKde(kdeCanvas, asGrid(dv));
-
-    const srcPlaced = src.placement ? `system="${src.placement.system}"` : "absent (array space)";
-    const outPlaced = density.placement ? `system="${density.placement.system}"` : "absent";
-    const prov = src.provenance;
+    const A = await splatOne(t, idA, kdeACanvas, A_COLOR, bbox); // sequential: one GPU pull at a time
+    const B = await splatOne(t, idB, kdeBCanvas, B_COLOR, bbox);
     readoutEl.innerHTML =
       `<b>${t.label}</b><br>` +
-      `total cells: ${t.totalCells} &nbsp;·&nbsp; cell types: ${t.types.length}<br>` +
-      `selected type id ${id}: <b>${ty.n}</b> cells<br>` +
-      `placement system: <b>${t.system}</b> &nbsp;(region "${t.provenance.region || "—"}", instance_key "${t.provenance.instanceKey}")<br>` +
-      `source cloud placement: ${srcPlaced}<br>` +
-      `splatDensity output placement (facet propagated): ${outPlaced}<br>` +
-      `provenance carried: cellTypeId=${prov?.cellTypeId ?? "—"}, region=${prov?.region ?? "—"}<br>` +
-      `KDE grid: ${SPLAT.width}×${SPLAT.height}, σ=${SPLAT.sigma} — peak density ${stats.max.toFixed(3)}`;
-    setStatus(`done — type ${id} splatted through the op-graph.`);
+      `<span class="chipA">A = type ${idA}</span>: ${A?.n ?? "—"} cells, peak ${A ? A.peak.toFixed(3) : "—"} &nbsp;·&nbsp; ` +
+      `<span class="chipB">B = type ${idB}</span>: ${B?.n ?? "—"} cells, peak ${B ? B.peak.toFixed(3) : "—"}<br>` +
+      `placement <b>${t.system}</b> (region "${t.provenance.region || "—"}", instance_key "${t.provenance.instanceKey}") · ` +
+      `splatDensity output: ${A?.outSystem ? `system="${A.outSystem}"` : "absent"} (facet propagated) · KDE ${SPLAT.width}², σ=${kdeSigma(bbox).toPrecision(3)}`;
+    setStatus(`done — types ${idA} + ${idB} splatted through the op-graph.`);
   } catch (e) {
     setStatus(`splat failed: ${(e as Error).message}`, true);
   }
@@ -337,7 +347,12 @@ const MATRIX_CELL = 22;
 
 /** N×N diverging heatmap of the cross-PCF matrix: log₂(g) mapped red (clustering) ↔ blue (exclusion),
  *  with an optional hovered-cell outline + row/col guides for the coordinated view. */
-function drawMatrix(c: HTMLCanvasElement, res: { types: number[]; g: Float64Array }, hover: { a: number; b: number } | null): void {
+function drawMatrix(
+  c: HTMLCanvasElement,
+  res: { types: number[]; g: Float64Array },
+  hover: { a: number; b: number } | null,
+  pinned: { a: number; b: number } | null,
+): void {
   const N = res.types.length;
   const cell = MATRIX_CELL;
   c.width = N * cell;
@@ -361,6 +376,13 @@ function drawMatrix(c: HTMLCanvasElement, res: { types: number[]; g: Float64Arra
       ctx.fillRect(b * cell, a * cell, cell, cell);
     }
   }
+  if (pinned) {
+    ctx.strokeStyle = "#a3e635"; // lime dashed = pinned (where the view returns on mouse-leave)
+    ctx.lineWidth = 2;
+    ctx.setLineDash([3, 2]);
+    ctx.strokeRect(pinned.b * cell + 1, pinned.a * cell + 1, cell - 2, cell - 2);
+    ctx.setLineDash([]);
+  }
   if (hover) {
     ctx.fillStyle = "rgba(226,232,240,0.14)";
     ctx.fillRect(0, hover.a * cell, N * cell, cell); // row A
@@ -381,7 +403,7 @@ function computeMatrix(): void {
   const res = crossPCFMatrix(allCells(t), { bbox, radius });
   const ms = performance.now() - t0;
   lastMatrix = res;
-  drawMatrix(matrixCanvas, res, hoverCell);
+  drawMatrix(matrixCanvas, res, hoverCell, pinnedCell);
   matrixReadoutEl.innerHTML =
     `<b>N-way cross-PCF</b> — ${res.types.length}×${res.types.length} (all ordered pairs), contact radius ${radius.toPrecision(3)} (world units) · ${ms.toFixed(0)} ms (one batched pass) · ` +
     `<b>hover a cell</b> to link the scatter · cross-PCF · Γ below (Γ on settle/click).`;
@@ -396,7 +418,7 @@ function setPair(idA: number, idB: number, doTcm: boolean): void {
   drawScatterPair(t, tableBounds(t), idA, idB);
   computePcf();
   if (doTcm) {
-    void splatSelected();
+    void splatPair();
     computeTcmMap();
   }
 }
@@ -406,7 +428,7 @@ function setPair(idA: number, idB: number, doTcm: boolean): void {
 function scheduleTcm(): void {
   if (tcmTimer) clearTimeout(tcmTimer);
   tcmTimer = setTimeout(() => {
-    void splatSelected();
+    void splatPair();
     computeTcmMap();
   }, 300);
 }
@@ -451,6 +473,15 @@ function present(t: CellTable): void {
   computeMatrix();
   const idA = biggest ? biggest.id : (t.types[0]?.id ?? 0);
   const idB = second ? second.id : idA;
+  // Pin the initial pair so leaving the matrix always has a home to return to.
+  if (lastMatrix) {
+    const a = lastMatrix.types.indexOf(idA);
+    const b = lastMatrix.types.indexOf(idB);
+    if (a >= 0 && b >= 0) {
+      pinnedCell = { a, b };
+      drawMatrix(matrixCanvas, lastMatrix, null, pinnedCell);
+    }
+  }
   setPair(idA, idB, true);
 }
 
@@ -491,23 +522,39 @@ matrixCanvas.addEventListener("mousemove", (e) => {
   const idA = res.types[cell.a]!;
   const idB = res.types[cell.b]!;
   const g = res.g[cell.a * N + cell.b]!;
-  drawMatrix(matrixCanvas, res, hoverCell);
+  drawMatrix(matrixCanvas, res, hoverCell, pinnedCell);
   const rel = g > 1 ? `clustering (${g.toFixed(2)}×)` : g < 1 && g > 0 ? `exclusion (${g.toFixed(2)}×)` : "no co-location";
   matrixReadoutEl.innerHTML =
     `<b>A = type ${idA}</b> (${res.counts[cell.a]} cells, <span style="color:#22d3ee">cyan</span>) → ` +
     `<b>B = type ${idB}</b> (${res.counts[cell.b]} cells, <span style="color:#f59e0b">amber</span>) · ` +
-    `g = ${g.toFixed(3)} — ${rel} · scatter + cross-PCF live; Γ on settle (or click)`;
+    `g = ${g.toFixed(3)} — ${rel} · scatter + cross-PCF live · Γ on settle · click to pin`;
   setPair(idA, idB, false);
   scheduleTcm();
 });
 matrixCanvas.addEventListener("mouseleave", () => {
   hoverCell = null;
-  if (lastMatrix) drawMatrix(matrixCanvas, lastMatrix, null);
+  const res = lastMatrix;
+  if (!res) return;
+  drawMatrix(matrixCanvas, res, null, pinnedCell);
+  if (!pinnedCell) return;
+  // Snap the linked views back to the PINNED pair, so leaving the matrix doesn't strand you on
+  // whatever cell the mouse happened to exit over.
+  const N = res.types.length;
+  const idA = res.types[pinnedCell.a]!;
+  const idB = res.types[pinnedCell.b]!;
+  const g = res.g[pinnedCell.a * N + pinnedCell.b]!;
+  matrixReadoutEl.innerHTML =
+    `<b>pinned</b> — <span class="chipA">A = type ${idA}</span> (${res.counts[pinnedCell.a]} cells) → ` +
+    `<span class="chipB">B = type ${idB}</span> (${res.counts[pinnedCell.b]} cells) · g = ${g.toFixed(3)} · hover to explore, click to re-pin`;
+  setPair(idA, idB, false);
+  scheduleTcm();
 });
 matrixCanvas.addEventListener("click", (e) => {
   const cell = matrixCellFromEvent(e);
   if (!cell || !lastMatrix) return;
   if (tcmTimer) clearTimeout(tcmTimer);
+  pinnedCell = cell;
+  drawMatrix(matrixCanvas, lastMatrix, hoverCell, pinnedCell);
   setPair(lastMatrix.types[cell.a]!, lastMatrix.types[cell.b]!, true);
 });
 matrixCanvas.style.cursor = "crosshair";
