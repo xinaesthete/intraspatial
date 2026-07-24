@@ -38,9 +38,14 @@ import type { ChannelCloud, GramParams } from "./gram";
 import { gramMatrix } from "./gram";
 import { EPANECHNIKOV, roughness } from "./kernels";
 
-/** A permutation of `0..n-1`, Fisher–Yates. `rnd` returns uniform `[0, 1)`. */
-export function randomPermutation(n: number, rnd: () => number): Uint32Array {
-  const perm = new Uint32Array(n);
+/**
+ * A permutation of `0..n-1`, Fisher–Yates. `rnd` returns uniform `[0, 1)`.
+ *
+ * Pass `out` to fill an existing array instead of allocating one; a simulation loop reshuffles the
+ * same buffer thousands of times and has no use for the old contents.
+ */
+export function randomPermutation(n: number, rnd: () => number, out?: Uint32Array): Uint32Array {
+  const perm = out && out.length === n ? out : new Uint32Array(n);
   for (let i = 0; i < n; i++) perm[i] = i;
   for (let i = n - 1; i > 0; i--) {
     const j = Math.floor(rnd() * (i + 1));
@@ -63,59 +68,121 @@ function sharesPoints(channels: readonly ChannelCloud[]): boolean {
 
 const weightAt = (c: ChannelCloud, i: number): number => (c.weights ? (c.weights[i] ?? 0) : 1);
 
+/** The number of cells a permutation for these channels must cover. */
+export function cellCount(channels: readonly ChannelCloud[]): number {
+  if (channels.length === 0) return 0;
+  return sharesPoints(channels) ? channels[0]!.xs.length : channels.reduce((s, c) => s + c.xs.length, 0);
+}
+
+export interface ChannelPermuter {
+  /** Cells the permutation must cover. */
+  readonly cells: number;
+  /**
+   * Move every cell's mark to the position named by `perm`, leaving the positions alone.
+   *
+   * **The returned channels alias reused scratch buffers and are valid only until the next
+   * `apply`.** That is the same contract `gramMatrixGpu`'s resident rasters carry, and for the same
+   * reason: a simulation loop consumes each realisation immediately, and allocating a fresh set
+   * per realisation dominated the run — at 162k cells and 8 channels it was ~10 MB of garbage each
+   * time, and roughly 200 ms of the 340 ms per realisation was allocation and collection rather
+   * than GPU work. Keep a realisation past the next call and it will silently be a later one.
+   */
+  apply(perm: Uint32Array): ChannelCloud[];
+}
+
 /**
- * Move every cell's mark to the position named by `perm`, leaving the positions alone.
+ * A reusable permuter over one channel set.
  *
  * Handles both channel shapes, because the caller should not have to know which it has:
  *
  *   * **shared points** — every channel's weight vector is permuted by the *same* `perm`, so each
- *     cell's whole profile lands together;
- *   * **partitioned points** — the concatenated cells are regrouped by permuted membership, which
- *     keeps every channel's cell count exactly and only moves which cells are in it.
- *
- * `perm` must be a permutation of `0..n-1` for the relevant `n`; a shorter one would silently drop
- * cells, so it is checked.
+ *     cell's whole profile lands together, and the positions are handed back by reference;
+ *   * **partitioned points** — the concatenated cells are regrouped by permuted membership. Each
+ *     channel's cell *count* is invariant under relabelling, which is what lets the destination
+ *     arrays be allocated once and filled by index instead of pushed into.
  */
-export function permuteChannels(channels: readonly ChannelCloud[], perm: Uint32Array): ChannelCloud[] {
-  if (channels.length === 0) return [];
+export function channelPermuter(channels: readonly ChannelCloud[]): ChannelPermuter {
+  const cells = cellCount(channels);
+  if (channels.length === 0) return { cells: 0, apply: () => [] };
+
+  const check = (perm: Uint32Array) => {
+    if (perm.length !== cells) throw new Error(`permuteChannels: perm length ${perm.length} != ${cells} cells`);
+  };
+
   if (sharesPoints(channels)) {
     const first = channels[0]!;
-    const n = first.xs.length;
-    if (perm.length !== n) throw new Error(`permuteChannels: perm length ${perm.length} != ${n} cells`);
-    return channels.map((c) => {
-      const w = new Float64Array(n);
-      for (let i = 0; i < n; i++) w[i] = weightAt(c, perm[i]!);
-      return { label: c.label, xs: c.xs, ys: c.ys, weights: w };
+    const K = channels.length;
+    const buf = Array.from({ length: K }, () => new Float64Array(cells));
+    // Source weights read once into a dense array: `channelsFromExpression` hands back subarray
+    // views, and going through `weightAt` per element inside the hot loop costs a branch each time.
+    const src = channels.map((c) => {
+      const w = new Float64Array(cells);
+      for (let i = 0; i < cells; i++) w[i] = weightAt(c, i);
+      return w;
     });
+    return {
+      cells,
+      apply(perm) {
+        check(perm);
+        const out: ChannelCloud[] = [];
+        for (let a = 0; a < K; a++) {
+          const dst = buf[a]!;
+          const s = src[a]!;
+          for (let i = 0; i < cells; i++) dst[i] = s[perm[i]!]!;
+          out.push({ label: channels[a]!.label, xs: first.xs, ys: first.ys, weights: dst });
+        }
+        return out;
+      },
+    };
   }
 
-  // Partitioned: one flat cell list, membership permuted, regrouped.
+  // Partitioned: flatten once, then regroup per call.
   const counts = channels.map((c) => c.xs.length);
-  const n = counts.reduce((a, b) => a + b, 0);
-  if (perm.length !== n) throw new Error(`permuteChannels: perm length ${perm.length} != ${n} cells`);
-  const xs = new Float64Array(n);
-  const ys = new Float64Array(n);
-  const owner = new Int32Array(n);
-  const weight = new Float64Array(n);
+  const flatX = new Float64Array(cells);
+  const flatY = new Float64Array(cells);
+  const flatW = new Float64Array(cells);
+  const owner = new Int32Array(cells);
   let at = 0;
   channels.forEach((c, k) => {
     for (let i = 0; i < c.xs.length; i++) {
-      xs[at] = c.xs[i] ?? 0;
-      ys[at] = c.ys[i] ?? 0;
-      weight[at] = weightAt(c, i);
+      flatX[at] = c.xs[i] ?? 0;
+      flatY[at] = c.ys[i] ?? 0;
+      flatW[at] = weightAt(c, i);
       owner[at] = k;
       at++;
     }
   });
-  const out = channels.map((c) => ({ label: c.label, xs: [] as number[], ys: [] as number[], weights: [] as number[] }));
-  for (let i = 0; i < n; i++) {
-    const k = owner[perm[i]!]!;
-    const dst = out[k]!;
-    dst.xs.push(xs[i]!);
-    dst.ys.push(ys[i]!);
-    dst.weights.push(weight[perm[i]!]!);
-  }
-  return out;
+  const outX = counts.map((n) => new Float64Array(n));
+  const outY = counts.map((n) => new Float64Array(n));
+  const outW = counts.map((n) => new Float64Array(n));
+  const fill = new Int32Array(channels.length);
+  return {
+    cells,
+    apply(perm) {
+      check(perm);
+      fill.fill(0);
+      for (let i = 0; i < cells; i++) {
+        const src = perm[i]!;
+        const k = owner[src]!;
+        const j = fill[k]!;
+        outX[k]![j] = flatX[i]!;
+        outY[k]![j] = flatY[i]!;
+        outW[k]![j] = flatW[src]!;
+        fill[k] = j + 1;
+      }
+      return channels.map((c, k) => ({ label: c.label, xs: outX[k]!, ys: outY[k]!, weights: outW[k]! }));
+    },
+  };
+}
+
+/**
+ * One-shot permutation, allocating its own buffers.
+ *
+ * The convenient form, for tests and single uses. A loop over many realisations should build one
+ * `channelPermuter` and reuse it — see its aliasing note for what that costs you in exchange.
+ */
+export function permuteChannels(channels: readonly ChannelCloud[], perm: Uint32Array): ChannelCloud[] {
+  return channelPermuter(channels).apply(perm);
 }
 
 /**

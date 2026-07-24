@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { type ChannelCloud, channelsFromExpression, channelsFromLabels, type GramParams, gramMatrix } from "./gram";
 import { EPANECHNIKOV } from "./kernels";
-import { nullMeanGram, permuteChannels, randomPermutation } from "./permute";
+import { channelPermuter, nullMeanGram, permuteChannels, randomPermutation } from "./permute";
 
 function rng(seed: number): () => number {
   let s = seed >>> 0;
@@ -114,6 +114,65 @@ describe("permuteChannels — partitioned points (the cell-type case)", () => {
     let moved = 0;
     for (const v of b) if (!a.has(v)) moved++;
     expect(moved).toBeGreaterThan(10);
+  });
+});
+
+describe("channelPermuter — the reused-buffer form", () => {
+  const n = 80;
+  const pts = cloud(n, 71);
+  const x = new Float64Array(3 * n);
+  for (let g = 0; g < 3; g++) for (let i = 0; i < n; i++) x[g * n + i] = ((i * 7 + g * 3) % 11) / 3;
+  const shared = channelsFromExpression(pts.xs, pts.ys, x, ["a", "b", "c"]);
+  const typeId = Array.from({ length: n }, (_, i) => i % 3);
+  const partitioned = channelsFromLabels(pts.xs, pts.ys, typeId);
+
+  it("agrees with the allocating form, for both channel shapes", () => {
+    // The optimisation must not be a different function. Same permutation in, same numbers out.
+    for (const channels of [shared, partitioned]) {
+      const perm = randomPermutation(n, rng(72));
+      const oneShot = permuteChannels(channels, perm);
+      const reused = channelPermuter(channels).apply(perm);
+      expect(reused.length).toBe(oneShot.length);
+      for (let a = 0; a < oneShot.length; a++) {
+        expect(Array.from(reused[a]!.xs)).toEqual(Array.from(oneShot[a]!.xs));
+        expect(Array.from(reused[a]!.ys)).toEqual(Array.from(oneShot[a]!.ys));
+        expect(Array.from(reused[a]!.weights ?? [])).toEqual(Array.from(oneShot[a]!.weights ?? []));
+      }
+    }
+  });
+
+  it("reuses its buffers rather than allocating per call — the point of it", () => {
+    for (const channels of [shared, partitioned]) {
+      const p = channelPermuter(channels);
+      const a = p.apply(randomPermutation(n, rng(73)));
+      const b = p.apply(randomPermutation(n, rng(74)));
+      for (let k = 0; k < a.length; k++) expect(b[k]!.weights).toBe(a[k]!.weights);
+    }
+  });
+
+  it("gives the same sequence as fresh permuters would — reuse must not leak state", () => {
+    // The failure this guards: a regroup that forgets to reset its fill counters, or a weight
+    // buffer read after it has been half-overwritten. Both would show up only from the second call.
+    for (const channels of [shared, partitioned]) {
+      const r1 = rng(75);
+      const r2 = rng(75);
+      const p = channelPermuter(channels);
+      for (let k = 0; k < 5; k++) {
+        const reused = p.apply(randomPermutation(n, r1)).map((c) => Array.from(c.weights ?? []).join(","));
+        const fresh = permuteChannels(channels, randomPermutation(n, r2)).map((c) => Array.from(c.weights ?? []).join(","));
+        expect(reused, `call ${k}`).toEqual(fresh);
+      }
+    }
+  });
+
+  it("keeps the shared-points identity, so the Gram path still sees one point set", () => {
+    // `gram.ts` decides whether `selfTerm` has off-diagonal content by comparing xs by identity.
+    // Handing back copies would silently zero the within-cell co-expression term.
+    const out = channelPermuter(shared).apply(randomPermutation(n, rng(76)));
+    for (const c of out) expect(c.xs).toBe(pts.xs);
+    // …and the partitioned form must NOT look shared.
+    const parts = channelPermuter(partitioned).apply(randomPermutation(n, rng(77)));
+    expect(parts[0]!.xs).not.toBe(parts[1]!.xs);
   });
 });
 

@@ -683,12 +683,17 @@ playground/src/datasource/cellCsv.ts     CSV → CellTable
 - **Mode 2 is only half built.** The Gram path has window-local mass, the viewport apron and a
   permutation envelope on its spectrum (§4); `crossPcf.ts` and `tcm.ts` still have none of the
   three, and no envelope exists for `g` or for the cross-PCF curves.
-- **The envelope re-splats every realisation, and allocates while it does.** 39 permutations of a
-  162k-cell, 8-channel selection take 13 s — about 340 ms each against 140 ms for the observed
-  matrix alone. The gap is host-side: `permuteChannels` allocates K fresh weight arrays per
-  realisation (~10 MB a time here), so most of the extra is allocation and collection rather than
-  GPU work. Reusing scratch buffers, or permuting into the packed point buffer on the device, would
-  take it close to the 140 ms floor. Not done.
+- **The envelope re-splats every realisation, and still uploads the points each time.** 39
+  permutations of a 162k-cell, 8-channel selection take 3.5 s — 90 ms each, down from 340 ms before
+  `channelPermuter` reused its scratch buffers (the allocating form threw away ~10 MB per
+  realisation, and most of the difference was collection, not GPU work). What remains is the packed
+  `[x, y, w]` upload: the positions never change between realisations, so re-sending 3n floats each
+  time is pure waste. Fixing it means a second input mode on `gramMatrixGpu` — resident positions
+  plus a resident K×n mark matrix, with a per-realisation `u32` permutation buffer the vertex shader
+  indexes through — which also keeps the shuffle uniform, since the permutation is still drawn on
+  the host by Fisher–Yates. Generating it on the device instead would need either a full GPU sort or
+  a keyed pseudorandom permutation, and the latter is **not** uniform over all `n!`, which is the
+  assumption the test's exactness rests on. Not done.
 - **`crossPCFMatrixGpu` is not wired into the demo**; the matrix still runs on the CPU (one batched
   pass, fast enough at Leap034 scale).
 - **The Gram form is global, not swept.** `C = MMᵀ` integrates over the whole raster, so it is one

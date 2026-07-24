@@ -28,7 +28,7 @@
 
 import { type GlobalEnvelope, globalRankEnvelope } from "../../spatial/envelope";
 import { type ChannelCloud, coLocationModes, type GramParams } from "../../spatial/gram";
-import { permuteChannels, randomPermutation } from "../../spatial/permute";
+import { channelPermuter, randomPermutation } from "../../spatial/permute";
 import { gramMatrixGpu } from "./gramMatrix";
 
 /** Deterministic RNG so a reported p-value can be reproduced. */
@@ -76,8 +76,6 @@ export async function spectrumEnvelope(
 ): Promise<SpectrumEnvelopeResult> {
   const simulations = Math.max(1, Math.floor(opts.simulations ?? 99));
   const rnd = mulberry32(opts.seed ?? 0x5eed);
-  const n = channels[0]?.xs.length ?? 0;
-  const cells = channels.every((c) => c.xs === channels[0]?.xs) ? n : channels.reduce((s, c) => s + c.xs.length, 0);
   const started = performance.now();
 
   const explainedOf = async (chs: readonly ChannelCloud[]): Promise<Float64Array> => {
@@ -85,9 +83,15 @@ export async function spectrumEnvelope(
     return coLocationModes(res).explained;
   };
 
+  // One permuter and one index buffer for the whole run. Each realisation is consumed by
+  // `gramMatrixGpu` before the next `apply`, which is exactly the lifetime the permuter's reused
+  // buffers require — see its aliasing note.
+  const permuter = channelPermuter(channels);
+  const perm = new Uint32Array(permuter.cells);
+
   const simulated: Float64Array[] = [];
   for (let i = 0; i < simulations; i++) {
-    simulated.push(await explainedOf(permuteChannels(channels, randomPermutation(cells, rnd))));
+    simulated.push(await explainedOf(permuter.apply(randomPermutation(permuter.cells, rnd, perm))));
     await opts.onProgress?.(i + 1, simulations + 1);
   }
   const observed = await explainedOf(channels);
