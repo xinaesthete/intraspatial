@@ -7,8 +7,50 @@ expensive part is a **render**, not a neighbour search.
 This document is the derivation and the map of the code. The demo is `playground/cellstats.html`;
 the implementation plan and its open questions are in [`muspan-cell-stats-plan.md`](./muspan-cell-stats-plan.md).
 
-Source for the statistics: *Bull et al.*, Nature Communications 14, 6516 (2023) —
-`natureCovid-TCMetc-s41467-023-42421-0.pdf`, equations 8–14.
+## Sources
+
+The statistics implemented here are **not ours**. They are taken, equation by equation, from:
+
+> Weeratunga P, Denney L, Bull JA, Repapi E, *et al.* **Single cell spatial analysis reveals
+> inflammatory foci of immature neutrophil and CD8 T cells in COVID-19 lungs.**
+> *Nature Communications* **14**, 7216 (2023).
+> [doi:10.1038/s41467-023-42421-0](https://doi.org/10.1038/s41467-023-42421-0)
+> — local copy: `docs/natureCovid-TCMetc-s41467-023-42421-0.pdf`. Equations 8–14 define the
+> cross-PCF and the TCM; that paper also gives the SpOOx pipeline and the MDV viewer.
+
+and, for the wider toolbox this is measured against:
+
+> Bull JA, Moore JW, Mulholland EJ, Leedham SJ, Byrne HM. **MuSpAn: A Toolbox for Multiscale
+> Spatial Analysis.** bioRxiv (2024).
+> [doi:10.1101/2024.12.06.627195](https://doi.org/10.1101/2024.12.06.627195)
+> — local copy: `docs/biorxivMuSpAn2024.12.06.627195v1.full.pdf`.
+
+Our contribution is the **formulation and the implementation** — recognising the statistic as two
+splats, generalising the mark kernel, and getting it onto the GPU with a parity oracle — not the
+statistics themselves.
+
+## Scope: what has been measured, and what has not
+
+Worth stating plainly, because two different "windowing" arguments live nearby and it would be easy
+to read one as evidence for the other.
+
+**Measured** (§2): the effect of the **mark kernel** `K_r` — the neighbourhood weighting *inside*
+one statistic — on discrimination, tie rate and stability, over a **single fixed ROI**. The finding
+is specific: smoothing buys little discrimination but removes a large amount of discretisation and
+parameter sensitivity.
+
+**Not measured, and not claimed here**: whether computing a statistic over a **grid of quadrat ROIs**
+— MuSpAn's usual practice — differs materially from sweeping a smooth window over the domain. That
+is a different axis entirely: it is about how the domain is *sampled*, not about how a neighbourhood
+is *weighted*. The toolbox's windowing argument
+([`fuzzy-tda-and-windowing.md`](./fuzzy-tda-and-windowing.md), and the docs-site "Windowing, not
+quadrats" page) asserts a position on it; nothing in this codebase tests it.
+
+The comparison that would settle it is sketched below (§4, "ROI and edge effects") and needs a
+per-quadrat baseline, a swept-window counterpart, and a **grid-phase sweep** — slide the quadrat
+origin across its own unit cell and see whether any conclusion flips, not merely whether the
+variance is larger. Intended to be run against the COVID-19 lung data from the source paper, so the
+baseline is the published one rather than a synthetic stand-in.
 
 ---
 
@@ -64,9 +106,10 @@ would be faster still and would quietly compute a different statistic.
 
 ---
 
-## 2. The kernel is a free choice, and the paper's is the worst one
+## 2. The mark kernel is a free choice, and the paper's is the least smooth
 
-Because eq 9 is a sampled KDE, the hard disk is not special — it is `n = 0` of a family
+This section is about `K_r`, the neighbourhood weighting inside eq 9 — **not** about how the ROI is
+divided (see *Scope*, above). Because eq 9 is a sampled KDE, the hard disk is not special — it is `n = 0` of a family
 (`src/spatial/kernels.ts`):
 
 ```
@@ -175,6 +218,22 @@ Both statistics currently run **Mode 1**: a fixed ROI, a *global* `ρ_B`, and fu
 areas. This is exact for anchors at least `r` inside the ROI and biased near the boundary. Mode 2 —
 a viewport apron with window-local `ρ_B` and live permutation envelopes — is designed
 (ADR-0018 §5) and not built.
+
+**One global number per pair is also the limit of what is spatially resolved here.** Γ is a map;
+the cross-PCF and the N-way matrix are single values over the whole ROI. So the association
+statistics are neither per-quadrat (MuSpAn's practice) nor swept — the comparison between those two
+has not been built, let alone run. Stated as the concrete next piece of work:
+
+- a **per-quadrat baseline**: partition the ROI on a lattice of side `q`, compute the composition /
+  pair counts per quadrat. This is the published practice and the thing to match.
+- a **swept counterpart**: the Gram-matrix form above, evaluated at every pixel through a window —
+  a per-quadrat statistic is just that box-filtered *and decimated onto a stride-`q` lattice*, and
+  those are two separable defects (leakage, and observing only at lattice points).
+- a **grid-phase sweep**: slide the quadrat origin across its unit cell and recompute. The spread is
+  pure artefact — the data did not move. The number worth reporting is not the variance but whether
+  the phase ever **flips a conclusion**: does a pair read as clustered under one origin and excluded
+  under another? A null result there is as publishable as a positive one, and should be reported as
+  such.
 
 ---
 
@@ -390,3 +449,6 @@ playground/src/datasource/cellCsv.ts     CSV → CellTable
 - **`crossPCFMatrixGpu` is not wired into the demo**; the matrix still runs on the CPU (one batched
   pass, fast enough at Leap034 scale).
 - **The Gram-matrix / eigen-projection formulation of §4 is a plan, not code.**
+- **Quadrats vs swept windows is UNTESTED.** The association statistics are global, so the
+  comparison the toolbox's windowing argument rests on has not been run here — see *Scope* at the
+  top. Do not cite §2's kernel measurements as evidence for it: they are a different axis.
