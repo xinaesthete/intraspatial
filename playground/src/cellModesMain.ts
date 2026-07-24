@@ -93,6 +93,7 @@ const modeCanvas = $<HTMLCanvasElement>("modemap");
 const corrCanvas = $<HTMLCanvasElement>("corr");
 const screeCanvas = $<HTMLCanvasElement>("scree");
 const loadingsCanvas = $<HTMLCanvasElement>("loadings");
+const loadingsLegendEl = $<HTMLDivElement>("loadingsLegend");
 const modeReadoutEl = $<HTMLDivElement>("modeReadout");
 const corrReadoutEl = $<HTMLDivElement>("corrReadout");
 const modeLegendEl = $<HTMLDivElement>("modeLegend");
@@ -553,19 +554,37 @@ async function sampleWandAt(clientX: number, clientY: number): Promise<void> {
   const raw = await probeChannels(live.res, col, row);
   const z = standardise(raw, live.res.resident.mean, live.res.resident.sd);
   wand = { z, col: Math.round(col), row: Math.round(row), label: `${Math.round(col)}, ${Math.round(row)}` };
+  const K = live.res.labels.length;
+
+  // Adaptive precision: a smoothed density for a gene detected in a few percent of cells is genuinely
+  // ~1e-3, and a fixed 2 dp would print every one as "0.00" — which is exactly the density reading
+  // the sample is meant to show. Exponential below a hundredth, plain above it.
+  const fmtDens = (v: number) => (v === 0 ? "0" : Math.abs(v) >= 0.01 ? v.toFixed(2) : v.toExponential(1));
 
   // What the sampled profile IS, in the channels' own terms — the four channels furthest from
-  // typical, signed. A bare "you clicked here" tells the user nothing about what they selected.
+  // typical, signed, each with its raw kernel-smoothed density alongside the standardised z so the
+  // reading is anchored to a real quantity and not only a count of σ.
   const top = live.res.labels
-    .map((lab, a) => ({ lab, z: z[a]! }))
+    .map((lab, a) => ({ lab, z: z[a]!, dens: raw[a]! }))
     .sort((p, q) => Math.abs(q.z) - Math.abs(p.z))
     .slice(0, 4)
-    .map((p) => `${p.z >= 0 ? "+" : "−"}${p.lab} ${Math.abs(p.z).toFixed(1)}σ`)
+    .map((p) => `${p.z >= 0 ? "+" : "−"}${p.lab} ${Math.abs(p.z).toFixed(1)}σ <span style="color:#64748b">(ρ ${fmtDens(p.dens)})</span>`)
     .join(" · ");
+
+  // The eigen-projection: the sample's coordinate on each mode, yₖ = Σ_a zₐ V_{k,a}. This is what the
+  // map's colour at that pixel literally is — mode 1 → L, modes 2–3 → the two chroma axes — so
+  // showing it reads the pixel back in the very basis the picture is painted in.
+  const proj = Array.from({ length: Math.min(3, K) }, (_, k) => {
+    let y = 0;
+    for (let a = 0; a < K; a++) y += z[a]! * live!.vectors[k * K + a]!;
+    return `<span style="color:${modeColour(k)}">mode ${k + 1} ${y >= 0 ? "+" : "−"}${Math.abs(y).toFixed(2)}</span>`;
+  }).join(" · ");
+
   const swatch = cssRgb(oklabToSrgb(similaritySwatch(1)));
   wandReadoutEl.innerHTML =
-    `<b style="color:${swatch}">wand @ px ${wand.label}</b> — ${top}. Drag on the map to move the ` +
-    `sample; rule lines mark it in both views.`;
+    `<b style="color:${swatch}">wand @ px ${wand.label}</b> — ${top}<br>` +
+    `<span style="color:#94a3b8">eigen-projection</span> ${proj} — the pixel's colour, in the mode basis. ` +
+    `<span style="color:#64748b">ρ = kernel-smoothed density; drag to move the sample, rule lines mark it in both views.</span>`;
   void paintMap();
   drawTerrain();
 }
@@ -673,6 +692,11 @@ function attachCamera(): void {
 
 const CELL = 20;
 
+/** The OKLab axis colour for mode k (0,1,2) — the same swatch the map and scree use, so a loading
+ *  row, its scree bar and its screen colour are one visual key rather than three. */
+const modeColour = (k: number): string =>
+  cssRgb(oklabToSrgb(modeSwatch([k === 0 ? 1 : 0, k === 1 ? 1 : 0, k === 2 ? 1 : 0])));
+
 function drawCorr(labels: string[], corr: Float64Array, hover: { a: number; b: number } | null): void {
   const N = labels.length;
   const gut = 104;
@@ -772,28 +796,44 @@ function drawScree(explained: Float64Array, env?: SpectrumEnvelopeResult | null)
   }
 }
 
-function drawLoadings(labels: string[], vectors: Float64Array): void {
+/** The loadings chart's geometry, shared by the painter and the hover hit-test so the two cannot
+ *  drift. `labelH` is the rotated channel-label gutter at the bottom. */
+const LOAD = { W: 460, rowH: 54, pad: 46, right: 10, top: 20, labelH: 40 } as const;
+const loadCol = (clientX: number, K: number): number => {
+  const rect = loadingsCanvas.getBoundingClientRect();
+  const x = ((clientX - rect.left) / rect.width) * LOAD.W;
+  const bw = (LOAD.W - LOAD.pad - LOAD.right) / K;
+  return Math.floor((x - LOAD.pad) / bw);
+};
+
+function drawLoadings(labels: string[], vectors: Float64Array, hover: number | null): void {
   const K = labels.length;
   const rows = Math.min(3, K);
-  const W = 460;
-  const rowH = 54;
-  const H = rows * rowH + 26;
+  const { W, rowH, pad, right, top, labelH } = LOAD;
+  const H = top + rows * rowH + labelH;
   loadingsCanvas.width = W;
   loadingsCanvas.height = H;
   const ctx = loadingsCanvas.getContext("2d")!;
   ctx.fillStyle = "#0f172a";
   ctx.fillRect(0, 0, W, H);
-  const pad = 46;
-  const bw = (W - pad - 10) / K;
+  const bw = (W - pad - right) / K;
+
+  // The hovered channel's column, behind the bars, so a single gene is legible straight across all
+  // three modes — "how does THIS gene load?" is the question the flat rows cannot answer on their own.
+  if (hover !== null && hover >= 0 && hover < K) {
+    ctx.fillStyle = "rgba(56, 189, 248, 0.14)";
+    ctx.fillRect(pad + hover * bw, top - 4, bw, rows * rowH + 4);
+  }
+
   ctx.font = "10px ui-sans-serif, system-ui, sans-serif";
   for (let k = 0; k < rows; k++) {
-    const mid = 20 + k * rowH + rowH / 2;
+    const mid = top + k * rowH + rowH / 2;
     ctx.strokeStyle = "#334155";
     ctx.beginPath();
     ctx.moveTo(pad, mid);
-    ctx.lineTo(W - 10, mid);
+    ctx.lineTo(W - right, mid);
     ctx.stroke();
-    ctx.fillStyle = cssRgb(oklabToSrgb(modeSwatch([k === 0 ? 1 : 0, k === 1 ? 1 : 0, k === 2 ? 1 : 0])));
+    ctx.fillStyle = modeColour(k);
     ctx.textAlign = "right";
     ctx.fillText(`mode ${k + 1}`, pad - 6, mid + 3);
     for (let a = 0; a < K; a++) {
@@ -802,9 +842,23 @@ function drawLoadings(labels: string[], vectors: Float64Array): void {
       ctx.fillRect(pad + a * bw + 1, mid - Math.max(h, 0), Math.max(bw - 2, 1), Math.abs(h));
     }
   }
-  ctx.fillStyle = "#64748b";
-  ctx.textAlign = "left";
-  ctx.fillText(`${K} channels, left to right in matrix order`, pad, H - 6);
+
+  // Channel labels along the bottom, rotated so gene names fit. Thinned when the bars are too narrow
+  // to carry every name without collision; the hover readout covers whatever is dropped.
+  const everyN = bw >= 34 ? 1 : bw >= 16 ? 2 : Math.ceil(11 / bw);
+  ctx.textAlign = "right";
+  ctx.textBaseline = "middle";
+  const axisY = top + rows * rowH + 4;
+  for (let a = 0; a < K; a++) {
+    if (hover !== a && a % everyN !== 0) continue;
+    ctx.save();
+    ctx.translate(pad + a * bw + bw / 2, axisY);
+    ctx.rotate(-Math.PI / 2.6);
+    ctx.fillStyle = hover === a ? "#e2e8f0" : "#64748b";
+    ctx.fillText(labels[a]!, 0, 0, labelH - 2);
+    ctx.restore();
+  }
+  ctx.textBaseline = "alphabetic";
 }
 
 // ---- the computation ---------------------------------------------------------------------------
@@ -854,7 +908,7 @@ async function computeModes(): Promise<void> {
     drawCorr(lastCorr.labels, lastCorr.corr, null);
     lastEnvelope = null;
     drawScree(modes.explained, null);
-    drawLoadings(res.labels, modes.vectors);
+    drawLoadings(res.labels, modes.vectors, null);
 
     const top = Array.from({ length: Math.min(3, res.labels.length) }, (_, k) => {
       const loads = res.labels
@@ -1031,6 +1085,32 @@ corrCanvas.addEventListener("mousemove", (e) => {
     (r > 0.2 ? "found in the same places" : r < -0.2 ? "spatially exclusive" : "little spatial relation") +
     ` · association g = ${g.toFixed(3)} (1 = complete spatial randomness) — <i>this</i> is the number the ` +
     `window's apron corrects; r and the modes never divide by mass, so they do not move with it.`;
+});
+
+// Loadings hover: light up one channel's column across all three modes and spell out its signed
+// loading per mode, in the mode colours. This is what turns the bar chart from "some weights" into
+// "gene X drives mode 1 and opposes mode 2", which is the reading the chart is for.
+const LOADINGS_LEGEND = loadingsLegendEl.innerHTML;
+loadingsCanvas.addEventListener("mousemove", (e) => {
+  if (!live) return;
+  const K = live.res.labels.length;
+  const a = loadCol(e.clientX, K);
+  if (a < 0 || a >= K) {
+    drawLoadings(live.res.labels, live.vectors, null);
+    loadingsLegendEl.innerHTML = LOADINGS_LEGEND;
+    return;
+  }
+  drawLoadings(live.res.labels, live.vectors, a);
+  const rows = Math.min(3, K);
+  const parts = Array.from({ length: rows }, (_, k) => {
+    const v = live!.vectors[k * K + a]!;
+    return `<span style="color:${modeColour(k)}">mode ${k + 1} ${v >= 0 ? "+" : "−"}${Math.abs(v).toFixed(2)}</span>`;
+  });
+  loadingsLegendEl.innerHTML = `<b>${live.res.labels[a]}</b> — ${parts.join(" · ")} (unit eigenvector components; sign is the co-variation direction).`;
+});
+loadingsCanvas.addEventListener("mouseleave", () => {
+  if (live) drawLoadings(live.res.labels, live.vectors, null);
+  loadingsLegendEl.innerHTML = LOADINGS_LEGEND;
 });
 
 attachWand();

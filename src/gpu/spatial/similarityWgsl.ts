@@ -64,13 +64,20 @@ fn sampleWhitened(col: u32, row: u32) -> vec4f {
  *  through steep gradients and a broad smear through flat ones. Same argument as the marker's rule
  *  lines. Fragment-stage only: fwidth has no meaning in a vertex shader.
  *
+ *  The edges are smoothstep, not step: a hard step aliases badly on the curved level set — a
+ *  staircase that crawls as the camera moves — so the coverage is ramped across the same
+ *  screen-space gradient w that sets the width, which is exactly analytic anti-aliasing (the ramp is
+ *  one pixel of d wide because w = |grad d| per pixel). w is floored off zero so a locally flat
+ *  field cannot collapse the ramp to a 0/0.
+ *
  *  The faint dark halo is what lets a one-pixel white line survive a pale H&E background without
  *  being thickened to compensate. */
 fn selectionOver(base: vec3f, d: f32, tol: f32, on: f32) -> vec3f {
   if (on < 0.5) { return base; }
-  let w = fwidth(d);
-  let core = step(abs(d - tol), w * 0.55);
-  let halo = step(abs(d - tol), w * 1.4);
-  return mix(mix(base, vec3f(0.05), halo * 0.3), vec3f(0.97), core);
+  let w = max(fwidth(d), 1e-8);
+  let e = abs(d - tol);
+  let core = 1.0 - smoothstep(w * 0.5, w * 1.5, e);   // ~1 px of white, ramped at its edges
+  let halo = 1.0 - smoothstep(w * 1.5, w * 3.0, e);   // a wider, softer dark backing beneath it
+  return mix(mix(base, vec3f(0.05), halo * 0.35), vec3f(0.97), core);
 }
 `;
