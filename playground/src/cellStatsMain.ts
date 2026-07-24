@@ -1,92 +1,148 @@
-// Cell-type spatial statistics — a coordinated view over one SpatialData regions table
-// (docs/stream-b-bridge-plan.md, docs/muspan-cell-stats-plan.md).
+// Cell-type spatial statistics — a coordinated view over one cell table
+// (docs/cell-stats.md, docs/muspan-cell-stats-plan.md).
 //
-// Ingestion: `cellTable.ts` reads the table (zarrita via zarrextra) and groups `obsm/spatial`
-// centroids into per-`cell_type_id` clouds (ADR-0018 — never merged), each carrying a resolved
-// placement + provenance. A synthetic 2-type fixture runs the identical path offline.
+// SOURCES. Three, all producing the same `CellTable`, so nothing downstream knows the difference:
+// a SpatialData store (inspected first — tables and candidate type columns are enumerated, not
+// hard-coded), a CSV export, or a synthetic fixture for offline use.
 //
-// Views, all driven by ONE cell-type pair (A, B): the centroid scatter (A cyan / B amber), a KDE
-// splat of each type through the registered `splatDensity` op (browserBackend, pull) in a shared
-// world frame, the TCM Γ_AB(x), the cross-PCF g_AB(r), and the N-way cross-PCF matrix.
+// STATISTICS. Every view is driven by ONE cell-type pair (A, B): the centroid scatter, a KDE of each
+// type through the registered `splatDensity` op in a shared world frame, the TCM Γ_AB(x), the
+// cross-PCF g_AB(r), and the N-way cross-PCF matrix. The matrix is the driver — hover to link every
+// view, click to pin.
 //
-// The matrix is the driver: HOVER a cell to link every view to that pair (cheap views update live;
-// the expensive Γ + KDEs settle on a debounce), CLICK to pin it — leaving the matrix returns to the
-// pinned pair rather than stranding you on whatever cell the mouse exited over.
+// Γ runs on the GPU by the RENDER formulation (`computeTcmRender`): B splatted through a radial
+// kernel, then A splatted as Gaussians whose per-point weight is the transformed mark fetched from
+// that first pass in the vertex stage. No neighbour search. The CPU oracle is one button away, and
+// reporting the agreement between them is part of the demo rather than a hidden test.
+//
+// KERNEL. The paper's hard disk is n = 0 of a smoothness ladder (src/spatial/kernels.ts). Switching
+// kernel holds the SPATIAL SCALE fixed via `equivalentRadius`, because μ₂ = r²/(n+2) shrinks with
+// order — comparing at equal r would silently confound "smoother" with "more local".
+//
+// COLOUR. Ramps are built in OKLCh (src/color/ramps.ts). Γ is signed and is read by comparing its
+// arms, so the diverging ramp derives lightness from |Γ| alone and lets only the hue carry the sign:
+// equal clustering and exclusion are then equally prominent by construction. An sRGB blue→white→red
+// ramp cannot do that — its arms differ by >0.15 in perceived lightness.
 
+import { cssRgb, deg, diverging, oklchToSrgbMapped, rgbBytes, type Srgb, sequential } from "../../src/color/ramps";
 import { Graph, pull, registerBuiltinOps } from "../../src/gpu/graph";
 import { browserBackend } from "../../src/gpu/graph/backend.browser";
 import type { FieldValue, GpuField } from "../../src/gpu/graph/handle";
+import { computeTcmRender } from "../../src/gpu/spatial/tcmRender";
+import { equivalentRadius, KERNELS, type KernelSpec, kernelLabel } from "../../src/spatial/kernels";
 import { crossPCF, crossPCFMatrix, type LabelledCells } from "../../src/spatial/pcf";
-import { computeTcm } from "../../src/spatial/tcm";
-import { type CellTable, DEFAULT_CELL_TABLE, readCellTable, syntheticCellTable } from "./datasource/cellTable";
+import { tcmKernelField } from "../../src/spatial/tcmKernel";
+import { csvToCellTable, inspectCsv, parseCsv } from "./datasource/cellCsv";
+import {
+  type CellTable,
+  type CellTypeCloud,
+  DEFAULT_CELL_TABLE,
+  listCellTables,
+  readCellTable,
+  syntheticCellTable,
+  type TableInfo,
+} from "./datasource/cellTable";
 
 /** The live Leap034 SpatialData store (zarr v3, CORS `*`). Configurable — not hard-coded downstream. */
 const DEFAULT_STORE = "http://localhost:5055/project/289/spatial/leap034_layers.zarr/";
 const SPLAT = { width: 384, height: 384, radiusSigma: 4 } as const;
+const TCM_GRID = 256;
+/** The B-density raster the mark is sampled from. Finer than Γ on purpose: this is the one
+ *  approximation the render formulation makes, and it is the knob that closes it. */
+const MARK_GRID = 512;
+const PCF_BINS = 30;
+const MATRIX_CELL = 22;
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const storeInput = $<HTMLInputElement>("store");
-const tableInput = $<HTMLInputElement>("table");
+const inspectBtn = $<HTMLButtonElement>("inspect");
+const tableSelect = $<HTMLSelectElement>("tableSel");
+const typeColSelect = $<HTMLSelectElement>("typeCol");
 const runBtn = $<HTMLButtonElement>("run");
 const fixtureBtn = $<HTMLButtonElement>("fixture");
+const csvInput = $<HTMLInputElement>("csvFile");
 const typeSelect = $<HTMLSelectElement>("type");
+const typeSelectB = $<HTMLSelectElement>("typeB");
+const kernelSelect = $<HTMLSelectElement>("kernel");
+const radiusInput = $<HTMLInputElement>("radius");
+const sigmaInput = $<HTMLInputElement>("sigma");
+const tcmBtn = $<HTMLButtonElement>("tcmBtn");
+const oracleBtn = $<HTMLButtonElement>("oracleBtn");
 const statusEl = $<HTMLDivElement>("status");
 const readoutEl = $<HTMLDivElement>("readout");
 const scatterCanvas = $<HTMLCanvasElement>("scatter");
 const kdeACanvas = $<HTMLCanvasElement>("kdeA");
 const kdeBCanvas = $<HTMLCanvasElement>("kdeB");
-const typeSelectB = $<HTMLSelectElement>("typeB");
-const radiusInput = $<HTMLInputElement>("radius");
-const sigmaInput = $<HTMLInputElement>("sigma");
-const tcmBtn = $<HTMLButtonElement>("tcmBtn");
 const tcmCanvas = $<HTMLCanvasElement>("tcm");
 const tcmReadoutEl = $<HTMLDivElement>("tcmReadout");
 const pcfCanvas = $<HTMLCanvasElement>("pcf");
 const pcfReadoutEl = $<HTMLDivElement>("pcfReadout");
 const matrixCanvas = $<HTMLCanvasElement>("matrix");
 const matrixReadoutEl = $<HTMLDivElement>("matrixReadout");
-const PCF_BINS = 30;
 
-// Coordinated-view state: the last N×N matrix (for hover lookup), the hovered cell, and a debounce
-// timer so the expensive TCM only recomputes when the mouse settles on a pair.
+// ---- colour ------------------------------------------------------------------------------------
+
+// A and B share a lightness so neither type looks more important than the other; only the hue
+// differs. Same principle as the diverging ramp, applied to a categorical pair.
+const A_HUE = deg(220);
+const B_HUE = deg(70);
+const A_CSS = cssRgb(oklchToSrgbMapped([0.74, 0.13, A_HUE]));
+const B_CSS = cssRgb(oklchToSrgbMapped([0.74, 0.13, B_HUE]));
+const CONTEXT_CSS = "rgba(148,163,184,0.16)";
+
+/** Bake a ramp into a 256-entry byte LUT. Per-pixel OKLCh (cube roots, and a gamut bisection when
+ *  the request is out of range) is far too slow for a 256² field every hover; the ramp is 1-D, so
+ *  one table costs nothing and the colour is identical. */
+function rampLut(f: (t: number) => Srgb, n = 256): Uint8Array {
+  const lut = new Uint8Array(n * 3);
+  for (let i = 0; i < n; i++) {
+    const [r, g, b] = rgbBytes(f(i / (n - 1)));
+    lut[i * 3] = r;
+    lut[i * 3 + 1] = g;
+    lut[i * 3 + 2] = b;
+  }
+  return lut;
+}
+/** Signed ramp: index 0 → t = −1, index 255 → t = +1.
+ *
+ *  Inverted against the library default: on a dark page the NEUTRAL should recede, so lightness
+ *  rises with |Γ| instead of falling. The property that matters is untouched — L still depends on
+ *  |Γ| alone and only the hue carries the sign, so the two arms stay equally prominent. */
+const DIVERGING_LUT = rampLut((u) => diverging(2 * u - 1, { centreL: 0.19, endL: 0.8, endC: 0.17 }));
+const SEQ_A_LUT = rampLut((u) => sequential(u, A_HUE));
+const SEQ_B_LUT = rampLut((u) => sequential(u, B_HUE));
+
+/** Write `t ∈ [0,1]` through a LUT into an ImageData pixel. */
+function putLut(img: ImageData, i: number, lut: Uint8Array, t: number): void {
+  const k = Math.max(0, Math.min(255, Math.round(t * 255))) * 3;
+  img.data[i * 4] = lut[k]!;
+  img.data[i * 4 + 1] = lut[k + 1]!;
+  img.data[i * 4 + 2] = lut[k + 2]!;
+  img.data[i * 4 + 3] = 255;
+}
+
+// ---- state -------------------------------------------------------------------------------------
+
+let current: CellTable | null = null;
 let lastMatrix: { types: number[]; counts: number[]; g: Float64Array } | null = null;
 let hoverCell: { a: number; b: number } | null = null;
 /** The last CLICKED cell — the view returns to this pair when the mouse leaves the matrix. */
 let pinnedCell: { a: number; b: number } | null = null;
 let tcmTimer: ReturnType<typeof setTimeout> | undefined;
-/** Fixed emphasis colours for the hovered pair in the scatter. */
-const A_COLOR: [number, number, number] = [34, 211, 238]; // cyan
-const B_COLOR: [number, number, number] = [245, 158, 11]; // amber
+/** Discovery result for the current store, so picking a table can repopulate the column list. */
+let storeTables: TableInfo[] = [];
+/** Left/top gutter used by the last matrix draw (0 when there are no names to show). */
+let matrixGutter = 0;
+/** The most recent Γ, kept so the CPU-oracle check can compare against exactly what is on screen. */
+let lastGamma: { grid: Float32Array; idA: number; idB: number; ms: number } | null = null;
 
-/** Flatten the per-type clouds back into one labelled cell set for the N-way pass. */
-function allCells(t: CellTable): LabelledCells {
-  const xs: number[] = [];
-  const ys: number[] = [];
-  const typeId: number[] = [];
-  for (const ty of t.types) {
-    for (let i = 0; i < ty.xs.length; i++) {
-      xs.push(ty.xs[i]!);
-      ys.push(ty.ys[i]!);
-      typeId.push(ty.id);
-    }
-  }
-  return { xs, ys, typeId };
-}
+const kernelOf = (): KernelSpec => KERNELS[Number(kernelSelect.value)] ?? KERNELS[0]!;
 
-/** TCM grid resolution + world-unit defaults (α=5 is fixed; radius:σ ≈ 2:1 as in the paper).
- *  256² keeps the smooth Γ field visually identical to 384² while staying interactive on hover. */
-const TCM_GRID = 256;
-const spanOf = (b: [number, number, number, number]) => Math.max(b[2] - b[0], b[3] - b[1], 1);
-const defaultRadius = (b: [number, number, number, number]) => spanOf(b) / 50;
-const defaultSigma = (b: [number, number, number, number]) => spanOf(b) / 100;
-/** KDE bandwidth, scale-adaptive: a fixed small σ is a delta function against a ~10⁴-unit tissue
- *  extent, which renders as sparse dots rather than a density. */
-const kdeSigma = (b: [number, number, number, number]) => spanOf(b) / 150;
-
-storeInput.value = DEFAULT_STORE;
-tableInput.value = DEFAULT_CELL_TABLE;
-
-let current: CellTable | null = null;
+/** What to call a cell type: its category name when the store gave one, else the bare id. */
+const typeLabel = (ty: CellTypeCloud | undefined): string => (ty ? (ty.label ?? `type ${ty.id}`) : "—");
+const labelOfId = (id: number): string => typeLabel(current?.types.find((t) => t.id === id));
+/** True when at least one type carries a real name — drives whether the matrix gets label gutters. */
+const hasNames = (t: CellTable | null): boolean => !!t?.types.some((x) => x.label !== undefined);
 
 function setStatus(msg: string, err = false): void {
   statusEl.textContent = msg;
@@ -103,12 +159,38 @@ function asGrid(v: FieldValue): GridValue {
   return { width: v.shape.width, height: v.shape.height, data: v.data as Float32Array };
 }
 
-/** World-bounds over ALL types (so scatter + every KDE share one frame). */
-function tableBounds(t: CellTable): [number, number, number, number] {
-  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+/** Flatten the per-type clouds back into one labelled cell set for the N-way pass. */
+function allCells(t: CellTable): LabelledCells {
+  const xs: number[] = [];
+  const ys: number[] = [];
+  const typeId: number[] = [];
   for (const ty of t.types) {
     for (let i = 0; i < ty.xs.length; i++) {
-      const x = ty.xs[i]!, y = ty.ys[i]!;
+      xs.push(ty.xs[i]!);
+      ys.push(ty.ys[i]!);
+      typeId.push(ty.id);
+    }
+  }
+  return { xs, ys, typeId };
+}
+
+const spanOf = (b: [number, number, number, number]) => Math.max(b[2] - b[0], b[3] - b[1], 1);
+const defaultRadius = (b: [number, number, number, number]) => spanOf(b) / 50;
+const defaultSigma = (b: [number, number, number, number]) => spanOf(b) / 100;
+/** KDE bandwidth, scale-adaptive: a fixed small σ is a delta function against a ~10⁴-unit tissue
+ *  extent, which renders as sparse dots rather than a density. */
+const kdeSigma = (b: [number, number, number, number]) => spanOf(b) / 150;
+
+/** World-bounds over ALL types (so scatter + every KDE + Γ share one frame). */
+function tableBounds(t: CellTable): [number, number, number, number] {
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (const ty of t.types) {
+    for (let i = 0; i < ty.xs.length; i++) {
+      const x = ty.xs[i]!;
+      const y = ty.ys[i]!;
       if (x < minX) minX = x;
       if (x > maxX) maxX = x;
       if (y < minY) minY = y;
@@ -120,10 +202,20 @@ function tableBounds(t: CellTable): [number, number, number, number] {
   return [minX - pad, minY - pad, maxX + pad, maxY + pad];
 }
 
-/** Scatter of every centroid, highlighting the current pair: type A in cyan, type B in amber, all
- *  other cells faint grey — so the linked pair pops against the tissue as you hover the matrix. */
+/** The mark radius actually used: the input is a TOP-HAT-equivalent radius, rescaled per kernel so
+ *  the probed spatial scale (μ₂) is held fixed. Without this, switching to a smoother kernel would
+ *  quietly shrink the neighbourhood and look like a change in the biology. */
+function markRadius(bbox: [number, number, number, number]): { base: number; effective: number } {
+  const base = Number(radiusInput.value) || defaultRadius(bbox);
+  return { base, effective: equivalentRadius(kernelOf(), base) };
+}
+
+// ---- views -------------------------------------------------------------------------------------
+
+/** Scatter of every centroid, highlighting the current pair; all other cells faint. */
 function drawScatterPair(t: CellTable, bbox: [number, number, number, number], idA: number, idB: number): void {
-  const W = 900, H = 900;
+  const W = 900;
+  const H = 900;
   scatterCanvas.width = W;
   scatterCanvas.height = H;
   const ctx = scatterCanvas.getContext("2d")!;
@@ -132,8 +224,8 @@ function drawScatterPair(t: CellTable, bbox: [number, number, number, number], i
   const [minX, minY, maxX, maxY] = bbox;
   const sx = W / (maxX - minX || 1);
   const sy = H / (maxY - minY || 1);
-  const draw = (xs: readonly number[], ys: readonly number[], color: [number, number, number], alpha: number, rad: number) => {
-    ctx.fillStyle = `rgba(${color[0]},${color[1]},${color[2]},${alpha})`;
+  const draw = (xs: readonly number[], ys: readonly number[], style: string, rad: number) => {
+    ctx.fillStyle = style;
     for (let i = 0; i < xs.length; i++) {
       const px = (xs[i]! - minX) * sx;
       const py = (ys[i]! - minY) * sy;
@@ -142,16 +234,16 @@ function drawScatterPair(t: CellTable, bbox: [number, number, number, number], i
   };
   for (const ty of t.types) {
     if (ty.id === idA || ty.id === idB) continue;
-    draw(ty.xs, ty.ys, [148, 163, 184], 0.16, 0.8); // context: faint grey
+    draw(ty.xs, ty.ys, CONTEXT_CSS, 0.8);
   }
   const A = t.types.find((x) => x.id === idA);
   const B = t.types.find((x) => x.id === idB);
-  if (B && idB !== idA) draw(B.xs, B.ys, B_COLOR, 0.9, 1.6);
-  if (A) draw(A.xs, A.ys, A_COLOR, 0.95, 1.8);
+  if (B && idB !== idA) draw(B.xs, B.ys, B_CSS, 1.6);
+  if (A) draw(A.xs, A.ys, A_CSS, 1.8);
 }
 
-/** Intensity ramp of a KDE grid in a base hue, auto-scaled to [0,max] — A and B match the scatter. */
-function drawKde(c: HTMLCanvasElement, g: GridValue, base: [number, number, number]): { max: number } {
+/** Sequential OKLCh render of a KDE grid, auto-scaled to [0, max]. */
+function drawKde(c: HTMLCanvasElement, g: GridValue, lut: Uint8Array): { max: number } {
   c.width = g.width;
   c.height = g.height;
   let hi = 0;
@@ -159,64 +251,20 @@ function drawKde(c: HTMLCanvasElement, g: GridValue, base: [number, number, numb
   const span = hi || 1;
   const img = new ImageData(g.width, g.height);
   for (let i = 0; i < g.data.length; i++) {
-    const k = Math.sqrt(Math.max(0, g.data[i]! / span)); // gamma — lifts the low tail into view
-    img.data[i * 4] = Math.round(base[0] * k);
-    img.data[i * 4 + 1] = Math.round(base[1] * k);
-    img.data[i * 4 + 2] = Math.round(base[2] * k);
-    img.data[i * 4 + 3] = 255;
+    // sqrt gamma lifts the low tail into view; lightness is monotone in the LUT, so this stays a
+    // faithful (if compressed) reading of density rather than a hue trick.
+    putLut(img, i, lut, Math.sqrt(Math.max(0, g.data[i]! / span)));
   }
   c.getContext("2d")!.putImageData(img, 0, 0);
   return { max: hi };
 }
 
-/** Splat ONE type's cloud through the graph into its canvas; returns the facts for the readout. */
-async function splatOne(
-  t: CellTable,
-  id: number,
-  canvas: HTMLCanvasElement,
-  base: [number, number, number],
-  bbox: [number, number, number, number],
-): Promise<{ n: number; peak: number; outSystem?: string } | null> {
-  const ty = t.types.find((x) => x.id === id);
-  if (!ty) return null;
-  const g = new Graph();
-  registerBuiltinOps();
-  const src: GpuField = ty.source(g);
-  const density = g.op1("splatDensity", { points: src }, { ...SPLAT, sigma: kdeSigma(bbox), bbox });
-  const dv = await pull(g, density, { ctx: { backend: browserBackend } });
-  const stats = drawKde(canvas, asGrid(dv), base);
-  return { n: ty.n, peak: stats.max, outSystem: density.placement?.system };
-}
-
-/** Splat BOTH types of the current pair — same op, same world frame, so A and B are directly
- *  comparable side by side (tinted to match the scatter). */
-async function splatPair(): Promise<void> {
-  const t = current;
-  if (!t) return;
-  const idA = Number(typeSelect.value);
-  const idB = Number(typeSelectB.value);
-  const bbox = tableBounds(t);
-  setStatus(`splatting types ${idA} + ${idB} on the GPU …`);
-  try {
-    const A = await splatOne(t, idA, kdeACanvas, A_COLOR, bbox); // sequential: one GPU pull at a time
-    const B = await splatOne(t, idB, kdeBCanvas, B_COLOR, bbox);
-    readoutEl.innerHTML =
-      `<b>${t.label}</b><br>` +
-      `<span class="chipA">A = type ${idA}</span>: ${A?.n ?? "—"} cells, peak ${A ? A.peak.toFixed(3) : "—"} &nbsp;·&nbsp; ` +
-      `<span class="chipB">B = type ${idB}</span>: ${B?.n ?? "—"} cells, peak ${B ? B.peak.toFixed(3) : "—"}<br>` +
-      `placement <b>${t.system}</b> (region "${t.provenance.region || "—"}", instance_key "${t.provenance.instanceKey}") · ` +
-      `splatDensity output: ${A?.outSystem ? `system="${A.outSystem}"` : "absent"} (facet propagated) · KDE ${SPLAT.width}², σ=${kdeSigma(bbox).toPrecision(3)}`;
-    setStatus(`done — types ${idA} + ${idB} splatted through the op-graph.`);
-  } catch (e) {
-    setStatus(`splat failed: ${(e as Error).message}`, true);
-  }
-}
-
-/** Diverging blue–white–red render of a TCM Γ grid, symmetric about 0. */
+/** Diverging OKLCh render of a Γ grid, symmetric about 0 (so ±x are equally prominent). */
 function drawTcm(c: HTMLCanvasElement, g: GridValue): { min: number; max: number } {
   c.width = g.width;
   c.height = g.height;
-  let lo = Infinity, hi = -Infinity;
+  let lo = Infinity;
+  let hi = -Infinity;
   for (const v of g.data) {
     if (v < lo) lo = v;
     if (v > hi) hi = v;
@@ -224,56 +272,10 @@ function drawTcm(c: HTMLCanvasElement, g: GridValue): { min: number; max: number
   const scale = Math.max(Math.abs(lo), Math.abs(hi)) || 1;
   const img = new ImageData(g.width, g.height);
   for (let i = 0; i < g.data.length; i++) {
-    const t = g.data[i]! / scale; // [-1,1]
-    let r: number, gg: number, b: number;
-    if (t >= 0) {
-      r = 255;
-      gg = Math.round(255 * (1 - t));
-      b = Math.round(255 * (1 - t));
-    } else {
-      b = 255;
-      r = Math.round(255 * (1 + t));
-      gg = Math.round(255 * (1 + t));
-    }
-    img.data[i * 4] = r;
-    img.data[i * 4 + 1] = gg;
-    img.data[i * 4 + 2] = b;
-    img.data[i * 4 + 3] = 255;
+    putLut(img, i, DIVERGING_LUT, (g.data[i]! / scale + 1) / 2); // [-1,1] → [0,1]
   }
   c.getContext("2d")!.putImageData(img, 0, 0);
   return { min: lo, max: hi };
-}
-
-/** Compute the TCM Γ_ab(x) for the selected (A, B) pair on the CPU (Mode 1, against the tested
- *  reference oracle) and render it. Fast enough at Leap034 scale via the bucket-grid path. */
-function computeTcmMap(): void {
-  const t = current;
-  if (!t) return;
-  const idA = Number(typeSelect.value);
-  const idB = Number(typeSelectB.value);
-  const A = t.types.find((x) => x.id === idA);
-  const B = t.types.find((x) => x.id === idB);
-  if (!A || !B) return;
-  const bbox = tableBounds(t);
-  const radius = Number(radiusInput.value) || defaultRadius(bbox);
-  const sigma = Number(sigmaInput.value) || defaultSigma(bbox);
-  setStatus(`computing TCM Γ(${idA}→${idB}) …`);
-  // Yield a frame so the status paints before the (synchronous) compute.
-  requestAnimationFrame(() => {
-    const t0 = performance.now();
-    const grid = computeTcm(
-      { xs: A.xs, ys: A.ys },
-      { xs: B.xs, ys: B.ys },
-      { width: TCM_GRID, height: TCM_GRID, bbox, radius, sigma, alpha: 5 },
-    );
-    const ms = performance.now() - t0;
-    const stats = drawTcm(tcmCanvas, { width: TCM_GRID, height: TCM_GRID, data: grid });
-    tcmReadoutEl.innerHTML =
-      `<b>Γ<sub>AB</sub></b> — A = type ${idA} (${A.n} cells), B = type ${idB} (${B.n} cells)<br>` +
-      `radius ${radius.toPrecision(3)}, σ ${sigma.toPrecision(3)} (world units), α=5, grid ${TCM_GRID}² · ${ms.toFixed(0)} ms (CPU)<br>` +
-      `Γ range [${stats.min.toFixed(3)}, ${stats.max.toFixed(3)}] · red = A clusters around B, blue = A excludes B`;
-    setStatus(`done — TCM Γ(${idA}→${idB}) computed (Mode 1, faithful; validated against the reference oracle).`);
-  });
 }
 
 /** Line plot of g(r) vs r with a dashed g=1 (CSR) reference. */
@@ -308,7 +310,7 @@ function drawPcfCurve(c: HTMLCanvasElement, r: number[], g: number[]): void {
   ctx.lineTo(padL, H - padB);
   ctx.lineTo(W - padR, H - padB);
   ctx.stroke();
-  ctx.strokeStyle = "#38bdf8";
+  ctx.strokeStyle = A_CSS;
   ctx.lineWidth = 2;
   ctx.beginPath();
   for (let i = 0; i < r.length; i++) {
@@ -325,6 +327,201 @@ function drawPcfCurve(c: HTMLCanvasElement, r: number[], g: number[]): void {
   ctx.fillText(`r → ${rMax.toPrecision(3)} (world units)`, W - padR - 150, H - 8);
 }
 
+/** N×N diverging heatmap of the cross-PCF matrix: log₂(g) through the OKLCh ramp, with hover/pin
+ *  markers and — when the store gave us names — labelled axes. */
+function drawMatrix(
+  c: HTMLCanvasElement,
+  res: { types: number[]; g: Float64Array },
+  hover: { a: number; b: number } | null,
+  pinned: { a: number; b: number } | null,
+): void {
+  const N = res.types.length;
+  const cell = MATRIX_CELL;
+  const names = hasNames(current) ? res.types.map(labelOfId) : null;
+  const gut = names ? 96 : 0;
+  matrixGutter = gut;
+  c.width = gut + N * cell;
+  c.height = gut + N * cell;
+  const ctx = c.getContext("2d")!;
+  ctx.fillStyle = "#0f172a";
+  ctx.fillRect(0, 0, c.width, c.height);
+  for (let a = 0; a < N; a++) {
+    for (let b = 0; b < N; b++) {
+      const g = res.g[a * N + b]!;
+      // log₂(g) clipped to ±2, i.e. a 4-fold enrichment or depletion saturates the ramp.
+      const l = g > 0 ? Math.max(-2, Math.min(2, Math.log2(g))) / 2 : -1;
+      const k = Math.max(0, Math.min(255, Math.round(((l + 1) / 2) * 255))) * 3;
+      ctx.fillStyle = `rgb(${DIVERGING_LUT[k]},${DIVERGING_LUT[k + 1]},${DIVERGING_LUT[k + 2]})`;
+      ctx.fillRect(gut + b * cell, gut + a * cell, cell, cell);
+    }
+  }
+  if (names) {
+    ctx.fillStyle = "#cbd5e1";
+    ctx.font = "10px ui-sans-serif, system-ui, sans-serif";
+    ctx.textBaseline = "middle";
+    for (let a = 0; a < N; a++) {
+      ctx.textAlign = "right";
+      ctx.fillText(names[a]!, gut - 5, gut + a * cell + cell / 2, gut - 8);
+    }
+    for (let b = 0; b < N; b++) {
+      ctx.save();
+      ctx.translate(gut + b * cell + cell / 2, gut - 5);
+      ctx.rotate(-Math.PI / 2);
+      ctx.textAlign = "left";
+      ctx.fillText(names[b]!, 0, 0, gut - 8);
+      ctx.restore();
+    }
+  }
+  if (pinned) {
+    ctx.strokeStyle = "#a3e635"; // lime dashed = pinned (where the view returns on mouse-leave)
+    ctx.lineWidth = 2;
+    ctx.setLineDash([3, 2]);
+    ctx.strokeRect(gut + pinned.b * cell + 1, gut + pinned.a * cell + 1, cell - 2, cell - 2);
+    ctx.setLineDash([]);
+  }
+  if (hover) {
+    ctx.fillStyle = "rgba(226,232,240,0.14)";
+    ctx.fillRect(gut, gut + hover.a * cell, N * cell, cell); // row A
+    ctx.fillRect(gut + hover.b * cell, gut, cell, N * cell); // col B
+    ctx.strokeStyle = "#e2e8f0";
+    ctx.lineWidth = 2;
+    ctx.strokeRect(gut + hover.b * cell + 1, gut + hover.a * cell + 1, cell - 2, cell - 2);
+  }
+}
+
+// ---- computations ------------------------------------------------------------------------------
+
+/** Splat ONE type's cloud through the graph into its canvas. */
+async function splatOne(
+  t: CellTable,
+  id: number,
+  canvas: HTMLCanvasElement,
+  lut: Uint8Array,
+  bbox: [number, number, number, number],
+): Promise<{ n: number; peak: number; outSystem?: string } | null> {
+  const ty = t.types.find((x) => x.id === id);
+  if (!ty) return null;
+  const g = new Graph();
+  registerBuiltinOps();
+  const src: GpuField = ty.source(g);
+  const density = g.op1("splatDensity", { points: src }, { ...SPLAT, sigma: kdeSigma(bbox), bbox });
+  const dv = await pull(g, density, { ctx: { backend: browserBackend } });
+  const stats = drawKde(canvas, asGrid(dv), lut);
+  return { n: ty.n, peak: stats.max, outSystem: density.placement?.system };
+}
+
+/** Splat BOTH types of the current pair — same op, same world frame, so A and B are directly
+ *  comparable side by side (and share a lightness ramp, so brightness means density, not identity). */
+async function splatPair(): Promise<void> {
+  const t = current;
+  if (!t) return;
+  const idA = Number(typeSelect.value);
+  const idB = Number(typeSelectB.value);
+  const bbox = tableBounds(t);
+  try {
+    const A = await splatOne(t, idA, kdeACanvas, SEQ_A_LUT, bbox); // sequential: one GPU pull at a time
+    const B = await splatOne(t, idB, kdeBCanvas, SEQ_B_LUT, bbox);
+    readoutEl.innerHTML =
+      `<b>${t.label}</b><br>` +
+      `<span class="chipA">A = ${labelOfId(idA)}</span>: ${A?.n ?? "—"} cells, peak ${A ? A.peak.toFixed(3) : "—"} &nbsp;·&nbsp; ` +
+      `<span class="chipB">B = ${labelOfId(idB)}</span>: ${B?.n ?? "—"} cells, peak ${B ? B.peak.toFixed(3) : "—"}<br>` +
+      `placement <b>${t.system}</b> (region "${t.provenance.region || "—"}", instance_key "${t.provenance.instanceKey}") · ` +
+      `splatDensity output: ${A?.outSystem ? `system="${A.outSystem}"` : "absent"} (facet propagated) · KDE ${SPLAT.width}², σ=${kdeSigma(bbox).toPrecision(3)}`;
+  } catch (e) {
+    setStatus(`splat failed: ${(e as Error).message}`, true);
+  }
+}
+
+/** Compute Γ_AB by the two-pass GPU render formulation and draw it. */
+async function computeTcmMap(): Promise<void> {
+  const t = current;
+  if (!t) return;
+  const idA = Number(typeSelect.value);
+  const idB = Number(typeSelectB.value);
+  const A = t.types.find((x) => x.id === idA);
+  const B = t.types.find((x) => x.id === idB);
+  if (!A || !B) return;
+  const bbox = tableBounds(t);
+  const { base, effective } = markRadius(bbox);
+  const sigma = Number(sigmaInput.value) || defaultSigma(bbox);
+  const kernel = kernelOf();
+  setStatus(`rendering Γ(${labelOfId(idA)} → ${labelOfId(idB)}) …`);
+  try {
+    const t0 = performance.now();
+    const grid = await computeTcmRender(
+      { xs: A.xs, ys: A.ys },
+      { xs: B.xs, ys: B.ys },
+      {
+        width: TCM_GRID,
+        height: TCM_GRID,
+        bbox,
+        radius: effective,
+        sigma,
+        alpha: 5,
+        kernel,
+        markWidth: MARK_GRID,
+        markHeight: MARK_GRID,
+      },
+    );
+    const ms = performance.now() - t0;
+    lastGamma = { grid, idA, idB, ms };
+    const stats = drawTcm(tcmCanvas, { width: TCM_GRID, height: TCM_GRID, data: grid });
+    const scaleNote =
+      kernel.kind === "poly" && kernel.order === 0
+        ? `radius ${base.toPrecision(3)}`
+        : `radius ${base.toPrecision(3)} → ${effective.toPrecision(3)} (matched μ₂)`;
+    tcmReadoutEl.innerHTML =
+      `<b>Γ<sub>AB</sub></b> — A = ${labelOfId(idA)} (${A.n} cells), B = ${labelOfId(idB)} (${B.n} cells)<br>` +
+      `${kernelLabel(kernel)} kernel, ${scaleNote}, σ ${sigma.toPrecision(3)}, α=5 · Γ ${TCM_GRID}², mark ${MARK_GRID}² · <b>${ms.toFixed(0)} ms</b> (GPU, 2 render passes)<br>` +
+      `Γ range [${stats.min.toFixed(3)}, ${stats.max.toFixed(3)}] · red = A associated with B here, blue = excluded`;
+    setStatus(`done — Γ rendered in ${ms.toFixed(0)} ms.`);
+  } catch (e) {
+    setStatus(`Γ render failed: ${(e as Error).message}`, true);
+  }
+}
+
+/** Recompute the same Γ on the CPU, exactly (continuous marks, f64), and report the agreement.
+ *
+ *  This is the parity claim made visible: the render path approximates the mark by sampling a
+ *  raster, and this says by how much, on the data actually on screen — rather than asking anyone to
+ *  take a test's word for it. */
+function checkAgainstOracle(): void {
+  const t = current;
+  const got = lastGamma;
+  if (!t || !got) {
+    setStatus("compute Γ first, then check it against the oracle.", true);
+    return;
+  }
+  const A = t.types.find((x) => x.id === got.idA);
+  const B = t.types.find((x) => x.id === got.idB);
+  if (!A || !B) return;
+  const bbox = tableBounds(t);
+  const { effective } = markRadius(bbox);
+  const sigma = Number(sigmaInput.value) || defaultSigma(bbox);
+  setStatus("computing the exact CPU oracle …");
+  requestAnimationFrame(() => {
+    const t0 = performance.now();
+    const { gamma } = tcmKernelField(
+      { xs: A.xs, ys: A.ys },
+      { xs: B.xs, ys: B.ys },
+      { width: TCM_GRID, height: TCM_GRID, bbox, radius: effective, sigma, alpha: 5, kernel: kernelOf(), radiusSigma: 4 },
+    );
+    const ms = performance.now() - t0;
+    let peak = 0;
+    let err = 0;
+    for (let i = 0; i < gamma.length; i++) {
+      peak = Math.max(peak, Math.abs(gamma[i]!));
+      err = Math.max(err, Math.abs(got.grid[i]! - gamma[i]!));
+    }
+    const rel = err / Math.max(peak, 1e-30);
+    tcmReadoutEl.innerHTML +=
+      `<br><b>oracle check</b>: CPU exact ${ms.toFixed(0)} ms vs GPU ${got.ms.toFixed(0)} ms ` +
+      `(<b>${(ms / Math.max(got.ms, 0.01)).toFixed(1)}×</b>) · max |Δ| / peak = <b>${(100 * rel).toFixed(3)}%</b> ` +
+      `— the render path samples the mark from a ${MARK_GRID}² raster; the oracle evaluates it at each cell in f64.`;
+    setStatus(`oracle agreement ${(100 * rel).toFixed(3)}% of peak (CPU ${ms.toFixed(0)} ms, GPU ${got.ms.toFixed(0)} ms).`);
+  });
+}
+
 /** Compute + render the cross-PCF g_ab(r) curve for the selected pair (CPU, Mode 1). */
 function computePcf(): void {
   const t = current;
@@ -339,58 +536,8 @@ function computePcf(): void {
   const res = crossPCF({ xs: A.xs, ys: A.ys }, { xs: B.xs, ys: B.ys }, { bbox, rMax, nBins: PCF_BINS });
   drawPcfCurve(pcfCanvas, res.r, res.g);
   pcfReadoutEl.innerHTML =
-    `<b>g<sub>AB</sub>(r)</b> — A = type ${idA} (${A.n} cells), B = type ${idB} (${B.n} cells)<br>` +
+    `<b>g<sub>AB</sub>(r)</b> — A = ${labelOfId(idA)} (${A.n} cells), B = ${labelOfId(idB)} (${B.n} cells)<br>` +
     `rMax ${rMax.toPrecision(3)} (world units), ${PCF_BINS} bins · g(r→0) = ${(res.g[0] ?? 0).toFixed(2)} · g&gt;1 clustering, g&lt;1 exclusion`;
-}
-
-const MATRIX_CELL = 22;
-
-/** N×N diverging heatmap of the cross-PCF matrix: log₂(g) mapped red (clustering) ↔ blue (exclusion),
- *  with an optional hovered-cell outline + row/col guides for the coordinated view. */
-function drawMatrix(
-  c: HTMLCanvasElement,
-  res: { types: number[]; g: Float64Array },
-  hover: { a: number; b: number } | null,
-  pinned: { a: number; b: number } | null,
-): void {
-  const N = res.types.length;
-  const cell = MATRIX_CELL;
-  c.width = N * cell;
-  c.height = N * cell;
-  const ctx = c.getContext("2d")!;
-  for (let a = 0; a < N; a++) {
-    for (let b = 0; b < N; b++) {
-      const g = res.g[a * N + b]!;
-      const l = g > 0 ? Math.max(-2, Math.min(2, Math.log2(g))) / 2 : -1; // [-1,1], 0 = CSR
-      let r: number, gg: number, bl: number;
-      if (l >= 0) {
-        r = 255;
-        gg = Math.round(255 * (1 - l));
-        bl = Math.round(255 * (1 - l));
-      } else {
-        bl = 255;
-        r = Math.round(255 * (1 + l));
-        gg = Math.round(255 * (1 + l));
-      }
-      ctx.fillStyle = `rgb(${r},${gg},${bl})`;
-      ctx.fillRect(b * cell, a * cell, cell, cell);
-    }
-  }
-  if (pinned) {
-    ctx.strokeStyle = "#a3e635"; // lime dashed = pinned (where the view returns on mouse-leave)
-    ctx.lineWidth = 2;
-    ctx.setLineDash([3, 2]);
-    ctx.strokeRect(pinned.b * cell + 1, pinned.a * cell + 1, cell - 2, cell - 2);
-    ctx.setLineDash([]);
-  }
-  if (hover) {
-    ctx.fillStyle = "rgba(226,232,240,0.14)";
-    ctx.fillRect(0, hover.a * cell, N * cell, cell); // row A
-    ctx.fillRect(hover.b * cell, 0, cell, N * cell); // col B
-    ctx.strokeStyle = "#e2e8f0";
-    ctx.lineWidth = 2;
-    ctx.strokeRect(hover.b * cell + 1, hover.a * cell + 1, cell - 2, cell - 2);
-  }
 }
 
 /** Compute + render the N-way cross-PCF association matrix for all cell types (one batched pass). */
@@ -409,7 +556,7 @@ function computeMatrix(): void {
     `<b>hover a cell</b> to link the scatter · cross-PCF · Γ below (Γ on settle/click).`;
 }
 
-/** Point the linked views (scatter pair, cross-PCF, and optionally the expensive TCM) at a pair. */
+/** Point the linked views at a pair. `doTcm` gates the expensive ones. */
 function setPair(idA: number, idB: number, doTcm: boolean): void {
   typeSelect.value = String(idA);
   typeSelectB.value = String(idB);
@@ -419,39 +566,42 @@ function setPair(idA: number, idB: number, doTcm: boolean): void {
   computePcf();
   if (doTcm) {
     void splatPair();
-    computeTcmMap();
+    void computeTcmMap();
   }
 }
 
-/** Debounce the expensive views (KDE-of-A splat + TCM) so they recompute only when the mouse
- *  settles on a matrix cell. The cheap ones (scatter, cross-PCF) already updated on hover. */
+/** Debounce the expensive views (KDE splats + Γ) so they recompute only when the mouse settles. */
 function scheduleTcm(): void {
   if (tcmTimer) clearTimeout(tcmTimer);
   tcmTimer = setTimeout(() => {
     void splatPair();
-    computeTcmMap();
-  }, 300);
+    void computeTcmMap();
+  }, 250);
 }
 
-/** Map a mouse event on the matrix canvas to a `(row a, col b)` cell, or null if outside. */
+/** Map a mouse event on the matrix canvas to a `(row a, col b)` cell, or null if outside.
+ *  The canvas is CSS-scaled and may carry a label gutter, so both have to be undone. */
 function matrixCellFromEvent(e: MouseEvent): { a: number; b: number } | null {
   const res = lastMatrix;
   if (!res) return null;
   const N = res.types.length;
   const rect = matrixCanvas.getBoundingClientRect();
-  const b = Math.floor(((e.clientX - rect.left) / rect.width) * N);
-  const a = Math.floor(((e.clientY - rect.top) / rect.height) * N);
+  const x = (e.clientX - rect.left) * (matrixCanvas.width / rect.width) - matrixGutter;
+  const y = (e.clientY - rect.top) * (matrixCanvas.height / rect.height) - matrixGutter;
+  const b = Math.floor(x / MATRIX_CELL);
+  const a = Math.floor(y / MATRIX_CELL);
   if (a < 0 || a >= N || b < 0 || b >= N) return null;
   return { a, b };
 }
 
-/** Populate the type dropdown + counts and draw the full scatter. */
-function present(t: CellTable): void {
-  current = t;
+// ---- sources -----------------------------------------------------------------------------------
+
+/** Fill the type A/B dropdowns and pick a sensible opening pair. */
+function fillTypeSelects(t: CellTable): { idA: number; idB: number } {
   typeSelect.innerHTML = "";
   typeSelectB.innerHTML = "";
   for (const ty of t.types) {
-    const label = `id ${ty.id} — ${ty.n} cells`;
+    const label = `${typeLabel(ty)} — ${ty.n} cells`;
     for (const sel of [typeSelect, typeSelectB]) {
       const opt = document.createElement("option");
       opt.value = String(ty.id);
@@ -459,20 +609,25 @@ function present(t: CellTable): void {
       sel.appendChild(opt);
     }
   }
-  // Default A = most populous, B = second most populous (skipping degenerate n<=1 ids), for a
-  // legible first splat and a meaningful first TCM pair.
+  // Default A = most populous, B = second (skipping degenerate n<=1 ids), for a legible first splat.
   const ranked = [...t.types].filter((x) => x.n > 1).sort((a, b) => b.n - a.n);
-  const biggest = ranked[0] ?? t.types[0];
-  const second = ranked[1] ?? biggest;
-  if (biggest) typeSelect.value = String(biggest.id);
-  if (second) typeSelectB.value = String(second.id);
+  const idA = (ranked[0] ?? t.types[0])?.id ?? 0;
+  const idB = (ranked[1] ?? ranked[0] ?? t.types[0])?.id ?? idA;
+  typeSelect.value = String(idA);
+  typeSelectB.value = String(idB);
+  return { idA, idB };
+}
+
+/** Take a freshly loaded table and drive every view from it. */
+function present(t: CellTable): void {
+  current = t;
+  lastGamma = null;
+  const { idA, idB } = fillTypeSelects(t);
   const bbox = tableBounds(t);
   radiusInput.value = defaultRadius(bbox).toPrecision(3);
   sigmaInput.value = defaultSigma(bbox).toPrecision(3);
-  setStatus(`read ${t.totalCells} cells in ${t.types.length} types — hover the N-way matrix to link the scatter · cross-PCF · Γ for any pair.`);
+  setStatus(`read ${t.totalCells} cells in ${t.types.length} types — hover the N-way matrix to link every view.`);
   computeMatrix();
-  const idA = biggest ? biggest.id : (t.types[0]?.id ?? 0);
-  const idB = second ? second.id : idA;
   // Pin the initial pair so leaving the matrix always has a home to return to.
   if (lastMatrix) {
     const a = lastMatrix.types.indexOf(idA);
@@ -485,30 +640,143 @@ function present(t: CellTable): void {
   setPair(idA, idB, true);
 }
 
-async function runLive(): Promise<void> {
+/** Populate the type-column dropdown for whichever table is selected. */
+function fillColumnSelect(info: TableInfo | undefined): void {
+  typeColSelect.innerHTML = "";
+  if (!info) return;
+  for (const col of info.columns) {
+    const opt = document.createElement("option");
+    opt.value = col.name;
+    const kind = col.kind === "categorical" ? `${col.nCategories ?? col.categories?.length ?? "?"} categories` : "numeric";
+    opt.textContent = `${col.name} — ${kind}`;
+    // Columns the heuristic ruled out stay in the list but are visibly deprioritised: the guess is
+    // only a default, and the user knows their data better than the regex does.
+    if (col.score <= 0) opt.textContent += " (unlikely)";
+    typeColSelect.appendChild(opt);
+  }
+  if (info.suggested) typeColSelect.value = info.suggested;
+}
+
+/**
+ * Inspect the store: enumerate its tables and each one's candidate cell-type columns.
+ *
+ * Auto-selects when there is only one table (and its suggested column), because being made to pick
+ * from a list of one is pure friction. With several, the list is shown and the best guess
+ * pre-selected — the cell-type column is not standardised, so guessing-and-showing beats either
+ * hard-coding a name or interrogating the user.
+ */
+async function inspectStore(autoLoad: boolean): Promise<void> {
   const url = storeInput.value.trim();
-  const table = tableInput.value.trim() || DEFAULT_CELL_TABLE;
-  setStatus(`reading table "${table}" from ${url} …`);
+  setStatus(`inspecting ${url} …`);
   try {
-    const t = await readCellTable(url, { table });
-    present(t);
+    storeTables = await listCellTables(url);
+    const usable = storeTables.filter((t) => t.hasCentroids);
+    tableSelect.innerHTML = "";
+    for (const info of storeTables) {
+      const opt = document.createElement("option");
+      opt.value = info.name;
+      opt.textContent = info.error
+        ? `${info.name} — unreadable (${info.error})`
+        : `${info.name} — ${info.nRows} cells${info.hasCentroids ? "" : ", no obsm/spatial"}`;
+      opt.disabled = !info.hasCentroids;
+      tableSelect.appendChild(opt);
+    }
+    if (usable.length === 0) {
+      setStatus(`no table in this store has obsm/spatial centroids (found ${storeTables.length}).`, true);
+      return;
+    }
+    const chosen = usable[0]!;
+    tableSelect.value = chosen.name;
+    fillColumnSelect(chosen);
+    const note =
+      usable.length === 1
+        ? `one table (${chosen.name}), selected automatically`
+        : `${usable.length} usable tables — ${chosen.name} selected`;
+    setStatus(`${note}; type column: ${chosen.suggested ?? "(none suggested — pick one)"}.`);
+    if (autoLoad) await loadSelected();
   } catch (e) {
-    setStatus(`live store failed: ${(e as Error).message}\nUse "run fixture" to demo offline.`, true);
+    setStatus(`inspect failed: ${(e as Error).message}\nUse "run fixture" or open a CSV to work offline.`, true);
   }
 }
 
-function runFixture(): void {
-  setStatus("building the synthetic 2-type fixture …");
-  present(syntheticCellTable());
+async function loadSelected(): Promise<void> {
+  const url = storeInput.value.trim();
+  const table = tableSelect.value || DEFAULT_CELL_TABLE;
+  const typeColumn = typeColSelect.value || undefined;
+  setStatus(`reading "${table}" (${typeColumn ?? "default column"}) …`);
+  try {
+    present(await readCellTable(url, { table, typeColumn }));
+  } catch (e) {
+    setStatus(`read failed: ${(e as Error).message}`, true);
+  }
 }
 
-runBtn.addEventListener("click", () => void runLive());
-fixtureBtn.addEventListener("click", () => runFixture());
+/** Open a CSV: parse, guess x/y/type from the headers (falling back to the shape of the data), and
+ *  load it through the same path as a store. */
+async function loadCsv(file: File): Promise<void> {
+  setStatus(`parsing ${file.name} …`);
+  try {
+    const rows = parseCsv(await file.text());
+    const schema = inspectCsv(rows);
+    if (!schema.suggestedX || !schema.suggestedY || !schema.suggestedType) {
+      setStatus(`could not identify x / y / type columns in ${file.name}. Headers: ${schema.headers.join(", ")}`, true);
+      return;
+    }
+    const t = csvToCellTable(rows, {
+      xColumn: schema.suggestedX,
+      yColumn: schema.suggestedY,
+      typeColumn: schema.suggestedType,
+      system: file.name,
+      label: file.name,
+    });
+    // Reflect the CSV's own columns in the pickers, so what was chosen is visible and not magic.
+    tableSelect.innerHTML = `<option>${file.name}</option>`;
+    typeColSelect.innerHTML = "";
+    for (const c of schema.columns) {
+      const opt = document.createElement("option");
+      opt.value = c.name;
+      opt.textContent = `${c.name} — ${c.distinct} distinct`;
+      typeColSelect.appendChild(opt);
+    }
+    typeColSelect.value = schema.suggestedType;
+    present(t);
+    setStatus(
+      `${file.name}: x=${schema.suggestedX}, y=${schema.suggestedY}, type=${schema.suggestedType} — ${t.totalCells} cells in ${t.types.length} types.`,
+    );
+  } catch (e) {
+    setStatus(`CSV failed: ${(e as Error).message}`, true);
+  }
+}
+
+// ---- wiring ------------------------------------------------------------------------------------
+
+storeInput.value = DEFAULT_STORE;
+for (const [i, k] of KERNELS.entries()) {
+  const opt = document.createElement("option");
+  opt.value = String(i);
+  opt.textContent = kernelLabel(k) + (i === 0 ? " (the paper)" : "");
+  kernelSelect.appendChild(opt);
+}
+kernelSelect.value = "0";
+
+inspectBtn.addEventListener("click", () => void inspectStore(false));
+runBtn.addEventListener("click", () => void loadSelected());
+fixtureBtn.addEventListener("click", () => {
+  setStatus("building the synthetic 2-type fixture …");
+  present(syntheticCellTable());
+});
+csvInput.addEventListener("change", () => {
+  const f = csvInput.files?.[0];
+  if (f) void loadCsv(f);
+});
+tableSelect.addEventListener("change", () => fillColumnSelect(storeTables.find((t) => t.name === tableSelect.value)));
 typeSelect.addEventListener("change", () => setPair(Number(typeSelect.value), Number(typeSelectB.value), true));
 typeSelectB.addEventListener("change", () => setPair(Number(typeSelect.value), Number(typeSelectB.value), true));
-tcmBtn.addEventListener("click", () => computeTcmMap());
-radiusInput.addEventListener("change", () => computeTcmMap());
-sigmaInput.addEventListener("change", () => computeTcmMap());
+tcmBtn.addEventListener("click", () => void computeTcmMap());
+oracleBtn.addEventListener("click", () => checkAgainstOracle());
+kernelSelect.addEventListener("change", () => void computeTcmMap());
+radiusInput.addEventListener("change", () => void computeTcmMap());
+sigmaInput.addEventListener("change", () => void computeTcmMap());
 
 // --- coordinated view: hover the N-way matrix to link the scatter, cross-PCF, and (on settle) Γ ---
 matrixCanvas.addEventListener("mousemove", (e) => {
@@ -525,8 +793,8 @@ matrixCanvas.addEventListener("mousemove", (e) => {
   drawMatrix(matrixCanvas, res, hoverCell, pinnedCell);
   const rel = g > 1 ? `clustering (${g.toFixed(2)}×)` : g < 1 && g > 0 ? `exclusion (${g.toFixed(2)}×)` : "no co-location";
   matrixReadoutEl.innerHTML =
-    `<b>A = type ${idA}</b> (${res.counts[cell.a]} cells, <span style="color:#22d3ee">cyan</span>) → ` +
-    `<b>B = type ${idB}</b> (${res.counts[cell.b]} cells, <span style="color:#f59e0b">amber</span>) · ` +
+    `<span class="chipA"><b>A = ${labelOfId(idA)}</b></span> (${res.counts[cell.a]} cells) → ` +
+    `<span class="chipB"><b>B = ${labelOfId(idB)}</b></span> (${res.counts[cell.b]} cells) · ` +
     `g = ${g.toFixed(3)} — ${rel} · scatter + cross-PCF live · Γ on settle · click to pin`;
   setPair(idA, idB, false);
   scheduleTcm();
@@ -544,8 +812,8 @@ matrixCanvas.addEventListener("mouseleave", () => {
   const idB = res.types[pinnedCell.b]!;
   const g = res.g[pinnedCell.a * N + pinnedCell.b]!;
   matrixReadoutEl.innerHTML =
-    `<b>pinned</b> — <span class="chipA">A = type ${idA}</span> (${res.counts[pinnedCell.a]} cells) → ` +
-    `<span class="chipB">B = type ${idB}</span> (${res.counts[pinnedCell.b]} cells) · g = ${g.toFixed(3)} · hover to explore, click to re-pin`;
+    `<b>pinned</b> — <span class="chipA">A = ${labelOfId(idA)}</span> (${res.counts[pinnedCell.a]} cells) → ` +
+    `<span class="chipB">B = ${labelOfId(idB)}</span> (${res.counts[pinnedCell.b]} cells) · g = ${g.toFixed(3)} · hover to explore, click to re-pin`;
   setPair(idA, idB, false);
   scheduleTcm();
 });
@@ -558,5 +826,7 @@ matrixCanvas.addEventListener("click", (e) => {
   setPair(lastMatrix.types[cell.a]!, lastMatrix.types[cell.b]!, true);
 });
 matrixCanvas.style.cursor = "crosshair";
-// Auto-attempt the live store on load; the fixture button is always available offline.
-void runLive();
+
+// Auto-inspect the default store on load and open its (single) table; the fixture and CSV paths are
+// always available offline.
+void inspectStore(true);

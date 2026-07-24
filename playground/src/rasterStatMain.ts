@@ -48,8 +48,12 @@ function asGrid(v: FieldValue): GridValue {
 function drawIntensity(c: HTMLCanvasElement, g: GridValue): void {
   c.width = g.width;
   c.height = g.height;
-  let lo = Infinity, hi = -Infinity;
-  for (const v of g.data) { if (v < lo) lo = v; if (v > hi) hi = v; }
+  let lo = Infinity,
+    hi = -Infinity;
+  for (const v of g.data) {
+    if (v < lo) lo = v;
+    if (v > hi) hi = v;
+  }
   const span = hi - lo || 1;
   const img = new ImageData(g.width, g.height);
   for (let i = 0; i < g.data.length; i++) {
@@ -66,21 +70,35 @@ function drawIntensity(c: HTMLCanvasElement, g: GridValue): void {
 function drawZ(c: HTMLCanvasElement, g: GridValue): { min: number; max: number; mean: number; hot: [number, number]; hotZ: number } {
   c.width = g.width;
   c.height = g.height;
-  let lo = Infinity, hi = -Infinity, sum = 0, hotZ = -Infinity, hotI = 0;
+  let lo = Infinity,
+    hi = -Infinity,
+    sum = 0,
+    hotZ = -Infinity,
+    hotI = 0;
   for (let i = 0; i < g.data.length; i++) {
     const v = g.data[i]!;
     if (v < lo) lo = v;
     if (v > hi) hi = v;
     sum += v;
-    if (v > hotZ) { hotZ = v; hotI = i; }
+    if (v > hotZ) {
+      hotZ = v;
+      hotI = i;
+    }
   }
   const scale = Math.max(Math.abs(lo), Math.abs(hi)) || 1;
   const img = new ImageData(g.width, g.height);
   for (let i = 0; i < g.data.length; i++) {
     const t = g.data[i]! / scale; // [-1,1]
     let r: number, gg: number, b: number;
-    if (t >= 0) { r = 255; gg = Math.round(255 * (1 - t)); b = Math.round(255 * (1 - t)); }
-    else { b = 255; r = Math.round(255 * (1 + t)); gg = Math.round(255 * (1 + t)); }
+    if (t >= 0) {
+      r = 255;
+      gg = Math.round(255 * (1 - t));
+      b = Math.round(255 * (1 - t));
+    } else {
+      b = 255;
+      r = Math.round(255 * (1 + t));
+      gg = Math.round(255 * (1 + t));
+    }
     img.data[i * 4] = r;
     img.data[i * 4 + 1] = gg;
     img.data[i * 4 + 2] = b;
@@ -130,7 +148,8 @@ async function runLive(): Promise<void> {
     // index `floor(n/2)` can land on e.g. a 1024×44 edge strip. Clamping away from the last
     // index guarantees a full, square-ish chunk.
     const interior = (n: number) => Math.min(Math.floor(n / 2), Math.max(0, n - 2));
-    const cx = interior(nx), cy = interior(ny);
+    const cx = interior(nx),
+      cy = interior(ny);
     const tile = await img.loader.getChunk({ level, x: cx, y: cy, z: 0 });
 
     const g = new Graph();

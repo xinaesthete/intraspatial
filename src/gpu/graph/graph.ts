@@ -6,7 +6,18 @@
 //
 // Edges are *derived* from each node's `inputs` map (a RAW dependency on the
 // referenced producer); they are never hand-declared.
-import type { Basis, ElementType, FieldProvenance, FieldRole, FieldValue, GpuField, NodeId, ResolvedPlacement, Shape, TensorAxis } from "./handle";
+import type {
+  Basis,
+  ElementType,
+  FieldProvenance,
+  FieldRole,
+  FieldValue,
+  GpuField,
+  NodeId,
+  ResolvedPlacement,
+  Shape,
+  TensorAxis,
+} from "./handle";
 import { SCALAR, SPATIAL } from "./handle";
 import type { Params } from "./op";
 import { getOp } from "./registry";

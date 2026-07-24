@@ -43,36 +43,50 @@
 <body>
   <div id="wrap">
     <h1>Cell-type spatial statistics — TCM · cross-PCF · N-way matrix (Stream B2)</h1>
-    <p class="sub">A real SpatialData regions table (<code>tables/Leap034_imc_cells</code>) is read through
-      <code>zarrita</code>; <code>obsm/spatial</code> centroids are grouped by <code>obs/cell_type_id</code>
-      into per-type clouds (ADR-0018 — never merged), each carrying a resolved <code>placement</code>.
+    <p class="sub">A SpatialData store is <b>inspected</b> for its tables and their candidate cell-type columns
+      (auto-selected when there is only one); <code>obsm/spatial</code> centroids are then grouped into
+      per-type clouds (ADR-0018 — never merged), each carrying a resolved <code>placement</code>. A CSV
+      export or the offline fixture take the identical path.
       <b>Hover the N-way matrix</b> to link every view to that cell-type pair; <b>click to pin</b> it (leaving
-      the matrix returns to the pinned pair). MuSpAn eqs 8–14, Mode 1 (faithful, global ρ<sub>B</sub>).</p>
+      the matrix returns to the pinned pair). MuSpAn eqs 8–14, Mode 1 (faithful, global ρ<sub>B</sub>).
+      Γ is rendered as two additive GPU passes — B through a radial kernel, then A splatted with the
+      transformed mark fetched per cell — with the exact CPU oracle one button away.
+      The derivation is in <code>docs/cell-stats.md</code>.</p>
 
     <div class="panel">
       <div class="row">
         <label for="store">store url</label>
         <input id="store" type="text" />
-        <label for="table">table</label>
-        <input id="table" type="text" style="flex:0 1 220px" />
-        <button id="run">read live store</button>
-        <button id="fixture">run fixture (offline)</button>
+        <button id="inspect">inspect</button>
+        <button id="fixture">fixture (offline)</button>
+        <label for="csvFile">or CSV</label>
+        <input id="csvFile" type="file" accept=".csv,text/csv" style="flex:0 1 210px" />
+      </div>
+      <div class="row">
+        <label for="tableSel">table</label>
+        <select id="tableSel" style="flex:1 1 240px"></select>
+        <label for="typeCol">cell-type column</label>
+        <select id="typeCol" style="flex:1 1 240px"></select>
+        <button id="run">load</button>
       </div>
       <div class="row">
         <label for="type">type A</label>
         <select id="type"></select>
         <label for="typeB">type B</label>
         <select id="typeB"></select>
-        <button id="tcmBtn">recompute Γ<sub>AB</sub></button>
+        <label for="kernel">mark kernel</label>
+        <select id="kernel"></select>
         <label for="radius">radius (m<sub>ab</sub>)</label>
         <input id="radius" type="text" style="flex:0 1 80px" />
-        <label for="sigma">σ (TCM)</label>
+        <label for="sigma">σ (Γ)</label>
         <input id="sigma" type="text" style="flex:0 1 80px" />
-        <span class="note" style="flex:1 1 auto">world units; α=5</span>
+        <button id="tcmBtn">render Γ<sub>AB</sub></button>
+        <button id="oracleBtn">check vs CPU oracle</button>
       </div>
-      <p class="note">⚠ Expects a CORS-enabled SpatialData store (default the local MDV server at
-        <code>localhost:5055</code>). If unreachable, use <b>run fixture</b> — the identical path on a
-        synthetic 2-type cloud, offline.</p>
+      <p class="note">Radius is <b>top-hat-equivalent</b>: switching kernel rescales it to hold the probed
+        scale (μ₂) fixed, so "smoother" never quietly becomes "more local". α=5, world units.
+        ⚠ The store must be CORS-enabled (default: the local MDV server at <code>localhost:5055</code>);
+        if unreachable, use <b>fixture</b> or open a <b>CSV</b>.</p>
       <div id="status">idle</div>
     </div>
 
@@ -80,7 +94,7 @@
       <div class="tile">
         <h2>N-way cross-PCF matrix — hover to link · click to pin</h2>
         <canvas id="matrix"></canvas>
-        <div class="legend">rows = A, cols = B (type ids ascending) · diverging log₂(g): red = clustering, blue = exclusion, white = CSR · white box = hover, dashed = pinned</div>
+        <div class="legend">rows = A, cols = B (axes labelled when the store names its types) · diverging log₂(g): red = clustering, blue = exclusion, white = CSR · white box = hover, dashed = pinned</div>
       </div>
       <div class="tile">
         <h2>centroids — pair highlighted</h2>
@@ -88,9 +102,10 @@
         <div class="legend"><span class="chipA">■</span> type A · <span class="chipB">■</span> type B · other cells faint</div>
       </div>
       <div class="tile">
-        <h2>TCM Γ<sub>AB</sub>(x) — topographical correlation</h2>
+        <h2>TCM Γ<sub>AB</sub>(x) — two GPU render passes</h2>
         <canvas id="tcm"></canvas>
-        <div class="legend">diverging blue → white → red, symmetric about 0 · red = A associated with B here, blue = excluded</div>
+        <div class="legend">OKLCh diverging ramp, lightness from |Γ| and hue from the sign — so equal clustering
+          and exclusion are equally prominent · red = A associated with B here, blue = excluded</div>
       </div>
       <div class="tile">
         <h2><span class="chipA">KDE — type A</span></h2>
@@ -100,7 +115,7 @@
       <div class="tile">
         <h2><span class="chipB">KDE — type B</span></h2>
         <canvas id="kdeB"></canvas>
-        <div class="legend">same op, same world frame — directly comparable with A</div>
+        <div class="legend">same op, same world frame, same lightness ramp — brightness means density, not identity</div>
       </div>
       <div class="tile">
         <h2>cross-PCF g<sub>AB</sub>(r)</h2>

@@ -30,11 +30,21 @@ describe("tileToField — Tile → FieldValue(grid)", () => {
   it("stamps the resolved placement / axes / role it is handed (additive)", () => {
     const placement: ResolvedPlacement = {
       system: "global",
-      worldFromArray: { origin: [1, 2, 0], axes: [[2, 0, 0], [0, 2, 0], [0, 0, 1]] },
+      worldFromArray: {
+        origin: [1, 2, 0],
+        axes: [
+          [2, 0, 0],
+          [0, 2, 0],
+          [0, 0, 1],
+        ],
+      },
     };
     const axes: TensorAxis[] = [{ name: "c", type: "channel", length: 1, entries: [{ label: "DAPI" }] }];
     const role: FieldRole = { kind: "intensity" };
-    const fv = tileToField(scalarTile(id0, 2, 2, () => 1), { placement, axes, role });
+    const fv = tileToField(
+      scalarTile(id0, 2, 2, () => 1),
+      { placement, axes, role },
+    );
     expect(fv.placement).toBe(placement);
     expect(fv.axes).toBe(axes);
     expect(fv.role).toBe(role);
@@ -42,7 +52,9 @@ describe("tileToField — Tile → FieldValue(grid)", () => {
 
   it("extracts one interleaved lane from a vec tile as a scalar grid", () => {
     // A 2x2 interleaved vec3 tile: lane c at cell i holds (10*i + c).
-    const w = 2, h = 2, lanes = 3;
+    const w = 2,
+      h = 2,
+      lanes = 3;
     const data = new Float32Array(w * h * lanes);
     for (let i = 0; i < w * h; i++) for (let c = 0; c < lanes; c++) data[i * lanes + c] = 10 * i + c;
     const tile: Tile = { id: id0, dims: [w, h, 1], element: { kind: "vec", n: 3 }, dtype: "f32", data };
@@ -53,23 +65,34 @@ describe("tileToField — Tile → FieldValue(grid)", () => {
   });
 
   it("rejects a volume tile, an out-of-range channel, and a length mismatch", () => {
-    expect(() =>
-      tileToField({ id: id0, dims: [2, 2, 2], element: { kind: "scalar" }, dtype: "f32", data: new Float32Array(8) }),
-    ).toThrow(/plane/);
+    expect(() => tileToField({ id: id0, dims: [2, 2, 2], element: { kind: "scalar" }, dtype: "f32", data: new Float32Array(8) })).toThrow(
+      /plane/,
+    );
     const vec: Tile = { id: id0, dims: [1, 1, 1], element: { kind: "vec", n: 2 }, dtype: "f32", data: new Float32Array([0, 1]) };
     expect(() => tileToField(vec, { channel: 2 })).toThrow(/channel/);
-    expect(() =>
-      tileToField({ id: id0, dims: [4, 4, 1], element: { kind: "scalar" }, dtype: "f32", data: new Float32Array(3) }),
-    ).toThrow(/length/);
+    expect(() => tileToField({ id: id0, dims: [4, 4, 1], element: { kind: "scalar" }, dtype: "f32", data: new Float32Array(3) })).toThrow(
+      /length/,
+    );
   });
 
   it("sourceFromTile adds a source node whose handle carries the stamped facets", () => {
     const g = new Graph();
     const placement: ResolvedPlacement = {
       system: "global",
-      worldFromArray: { origin: [0, 0, 0], axes: [[1, 0, 0], [0, 1, 0], [0, 0, 1]] },
+      worldFromArray: {
+        origin: [0, 0, 0],
+        axes: [
+          [1, 0, 0],
+          [0, 1, 0],
+          [0, 0, 1],
+        ],
+      },
     };
-    const handle = sourceFromTile(g, scalarTile(id0, 8, 8, (x, y) => (x * y) % 5), { placement });
+    const handle = sourceFromTile(
+      g,
+      scalarTile(id0, 8, 8, (x, y) => (x * y) % 5),
+      { placement },
+    );
     expect(handle.shape).toEqual({ kind: "grid", width: 8, height: 8 });
     expect(handle.placement).toBe(placement);
   });

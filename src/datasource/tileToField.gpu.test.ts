@@ -11,8 +11,13 @@ import { tileToField } from "./tileToField";
 function getisCpu(grid: ArrayLike<number>, w: number, h: number, radius: number): Float32Array {
   const n = w * h;
   const clamp = (v: number, hi: number) => (v < 0 ? 0 : v > hi ? hi : v);
-  let sum = 0, sumSq = 0;
-  for (let i = 0; i < n; i++) { const v = grid[i]!; sum += v; sumSq += v * v; }
+  let sum = 0,
+    sumSq = 0;
+  for (let i = 0; i < n; i++) {
+    const v = grid[i]!;
+    sum += v;
+    sumSq += v * v;
+  }
   const mean = sum / n;
   const std = Math.sqrt(Math.max(0, sumSq / n - mean * mean));
   const W = (2 * radius + 1) ** 2;

@@ -11,7 +11,7 @@
 // behaviour (array space, no axes, intensity), so the converter is additive.
 
 import type { Graph } from "../gpu/graph/graph";
-import type { FieldValue, FieldRole, GpuField, ResolvedPlacement, TensorAxis } from "../gpu/graph/handle";
+import type { FieldRole, FieldValue, GpuField, ResolvedPlacement, TensorAxis } from "../gpu/graph/handle";
 import { elementLanes } from "../gpu/graph/handle";
 import type { Tile } from "./types";
 

@@ -15,8 +15,8 @@
 // into SEPARATE clouds and NEVER merge them. The centroids are carried, not host-transformed: the
 // placement rides along on each cloud and is applied on the GPU (splatDensity).
 
-import { centroidsToField } from "../../../src/datasource";
 import type { Affine3 } from "../../../src/datasource";
+import { centroidsToField } from "../../../src/datasource";
 import type { Graph } from "../../../src/gpu/graph/graph";
 import type { FieldProvenance, GpuField, ResolvedPlacement } from "../../../src/gpu/graph/handle";
 
@@ -25,8 +25,12 @@ export const DEFAULT_CELL_TABLE = "Leap034_imc_cells";
 
 /** A single cell type's centroid cloud, ready to add to a graph as a points source (via B2a). */
 export interface CellTypeCloud {
-  /** The `cell_type_id` this cloud was split on (integer). */
+  /** The type id this cloud was split on. For a numeric column that is the value itself; for an
+   *  AnnData categorical it is the CODE, and `label` carries the human name. */
   readonly id: number;
+  /** The category name, when the type column is a categorical (so it carries names). Absent for a
+   *  bare integer column, where the store simply does not say what the numbers mean. */
+  readonly label?: string;
   /** Number of cells of this type. */
   readonly n: number;
   /** This type's centroids, parallel arrays (for the scatter render; the GPU path packs them). */
@@ -44,6 +48,9 @@ export interface CellTable {
   readonly placement: ResolvedPlacement;
   /** The table's region + instance key (NGFF `region` / `instance_key`), for provenance/HUD. */
   readonly provenance: { region: string; instanceKey: string };
+  /** Which table was read, and which `obs` column the types were split on. */
+  readonly tableName: string;
+  readonly typeColumn: string;
   /** Total cells read across all types. */
   readonly totalCells: number;
   /** The coordinate-system name the placement targets (mirrors `placement.system`, for the HUD). */
@@ -81,6 +88,158 @@ function leafAt(node: unknown, path: string[]): LazyZarrArrayLike {
     throw new Error(`cellTable: no zarr array at .${path.join(".")}`);
   }
   return cur as LazyZarrArrayLike;
+}
+
+/** Is this tree node a zarr array (as opposed to a group)? Leaves expose `get()`. */
+const isLeaf = (v: unknown): v is LazyZarrArrayLike => !!v && typeof v === "object" && typeof (v as LazyZarrArrayLike).get === "function";
+
+/** An AnnData categorical column is a GROUP holding `codes` (int) + `categories` (string).
+ *  Detected structurally rather than by the `encoding-type` attribute: the structure is what we
+ *  actually need to read, and it does not depend on how the writer spelled its metadata. */
+const isCategorical = (v: unknown): boolean =>
+  !!v && typeof v === "object" && isLeaf((v as Record<string, unknown>).codes) && isLeaf((v as Record<string, unknown>).categories);
+
+// ---- discovery -------------------------------------------------------------------------------
+
+export interface ColumnInfo {
+  readonly name: string;
+  readonly kind: "categorical" | "numeric";
+  /** Category names, for a categorical (they are small, so we read them during discovery — this is
+   *  what lets the UI show real cell-type names rather than bare integers). Only read for columns
+   *  still in contention. */
+  readonly categories?: string[];
+  /** How many categories, for a categorical — known from the array's shape without reading it. */
+  readonly nCategories?: number;
+  /** Heuristic plausibility as THE cell-type column; higher is better, negative disqualifies. */
+  readonly score: number;
+}
+
+export interface TableInfo {
+  readonly name: string;
+  /** Row count, from `obsm/spatial` where present. */
+  readonly nRows: number;
+  /** Whether the table has the `obsm/spatial` centroids this demo needs. */
+  readonly hasCentroids: boolean;
+  /** Candidate type columns, best first. */
+  readonly columns: ColumnInfo[];
+  /** Highest-scoring column, if any scored positively. */
+  readonly suggested?: string;
+  /** Populated instead of the above when the table could not be inspected. */
+  readonly error?: string;
+}
+
+/** How plausible is `name` as the cell-type column?
+ *
+ *  Deliberately a transparent heuristic rather than anything clever: it only picks a DEFAULT, and
+ *  the UI always shows the full list so a wrong guess costs one click. Categoricals get a bonus
+ *  because they carry names, which is the difference between "type 10 → type 3" and something a
+ *  biologist can read. */
+function scoreColumn(name: string, kind: "categorical" | "numeric", nCategories?: number): number {
+  if (name === "_index") return -100;
+  // A column with fewer than two categories partitions nothing — it cannot be the cell type
+  // however promising its name. (Leap034's `annot_region` is exactly this: one category, and it
+  // out-scored `cell_type_id` until this rule existed.)
+  if (kind === "categorical" && nCategories !== undefined && nCategories < 2) return -100;
+  let score = kind === "categorical" ? 5 : 0;
+  const isCellType = /cell.?type|celltype|phenotype/i.test(name);
+  if (isCellType) score += 20;
+  else if (/cluster|annot|label|class|subset|population|lineage/i.test(name)) score += 10;
+  // `cell_type_id` is a cell-type column that happens to end in `_id`; only penalise names where
+  // the `_id` is the whole story.
+  if (!isCellType && /(^|_)(id|idx|index)$/i.test(name)) score -= 8;
+  if (/area|perim|diam|x$|y$|coord|intensity|mean|median|sum|count|dna|nuclei/i.test(name)) score -= 5;
+  return score;
+}
+
+function describeColumns(obsNode: unknown): Array<{ name: string; kind: "categorical" | "numeric"; node: unknown }> {
+  if (!obsNode || typeof obsNode !== "object") return [];
+  const out: Array<{ name: string; kind: "categorical" | "numeric"; node: unknown }> = [];
+  for (const [name, node] of Object.entries(obsNode as Record<string, unknown>)) {
+    if (isCategorical(node)) out.push({ name, kind: "categorical", node });
+    else if (isLeaf(node)) out.push({ name, kind: "numeric", node });
+  }
+  return out;
+}
+
+/** Read a 1-D zarr array of strings (AnnData writes `categories` as vlen-utf8). */
+async function readStrings1D(arr: ZarrArrayLike): Promise<string[]> {
+  const n = arr.shape[0] ?? 0;
+  const cn = arr.chunks[0] ?? (n || 1);
+  const out = new Array<string>(n);
+  for (let ci = 0; ci < Math.ceil(n / cn); ci++) {
+    const chunk = (await arr.getChunk([ci])) as unknown as { data: ArrayLike<unknown>; stride: number[] };
+    const base = ci * cn;
+    const extent = Math.min(cn, n - base);
+    const stride = chunk.stride[0] ?? 1;
+    for (let i = 0; i < extent; i++) out[base + i] = String(chunk.data[i * stride]);
+  }
+  return out;
+}
+
+/**
+ * Inspect a SpatialData store: which tables are there, and which `obs` column in each one plausibly
+ * holds the cell type?
+ *
+ * This exists because the cell-type column is NOT standardised — `cell_type_id`, `cell_type`,
+ * `phenotype`, `cluster`, `annot_*` are all in the wild, sometimes as bare integers whose meaning
+ * lives only in a collaborator's head. So rather than hard-code a name and fail on the next store,
+ * we enumerate and rank, auto-select when there is no ambiguity, and let the user override.
+ *
+ * Tables that fail to inspect are reported rather than dropped: a store with one broken table and
+ * one good one should still be usable, and the reason should be visible.
+ */
+export async function listCellTables(url: string): Promise<TableInfo[]> {
+  const zx = await import("zarrextra");
+  const opened = await zx.openExtraConsolidated(url);
+  const { tree } = zx.unwrap(opened) as { tree: { tables?: Record<string, unknown> } };
+  const tables = tree.tables ?? {};
+
+  return Promise.all(
+    Object.entries(tables).map(async ([name, node]): Promise<TableInfo> => {
+      try {
+        let nRows = 0;
+        let hasCentroids = false;
+        try {
+          const spatial = await leafAt(node, ["obsm", "spatial"]).get();
+          nRows = spatial.shape[0] ?? 0;
+          hasCentroids = (spatial.shape[1] ?? 0) >= 2;
+        } catch {
+          hasCentroids = false;
+        }
+        const described = describeColumns((node as Record<string, unknown>).obs);
+        const columns: ColumnInfo[] = await Promise.all(
+          described.map(async ({ name: col, kind, node: colNode }) => {
+            // The category COUNT comes from the array's shape (metadata we need anyway) and feeds
+            // the score; the names themselves are only read for columns still in contention.
+            let catArr: ZarrArrayLike | undefined;
+            let nCategories: number | undefined;
+            if (kind === "categorical") {
+              try {
+                catArr = await leafAt(colNode, ["categories"]).get();
+                nCategories = catArr.shape[0] ?? 0;
+              } catch {
+                catArr = undefined;
+              }
+            }
+            const score = scoreColumn(col, kind, nCategories);
+            let categories: string[] | undefined;
+            if (catArr && score > 0) {
+              try {
+                categories = await readStrings1D(catArr);
+              } catch {
+                categories = undefined;
+              }
+            }
+            return { name: col, kind, categories, nCategories, score };
+          }),
+        );
+        columns.sort((a, b) => b.score - a.score || a.name.localeCompare(b.name));
+        return { name, nRows, hasCentroids, columns, suggested: columns.find((c) => c.score > 0)?.name };
+      } catch (err) {
+        return { name, nRows: 0, hasCentroids: false, columns: [], error: err instanceof Error ? err.message : String(err) };
+      }
+    }),
+  );
 }
 
 const IDENTITY_AFFINE: Affine3 = {
@@ -175,11 +334,9 @@ function collectAttrs(node: unknown): Record<string, unknown> | undefined {
  * ADR-0018: never merges the clouds — one points source per `cell_type_id`, each carrying the
  * shared placement + its own provenance `{ region, instanceKey, cellTypeId }`.
  */
-export async function readCellTable(
-  url: string,
-  opts: { table?: string; system?: string } = {},
-): Promise<CellTable> {
+export async function readCellTable(url: string, opts: { table?: string; typeColumn?: string; system?: string } = {}): Promise<CellTable> {
   const tableName = opts.table ?? DEFAULT_CELL_TABLE;
+  const typeColumn = opts.typeColumn ?? "cell_type_id";
   const zx = await import("zarrextra");
   const opened = await zx.openExtraConsolidated(url);
   const { tree } = zx.unwrap(opened) as { tree: { tables?: Record<string, unknown> } };
@@ -190,11 +347,29 @@ export async function readCellTable(
   }
 
   const spatialArr = await leafAt(tableNode, ["obsm", "spatial"]).get();
-  const idArr = await leafAt(tableNode, ["obs", "cell_type_id"]).get();
+
+  // The type column is either a plain integer array or an AnnData categorical (a group of
+  // `codes` + `categories`). The categorical case is the one worth having: it comes with NAMES.
+  const obsNode = (tableNode as Record<string, unknown>).obs;
+  const colNode = obsNode && typeof obsNode === "object" ? (obsNode as Record<string, unknown>)[typeColumn] : undefined;
+  if (!colNode) {
+    const have = describeColumns(obsNode)
+      .map((c) => c.name)
+      .join(", ");
+    throw new Error(`cellTable: no obs column '${typeColumn}' in '${tableName}'; available: ${have || "(none)"}`);
+  }
+  let categories: string[] | undefined;
+  let idArr: ZarrArrayLike;
+  if (isCategorical(colNode)) {
+    idArr = await leafAt(colNode, ["codes"]).get();
+    categories = await readStrings1D(await leafAt(colNode, ["categories"]).get());
+  } else {
+    idArr = await leafAt(obsNode, [typeColumn]).get();
+  }
 
   const rows = spatialArr.shape[0] ?? 0;
   if ((idArr.shape[0] ?? 0) !== rows) {
-    throw new Error(`cellTable: obsm/spatial rows (${rows}) != obs/cell_type_id length (${idArr.shape[0]})`);
+    throw new Error(`cellTable: obsm/spatial rows (${rows}) != obs/${typeColumn} length (${idArr.shape[0]})`);
   }
 
   const { xs, ys } = await readCentroids2D(spatialArr);
@@ -225,12 +400,16 @@ export async function readCellTable(
     .sort((a, b) => a[0] - b[0])
     .map(([id, cloud]) => {
       const provenance: FieldProvenance = { region, instanceKey, cellTypeId: id };
+      // A categorical code of -1 is AnnData's NaN; anything past the end is a broken store. Both
+      // fall back to the bare number rather than inventing a name.
+      const label = categories?.[id];
       return {
         id,
+        label,
         n: cloud.xs.length,
         xs: cloud.xs,
         ys: cloud.ys,
-        source: (g: Graph) => g.source(centroidsToField(cloud.xs, cloud.ys, { placement, provenance }), `cellType:${id}`),
+        source: (g: Graph) => g.source(centroidsToField(cloud.xs, cloud.ys, { placement, provenance }), `cellType:${label ?? id}`),
       };
     });
 
@@ -238,9 +417,11 @@ export async function readCellTable(
     types,
     placement,
     provenance: { region, instanceKey },
+    tableName,
+    typeColumn,
     totalCells: rows,
     system,
-    label: `${tableName} · ${rows} cells · ${types.length} types`,
+    label: `${tableName} · ${typeColumn} · ${rows} cells · ${types.length} types`,
   };
 }
 
@@ -286,6 +467,8 @@ export function syntheticCellTable(opts: { perType?: number; system?: string } =
     provenance: { region: "synthetic", instanceKey: "cell_id" },
     totalCells: perType * clouds.length,
     system,
+    tableName: "synthetic",
+    typeColumn: "cell_type_id",
     label: `synthetic · ${perType * clouds.length} cells · 2 types`,
   };
 }

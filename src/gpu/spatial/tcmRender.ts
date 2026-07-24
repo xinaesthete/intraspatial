@@ -352,9 +352,9 @@ function drawKernel(
   const uni = new Float32Array(UNI_FLOATS);
   uni.set([minX, minY, 1 / (maxX - minX || 1), 1 / (maxY - minY || 1), radius, kernelCode(kernel)]);
   const ub = ensureUni(device);
-  device.queue.writeBuffer(ub, 0, uni);
+  device.queue.writeBuffer(ub, 0, uni as BufferSource);
   const pb = ensurePts(device, 2 * Math.max(xs.length, 1));
-  device.queue.writeBuffer(pb, 0, packXY(xs, ys));
+  device.queue.writeBuffer(pb, 0, packXY(xs, ys) as BufferSource);
 
   const pass = enc.beginRenderPass({
     colorAttachments: [{ view: target.view, clearValue: { r: 0, g: 0, b: 0, a: 0 }, loadOp: "clear", storeOp: "store" }],
@@ -412,9 +412,9 @@ export async function computeTcmRender(a: CellCloud, b: CellCloud, p: TcmRenderP
     mh,
   ]);
   const ub = ensureUni(device);
-  device.queue.writeBuffer(ub, 0, uni);
+  device.queue.writeBuffer(ub, 0, uni as BufferSource);
   const pb = ensurePts(device, 2 * Math.max(a.xs.length, 1));
-  device.queue.writeBuffer(pb, 0, packXY(a.xs, a.ys));
+  device.queue.writeBuffer(pb, 0, packXY(a.xs, a.ys) as BufferSource);
 
   const enc2 = device.createCommandEncoder();
   const pass = enc2.beginRenderPass({

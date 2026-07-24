@@ -14,6 +14,8 @@
 
 import { inGamut, type Oklch, oklabToLinear, oklchToOklab, oklchToSrgb, type Srgb } from "./oklab";
 
+export type { Oklch, Srgb } from "./oklab";
+
 const clamp01 = (c: Srgb): Srgb => [Math.min(1, Math.max(0, c[0])), Math.min(1, Math.max(0, c[1])), Math.min(1, Math.max(0, c[2]))];
 
 /** OKLCh → sRGB (0..1), gamut-mapped by bisection on chroma at fixed L and h.
@@ -88,10 +90,15 @@ export interface SequentialOpts {
  *  only gets mapped away again. */
 export function sequential(t: number, hue: number, opts: SequentialOpts = {}): Srgb {
   const minL = opts.minL ?? 0.14;
-  const maxL = opts.maxL ?? 0.95;
+  const maxL = opts.maxL ?? 0.86;
   const peakC = opts.peakC ?? 0.15;
   const v = Math.max(0, Math.min(1, t));
-  return oklchToSrgbMapped([minL + (maxL - minL) * v, peakC * Math.sin(Math.PI * v) ** 0.7, hue]);
+  // Chroma RISES to the top of the ramp rather than peaking in the middle. A mid-peaking profile
+  // (sin πv) returns to zero at v = 1, which renders the densest region — the part anyone actually
+  // looks at — as flat white, losing the type's identity exactly where it matters most. Rising
+  // chroma keeps the peak tinted; `maxL` stays below 0.9 so there is gamut left to hold it, and
+  // whatever cannot be held is given back by the bisection rather than clipped.
+  return oklchToSrgbMapped([minL + (maxL - minL) * v, peakC * v ** 0.4, hue]);
 }
 
 /** Evenly spaced hues (rad) for `n` categories. Equal steps on the OKLCh hue circle are the ones

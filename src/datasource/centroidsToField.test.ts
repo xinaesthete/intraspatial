@@ -26,7 +26,14 @@ describe("centroidsToField — xs/ys → FieldValue(points)", () => {
   it("stamps the resolved placement + provenance it is handed (additive)", () => {
     const placement: ResolvedPlacement = {
       system: "Leap034",
-      worldFromArray: { origin: [0, 0, 0], axes: [[1, 0, 0], [0, 1, 0], [0, 0, 1]] },
+      worldFromArray: {
+        origin: [0, 0, 0],
+        axes: [
+          [1, 0, 0],
+          [0, 1, 0],
+          [0, 0, 1],
+        ],
+      },
     };
     const provenance: FieldProvenance = { region: "Leap034_imc_cell_shapes", instanceKey: "cell_id", cellTypeId: 6 };
     const fv = centroidsToField([1], [2], { placement, provenance });
@@ -48,7 +55,14 @@ describe("centroidsToField — xs/ys → FieldValue(points)", () => {
   it("feeds a graph points source that carries the placement + provenance facets onto the handle", () => {
     const placement: ResolvedPlacement = {
       system: "Leap034",
-      worldFromArray: { origin: [0, 0, 0], axes: [[1, 0, 0], [0, 1, 0], [0, 0, 1]] },
+      worldFromArray: {
+        origin: [0, 0, 0],
+        axes: [
+          [1, 0, 0],
+          [0, 1, 0],
+          [0, 0, 1],
+        ],
+      },
     };
     const provenance: FieldProvenance = { region: "R", instanceKey: "cell_id", cellTypeId: 3 };
     const g = new Graph();

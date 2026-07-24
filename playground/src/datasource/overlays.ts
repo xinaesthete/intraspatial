@@ -3,7 +3,16 @@
 // selected chunks as level-tinted wireframe boxes plus a faint dataset bound — the
 // receding-resolution gradient made visible, driven entirely by the pure `select()`.
 import * as THREE from "three";
-import { type Affine3, applyAffine, chunkArrayBox, chunkKey, type Multiscale, type Selection, type Vec3, worldFromArrayOf } from "../../../src/datasource";
+import {
+  type Affine3,
+  applyAffine,
+  chunkArrayBox,
+  chunkKey,
+  type Multiscale,
+  type Selection,
+  type Vec3,
+  worldFromArrayOf,
+} from "../../../src/datasource";
 
 /** okLCH-ish ramp by level: fine = warm & bright, coarse = cool & dim. */
 export function levelColor(level: number, maxLevel: number): THREE.Color {

@@ -5,7 +5,14 @@ import { channelAxisFrom, placementFromMatrix, type ResolvedChannel, rgbToHex } 
 
 describe("placementFromMatrix — resolved Affine3 → ResolvedPlacement", () => {
   it("wraps a matrix as a global placement", () => {
-    const m: Affine3 = { origin: [3, 4, 0], axes: [[2, 0, 0], [0, 2, 0], [0, 0, 1]] };
+    const m: Affine3 = {
+      origin: [3, 4, 0],
+      axes: [
+        [2, 0, 0],
+        [0, 2, 0],
+        [0, 0, 1],
+      ],
+    };
     const p = placementFromMatrix(m);
     expect(p).toEqual({ system: "global", worldFromArray: m });
     expect(p?.worldFromArray).toBe(m); // resolved value carried, not re-composed
@@ -16,7 +23,14 @@ describe("placementFromMatrix — resolved Affine3 → ResolvedPlacement", () =>
   });
 
   it("honours a custom system name", () => {
-    const m: Affine3 = { origin: [0, 0, 0], axes: [[1, 0, 0], [0, 1, 0], [0, 0, 1]] };
+    const m: Affine3 = {
+      origin: [0, 0, 0],
+      axes: [
+        [1, 0, 0],
+        [0, 1, 0],
+        [0, 0, 1],
+      ],
+    };
     expect(placementFromMatrix(m, "microns")?.system).toBe("microns");
   });
 });
