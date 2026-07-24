@@ -276,7 +276,10 @@ const align256 = (n: number) => Math.ceil(n / 256) * 256;
 
 /** Interleave every channel's points into one `[x, y, w, …]` buffer, recording where each starts
  *  so the draws can be issued with `firstInstance` instead of one upload per channel. */
-function packChannels(channels: readonly ChannelCloud[]): { data: Float32Array; offsets: number[]; mass: Float64Array } {
+// The return type is inferred rather than annotated: a bare `Float32Array` annotation widens to
+// `Float32Array<ArrayBufferLike>`, which `queue.writeBuffer` rejects (it will not accept a possibly
+// SharedArrayBuffer-backed view). Inference keeps the precise `Float32Array<ArrayBuffer>`.
+function packChannels(channels: readonly ChannelCloud[]) {
   const counts = channels.map((c) => c.xs.length);
   const total = counts.reduce((a, b) => a + b, 0);
   const data = new Float32Array(3 * Math.max(total, 1));
@@ -299,13 +302,30 @@ function packChannels(channels: readonly ChannelCloud[]): { data: Float32Array; 
   return { data, offsets, mass };
 }
 
-/** What the GPU path returns: the same statistics as `GramResult`, minus the `rasters` (they stay
- *  on the device — downloading K full rasters is exactly the readback this formulation exists to
- *  avoid) and minus the per-pixel `mean`/`sd`, which are folded into `corr` already. */
+/** The splatted channel rasters, left **on the device**.
+ *
+ *  Downloading K full rasters is exactly the readback this formulation exists to avoid, so the
+ *  mode projection consumes them in place (`paintGramModes`). The `mean`/`sd` are carried alongside
+ *  because the projection standardises with the same numbers `corr` was built from — recomputing
+ *  them would risk the map and the matrix disagreeing.
+ *
+ *  **Lifetime: valid until the next `gramMatrixGpu` call.** The buffer is pooled and grow-only (a
+ *  `.destroy()` segfaults Dawn-on-Node's teardown), so a second call overwrites it in place. */
+export interface ResidentRasters {
+  readonly buffer: GPUBuffer;
+  /** Row stride in floats — `copyTextureToBuffer` pads rows to 256 bytes, and the padding is
+   *  skipped by indexing rather than removed by a de-pad pass. */
+  readonly rowFloats: number;
+  readonly mean: Float64Array;
+  readonly sd: Float64Array;
+}
+
+/** What the GPU path returns: the same statistics as `GramResult`, with the rasters kept as a
+ *  device handle rather than a host array. */
 export type GramMatrixGpuResult = Pick<
   GramResult,
   "labels" | "mass" | "c" | "g" | "corr" | "selfTerm" | "width" | "height" | "bbox" | "pixelArea"
->;
+> & { readonly resident: ResidentRasters };
 
 /**
  * The N-way Gram matrix on the GPU. Same statistic, same normalisation and same result shape as
@@ -458,5 +478,6 @@ export async function gramMatrixGpu(channels: readonly ChannelCloud[], p: GramPa
     height: h,
     bbox: p.bbox,
     pixelArea,
+    resident: { buffer: rasters, rowFloats, mean, sd },
   };
 }

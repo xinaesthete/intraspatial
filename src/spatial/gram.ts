@@ -323,7 +323,12 @@ export interface CoLocationModes {
  * network diagrams are drawn from, and it is *not* PSD (see the module header), so `explained` is
  * not a variance share; `psdDefect` reports how badly.
  */
-export function coLocationModes(gram: GramResult, opts: { matrix?: "corr" | "g" } = {}): CoLocationModes {
+export function coLocationModes(
+  // Only the three fields it actually reads, so the GPU path's narrower result works here too
+  // without either widening that type or duplicating the decomposition.
+  gram: Pick<GramResult, "labels" | "corr" | "g">,
+  opts: { matrix?: "corr" | "g" } = {},
+): CoLocationModes {
   const K = gram.labels.length;
   const source = opts.matrix === "g" ? gram.g : gram.corr;
   const { values, vectors } = eigenSym(source, K);
