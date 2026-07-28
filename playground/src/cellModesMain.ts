@@ -249,6 +249,32 @@ function windowBbox(full: [number, number, number, number], radius: number): { b
   }
 }
 
+/**
+ * Map a pointer position to raster `(col, row)`, honouring the canvas's `object-fit: contain`.
+ *
+ * The element box does NOT share the raster's aspect: a tall raster in the wide map tile hits the
+ * tile's `max-height` and is then letterboxed — scaled to fit and CENTRED, with dead margins on the
+ * long sides. The naive `(clientX − left) / width × resW` folds those margins into the image and
+ * mislocates every sample (measured: a 316×466 raster drawn as a 420 px column inside a 1510 px box,
+ * so X was off by up to ~3×). Aspect comes from the raster dims, which the canvas is drawn at, so
+ * this is correct at any device-pixel ratio. Clamped rather than rejected, so a drag past the edge
+ * samples the edge instead of jumping.
+ */
+function pointerToRaster(
+  canvas: HTMLCanvasElement,
+  resW: number,
+  resH: number,
+  clientX: number,
+  clientY: number,
+): { col: number; row: number; inside: boolean } {
+  const rect = canvas.getBoundingClientRect();
+  const scale = Math.min(rect.width / resW, rect.height / resH); // contain: the limiting axis wins
+  const x = (clientX - rect.left - (rect.width - resW * scale) / 2) / scale;
+  const y = (clientY - rect.top - (rect.height - resH * scale) / 2) / scale;
+  const inside = x >= 0 && x <= resW && y >= 0 && y <= resH;
+  return { col: Math.max(0, Math.min(resW, x)), row: Math.max(0, Math.min(resH, y)), inside };
+}
+
 /** Raster dims on an AREA budget, so a non-square ROI is not stretched and world cells stay square. */
 function viewDims(b: [number, number, number, number], target: number): { width: number; height: number } {
   const w = Math.max(b[2] - b[0], 1e-9);
@@ -548,9 +574,7 @@ async function loadImage(): Promise<void> {
  *  densities at that pixel off the device and standardise them the same way `corr` was built. */
 async function sampleWandAt(clientX: number, clientY: number): Promise<void> {
   if (!live) return;
-  const rect = modeCanvas.getBoundingClientRect();
-  const col = ((clientX - rect.left) / rect.width) * live.res.width;
-  const row = ((clientY - rect.top) / rect.height) * live.res.height;
+  const { col, row } = pointerToRaster(modeCanvas, live.res.width, live.res.height, clientX, clientY);
   const raw = await probeChannels(live.res, col, row);
   const z = standardise(raw, live.res.resident.mean, live.res.resident.sd);
   wand = { z, col: Math.round(col), row: Math.round(row), label: `${Math.round(col)}, ${Math.round(row)}` };
