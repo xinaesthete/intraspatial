@@ -13,6 +13,7 @@
 // *selection* mechanism and the full matrix is never densified. The UI enforces the selection; this
 // module reports what a selection will cost before it is paid.
 
+import type { SpatialData } from "@spatialdata/core";
 import {
   type ColumnStats,
   columnStats,
@@ -21,7 +22,7 @@ import {
   sparseColumnCost,
   sparseToColumns,
 } from "../../../src/datasource/sparseColumns";
-import { isLeaf, leafAt, readStrings1D, symbolAttrs, type ZarrArrayLike } from "./cellTable";
+import { isLeaf, leafAt, readStrings1D, storeTree, symbolAttrs, type ZarrArrayLike } from "./cellTable";
 
 /** What a table's expression matrix looks like, without having read any of it. */
 export interface VarCatalog {
@@ -136,17 +137,23 @@ async function resolveMatrix(tableNode: unknown, matrix: string): Promise<Matrix
  * never the matrix. Returns `{ error }` rather than throwing for a table with no `X`, because a
  * store where only some tables carry expression should still be usable.
  */
-export async function listVars(url: string, tableName: string): Promise<VarCatalog> {
+export async function listVars(sdata: SpatialData, tableName: string): Promise<VarCatalog> {
   const empty = { names: [], nCells: 0, nVars: 0, encoding: "dense" as const, matrices: [] };
   try {
-    const zx = await import("zarrextra");
-    const opened = await zx.openExtraConsolidated(url);
-    const { tree } = zx.unwrap(opened) as { tree: { tables?: Record<string, unknown> } };
-    const tableNode = tree.tables?.[tableName];
+    const tableNode = storeTree(sdata).tables?.[tableName];
     if (!tableNode) return { ...empty, error: `no table '${tableName}'` };
 
     const handle = await resolveMatrix(tableNode, "X");
+    // UPSTREAM(anndata.js): `AnnData.varNames()` returns a lazy `zarr.Array`, not `string[]`, and
+    // decoding a zarr string / categorical index is exactly the fiddly part — so we read the `var`
+    // index off the tree ourselves (`readVarNames`). A `varNames({ decode: true }): string[]`, or a
+    // `TableElement.getVarNames()` on the sd.js side mirroring `getObsColumnNames()`, would delete it.
+    // (The earlier `await tableNode.varNames()` bound the lazy Array and silently fell back to
+    // `var{i}` for every gene — the names never actually appeared.)
     const names = await readVarNames((tableNode as Record<string, unknown>).var, handle.nVars);
+    // UPSTREAM(anndata.js): `AnnData.layers` is an `AxisArrays` with `get()`/`has()` but no
+    // `keys()`, so "which layers exist?" — a plain catalogue question — can't be answered on the
+    // high-level object. We enumerate the group's members off the tree instead.
     const layersNode = (tableNode as Record<string, unknown>).layers;
     const layers = layersNode && typeof layersNode === "object" ? Object.keys(layersNode as Record<string, unknown>) : [];
     return {
@@ -216,14 +223,11 @@ async function readDenseColumns(arr: ZarrArrayLike, wanted: readonly number[]): 
  * returned `names` line up with the columns one-for-one.
  */
 export async function readVarColumns(
-  url: string,
+  sdata: SpatialData,
   opts: { table: string; vars: readonly number[]; matrix?: string; names?: readonly string[] },
 ): Promise<VarColumns> {
   const matrix = opts.matrix ?? "X";
-  const zx = await import("zarrextra");
-  const opened = await zx.openExtraConsolidated(url);
-  const { tree } = zx.unwrap(opened) as { tree: { tables?: Record<string, unknown> } };
-  const tableNode = tree.tables?.[opts.table];
+  const tableNode = storeTree(sdata).tables?.[opts.table];
   if (!tableNode) throw new Error(`varMatrix: no table '${opts.table}'`);
 
   const handle = await resolveMatrix(tableNode, matrix);
@@ -236,6 +240,13 @@ export async function readVarColumns(
     // Sparse: three 1-D arrays. For CSC only the wanted slices are needed in principle, but the
     // arrays are chunked along their own length rather than by var, so a partial read would still
     // fetch whole chunks — reading them whole keeps this simple and is what CSR requires anyway.
+    //
+    // UPSTREAM(anndata.js): `SparseArray.get()` takes `number | Slice | null` per axis — one column
+    // or a *contiguous* range, never an arbitrary set of genes. So the high-level object can't
+    // express "these 14 columns" in one read; per-gene calls would be N CSR scans. We read the raw
+    // arrays and scatter every wanted column in a single pass (`sparseColumns.ts`). A
+    // `getColumns(indices: number[])` that did one pass would honour what `selectionCost` promises
+    // ("one CSR scan for N genes") instead of quietly defeating it.
     const [indptr, indices, data] = await Promise.all([
       readTyped1D(await leafAt(handle.node, ["indptr"]).get()),
       readTyped1D(await leafAt(handle.node, ["indices"]).get()),

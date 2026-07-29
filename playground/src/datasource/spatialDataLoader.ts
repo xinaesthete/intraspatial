@@ -18,6 +18,7 @@
 // OME `omero.channels`, with auto-contrast for >8-bit (fluorescence).
 
 import type { Affine3, ChunkId, Loader, Multiscale, Tile, Vec3 } from "../../../src/datasource";
+import { openSpatialData as openStore } from "./spatialDataStore";
 import { type ChannelSettings, defaultChannelColors, MAX_CHANNELS } from "./tileChannelMaterial";
 
 // zarrextra's viv-compatible per-level pixel source (structural — avoids a value import here).
@@ -160,9 +161,10 @@ export interface SpatialDataHandle {
  */
 export async function openSpatialData(url: string): Promise<SpatialDataHandle> {
   await ensureWorkerDecode();
-  const core = await import("@spatialdata/core");
   const zx = await import("zarrextra");
-  const sdata = await core.readZarr(url);
+  // Shared with the cell-table / expression path: one cached `readZarr` per store (spatialDataStore),
+  // so opening this store for its images does not re-parse metadata the table reads already have.
+  const sdata = await openStore(url);
   const images = (sdata.images ?? {}) as Record<string, { getStore(): unknown; attrs?: unknown }>;
   const imageNames = Object.keys(images);
   return {

@@ -36,6 +36,7 @@ import {
   type ColumnInfo,
   listCellTables,
   NO_TYPE_COLUMN,
+  openSpatialData,
   readCellTable,
   type TableInfo,
   TooManyTypesError,
@@ -362,7 +363,7 @@ async function refreshVarCatalog(t: CellTable): Promise<void> {
   renderChips();
   renderVarList();
   varNoteEl.textContent = "reading var names …";
-  const cat = await listVars(storeInput.value.trim(), t.tableName);
+  const cat = await listVars(await openSpatialData(storeInput.value.trim()), t.tableName);
   if (cat.error || cat.nVars === 0) {
     varNoteEl.textContent = `no readable X on '${t.tableName}'${cat.error ? ` — ${cat.error}` : ""}.`;
     return;
@@ -390,7 +391,7 @@ async function buildChannels(t: CellTable): Promise<{ channels: ChannelCloud[]; 
   if (source === "obs") {
     const col = obsColSelect.value;
     if (!col) throw new Error("no categorical obs column selected");
-    const typed = await readCellTable(storeInput.value.trim(), { table: t.tableName, typeColumn: col });
+    const typed = await readCellTable(await openSpatialData(storeInput.value.trim()), { table: t.tableName, typeColumn: col });
     const channels = typed.types
       .filter((ty) => ty.n > 0)
       .sort((a, b) => b.n - a.n)
@@ -408,7 +409,7 @@ async function buildChannels(t: CellTable): Promise<{ channels: ChannelCloud[]; 
   const names = chosenVars.map((v) => varCatalog!.names[v] ?? `var${v}`);
   const cost = selectionCost(varCatalog, chosenVars.length);
   setStatus(`reading ${chosenVars.length} vars (~${(cost * 100).toFixed(0)}% of the matrix) …`);
-  const cols = await readVarColumns(storeInput.value.trim(), {
+  const cols = await readVarColumns(await openSpatialData(storeInput.value.trim()), {
     table: t.tableName,
     vars: chosenVars,
     matrix: varMatrixSel.value || "X",
@@ -726,8 +727,7 @@ const CELL = 20;
 
 /** The OKLab axis colour for mode k (0,1,2) — the same swatch the map and scree use, so a loading
  *  row, its scree bar and its screen colour are one visual key rather than three. */
-const modeColour = (k: number): string =>
-  cssRgb(oklabToSrgb(modeSwatch([k === 0 ? 1 : 0, k === 1 ? 1 : 0, k === 2 ? 1 : 0])));
+const modeColour = (k: number): string => cssRgb(oklabToSrgb(modeSwatch([k === 0 ? 1 : 0, k === 1 ? 1 : 0, k === 2 ? 1 : 0])));
 
 function drawCorr(labels: string[], corr: Float64Array, hover: { a: number; b: number } | null): void {
   const N = labels.length;
@@ -992,7 +992,7 @@ async function inspectStore(autoLoad: boolean): Promise<void> {
   const url = storeInput.value.trim();
   setStatus(`inspecting ${url} …`);
   try {
-    storeTables = await listCellTables(url);
+    storeTables = await listCellTables(await openSpatialData(url));
     const usable = storeTables.filter((t) => t.hasCentroids);
     tableSelect.innerHTML = "";
     for (const info of storeTables) {
@@ -1045,7 +1045,7 @@ async function loadTable(): Promise<void> {
   const table = tableSelect.value;
   setStatus(`reading centroids from "${table}" …`);
   try {
-    base = await readCellTable(url, { table, typeColumn: NO_TYPE_COLUMN });
+    base = await readCellTable(await openSpatialData(url), { table, typeColumn: NO_TYPE_COLUMN });
     const bbox = tableBounds(base);
     radiusInput.value = toUm(Math.max(bbox[2] - bbox[0], bbox[3] - bbox[1]) / 40).toPrecision(3);
     setStatus(

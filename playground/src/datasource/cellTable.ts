@@ -6,8 +6,11 @@
 // playground side (ADR-0015 ownership boundary); `src/datasource/centroidsToField.ts` receives only
 // resolved values.
 //
-//   openExtraConsolidated(url) → tree.tables[name]   (zarrextra's own zarrita; consolidated
-//                                                      metadata lives at the store root)
+//   openSpatialData(url) → SpatialData → storeTree(sdata).tables[name]
+//     (readZarr opens the store once at the high level; SpatialData is threaded by reference, and
+//      `rootStore.tree` is the consolidated metadata at the store root — the one place we drop to
+//      the raw tree because the typed element API does not yet cover these reads; see the UPSTREAM
+//      markers.)
 //     obsm/spatial   [N,2] float64 → per-cell (x,y) centroids
 //     obs/cell_type_id  [N] int64  → per-cell integer type id
 //
@@ -15,14 +18,20 @@
 // into SEPARATE clouds and NEVER merge them. The centroids are carried, not host-transformed: the
 // placement rides along on each cloud and is applied on the GPU (splatDensity).
 
+import type { SpatialData } from "@spatialdata/core";
 import type { Affine3 } from "../../../src/datasource";
 import { centroidsToField } from "../../../src/datasource";
 import type { Graph } from "../../../src/gpu/graph/graph";
 import type { FieldProvenance, GpuField, ResolvedPlacement } from "../../../src/gpu/graph/handle";
 import { type Affine2, IDENTITY2, type NgffAxis, resolveNgffXY } from "../../../src/spatial/ngffTransform";
+import { openSpatialData, storeTree } from "./spatialDataStore";
 
 /** Default target table on the Leap034 store. */
 export const DEFAULT_CELL_TABLE = "Leap034_imc_cells";
+
+// The store is opened once, at the high level, and threaded by reference — see `spatialDataStore.ts`.
+// Re-exported so this module's callers (and `varMatrix`) keep a single datasource import.
+export { openSpatialData, storeTree };
 
 /** Pass as `typeColumn` to skip the split entirely and load every cell as ONE cloud.
  *
@@ -251,11 +260,12 @@ export async function readStrings1D(arr: ZarrArrayLike): Promise<string[]> {
  * Tables that fail to inspect are reported rather than dropped: a store with one broken table and
  * one good one should still be usable, and the reason should be visible.
  */
-export async function listCellTables(url: string): Promise<TableInfo[]> {
-  const zx = await import("zarrextra");
-  const opened = await zx.openExtraConsolidated(url);
-  const { tree } = zx.unwrap(opened) as { tree: { tables?: Record<string, unknown> } };
-  const tables = tree.tables ?? {};
+export async function listCellTables(sdata: SpatialData): Promise<TableInfo[]> {
+  // UPSTREAM(sd.js): `SpatialData.tables` gives the table keys, and `TableElement.getObsColumnNames()`
+  // the obs column names — but not each column's dtype/cardinality, which is what the ranking below
+  // needs to guess the cell-type column. So we walk the tree for the column KINDS. A
+  // `TableElement.getObsSchema()` (name → {kind, nCategories}) would let this stay on the object.
+  const tables = storeTree(sdata).tables ?? {};
 
   return Promise.all(
     Object.entries(tables).map(async ([name, node]): Promise<TableInfo> => {
@@ -464,15 +474,19 @@ function resolveTableSpace(
  * ADR-0018: never merges the clouds — one points source per `cell_type_id`, each carrying the
  * shared placement + its own provenance `{ region, instanceKey, cellTypeId }`.
  */
-export async function readCellTable(url: string, opts: { table?: string; typeColumn?: string; system?: string } = {}): Promise<CellTable> {
+export async function readCellTable(
+  sdata: SpatialData,
+  opts: { table?: string; typeColumn?: string; system?: string } = {},
+): Promise<CellTable> {
   const tableName = opts.table ?? DEFAULT_CELL_TABLE;
   const typeColumn = opts.typeColumn ?? "cell_type_id";
-  const zx = await import("zarrextra");
-  const opened = await zx.openExtraConsolidated(url);
-  const { tree } = zx.unwrap(opened) as { tree: { tables?: Record<string, unknown> } };
-  const tableNode = tree.tables?.[tableName];
+  // The whole tree, not just `.tables`: the root carries the store's coordinate-system attrs and the
+  // element groups `resolveTableSpace` walks to place the table (see below).
+  const tree = storeTree(sdata);
+  const tables = tree.tables;
+  const tableNode = tables?.[tableName];
   if (!tableNode) {
-    const have = Object.keys(tree.tables ?? {}).join(", ") || "(none)";
+    const have = Object.keys(tables ?? {}).join(", ") || "(none)";
     throw new Error(`cellTable: no table '${tableName}' in store; available: ${have}`);
   }
 
