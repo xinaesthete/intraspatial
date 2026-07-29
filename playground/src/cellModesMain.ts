@@ -555,7 +555,7 @@ async function loadImage(): Promise<void> {
   if (!element) return;
   imageNoteEl.textContent = `loading ${element} …`;
   try {
-    const img = await loadContextImage(storeInput.value.trim(), element);
+    const img = await loadContextImage(await openSpatialData(storeInput.value.trim()), element);
     const uv = uvFromWorld(img);
     if (!uv) {
       ctxImage = null;
@@ -992,7 +992,8 @@ async function inspectStore(autoLoad: boolean): Promise<void> {
   const url = storeInput.value.trim();
   setStatus(`inspecting ${url} …`);
   try {
-    storeTables = await listCellTables(await openSpatialData(url));
+    const sdata = await openSpatialData(url);
+    storeTables = await listCellTables(sdata);
     const usable = storeTables.filter((t) => t.hasCentroids);
     tableSelect.innerHTML = "";
     for (const info of storeTables) {
@@ -1013,7 +1014,7 @@ async function inspectStore(autoLoad: boolean): Promise<void> {
     setStatus(`${usable.length} usable table${usable.length > 1 ? "s" : ""} — ${usable[0]!.name} selected.`);
     // Image elements are listed but NOT fetched: naming them is metadata, and a level costs a
     // dozen chunk requests, so it waits for an explicit click.
-    void listImageElements(url)
+    void listImageElements(sdata)
       .then((names) => {
         imageSel.innerHTML = "";
         for (const n of names) {

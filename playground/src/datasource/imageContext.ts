@@ -25,9 +25,10 @@
 // reported rather than papered over, because an overlay that is silently in the wrong place is
 // worse than no overlay.
 
+import type { SpatialData } from "@spatialdata/core";
 import type { Affine3 } from "../../../src/datasource";
 import { getDevice } from "../../../src/gpu/device";
-import { openSpatialData, openSpatialDataImage, type SpatialDataImage } from "./spatialDataLoader";
+import { imageHandle, type SpatialDataImage } from "./spatialDataLoader";
 import type { ChannelSettings } from "./tileChannelMaterial";
 
 /** Long-side cap for the composited texture. 2048 keeps the load to at most a 4×4 grid of 512²
@@ -51,9 +52,9 @@ export interface ContextImage {
   readonly channels: readonly ChannelSettings[];
 }
 
-/** Names of the image elements in a store, for a dropdown. */
-export async function listImageElements(url: string): Promise<string[]> {
-  return (await openSpatialData(url)).imageNames;
+/** Names of the image elements in a store, for a dropdown. Takes the shared `SpatialData`. */
+export async function listImageElements(sdata: SpatialData): Promise<string[]> {
+  return (await imageHandle(sdata)).imageNames;
 }
 
 /** Finest level whose long side fits the budget — quality first, subject to a bounded fetch. */
@@ -75,9 +76,9 @@ function pickLevel(img: SpatialDataImage, maxSide: number): number {
  * being explored, so folding them in once costs one pass over the level and saves carrying N
  * channel planes and their settings into two more shaders.
  */
-export async function loadContextImage(url: string, element: string, opts: { maxSide?: number } = {}): Promise<ContextImage> {
+export async function loadContextImage(sdata: SpatialData, element: string, opts: { maxSide?: number } = {}): Promise<ContextImage> {
   const device = await getDevice();
-  const img = await openSpatialDataImage(url, element);
+  const img = await (await imageHandle(sdata)).image(element);
   const maxSide = opts.maxSide ?? DEFAULT_MAX_SIDE;
   const level = pickLevel(img, maxSide);
   const dims = img.ms.levelDims?.[level] ?? [Math.ceil(img.ms.voxelDims0[0] / 2 ** level), Math.ceil(img.ms.voxelDims0[1] / 2 ** level), 1];
