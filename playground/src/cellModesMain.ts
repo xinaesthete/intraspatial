@@ -80,6 +80,7 @@ const resetCamBtn = $<HTMLButtonElement>("resetCam");
 const terrainCanvas = $<HTMLCanvasElement>("terrain");
 const terrainLegendEl = $<HTMLDivElement>("terrainLegend");
 const wandReadoutEl = $<HTMLDivElement>("wandReadout");
+const wandOverlayEl = $<HTMLDivElement>("wandOverlay");
 const imageSel = $<HTMLSelectElement>("imageSel");
 const imageLoadBtn = $<HTMLButtonElement>("imageLoad");
 const imageMixInput = $<HTMLInputElement>("imageMix");
@@ -605,10 +606,14 @@ async function sampleWandAt(clientX: number, clientY: number): Promise<void> {
   }).join(" · ");
 
   const swatch = cssRgb(oklabToSrgb(similaritySwatch(1)));
-  wandReadoutEl.innerHTML =
+  const html =
     `<b style="color:${swatch}">wand @ px ${wand.label}</b> — ${top}<br>` +
     `<span style="color:#94a3b8">eigen-projection</span> ${proj} — the pixel's colour, in the mode basis. ` +
     `<span style="color:#64748b">ρ = kernel-smoothed density; drag to move the sample, rule lines mark it in both views.</span>`;
+  // Written to both the footer readout and the pinned overlay, from one string, so they cannot drift.
+  wandReadoutEl.innerHTML = html;
+  wandOverlayEl.innerHTML = html;
+  wandOverlayEl.hidden = false;
   void paintMap();
   drawTerrain();
 }
@@ -924,6 +929,7 @@ async function computeModes(): Promise<void> {
     live = { res, vectors: modes.vectors };
     wand = null;
     wandReadoutEl.textContent = "no sample — click or drag on the mode map to set the wand reference";
+    wandOverlayEl.hidden = true;
     const info = await paintMap();
     const ms = performance.now() - t0;
     drawTerrain();
