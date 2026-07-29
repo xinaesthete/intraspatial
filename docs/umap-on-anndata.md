@@ -167,7 +167,33 @@ Removing the references makes it kill the fork, 3 runs of 3.
 The Node-22 volta pin was justified by Dawn atexit crashes on Node 24/26, which was
 plausibly this same bug from another angle. Worth re-testing; not yet re-tested.
 
-## 6. Testing notes
+## 6. The layout on the GPU
+
+[`umapLayoutGpu.ts`](../src/gpu/spatial/umapLayoutGpu.ts) runs the SGD edge-parallel over
+a **resident** embedding: one thread per edge, coordinates never leave the device between
+epochs, one readback per *frame* rather than per epoch. Measured at n=4000 / 75k edges:
+**16.55 ms/epoch host → 0.20 ms/epoch GPU, 82x**. In the page at 3000 cells the GPU path
+is rAF-capped (960 epochs/s at 8 epochs/frame, i.e. still idle) while the host plateaus
+at ~144 regardless of how many epochs are asked for.
+
+It is a stateful handle (`GpuUmapLayout`), not a pure function, because the animation
+model is one embedding that keeps being optimised — a `layout(graph) -> coords` signature
+would upload and download every frame, which is the cost this exists to remove.
+
+**It races, deliberately.** Threads for edges sharing an endpoint read-modify-write the
+same position unsynchronised — the Hogwild! regime every GPU UMAP uses. So output is not
+reproducible run to run even at a fixed seed, and the tests assert `trustworthiness`
+rather than coordinates. The offline `obsm` path deliberately keeps the **host** SGD: a
+written `obsm` should be reproducible. The page offers both, which is also the cheapest
+way to confirm the racy kernel agrees with the exact one.
+
+One bug worth recording, because it was silent: batching every epoch's dispatch into a
+single command buffer looks like an obvious win and is wrong. The per-epoch uniform is
+written with `queue.writeBuffer`, so all of those writes land before the single submit
+and every pass runs with the *last* epoch's parameters. The layout still moves and still
+looks plausible — trustworthiness just collapses to ~0.49, barely above random.
+
+## 7. Testing notes
 
 The GPU suite is deterministic and runs files in parallel. The only failing files are
 those importing `rust/htj2k-core/pkg`, which need `pnpm build:wasm` first.
@@ -181,15 +207,8 @@ the same neighbourhoods.
 also gives the offline path a cheap cross-check: `--cpu` and the default must produce the
 same graph (they do — 139790 edges on the 6000-cell fixture either way).
 
-## 7. Not done
+## 8. Not done
 
-- **The playground page.** The interactive building blocks are all present and browser-
-  ready (`umapGraphFor` + `initLayout` + `optimizeLayoutStep`, with `knnGpu` usable
-  directly since the browser has no Dawn problem), but no page wires them to a canvas
-  and a gene picker yet. §4 is the recipe.
-- **The layout SGD on the GPU.** Currently host-side. It is the next thing to move for
-  large N — an edge-parallel kernel over a resident embedding buffer, which is also what
-  makes the animation free at 100k+ points.
 - **Approximate k-NN** (§3) — the blocker for a full section.
 - **`obsp` / the neighbour graph.** Only the embedding is written. scanpy also stores
   the connectivity graph in `obsp`; writing it would let scanpy re-run clustering on our

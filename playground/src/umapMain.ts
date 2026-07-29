@@ -24,6 +24,7 @@
 // renderer. The heavy path is shared with the offline CLI — same `umapGraphFor`.
 
 import { knnGpu } from "../../src/gpu/spatial/knn";
+import { GpuUmapLayout } from "../../src/gpu/spatial/umapLayoutGpu";
 import { subsetColumns, umapGraphFor } from "../../src/spatial/umap";
 import type { FuzzyGraph, KnnResult } from "../../src/spatial/umapGraph";
 import { fitAB, initLayout, type LayoutState, mulberry32, optimizeLayoutStep, reheatLayout } from "../../src/spatial/umapLayout";
@@ -97,11 +98,31 @@ const canvas = $<HTMLCanvasElement>("view");
 const ctx2d = canvas.getContext("2d")!;
 const banner = $<HTMLDivElement>("banner");
 
+/** The layout, whichever backend is driving it.
+ *
+ *  Both keep ONE embedding and step it — the difference is only where the arithmetic
+ *  happens. The GPU path keeps the coordinates resident and is ~80x faster per epoch at
+ *  a few thousand cells (measured: 16.55 ms -> 0.20 ms at n=4000, 75k edges), which is
+ *  what makes "several epochs per frame" affordable. The host path stays selectable
+ *  because it is the reproducible one, and being able to flip between them on the same
+ *  graph is the cheapest way to see that the racy kernel really does agree. */
+interface LayoutDriver {
+  step(epochs: number, opts: { initialAlpha: number; minDist: number }): void;
+  /** Latest coordinates on the host. For the GPU driver this is the last readback. */
+  coords(): Float32Array;
+  /** Pull the device's current state into `coords()`. No-op on the host driver. */
+  sync(): Promise<void>;
+  readonly epoch: number;
+  alphaNow(initialAlpha: number): number;
+  reheat(epoch: number): void;
+  dispose(): void;
+}
+
 let data: Dataset;
 let active: boolean[] = [];
 let graph: FuzzyGraph | undefined;
 let knn: KnnResult | undefined;
-let state: LayoutState | undefined;
+let driver: LayoutDriver | undefined;
 let running = true;
 let rebuildToken = 0;
 
@@ -133,6 +154,63 @@ function activeColumns(): number[] {
   return cols;
 }
 
+const LAYOUT_EPOCHS = 400;
+
+/** `fitAB` is a 100-iteration least-squares fit; memoise it or it runs every frame. */
+let abCache: { minDist: number; ab: { a: number; b: number } } | undefined;
+function abFor(minDist: number): { a: number; b: number } {
+  if (!abCache || abCache.minDist !== minDist) abCache = { minDist, ab: fitAB(minDist, 1) };
+  return abCache.ab;
+}
+
+function hostDriver(g: FuzzyGraph, carried?: Float32Array): LayoutDriver {
+  const state = initLayout(g, { dim: 2, nEpochs: LAYOUT_EPOCHS, seed: 7 }, carried);
+  return {
+    step(epochs, opts) {
+      for (let i = 0; i < epochs; i++) {
+        optimizeLayoutStep(state, g, { nEpochs: LAYOUT_EPOCHS, initialAlpha: opts.initialAlpha, seed: 7, ab: abFor(opts.minDist) });
+      }
+    },
+    coords: () => state.embedding,
+    sync: async () => {},
+    get epoch() {
+      return state.epoch;
+    },
+    alphaNow: (initialAlpha) => initialAlpha * Math.max(0, 1 - state.epoch / LAYOUT_EPOCHS),
+    reheat: (epoch) => reheatLayout(state, epoch),
+    dispose: () => {},
+  };
+}
+
+async function gpuDriver(g: FuzzyGraph, carried?: Float32Array): Promise<LayoutDriver> {
+  const gl = await GpuUmapLayout.create(g, { dim: 2, nEpochs: LAYOUT_EPOCHS, seed: 7 }, carried);
+  // The device holds the truth; this is the host mirror the renderer draws from, refreshed
+  // by `sync()` once per frame rather than once per epoch.
+  let mirror: Float32Array<ArrayBufferLike> = carried ? Float32Array.from(carried) : new Float32Array(g.n * 2);
+  return {
+    step(epochs) {
+      // `initialAlpha`/`minDist` are baked in at create time for this driver — changing
+      // them mid-run rebuilds it (see `applyLayoutBackend`), which keeps the kernel's
+      // uniform simple and the schedule consistent.
+      gl.step(epochs);
+    },
+    coords: () => mirror,
+    async sync() {
+      mirror = await gl.read();
+    },
+    get epoch() {
+      return gl.epoch;
+    },
+    alphaNow: () => gl.alphaAt(gl.epoch),
+    reheat: (epoch) => gl.reheat(epoch),
+    dispose: () => gl.destroy(),
+  };
+}
+
+function gpuLayoutSelected(): boolean {
+  return $<HTMLSelectElement>("layoutBackend").value === "gpu";
+}
+
 async function rebuildGraph(carryEmbedding: boolean): Promise<void> {
   const token = ++rebuildToken;
   const cols = activeColumns();
@@ -160,8 +238,10 @@ async function rebuildGraph(carryEmbedding: boolean): Promise<void> {
   $<HTMLSpanElement>("sEdges").textContent = graph.nEdges.toLocaleString();
 
   // Carry the coordinates across the swap — this is the whole animation model.
-  const carried = carryEmbedding && state ? state.embedding : undefined;
-  state = initLayout(graph, { dim: 2, nEpochs: 400, seed: 7 }, carried);
+  const carried = carryEmbedding && driver ? Float32Array.from(driver.coords()) : undefined;
+  driver?.dispose();
+  driver = gpuLayoutSelected() ? await gpuDriver(graph, carried) : hostDriver(graph, carried);
+  if (token !== rebuildToken) return;
   if (!carried) {
     previous = undefined;
     canFade = false;
@@ -171,8 +251,8 @@ async function rebuildGraph(carryEmbedding: boolean): Promise<void> {
 // --- per-frame derived channels ---------------------------------------------------
 
 function updateSpeed(): void {
-  if (!state) return;
-  const emb = state.embedding;
+  if (!driver) return;
+  const emb = driver.coords();
   speed ??= new Float32Array(data.n);
   if (!previous || previous.length !== emb.length) {
     previous = Float32Array.from(emb);
@@ -195,9 +275,9 @@ function updateSpeed(): void {
 /** Mean embedded length of each point's k-NN edges — how far its high-dimensional
  *  neighbours ended up. Recomputed lazily; it changes slowly compared to speed. */
 function updateStress(): void {
-  if (!state || !knn) return;
+  if (!driver || !knn) return;
   stress ??= new Float32Array(data.n);
-  const emb = state.embedding;
+  const emb = driver.coords();
   const k = knn.k;
   for (let i = 0; i < data.n; i++) {
     let acc = 0;
@@ -273,9 +353,9 @@ function draw(): void {
     ctx2d.fillRect(0, 0, w, h);
   }
   canFade = true;
-  if (!state) return;
+  if (!driver) return;
 
-  const emb = state.embedding;
+  const emb = driver.coords();
   const { s, ox, oy } = fitTransform(emb);
   const mode = $<HTMLSelectElement>("colourBy").value;
 
@@ -311,30 +391,32 @@ function draw(): void {
 
 // --- main loop --------------------------------------------------------------------
 
-function frame(): void {
-  if (running && state && graph) {
+async function frame(): Promise<void> {
+  if (running && driver && graph) {
     const steps = Number($<HTMLInputElement>("steps").value);
     const initialAlpha = Number($<HTMLInputElement>("alpha").value);
     const minDist = Number($<HTMLInputElement>("minDist").value);
-    for (let s = 0; s < steps; s++) {
-      // nEpochs is the decay horizon, not a stopping point: the loop keeps running and
-      // the rate keeps falling, so a settled layout stays put until something changes.
-      optimizeLayoutStep(state, graph, { nEpochs: 400, initialAlpha, seed: 7, ab: abFor(minDist) });
-    }
+    // `LAYOUT_EPOCHS` is the decay horizon, not a stopping point: the loop keeps running
+    // and the rate keeps falling, so a settled layout stays put until something changes.
+    driver.step(steps, { initialAlpha, minDist });
+    // One readback per FRAME, not per epoch — the whole point of the resident buffer.
+    await driver.sync();
     updateSpeed();
-    if (state.epoch % 8 === 0) updateStress();
-    $<HTMLSpanElement>("sEpoch").textContent = String(state.epoch);
-    $<HTMLSpanElement>("sAlpha").textContent = (initialAlpha * Math.max(0, 1 - state.epoch / 400)).toFixed(3);
+    if (driver.epoch % 8 === 0) updateStress();
+    $<HTMLSpanElement>("sEpoch").textContent = String(driver.epoch);
+    $<HTMLSpanElement>("sAlpha").textContent = driver.alphaNow(initialAlpha).toFixed(3);
   }
   draw();
-  requestAnimationFrame(frame);
+  requestAnimationFrame(() => void frame());
 }
 
-/** `fitAB` is a 100-iteration least-squares fit; memoise it or it runs every frame. */
-let abCache: { minDist: number; ab: { a: number; b: number } } | undefined;
-function abFor(minDist: number): { a: number; b: number } {
-  if (!abCache || abCache.minDist !== minDist) abCache = { minDist, ab: fitAB(minDist, 1) };
-  return abCache.ab;
+/** Rebuild the driver around new coordinates (the GPU one owns a device buffer, so a
+ *  host-side perturbation has to be re-uploaded rather than written in place). */
+async function restartWith(coords: Float32Array, epoch: number): Promise<void> {
+  if (!graph) return;
+  driver?.dispose();
+  driver = gpuLayoutSelected() ? await gpuDriver(graph, coords) : hostDriver(graph, coords);
+  driver.reheat(epoch);
 }
 
 // --- wiring -----------------------------------------------------------------------
@@ -380,7 +462,8 @@ async function regenerate(): Promise<void> {
   const clusters = Number($<HTMLInputElement>("nClusters").value);
   data = makeDataset(n, clusters);
   active = data.programmes.map(() => true);
-  state = undefined;
+  driver?.dispose();
+  driver = undefined;
   previous = undefined;
   renderGeneButtons();
   await rebuildGraph(false);
@@ -401,6 +484,10 @@ async function main(): Promise<void> {
   bindSlider("alpha", (v) => v.toFixed(2));
   bindSlider("steps", (v) => String(v));
 
+  $<HTMLSelectElement>("layoutBackend").addEventListener("change", () => {
+    showBanner(`layout on ${gpuLayoutSelected() ? "GPU" : "host"}`);
+    void rebuildGraph(true);
+  });
   $<HTMLButtonElement>("regen").addEventListener("click", () => void regenerate());
   $<HTMLButtonElement>("reseed").addEventListener("click", () => void rebuildGraph(false));
   $<HTMLButtonElement>("pause").addEventListener("click", (e) => {
@@ -410,13 +497,16 @@ async function main(): Promise<void> {
   $<HTMLButtonElement>("kick").addEventListener("click", () => {
     // Jitter the layout to show it re-converging — the cheapest way to see that what is
     // on screen is a live optimum rather than a stored picture.
-    if (!state) return;
-    const rnd = mulberry32(state.epoch + 1);
-    for (let t = 0; t < state.embedding.length; t++) state.embedding[t] = state.embedding[t]! + (rnd() - 0.5) * 6;
+    if (!driver || !graph) return;
+    const jittered = Float32Array.from(driver.coords());
+    const rnd = mulberry32(driver.epoch + 1);
+    for (let t = 0; t < jittered.length; t++) jittered[t] = jittered[t]! + (rnd() - 0.5) * 6;
     // Rewind the anneal, or nothing happens: a settled layout has no learning rate left,
-    // AND its per-edge sampling schedule has run past the horizon. `reheatLayout` resets
-    // both — setting `epoch` alone leaves every edge un-due and the layout frozen.
-    reheatLayout(state, Math.min(state.epoch, 200));
+    // AND its per-edge sampling schedule has run past the horizon. Both drivers expose
+    // `reheat` for exactly this — setting the epoch alone leaves every edge un-due and
+    // the layout frozen.
+    const at = Math.min(driver.epoch, 200);
+    void restartWith(jittered, at);
     showBanner("kicked — watch it re-converge");
   });
 
@@ -429,7 +519,7 @@ async function main(): Promise<void> {
   $<HTMLSpanElement>("sBackend").textContent = backendLabel;
 
   await regenerate();
-  frame();
+  void frame();
 }
 
 void main();

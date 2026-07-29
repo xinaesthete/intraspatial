@@ -153,6 +153,13 @@
         <span class="val" id="stepsV">2</span>
       </div>
       <div class="row">
+        <label for="layoutBackend">layout on</label>
+        <select id="layoutBackend" style="flex: 1; background: #262b38; color: var(--ink); border: 1px solid var(--line); border-radius: 5px; padding: 4px">
+          <option value="gpu">GPU (resident)</option>
+          <option value="host">host (reproducible)</option>
+        </select>
+      </div>
+      <div class="row">
         <button id="pause" class="primary">Pause</button>
         <button id="kick">Kick</button>
       </div>
