@@ -36,3 +36,25 @@ export function getDevice(): Promise<GPUDevice> {
   })();
   return devicePromise;
 }
+
+/**
+ * Compile a shader module and surface its diagnostics as an exception.
+ *
+ * `createShaderModule` never throws. A module that failed to compile yields an invalid pipeline,
+ * which yields an invalid bind group, which yields an invalid command buffer — and the only thing
+ * the console shows is a cascade of "invalid due to a previous error" with the actual WGSL message
+ * nowhere in it. The root cause is in `getCompilationInfo()`, so ask for it.
+ *
+ * Awaiting this costs one round-trip per pipeline, at pipeline-construction time only, which is
+ * cached in every consumer here.
+ */
+export async function compileShader(device: GPUDevice, code: string, label: string): Promise<GPUShaderModule> {
+  const module = device.createShaderModule({ code, label });
+  const info = await module.getCompilationInfo();
+  const errors = info.messages.filter((m) => m.type === "error");
+  if (errors.length > 0) {
+    const detail = errors.map((m) => `  ${m.lineNum}:${m.linePos} ${m.message}`).join("\n");
+    throw new Error(`WGSL compile failed in '${label}':\n${detail}`);
+  }
+  return module;
+}

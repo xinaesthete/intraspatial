@@ -207,17 +207,254 @@ C_AB(r) = Σ_a Σ_b 1[|x_a−x_b| < r] = ⟨ α , T_r ⊛ β ⟩
 separate calls; `crossPCFMatrixGpu` is the same statistic with the counting on the GPU (integer
 atomics, so it is exact parity with the CPU, not an approximation).
 
-The rasterised form generalises further and is not yet implemented: with `R` the N×P matrix of
-per-type count rasters and `S = T_r ⊛ R`, the entire matrix is `C = R Sᵀ` — one matmul, multi-radius
-for free, and the natural home for the eigen-projection idea (eigenvectors of the symmetrised
-g-matrix are co-localisation modes). See plan §7.
+### The Gram form
+
+The rasterised form is `src/spatial/gram.ts` (f64 reference) and `src/gpu/spatial/gramMatrix.ts`
+(render + matmul). Splat each of the K channels through a unit-mass kernel `J` to get `M = J ⊛ R`,
+and the whole K×K matrix is one product:
+
+```
+C = M Mᵀ,     C_ab = ∫ M_a M_b = Σ_{i∈a} Σ_{j∈b} w_i w_j · (J ⊛ J)(x_i − x_j)
+```
+
+— the same pairwise sum, with the hard `1[d < r]` replaced by the smooth `(J ⊛ J)(d)`, whose
+support is **2r**, not r. Normalisation is kernel-agnostic and has no `πr²` in it at all:
+`g_ab = C_ab · |ROI| / (W_a · W_b)`, where `W` is total mark mass. CSR gives exactly 1 (tested for
+every kernel).
+
+**The cost argument.** The bucket-grid path walks every neighbour inside `r`, so it is
+`O(n · ρ · πr²)` — *quadratic in the radius*. The raster path is `O(K·P)` to splat and `O(K²·P)` to
+multiply, and **neither term contains r**: a bigger radius only spreads each quad further. There is
+therefore a crossover past which the raster form wins outright, and the paper's regime (r = 100 µm,
+bins to 300 µm) is on the far side of it. The trade is exactness — the counting path is integer
+arithmetic and so is *exactly* the CPU statistic, whereas this is a quadrature accumulated in f32,
+measured at **< 2e-3** relative against the f64 oracle.
+
+**Cell types are the one-hot case of a general mark.** Nothing in the derivation uses the fact that
+a cell has exactly one type; `R`'s rows are arbitrary non-negative per-cell weights. Hand it a gene
+column from an AnnData `X` instead and the identical code computes a spatially-smoothed gene–gene
+co-expression matrix. This is the mark cross-correlation function of point-process theory, of which
+the cell-type cross-PCF is a special case. See §12.
+
+### Why the eigen-projection needs the Gram form
+
+An eigendecomposition reads as a decomposition of variance only if the matrix is positive
+semi-definite, and **symmetry is not definiteness**. This is worth stating plainly because the
+plan's §7 proposed "eigenvectors of the symmetrised g-matrix", and symmetrising is not the missing
+ingredient — `crossPCFMatrix`'s `g` is *already* exactly symmetric.
+
+Two separate things cost definiteness:
+
+1. **The mark kernel.** In operator form the matrix is `C = R K Rᵀ`, which is PSD iff the kernel is
+   positive-definite — iff its Fourier transform is non-negative (Bochner). `kernelSpectrum.ts`
+   measures the 2-D radial transform of the whole family and **none of them qualifies**:
+
+   | kernel | min `K̂(z)/K̂(0)` | at `z = kr` |
+   |---|---|---|
+   | top-hat (the paper's) | **−13.2%** | 5.14 |
+   | Epanechnikov | −5.9% | 6.38 |
+   | quartic | −2.9% | 7.58 |
+   | triweight | −1.6% | 8.78 |
+   | gaussian (3σ) | −0.13% | 12.5 |
+
+   Smoothness shrinks the violation monotonically and never removes it; the truncated Gaussian is
+   near-PD and would be exactly PD untruncated, so what that row measures is the cost of compact
+   support, not of shape. The Gram form escapes this for free: its effective kernel is `J ⊛ J`,
+   whose transform is `|Ĵ|² ≥ 0`, positive-definite whatever `J` was.
+
+2. **The normalisation — and this is the one that actually bites.** `g` divides by per-channel mass
+   and drops self-pairs, removing exactly the diagonal dominance that would otherwise carry the
+   matrix. On self-clustering populations it usually stays PSD *by accident*. Interdigitated ones
+   destroy it: two types alternating on a lattice give `g = [[0, 2.09], [2.09, 0]]` at the pitch
+   radius — eigenvalues ±2.09, maximally indefinite. That is `crossPCFMatrix`, the published
+   statistic, with no Gram form involved.
+
+So the modes are taken from **`corr`**, the centred and standardised spatial correlation of the
+smoothed channel densities — a Gram matrix of real vectors, hence PSD *structurally*: exactly, for
+any kernel, and even in f32 (asserted on the GPU path). Its diagonal is exactly 1 and its trace
+exactly K, so `λ_k / K` is a genuine variance share. `g` remains the right thing to report and to
+draw a network from; its spectrum simply is not a variance decomposition.
+
+Mode `k` is a signed weighting over channels, and `projectMode` renders it as a pixel field
+`y_k(p) = Σ_a v_ka (M_a(p) − μ_a)/σ_a` — a recombination of rasters already in hand, so the map
+costs no re-splatting and no second neighbour search. An exact identity pins the three pieces
+together: **the spatial variance of the projected field equals its eigenvalue**.
+
+### The terrain, and the metric over the mode axis
+
+`gramTerrain.ts` draws the same resident rasters as a lit, displaced surface. Height is a fourth
+channel that costs none of the three the colour carries — the eye reads a shaded surface as geometry
+rather than as colour — and it is driven by a mode, or by similarity to a sampled point. Nothing is
+re-splatted and nothing is read back: the grid mesh samples the buffer the matrix was reduced from
+in its *vertex* shader, so a camera move is a redraw of data already on the device.
+
+The **wand** is where the eigen-decomposition pays for itself twice. Click a pixel and its
+standardised channel vector `z_ref` becomes a reference; "where else looks like this?" is then a
+distance in channel space, and the honest one is Mahalanobis, because two channels that always
+co-occur should not count as two independent pieces of evidence. With `corr = V Λ Vᵀ`,
+
+    d²(x) = Δzᵀ corr⁻¹ Δz = Σ_k (Δy_k)² / λ_k,      Δy = Vᵀ Δz
+
+— project onto the co-location modes, then divide each by its own variance. The shader takes the
+whitening matrix `A = Λ^{-1/2} Vᵀ` truncated to the leading `m` modes and computes `d = |A Δz|`, so
+one uniform spans both ends: `m = K` is exact Mahalanobis and noisy (the trailing modes have tiny
+`λ`, and dividing by them amplifies whatever they hold), while `m = 3` is distance in precisely the
+space the colour is drawn from, so "looks similar" and "is selected" agree by construction. That is
+ADR-0015's metric-over-an-open-axis at its full-metric end, and the Gram form is what makes the
+full-metric case computable at all.
+
+The selected region is **outlined in the flat map**, at the level set `d = tolerance` — the same
+distance where the terrain's similarity ramp reaches zero, so the boundary and the shading are two
+readings of one number rather than two settings to keep in step. The distance itself lives in
+`similarityWgsl.ts` and both shaders call it; this is the one snippet that *must* be shared rather
+than merely kept aligned, because if the two computed `d` even slightly differently the outline
+would enclose a region the colour disagrees with and the picture would give no clue which was wrong.
+Outline and rule lines are deliberately different colours: the outline is the similarity hue and
+means "what got selected", the lines are white and mean "where you sampled".
+
+The sample is **dragged, not clicked**: holding the pointer down on the map moves the reference and
+both views follow. Sampling is a dispatch plus a buffer map, so it cannot keep up one-to-one with
+pointer events and must not queue — fifty pending readbacks would land in order and repaint for
+positions the pointer left long ago. The loop holds only the latest position and runs one sample at
+a time, dropping intermediate positions rather than falling behind, and re-checks after each
+readback so the final position is always the one sampled. That costs about 100 ms per
+sample-and-redraw at a 672×219 raster, which a drag absorbs.
+
+Where the sample came from is drawn in **both** views, by one shared WGSL snippet
+(`markerWgsl.ts`, on the same principle as `kernelWgsl.ts`) so the two marks cannot drift apart. It
+is a pair of full-span rule lines rather than a ring: a ring has to be found before it can be read,
+and on the terrain it is a locus in the surface's XY, so over steep relief it drapes down a
+near-vertical face and stops reading as a ring at all. Lines are found immediately, and draping them
+is a feature — each is the surface's profile along one axis through the sample. Their width is taken
+from the per-axis screen-space derivative, because a fixed model-space band smears across a wall
+where model XY barely changes per pixel.
+
+### Permutation envelopes: what the spectrum is worth
+
+`45% of the spatial variance in mode 1` is not a claim until you know what the same cells would give
+with no spatial arrangement at all. The null is **random labelling** — every cell stays exactly
+where it is, the marks are shuffled between them (`src/spatial/permute.ts`). CSR is the wrong null
+here and would be a straw man: tissue is nowhere near homogeneous, so a CSR test rejects for every
+pair and has detected only that the section has anatomy.
+
+**One permutation, shared across all channels.** Permuting each channel independently destroys
+within-cell co-expression as well as geography, so the test would reject on cells that co-express —
+which has no spatial content and is exactly the confound `selfTerm` documents. A single shuffle
+moves each cell's whole profile together, leaving co-expression exact and destroying only the
+geography. For one-hot types the two are the same; for `X` it is the whole ball game, and
+`permute.test.ts` pins it by comparing the multiset of per-cell profiles before and after.
+
+**The mean of the null is analytic and free.** Splitting `C_ab` at `i = j` and taking the
+expectation over a uniform permutation separates the marks from the geometry completely:
+
+    E[C_ab] = φ(0)·S_ab + Φ·(W_a·W_b − S_ab) / (n(n−1)),     φ = J ⊛ J
+
+where the only geometric term is `Φ = Σ_{i≠j} φ(x_i − x_j) = ∫(J⊛ρ)² − n·φ(0)` — one splat of all
+cells, whatever the simulation count. This is not an optimisation, it is the check that the shuffle
+is uniform: a Monte Carlo mean that misses it means the permutation is wrong, and a biased
+simulation produces a perfectly plausible envelope in the wrong place. Both are tested against each
+other to 3%, for one-hot and weighted channels.
+
+**The test is a global rank envelope, not pointwise quantiles.** Pointwise 2.5/97.5% bands are a 5%
+test at each mode applied at K modes at once; measured here on null data at `d = 8`, that rejects
+**20%** of the time at a nominal 5%. The global construction (Myllymäki et al. 2017) ranks whole
+curves, so the multiplicity is handled by construction. Two implementation traps were hit and are
+recorded in `envelope.ts` because both look correct: the paper's plain global rank `min_r R(r)` is
+too coarse — ties at rank 1 gave a curve that was most extreme at every point p = 0.06 instead of
+0.01, and shrank the band until it rejected 29% of the time — so the ERL refinement is not optional;
+and building the band from the hull of the *simulated* curves only, rather than pooling the observed
+in with them, over-rejects at 21%. The version that ships has a measured rejection rate inside
+[2.6%, 7.4%] at a nominal 5% over 1000 replicates, and that test is the reason to trust the band.
+
+**The first real result inverts the naive reading.** On the Xenium selection (8 genes, 900 µm range,
+centre-25% window, 39 permutations): the observed spectrum is *outside* the null band with the
+smallest attainable p, but mode 1 is **below** it — 45% observed against 66% under random labelling
+— and modes 2 through 7 are all above. Under random labelling every channel's smoothed density is
+essentially the total cell density, so all channels become the same field, `corr` goes nearly
+rank-1, and the null concentrates almost everything in mode 1. Real tissue *differentiates* the
+channels, so the variance spreads. Read alone, "mode 1 carries 45%" would have been quoted as
+evidence of strong structure; against its null it is the opposite of remarkable, and the finding is
+in modes 2–7.
+
+### The context image, and one camera for both
+
+The store's own image can be blended under either view. It is **draped**, not laid on a plane
+beneath the terrain: the surface samples it by its own model XY, so the anatomy and the statistic
+are literally the same geometry and no alignment can drift between them — which is what makes one
+orbit camera serve both without anything to synchronise. The flat map takes the identical blend
+through the identical shared snippet (`imageOverlayWgsl.ts`), so moving between the two views does
+not change what a given mix looks like.
+
+Two decisions in that are load-bearing. The blend happens in **OKLab**, before the sRGB conversion:
+mixing encoded sRGB darkens through the midpoint and drags hue, so a slider at 0.5 would not look
+halfway, and the mode colours' meaning — distance in the field ∝ perceived colour distance — would
+not survive partial blending. And the **coordinates** come from the element's stored transform, not
+from the loader's `ms.placements[0]`, which is a demo-normalised axis-aligned placement that centres
+each image on the origin for the scene editor's staggered layout. An element with no stored
+transform is refused rather than stretched to the window: an overlay that is silently in the wrong
+place is worse than no overlay.
+
+One WGSL trap is worth recording because its symptom is so unhelpful. `textureSample` takes implicit
+derivatives, so it may not appear in non-uniform control flow — wrapping it in an "is this pixel on
+the image?" test compiles to an invalid shader module, and the only evidence is a cascade of
+"invalid due to a previous error" with the actual message nowhere in it. Sample unconditionally and
+carry the test in the blend weight. `compileShader` in `src/gpu/device.ts` now asks for
+`getCompilationInfo()` and throws with the WGSL diagnostic, so the next one of these names itself.
+
+Two things this surfaced that are worth keeping. **A whitened distance is in units of mode σ**, so
+the useful saturation span is ~1, not the 3 the first version defaulted to — above 2 nearly all
+tissue reads as similar. And the mode views make **under-resolution** visible: if the splat radius
+is fewer than about two raster pixels, the map and the terrain show aliasing rather than the
+smoothed field, while the statistic itself stays perfectly well defined. `cellmodes.html` reports
+pixels-per-radius and warns below 2, because nothing else in the numbers gives it away.
+
+**Chroma weighting: what the colour is honest about.** The map assigns mode 1 → L, modes 2–3 → the
+two chroma axes, and scales each mode by *its own* σ (`= √λ`). That is deliberate — eigenvalues fall
+off fast, so a shared scale would render modes 2–3 as flat grey — but it has a consequence the eye
+does not see: it **removes the eigenvalue weighting from the picture**. Colour distance then stands
+in for the *whitened* distance (every mode counted equally per its own spread, the same metric the
+wand uses), not for variance share. So when mode 1 dominates — 61% vs 16% vs 6% on the lung set — a
+6%-variance difference in mode 3 can look as colourful as a 61%-variance difference in mode 1 looks
+in lightness, and the chroma amplifies whatever noise the low-`λ` modes carry. The `chroma` control
+interpolates out of that: the two chroma axes are scaled by `(σ_k/σ₁)^{1−w}`, so `w = 1` is the
+whitened view above and `w = 0` is **variance-weighted** — colour appears only in proportion to
+`σ_k/σ₁`, faithful to importance but near-greyscale when mode 1 dominates. Mode 1 → lightness is
+never touched, and it is **colour only**: the terrain's relief keeps the unweighted per-mode scale,
+so dialling chroma down mutes the map's and the terrain's colour together without flattening a mode
+chosen as the height source. The scree chart and its null band remain where the true variance
+weighting lives; the map shows the whitened geometry, and `w` is the dial between the two readings.
 
 ### ROI and edge effects
 
-Both statistics currently run **Mode 1**: a fixed ROI, a *global* `ρ_B`, and full-disk / full-annulus
-areas. This is exact for anchors at least `r` inside the ROI and biased near the boundary. Mode 2 —
-a viewport apron with window-local `ρ_B` and live permutation envelopes — is designed
-(ADR-0018 §5) and not built.
+`crossPcf.ts` and `tcm.ts` still run **Mode 1**: a fixed ROI, a *global* `ρ_B`, and full-disk /
+full-annulus areas. This is exact for anchors at least `r` inside the ROI and biased near the
+boundary. Permutation envelopes remain unbuilt on every path.
+
+**The Gram path has the viewport apron** (`src/spatial/gram.ts`), and the shape of the fix is worth
+recording because it is smaller than it was designed to be. Two rectangles had been conflated: the
+**window** (`bbox` — what is integrated, standardised and drawn) and the set of points that reach
+it. `gramMatrix` now splats every point handed to it, wherever it lies, but counts `mass` only
+inside the window, so `ρ_a` is estimated window-locally as `W_a(A)/|A|`. That is the whole
+correction: under CSR on a window interior to the data, `g` is 1 at every radius, against the
+uncorrected ladder of 0.965 (r=5) → 0.892 (r=14) → 0.814 (r=25) on the same points measured over
+their own extent.
+
+The first implementation also dilated the *raster* by `r` and integrated over the interior. Measured
+against the plain version it changed nothing to four decimal places, at every radius, and it was
+removed. The reason: `M_a(x)` for `x` in the window depends on points within `r` of the window, and
+those points deposit onto the window's own pixels whether or not any pixels exist beyond them — the
+splat's footprint is clipped to the raster, never to the point set. **So the apron is a fact about
+which points you supply, not about how many pixels you rasterise**, which in a tiled reader is a
+halo-fetch requirement: to measure a window, read the points covering `bbox ⊕ radius`.
+
+What the apron cannot do is invent data. A window at the tissue edge has nothing outside it, so
+`apronCoverage` reports the ring density relative to the window's own — 1 means the correction had
+real cells to work with, 0 means this `g` still carries the full deficit. On the Xenium strip in
+`cellmodes.html` that reads 0 for the full extent, 0.07 for a window inset from the bounding box
+(whose margins are empty, because the section is not rectangular) and 1.49 for the centre 25%.
+
+Note also which numbers move: the apron changes `mass`, so it changes `g` alone. `corr` and the
+co-location modes never divide by mass and are untouched by it.
 
 **One global number per pair is also the limit of what is spatially resolved here.** Γ is a map;
 the cross-PCF and the N-way matrix are single values over the whole ROI. So the association
@@ -414,6 +651,9 @@ src/spatial/tcm.ts             eq 9-14 exact (reference oracle + bucket-grid pat
 src/spatial/tcmKernel.ts       continuous generalisation over any kernel (f64)
 src/spatial/kernelAnalysis.ts  ground-truth scene, AUC / tie / stability scoring
 src/spatial/pcf.ts             cross-PCF and the N-way matrix
+src/spatial/gram.ts            the Gram form C = MMᵀ, g, corr, modes and mode maps (f64 reference)
+src/spatial/eigenSym.ts        Jacobi symmetric eigensolver + psdDefect
+src/spatial/kernelSpectrum.ts  the kernels' 2-D Fourier transforms — the positive-definiteness table
 src/spatial/bucketGrid.ts      CSR neighbourhood index (counting sort)
 src/spatial/cellCsv.ts         CSV parsing / inspection / grouping
 src/spatial/ngffTransform.ts   NGFF coordinateTransformations → 2-D affine + physical unit
@@ -422,6 +662,17 @@ src/gpu/spatial/tcmRender.ts   the two render passes  ← the interactive path
 src/gpu/spatial/paintField.ts  texture → canvas through a LUT; the single display path
 src/gpu/spatial/tcm.ts         exact compute path (TGSL), the GPU parity oracle
 src/gpu/spatial/crossPcf.ts    GPU cross-PCF + N-way matrix (WGSL, integer atomics)
+src/gpu/spatial/gramMatrix.ts  GPU Gram form: one splat per channel + one reduction dispatch
+src/spatial/envelope.ts        global rank envelopes (ERL); the coverage test is the point
+src/spatial/permute.ts         the random-labelling null + its analytic mean
+src/gpu/spatial/gramEnvelope.ts  N permuted spectra -> a banded scree chart
+src/gpu/spatial/gramModes.ts   the flat OKLab mode map, one fragment pass, no readback
+src/gpu/spatial/gramTerrain.ts the displaced surface, the orbit camera, and the wand's metric
+src/gpu/spatial/markerWgsl.ts  the sample rule lines in WGSL, shared by the map and the terrain
+src/gpu/spatial/similarityWgsl.ts  the wand distance + selection boundary, shared (must be, not just aligned)
+src/gpu/spatial/imageOverlayWgsl.ts  the OKLab image blend, shared by the map and the terrain
+playground/src/datasource/imageContext.ts  one pyramid level -> one RGBA texture + world->UV
+src/gpu/spatial/kernelWgsl.ts  the kernel family in WGSL, shared by tcmRender and gramMatrix
 src/color/ramps.ts             OKLCh diverging / sequential ramps
 
 playground/cellstats.html      the demo
@@ -445,10 +696,117 @@ playground/src/datasource/cellCsv.ts     CSV → CellTable
   where it does not (Leap034), the µm/unit box is an assumption and everything is marked `µm*`.
   Nothing in the pipeline can tell the two apart for you.
 - **`byDimension` and non-linear transforms are unimplemented** — reported, not approximated.
-- **Mode 2 is unbuilt** — no window-local `ρ_B`, no edge correction, no permutation envelopes.
+- **Mode 2 is only half built.** The Gram path has window-local mass, the viewport apron and a
+  permutation envelope on its spectrum (§4); `crossPcf.ts` and `tcm.ts` still have none of the
+  three, and no envelope exists for `g` or for the cross-PCF curves.
+- **The envelope's remaining cost is per-INSTANCE, and the obvious optimisations are not the ones
+  that pay.** 39 permutations of a 162k-cell, 8-channel selection take 3.2 s. Getting there was two
+  steps, and a third that was measured and abandoned:
+  - `channelPermuter` reusing its scratch buffers: 340 → 90 ms per realisation. The allocating form
+    threw away ~10 MB each time and most of the difference was collection, not GPU work.
+  - Culling zero-weight marks in the splat's vertex stage: 90 → 82 ms. A zero weight adds nothing
+    but otherwise rasterises its whole kernel footprint; expression data is mostly zeros.
+    `gramMatrix.gpu.test.ts` pins that a zero-weight cell is indistinguishable from an absent one in
+    `c`, `g`, `mass` and `selfTerm`, which is what makes the cull a no-op rather than an
+    approximation.
+  - **Resident positions plus a permutation buffer: measured at ~1.5%, not built.** The intuition is
+    that re-uploading the packed `[x, y, w]` every realisation is waste. It is, but it is small
+    waste: with `n = 1` and the same 8 channels and raster, the entire fixed cost — host packing,
+    upload, both submits, all three readbacks — is **2.1 ms against 141 ms**. Adding a second input
+    mode and shader variant to save part of 2.1 ms is not worth the two lifetime contracts it
+    introduces.
+  - **Compaction — draw only the non-zero cells — was built, measured, and reverted: it is 3×
+    SLOWER here.** The reasoning that led to it was that a culled zero still costs a vertex
+    invocation and a primitive, so a run splats far more instances than it needs. That per-instance
+    cost is real and monotone in isolation (all-offscreen instances, no fragments: 1.3 M cost ~28 ms
+    over a ~4 ms floor). But it is not the bottleneck, and removing it makes things much worse. In a
+    controlled A/B at a realistic 5% occupancy — the same in-window splats either way, so identical
+    fragments — the cull (draw all 1.3 M, 95% collapse offscreen) and host compaction (draw only the
+    ~65 k in-window) run, sustained over 39 realisations:
+
+    | path | 39× wall clock | per realisation |
+    |---|---|---|
+    | vertex cull (draw all, collapse zeros) | **1.3 s** | 33 ms |
+    | host compaction (draw non-zeros only) | **3.9 s** | 101 ms |
+
+    The mechanism is the tile-based GPU, not per-instance work: cost is dominated by how *scattered*
+    the in-window coverage is, and it is **non-monotone** in occupancy — 1.3 M dense instances splat
+    in 110 ms while 660 k scattered ones take 235 ms. Drawing the full instance list alongside the
+    splats keeps the identical in-window fragments roughly an order of magnitude cheaper (the ~1 ms
+    they add to the cull vs the ~80 ms they cost alone), consistent with a clock/batching regime that
+    the bulk draw triggers and the bare scattered draw does not. It is not fully root-caused, but the
+    direction is unambiguous and reproduced four ways (occupancy sweep, two offscreen-coordinate
+    A/Bs, and the sustained loop above), so the cull stays and there is no case for the device-side
+    prefix-sum + indirect-draw version either — it would only draw fewer scattered primitives, which
+    is the slow direction. Had it shipped, the permutation would still have stayed on the host
+    regardless: Fisher–Yates on 162k indices is ~1 ms, while the GPU-shaped alternatives are a full
+    sort or a keyed pseudorandom permutation, and the latter is **not** uniform over all `n!` — the
+    assumption the test's exactness rests on.
+
+  The earlier reading of these numbers credited GPU per-instance splatting with the whole 111 → 69 ms
+  occupancy swing and called compaction "the lever." That was wrong: isolated, host packing is ~10 ms
+  and the per-call fixed cost ~3 ms, the splat is insensitive to raster size, and the real cost is the
+  scattered-coverage term above — which neither the cull nor compaction moves. Chasing it means
+  changing the *raster*, not the instance list: a coarser splat, or a windowed formulation that
+  replaces the global integral (§ the Gram-form limit below).
 - **`crossPCFMatrixGpu` is not wired into the demo**; the matrix still runs on the CPU (one batched
   pass, fast enough at Leap034 scale).
-- **The Gram-matrix / eigen-projection formulation of §4 is a plan, not code.**
+- **The Gram form is global, not swept.** `C = MMᵀ` integrates over the whole raster, so it is one
+  K×K matrix per view, exactly as the pair-counting path is. The *windowed* version — replace the
+  integral with a convolution of the products `M_a·M_b` and you get a K×K matrix **per pixel**, an
+  open-axis tensor field — is the thing plan §7 asks for and is not built. It is what would make
+  the quadrat-vs-swept comparison below runnable, and what the "distance from a reference
+  co-location profile" reduction needs.
+- **The image overlay is one pyramid level, not a tiled pyramid.** `imageContext.ts` fetches the
+  finest level whose long side fits a 2048 budget and composites it once; zoom past that and the
+  overlay goes soft. `tileRenderer.ts` does proper LOD streaming for the scene editor and is not
+  wired in here — the mode views draw one fixed analysis window, so there is no camera-driven LOD
+  problem to solve, only a resolution ceiling.
+- **The overlay's registration has not been checked against a fiducial.** It uses the element's own
+  stored transform (element ∘ dataset, straight from sd.js) into the same coordinate system the
+  table resolves into, and the flat map and the terrain agree with each other by construction —
+  but "the two views agree" is not "the image is where the cells are". An element carrying no
+  stored transform is refused outright rather than stretched to fit.
+- **Any substantial CPU work in a `*.gpu.test.ts` process crashes the Dawn fork before vitest
+  flushes results.** Bisected while building `gramMatrix.gpu.test.ts`: a bare `Float64Array` churn
+  loop with no GPU code involved kills it just as reliably as running the CPU oracle, while the
+  same GPU calls with trivial assertions pass repeatedly. The budget is severe — a CPU oracle at a
+  32² raster survives, 48² does not. This is the same fragility as the `tcmRender` entry above, but
+  the trigger is *host* allocation churn rather than render/readback cycles. The workaround is to
+  bake oracle values in as constants (see that file's header); the general rule is that GPU test
+  files must stay GPU-only. Not root-caused.
 - **Quadrats vs swept windows is UNTESTED.** The association statistics are global, so the
   comparison the toolbox's windowing argument rests on has not been run here — see *Scope* at the
   top. Do not cite §2's kernel measurements as evidence for it: they are a different axis.
+
+---
+
+## 12. Weighted marks: gene expression as a channel
+
+The Gram form takes per-cell weights, so a gene's expression column substitutes directly for a
+one-hot type indicator — `channelsFromExpression` builds the channels, everything downstream is
+unchanged, and the GPU splat already carries the weight per instance. This is tested both ways: a
+one-hot `X` reproduces the cell-type matrix exactly, and doubling a channel's weights scales `C` by
+4 while leaving `g` invariant.
+
+**The confound that makes this non-trivial.** The pair sum includes `i = j`. For disjoint cell-type
+channels that self term only touches the diagonal, but when every cell carries a weight in *every*
+channel it lands in every entry, contributing `(J⊛J)(0) · Σ_i w_a(i) w_b(i)` — within-cell
+co-expression with no spatial content at all, wearing the costume of co-location. Two genes
+perfectly co-expressed in cells spread far apart still produce a large raw `C_ab`. It is reported
+as `selfTerm` and subtracted in `g` (which is what `crossPCFMatrix`'s `j != i` does); `corr` cannot
+subtract it and stay PSD, so for the *modes* the honest control is a permutation null — shuffle the
+marks among cells and keep the positions — which is the same machinery Mode 2 needs.
+
+**Scale.** Cost is `O(G·P)` to splat and `O(G²·P)` to reduce, so this is a *selected genes*
+feature, not an all-genes one: ~50 genes at 512² is fine, 2000 is not. That matches ADR-0005's
+existing position (sparse gene columns are a selection mechanism; never densify the full matrix).
+
+**What is missing is only the loading.** Nothing in the repo reads `X`, `var` or `layers` today —
+`playground/src/datasource/cellTable.ts` reads `obsm/spatial` and one `obs` column, and that is
+all. The cheapest route needs no new dependency: the `zarrextra` tree the table reader already
+holds contains `tables/<name>/X`, either as a dense array or as the `X/{data,indices,indptr}` CSR
+triple (with `encoding-type` and `shape` in the group attrs, reachable via the existing
+`symbolAttrs` helper), and `var/_index` gives the gene names through the existing `readStrings1D`.
+The alternative is `@spatialdata/core`'s `getAnnDataJS()`, which exposes a `SparseArray` with a
+slicing API — already a transitive dependency, but not currently imported for tables.

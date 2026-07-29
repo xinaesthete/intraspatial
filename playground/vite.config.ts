@@ -84,6 +84,7 @@ export default defineConfig({
         spatialvolume: fileURLToPath(new URL("./spatialvolume.html", import.meta.url)),
         rasterstat: fileURLToPath(new URL("./rasterstat.html", import.meta.url)),
         cellstats: fileURLToPath(new URL("./cellstats.html", import.meta.url)),
+        cellmodes: fileURLToPath(new URL("./cellmodes.html", import.meta.url)),
         r3fspike: fileURLToPath(new URL("./r3fspike.html", import.meta.url)),
       },
     },

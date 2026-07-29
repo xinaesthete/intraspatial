@@ -17,7 +17,9 @@
 // colour/window/blend on the GPU. Channel defaults (colour + contrast + label) are seeded from
 // OME `omero.channels`, with auto-contrast for >8-bit (fluorescence).
 
+import type { SpatialData } from "@spatialdata/core";
 import type { Affine3, ChunkId, Loader, Multiscale, Tile, Vec3 } from "../../../src/datasource";
+import { openSpatialData as openStore } from "./spatialDataStore";
 import { type ChannelSettings, defaultChannelColors, MAX_CHANNELS } from "./tileChannelMaterial";
 
 // zarrextra's viv-compatible per-level pixel source (structural — avoids a value import here).
@@ -158,17 +160,28 @@ export interface SpatialDataHandle {
  * and list its image elements. Reuse the handle to build individual images without re-reading
  * the store. Throws if the URL is not a readable zarr / SpatialData object.
  */
-export async function openSpatialData(url: string): Promise<SpatialDataHandle> {
+/**
+ * Build the image handle for an ALREADY-OPEN `SpatialData` — the reference-threaded entry.
+ *
+ * Shared by `openSpatialData(url)` (which fetches the store first) and by `imageContext`, which is
+ * handed the very same `SpatialData` the cell-table / expression reads use. No `readZarr` here:
+ * the object is passed in, so an overlay never re-parses a store the table path already opened.
+ */
+export async function imageHandle(sdata: SpatialData): Promise<SpatialDataHandle> {
   await ensureWorkerDecode();
-  const core = await import("@spatialdata/core");
   const zx = await import("zarrextra");
-  const sdata = await core.readZarr(url);
   const images = (sdata.images ?? {}) as Record<string, { getStore(): unknown; attrs?: unknown }>;
   const imageNames = Object.keys(images);
   return {
     imageNames,
     image: (elementName, opts = {}) => buildImage(zx, images[elementName], elementName, imageNames, opts),
   };
+}
+
+export async function openSpatialData(url: string): Promise<SpatialDataHandle> {
+  // The url-taking form, for pages that hold only a store URL — opens the shared cached store, then
+  // hands the same object to `imageHandle`.
+  return imageHandle(await openStore(url));
 }
 
 /** Convenience: open a store and build one image in a single call. */

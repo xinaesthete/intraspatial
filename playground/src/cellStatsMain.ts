@@ -39,6 +39,7 @@ import {
   type CellTypeCloud,
   DEFAULT_CELL_TABLE,
   listCellTables,
+  openSpatialData,
   readCellTable,
   syntheticCellTable,
   type TableInfo,
@@ -734,7 +735,7 @@ async function inspectStore(autoLoad: boolean): Promise<void> {
   const url = storeInput.value.trim();
   setStatus(`inspecting ${url} …`);
   try {
-    storeTables = await listCellTables(url);
+    storeTables = await listCellTables(await openSpatialData(url));
     const usable = storeTables.filter((t) => t.hasCentroids);
     tableSelect.innerHTML = "";
     for (const info of storeTables) {
@@ -770,7 +771,7 @@ async function loadSelected(): Promise<void> {
   const typeColumn = typeColSelect.value || undefined;
   setStatus(`reading "${table}" (${typeColumn ?? "default column"}) …`);
   try {
-    present(await readCellTable(url, { table, typeColumn }));
+    present(await readCellTable(await openSpatialData(url), { table, typeColumn }));
   } catch (e) {
     setStatus(`read failed: ${(e as Error).message}`, true);
   }

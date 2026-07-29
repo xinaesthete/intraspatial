@@ -6,8 +6,11 @@
 // playground side (ADR-0015 ownership boundary); `src/datasource/centroidsToField.ts` receives only
 // resolved values.
 //
-//   openExtraConsolidated(url) → tree.tables[name]   (zarrextra's own zarrita; consolidated
-//                                                      metadata lives at the store root)
+//   openSpatialData(url) → SpatialData → storeTree(sdata).tables[name]
+//     (readZarr opens the store once at the high level; SpatialData is threaded by reference, and
+//      `rootStore.tree` is the consolidated metadata at the store root — the one place we drop to
+//      the raw tree because the typed element API does not yet cover these reads; see the UPSTREAM
+//      markers.)
 //     obsm/spatial   [N,2] float64 → per-cell (x,y) centroids
 //     obs/cell_type_id  [N] int64  → per-cell integer type id
 //
@@ -15,14 +18,52 @@
 // into SEPARATE clouds and NEVER merge them. The centroids are carried, not host-transformed: the
 // placement rides along on each cloud and is applied on the GPU (splatDensity).
 
+import type { SpatialData } from "@spatialdata/core";
 import type { Affine3 } from "../../../src/datasource";
 import { centroidsToField } from "../../../src/datasource";
 import type { Graph } from "../../../src/gpu/graph/graph";
 import type { FieldProvenance, GpuField, ResolvedPlacement } from "../../../src/gpu/graph/handle";
 import { type Affine2, IDENTITY2, type NgffAxis, resolveNgffXY } from "../../../src/spatial/ngffTransform";
+import { openSpatialData, storeTree } from "./spatialDataStore";
 
 /** Default target table on the Leap034 store. */
 export const DEFAULT_CELL_TABLE = "Leap034_imc_cells";
+
+// The store is opened once, at the high level, and threaded by reference — see `spatialDataStore.ts`.
+// Re-exported so this module's callers (and `varMatrix`) keep a single datasource import.
+export { openSpatialData, storeTree };
+
+/** Pass as `typeColumn` to skip the split entirely and load every cell as ONE cloud.
+ *
+ *  Not every table has a cell-type column — a raw Xenium export has `cell_id`, counts and areas and
+ *  nothing else annotated. Before this existed such a store could not be opened at all, which also
+ *  shut out the expression path, where the marks come from `X` and the type column is irrelevant. */
+export const NO_TYPE_COLUMN = "__none__";
+
+/** Above this many distinct values, a column is an identifier rather than a cell type.
+ *
+ *  Real annotations run to tens of types, occasionally a hundred. The number that matters is not
+ *  the memory but the N-way matrix, which is N×N: at N = 162254 (one "type" per cell, which is what
+ *  Xenium's `cell_labels` actually is) that is a 26-billion-element allocation, and the failure
+ *  surfaces far downstream as an opaque "Invalid typed array length". Catching it here means the
+ *  error can name the column and the count. */
+const MAX_CELL_TYPES = 512;
+
+/** Thrown when the chosen column splits into implausibly many types. Carries the numbers so the
+ *  caller can explain itself, or silently fall back to `NO_TYPE_COLUMN`, without parsing a string. */
+export class TooManyTypesError extends Error {
+  constructor(
+    readonly column: string,
+    readonly distinct: number,
+    readonly rows: number,
+  ) {
+    super(
+      `'${column}' has ${distinct} distinct values across ${rows} cells — that is an identifier, not a cell type. ` +
+        `Pick a different column, or load every cell as one cloud.`,
+    );
+    this.name = "TooManyTypesError";
+  }
+}
 
 /** A single cell type's centroid cloud, ready to add to a graph as a points source (via B2a). */
 export interface CellTypeCloud {
@@ -60,6 +101,15 @@ export interface CellTable {
   readonly label: string;
   /** What the store says about physical scale. See `resolveTableSpace`. */
   readonly units: TableUnits;
+  /** Centroids in **table row order**, ungrouped — the join key for any other column of the same
+   *  table (`obs/*`, `X`, `layers/*`), all of which are indexed by row and know nothing about the
+   *  cell-type grouping. `types[].xs` cannot serve: grouping permutes the rows.
+   *
+   *  This is not a merged cloud, and ADR-0018 is not being sidestepped — that rule governs points
+   *  *sources* fed to the graph, which are still one per `(table, region, cell_type)`. This is the
+   *  row index those columns live on, and it is the only correct way to attach an expression
+   *  weight to a centroid. Absent for sources that have no table behind them (CSV, fixture). */
+  readonly rowOrder?: { readonly xs: readonly number[]; readonly ys: readonly number[] };
 }
 
 /** The physical-scale story for a table, deduced where the metadata states it and left explicitly
@@ -82,24 +132,24 @@ export interface TableUnits {
 
 // ---- structural zarr shapes (zarrita is zarrextra's dep, not ours — no value import) ---------------
 
-interface ZarrChunk {
+export interface ZarrChunk {
   data: ArrayLike<number | bigint>;
   shape: number[];
   stride: number[];
 }
-interface ZarrArrayLike {
+export interface ZarrArrayLike {
   readonly shape: number[];
   readonly chunks: number[];
   readonly dtype: string;
   getChunk(coords: number[]): Promise<ZarrChunk>;
 }
-interface LazyZarrArrayLike {
+export interface LazyZarrArrayLike {
   get(): Promise<ZarrArrayLike>;
 }
 
 /** Descend a zarrextra ZarrTree node to a named lazy-array leaf by path, e.g. `["obsm","spatial"]`.
  *  A leaf is identified by exposing a `get()`; group nodes are plain objects. */
-function leafAt(node: unknown, path: string[]): LazyZarrArrayLike {
+export function leafAt(node: unknown, path: string[]): LazyZarrArrayLike {
   let cur: unknown = node;
   for (const key of path) {
     if (!cur || typeof cur !== "object") throw new Error(`cellTable: path .${path.join(".")} — '${key}' parent is not a group`);
@@ -112,7 +162,8 @@ function leafAt(node: unknown, path: string[]): LazyZarrArrayLike {
 }
 
 /** Is this tree node a zarr array (as opposed to a group)? Leaves expose `get()`. */
-const isLeaf = (v: unknown): v is LazyZarrArrayLike => !!v && typeof v === "object" && typeof (v as LazyZarrArrayLike).get === "function";
+export const isLeaf = (v: unknown): v is LazyZarrArrayLike =>
+  !!v && typeof v === "object" && typeof (v as LazyZarrArrayLike).get === "function";
 
 /** An AnnData categorical column is a GROUP holding `codes` (int) + `categories` (string).
  *  Detected structurally rather than by the `encoding-type` attribute: the structure is what we
@@ -183,7 +234,7 @@ function describeColumns(obsNode: unknown): Array<{ name: string; kind: "categor
 }
 
 /** Read a 1-D zarr array of strings (AnnData writes `categories` as vlen-utf8). */
-async function readStrings1D(arr: ZarrArrayLike): Promise<string[]> {
+export async function readStrings1D(arr: ZarrArrayLike): Promise<string[]> {
   const n = arr.shape[0] ?? 0;
   const cn = arr.chunks[0] ?? (n || 1);
   const out = new Array<string>(n);
@@ -209,11 +260,12 @@ async function readStrings1D(arr: ZarrArrayLike): Promise<string[]> {
  * Tables that fail to inspect are reported rather than dropped: a store with one broken table and
  * one good one should still be usable, and the reason should be visible.
  */
-export async function listCellTables(url: string): Promise<TableInfo[]> {
-  const zx = await import("zarrextra");
-  const opened = await zx.openExtraConsolidated(url);
-  const { tree } = zx.unwrap(opened) as { tree: { tables?: Record<string, unknown> } };
-  const tables = tree.tables ?? {};
+export async function listCellTables(sdata: SpatialData): Promise<TableInfo[]> {
+  // UPSTREAM(sd.js): `SpatialData.tables` gives the table keys, and `TableElement.getObsColumnNames()`
+  // the obs column names — but not each column's dtype/cardinality, which is what the ranking below
+  // needs to guess the cell-type column. So we walk the tree for the column KINDS. A
+  // `TableElement.getObsSchema()` (name → {kind, nCategories}) would let this stay on the object.
+  const tables = storeTree(sdata).tables ?? {};
 
   return Promise.all(
     Object.entries(tables).map(async ([name, node]): Promise<TableInfo> => {
@@ -351,7 +403,7 @@ function collectAttrs(node: unknown): Record<string, unknown> | undefined {
 }
 
 /** The generic form: the first symbol-keyed plain object on a tree node satisfying `want`. */
-function symbolAttrs(node: unknown, want: (v: Record<string, unknown>) => boolean): Record<string, unknown> | undefined {
+export function symbolAttrs(node: unknown, want: (v: Record<string, unknown>) => boolean): Record<string, unknown> | undefined {
   if (!node || typeof node !== "object") return undefined;
   for (const sym of Object.getOwnPropertySymbols(node)) {
     const v = (node as Record<symbol, unknown>)[sym];
@@ -422,15 +474,19 @@ function resolveTableSpace(
  * ADR-0018: never merges the clouds — one points source per `cell_type_id`, each carrying the
  * shared placement + its own provenance `{ region, instanceKey, cellTypeId }`.
  */
-export async function readCellTable(url: string, opts: { table?: string; typeColumn?: string; system?: string } = {}): Promise<CellTable> {
+export async function readCellTable(
+  sdata: SpatialData,
+  opts: { table?: string; typeColumn?: string; system?: string } = {},
+): Promise<CellTable> {
   const tableName = opts.table ?? DEFAULT_CELL_TABLE;
   const typeColumn = opts.typeColumn ?? "cell_type_id";
-  const zx = await import("zarrextra");
-  const opened = await zx.openExtraConsolidated(url);
-  const { tree } = zx.unwrap(opened) as { tree: { tables?: Record<string, unknown> } };
-  const tableNode = tree.tables?.[tableName];
+  // The whole tree, not just `.tables`: the root carries the store's coordinate-system attrs and the
+  // element groups `resolveTableSpace` walks to place the table (see below).
+  const tree = storeTree(sdata);
+  const tables = tree.tables;
+  const tableNode = tables?.[tableName];
   if (!tableNode) {
-    const have = Object.keys(tree.tables ?? {}).join(", ") || "(none)";
+    const have = Object.keys(tables ?? {}).join(", ") || "(none)";
     throw new Error(`cellTable: no table '${tableName}' in store; available: ${have}`);
   }
 
@@ -439,29 +495,40 @@ export async function readCellTable(url: string, opts: { table?: string; typeCol
   // The type column is either a plain integer array or an AnnData categorical (a group of
   // `codes` + `categories`). The categorical case is the one worth having: it comes with NAMES.
   const obsNode = (tableNode as Record<string, unknown>).obs;
-  const colNode = obsNode && typeof obsNode === "object" ? (obsNode as Record<string, unknown>)[typeColumn] : undefined;
-  if (!colNode) {
+  const untyped = typeColumn === NO_TYPE_COLUMN;
+  const colNode = untyped
+    ? undefined
+    : obsNode && typeof obsNode === "object"
+      ? (obsNode as Record<string, unknown>)[typeColumn]
+      : undefined;
+  if (!untyped && !colNode) {
     const have = describeColumns(obsNode)
       .map((c) => c.name)
       .join(", ");
     throw new Error(`cellTable: no obs column '${typeColumn}' in '${tableName}'; available: ${have || "(none)"}`);
   }
+  const rows = spatialArr.shape[0] ?? 0;
   let categories: string[] | undefined;
-  let idArr: ZarrArrayLike;
-  if (isCategorical(colNode)) {
+  let idArr: ZarrArrayLike | undefined;
+  if (untyped) {
+    idArr = undefined;
+  } else if (isCategorical(colNode)) {
     idArr = await leafAt(colNode, ["codes"]).get();
     categories = await readStrings1D(await leafAt(colNode, ["categories"]).get());
   } else {
     idArr = await leafAt(obsNode, [typeColumn]).get();
   }
-
-  const rows = spatialArr.shape[0] ?? 0;
-  if ((idArr.shape[0] ?? 0) !== rows) {
+  if (idArr && (idArr.shape[0] ?? 0) !== rows) {
     throw new Error(`cellTable: obsm/spatial rows (${rows}) != obs/${typeColumn} length (${idArr.shape[0]})`);
   }
 
   const { xs, ys } = await readCentroids2D(spatialArr);
-  const ids = await readArray1D(idArr);
+  // Untyped: every cell in one cloud, so the id is a constant.
+  const ids = idArr ? await readArray1D(idArr) : new Array<number>(rows).fill(0);
+  if (!untyped) {
+    const distinct = new Set(ids).size;
+    if (distinct > MAX_CELL_TYPES) throw new TooManyTypesError(typeColumn, distinct, rows);
+  }
 
   const attrs = readTableAttrs(tableNode);
   const region = attrs.region || opts.system || "";
@@ -492,7 +559,7 @@ export async function readCellTable(url: string, opts: { table?: string; typeCol
       const provenance: FieldProvenance = { region, instanceKey, cellTypeId: id };
       // A categorical code of -1 is AnnData's NaN; anything past the end is a broken store. Both
       // fall back to the bare number rather than inventing a name.
-      const label = categories?.[id];
+      const label = untyped ? "all cells" : categories?.[id];
       return {
         id,
         label,
@@ -512,7 +579,8 @@ export async function readCellTable(url: string, opts: { table?: string; typeCol
     totalCells: rows,
     system,
     units: space.units,
-    label: `${tableName} · ${typeColumn} · ${rows} cells · ${types.length} types`,
+    rowOrder: { xs, ys },
+    label: untyped ? `${tableName} · ${rows} cells · untyped` : `${tableName} · ${typeColumn} · ${rows} cells · ${types.length} types`,
   };
 }
 
