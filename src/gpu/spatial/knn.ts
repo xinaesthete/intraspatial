@@ -36,7 +36,7 @@ const WG = 64;
  *  stops changing much above ~30). */
 const MAX_K = 32;
 
-const Params = d.struct({ n: d.u32, dim: d.u32, k: d.u32 });
+const Params = d.struct({ n: d.u32, dim: d.u32, k: d.u32, rowOffset: d.u32 });
 
 const layout = tgpu.bindGroupLayout({
   params: { uniform: Params },
@@ -48,7 +48,8 @@ const layout = tgpu.bindGroupLayout({
 const TEMPLATE = /* wgsl */ `
 @compute @workgroup_size(${WG})
 fn knn(@builtin(global_invocation_id) gid: vec3u) {
-  let i = gid.x;
+  // Query rows are processed in tiles; this dispatch owns [rowOffset, rowOffset + count).
+  let i = gid.x + params.rowOffset;
   let n = params.n;
   if (i >= n) { return; }
   let dim = params.dim;
@@ -136,6 +137,15 @@ function ensurePool(root: Root, values: number, pairs: number) {
 
 export const KNN_MAX_K = MAX_K;
 
+/** Target work per dispatch, in (row x column x dimension) products.
+ *
+ *  Calibrated against measurement, not guessed: a single dispatch of 1.28e10 products
+ *  (n=16000, dim=50) completed reliably, while 3.4e10 (n=26000) was killed. 4e9 sits ~3x
+ *  below the largest known-good dispatch. Larger tiles mean fewer per-tile syncs and so
+ *  more throughput; the cost of guessing too large is not a slowdown but a silently
+ *  all-zero result, so the margin is deliberate. */
+const TARGET_PAIRS_PER_DISPATCH = 4_000_000_000;
+
 export interface KnnGpuOptions {
   /** Rows. */
   readonly n: number;
@@ -163,16 +173,37 @@ export async function knnGpu(data: ArrayLike<number>, opts: KnnGpuOptions): Prom
 
   const flat = data instanceof Float32Array && data.length === n * dim ? data : Float32Array.from({ length: n * dim }, (_, t) => data[t]!);
   device.queue.writeBuffer(root.unwrap(p.data), 0, flat as BufferSource);
-  p.params.write({ n, dim, k });
 
   const bind = root.unwrap(root.createBindGroup(layout, { params: p.params, data: p.data, outIdx: p.outIdx, outDist: p.outDist }));
-  const enc = device.createCommandEncoder();
-  const pass = enc.beginComputePass();
-  pass.setPipeline(pipeline);
-  pass.setBindGroup(0, bind);
-  pass.dispatchWorkgroups(Math.ceil(n / WG));
-  pass.end();
-  device.queue.submit([enc.finish()]);
+
+  // Tiled over query rows, and this is a correctness fix rather than a tuning knob.
+  // One dispatch covering every row is O(n^2 * dim) of work in a single command, and past
+  // roughly two seconds the OS GPU watchdog kills it — Dawn then reports NO error, the
+  // output buffer keeps its zeroes, and the caller gets a complete-looking result whose
+  // every index is 0. Measured before this: n=26000 and n=30000 returned all-zero
+  // neighbour lists (recall 0.000) while n=28000 happened to survive, so it presented as
+  // an intermittent wrong answer rather than a failure. Bounding each dispatch to a tile
+  // of rows keeps every command well inside the watchdog.
+  // Each query row costs n*dim products, so the tile is TARGET / (n*dim) rows, rounded
+  // up to a whole number of workgroups and clamped into [WG, n].
+  const perRow = Math.max(n * dim, 1);
+  const wantRows = Math.max(WG, Math.min(n, Math.floor(TARGET_PAIRS_PER_DISPATCH / perRow)));
+  const rowsPerTile = Math.min(n, Math.ceil(wantRows / WG) * WG);
+  for (let start = 0; start < n; start += rowsPerTile) {
+    const count = Math.min(rowsPerTile, n - start);
+    p.params.write({ n, dim, k, rowOffset: start });
+    const enc = device.createCommandEncoder();
+    const pass = enc.beginComputePass();
+    pass.setPipeline(pipeline);
+    pass.setBindGroup(0, bind);
+    pass.dispatchWorkgroups(Math.ceil(count / WG));
+    pass.end();
+    device.queue.submit([enc.finish()]);
+    // Wait for each tile before queuing the next, so the queue never holds more than one
+    // long command and `params` (one uniform, rewritten per tile) cannot be overwritten
+    // before the dispatch that reads it has run.
+    await device.queue.onSubmittedWorkDone();
+  }
 
   const gotIdx = (await p.outIdx.read()) as ArrayLike<number>;
   const gotDist = (await p.outDist.read()) as ArrayLike<number>;

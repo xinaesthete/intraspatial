@@ -18,9 +18,9 @@
 // `releaseDevice()` is called once the last kernel has read back: holding Dawn's
 // Instance is what keeps GPU work safe, and dropping it is what lets the process exit.
 //
-// Both paths are exact and O(N^2 * D). That is fine into the low tens of thousands of
-// cells and is not fine past that; the fix for large stores is an approximate index,
-// not a bigger machine — see `docs/umap-on-anndata.md` §3.
+// The k-NN is chosen by size: exact (GPU) below ~5k cells, NN-descent above, because the
+// exact search is O(N^2 * D) and no device fixes that. `--exact` / `--approx` override.
+// See `docs/umap-on-anndata.md` §3.
 //
 //   pnpm umap:obsm <store> [options]
 //
@@ -33,6 +33,8 @@
 //     --dim <n>          embedding dimension               (default 2)
 //     --seed <n>         (default 42)
 //     --cpu              force the host k-NN instead of the GPU
+//     --exact            force the exact k-NN even above the crossover
+//     --approx           force approximate (NN-descent) even below it
 //     --obsp             also write the neighbour graph to obsp + uns/neighbors
 //     --force            overwrite an existing obsm/obsp key
 //     --dry-run          compute and report, write nothing
@@ -47,6 +49,7 @@ import {
   writeObsm,
   writeObsp,
 } from "../src/datasource/annDataIo";
+import { knnDescentCpu, knnStrategyFor } from "../src/spatial/knnDescent";
 import { umapGraphFor } from "../src/spatial/umap";
 import type { KnnResult } from "../src/spatial/umapGraph";
 import { fitAB, optimizeLayout } from "../src/spatial/umapLayout";
@@ -64,6 +67,8 @@ interface Args {
   dim: number;
   seed: number;
   cpu: boolean;
+  exact: boolean;
+  approx: boolean;
   obsp: boolean;
   force: boolean;
   dryRun: boolean;
@@ -124,6 +129,8 @@ function parseArgs(argv: string[]): Args {
     dim: num("dim", 2),
     seed: num("seed", 42),
     cpu: flags.get("cpu") === true,
+    exact: flags.get("exact") === true,
+    approx: flags.get("approx") === true,
     obsp: flags.get("obsp") === true,
     force: flags.get("force") === true,
     dryRun: flags.get("dry-run") === true,
@@ -149,19 +156,45 @@ async function detectTablePath(loc: Awaited<ReturnType<typeof openStore>>, expli
   throw new Error("could not find an AnnData group; pass --table <path> explicitly");
 }
 
-/** Prefer the GPU k-NN; fall back to the host one if no adapter is available — a
- *  headless box with no GPU is an ordinary case, not an error, and the two agree. */
-function resolveKnn(forceCpu: boolean): {
+/**
+ * Choose the k-NN.
+ *
+ * Two independent axes: **where** it runs (GPU or host) and **whether it is exact**. The
+ * exact search is O(N^2 * D) and stops being viable somewhere in the tens of thousands of
+ * cells whichever device runs it, so past the crossover we switch to NN-descent — which
+ * is host-side today, hence `--exact` for anyone who would rather wait for the exact
+ * answer.
+ */
+function resolveKnn(
+  args: Args,
+  nCells: number,
+): {
   fn?: (d: ArrayLike<number>, n: number, dim: number, k: number) => Promise<KnnResult>;
   label: string;
   gpu: boolean;
 } {
-  if (forceCpu) return { label: "host (--cpu)", gpu: false };
-  const fn = async (d: ArrayLike<number>, n: number, dim: number, k: number): Promise<KnnResult> => {
-    const { knnGpu } = await import("../src/gpu/spatial/knn");
-    return knnGpu(d, { n, dim, k });
+  // The crossover depends on which exact search we would otherwise run: the tiled GPU
+  // kernel stays ahead of the host descent past 50k, whereas a host brute force is
+  // overtaken around 5k. Measured — see the table in `knnDescent.ts`.
+  const crossover = args.cpu ? 5_000 : 50_000;
+  const wantApprox = args.approx || (!args.exact && knnStrategyFor(nCells, crossover) === "descent");
+  if (wantApprox) {
+    const why = args.approx ? "--approx" : `${nCells} cells is past the ${crossover} crossover`;
+    return {
+      fn: async (d, n, dim, k) => knnDescentCpu(d, n, dim, { k, seed: args.seed }),
+      label: `NN-descent, approximate (${why})`,
+      gpu: false,
+    };
+  }
+  if (args.cpu) return { label: "exact, host (--cpu)", gpu: false };
+  return {
+    fn: async (d, n, dim, k) => {
+      const { knnGpu } = await import("../src/gpu/spatial/knn");
+      return knnGpu(d, { n, dim, k });
+    },
+    label: "exact, GPU",
+    gpu: true,
   };
-  return { fn, label: "GPU", gpu: true };
 }
 
 async function main(): Promise<void> {
@@ -176,11 +209,11 @@ async function main(): Promise<void> {
   const matrix = await readExpressionMatrix(loc, { tablePath, matrix: args.matrix, vars: args.genes });
   console.log(`matrix   ${args.matrix} — ${matrix.nCells} cells x ${matrix.nVars} genes`);
 
-  const { fn: knn, label, gpu } = resolveKnn(args.cpu);
+  const { fn: knn, label, gpu } = resolveKnn(args, matrix.nCells);
   usedGpu = gpu;
   console.log(`k-NN     ${label}`);
-  if (matrix.nCells > 20000) {
-    console.warn(`  warning: ${matrix.nCells} cells through an exact O(N^2) k-NN will be slow`);
+  if (matrix.nCells > 20000 && label.startsWith("exact")) {
+    console.warn(`  warning: ${matrix.nCells} cells through an exact O(N^2) k-NN will be slow; drop --exact to approximate`);
   }
 
   // All GPU work happens in this call. The device is NOT released here: the k-NN's

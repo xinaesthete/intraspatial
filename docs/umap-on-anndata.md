@@ -53,16 +53,48 @@ uniquely. For a point whose neighbours are equidistant the target is only approa
 8×. The **memberships** are nonetheless scale-invariant to ~5 decimals, and that is what
 the tests assert, because that is what downstream reads.
 
-## 3. The k-NN, and the wall at ~20k cells
+## 3. The k-NN, and where it actually runs out
 
-`knnGpu` is exact brute force, O(N²·D), one thread per query point, k smallest kept in a
-private array. Exact-first is the ADR-0016 pattern (reproduce, then improve) and it is
-genuinely adequate to ~10–20k cells: at N=10k, D=50 the inner loop is 5·10⁹ FMAs.
+`knnGpu` is exact brute force, O(N²·D), one thread per query point. Exact-first is the
+ADR-0016 pattern, and with the tiling below it reaches further than expected: **n=50000,
+D=50 in 14.6 s**.
 
-Past that the O(N²) wall is real and a bigger GPU does not fix it. The fix is an
-approximate index — RP-trees or a generalised bucket grid — dropped in behind the same
-`KnnResult` interface, which is why that interface is a named type and the k-NN is
-**injected** rather than imported. A full Xenium section is not reachable today.
+**Tiling is a correctness fix, not a tuning knob.** One dispatch covering every query row
+is O(n²·D) of work in a single command, and past roughly two seconds the OS GPU watchdog
+kills it — Dawn reports *no error*, the output buffer keeps its zeroes, and the caller
+gets a complete-looking result whose every index is 0. Measured: n=26000 and n=30000 came
+back entirely zero (recall 0.000) while n=28000 happened to survive, so it presented as an
+intermittent wrong answer rather than a failure. Dispatches are now bounded to 4·10⁹
+row×column×dimension products — about 3× below the largest dispatch observed to complete —
+and `knnInvariants.gpu.test.ts` pins the tiled path.
+
+[`knnDescent.ts`](../src/spatial/knnDescent.ts) is the approximate path: NN-descent
+(Dong, Charikar & Li 2011), on the observation that a neighbour of my neighbour is a good
+candidate for being my neighbour. Cost is `maxIters · n · candidates²` rather than n², and
+recall is measured rather than assumed (`knnRecall`).
+
+**The crossover depends on which exact search you are racing, and this is the honest
+summary:**
+
+| n | host exact | host descent | recall | `knnGpu` (tiled) |
+| --- | --- | --- | --- | --- |
+| 3000 | 551 ms | 938 ms | 0.990 | — |
+| 6000 | 2197 ms | 1814 ms | 0.970 | — |
+| 16000 | — | ~6.1 s | 0.918 | **739 ms** |
+| 25000 | 38.0 s | 8.9 s | 0.881 | — |
+| 30000 | — | ~11.2 s | — | **3.5 s** |
+| 50000 | — | ~19 s | — | **14.6 s** |
+
+So descent overtakes a *host* brute force around 5–6k points, but the GPU exact search is
+still ahead of it at 50k. `pickKnn` therefore takes the crossover as a parameter rather
+than pretending one number fits both; the CLI passes 5k when forced to the host and 50k
+when it has a GPU.
+
+The consequence worth being clear about: **descent's value today is machines without a
+usable GPU, plus being the algorithm that will actually scale once its inner local join
+moves to the device.** That is the next piece of work, and it is what a full Xenium
+section needs — the flat `NeighbourHeap` and candidate arrays are laid out to upload
+verbatim when it happens.
 
 PCA first, always, past ~50 genes ([`pca.ts`](../src/spatial/pca.ts)). The covariance is
 G×G where G is the number of *selected* genes, so the eigenproblem is tiny and
@@ -218,4 +250,5 @@ same graph (they do — 139790 edges on the 6000-cell fixture either way).
 
 ## 8. Not done
 
-- **Approximate k-NN** (§3) — the blocker for a full section.
+- **NN-descent on the GPU** (§3). The host version is in and correct; the local join is
+  what needs to move to the device for a full section.

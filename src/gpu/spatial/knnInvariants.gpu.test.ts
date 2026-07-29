@@ -86,3 +86,52 @@ describe("knnGpu — structural invariants", () => {
     expect(maxDistError).toBeLessThan(2e-3);
   });
 });
+
+describe("knnGpu — tiled dispatch", () => {
+  // Regression guard for a SILENT wrong answer. A single dispatch covering every query
+  // row is O(n^2 * dim) of work in one command, and past roughly two seconds the OS GPU
+  // watchdog kills it — Dawn reports no error, the output buffer keeps its zeroes, and
+  // the caller gets a complete-looking result whose every index is 0. Measured before the
+  // fix: n=26000 and n=30000 came back entirely zero (recall 0.000) while n=28000 happened
+  // to survive, so it presented as an intermittent wrong answer rather than a failure.
+  //
+  // N here is far below the failure threshold — the point is to pin the TILED PATH's
+  // correctness, not to re-run a multi-second kernel in the test suite. The tile size is
+  // forced small by using a large `dim`, so several tiles run for a modest n.
+  it("agrees with the CPU golden when the work spans several tiles", async () => {
+    const n = 220;
+    const dim = 64;
+    const k = 8;
+    const data = randomMatrix(n, dim, 0x8888);
+    const cpu = knnBruteForceCpu(data, n, dim, k);
+    const gpu = await knnGpu(data, { n, dim, k });
+
+    let maxDistError = 0;
+    let allZero = 0;
+    for (let i = 0; i < n; i++) {
+      if (gpu.distances[i * k] === 0 && gpu.indices[i * k] === 0) allZero++;
+      for (let t = 0; t < k; t++) {
+        maxDistError = Math.max(maxDistError, Math.abs(gpu.distances[i * k + t]! - cpu.distances[i * k + t]!));
+      }
+    }
+    expect(maxDistError).toBeLessThan(2e-3);
+    // The specific shape of the watchdog failure: every row zeroed.
+    expect(allZero).toBeLessThan(n);
+  });
+
+  it("covers every row — no tile boundary is skipped", async () => {
+    // A row dropped at a tile boundary keeps its initial zeroes, so check that no row
+    // came back as the all-zero pattern on data where that cannot legitimately happen.
+    const n = 300;
+    const dim = 32;
+    const k = 6;
+    const gpu = await knnGpu(randomMatrix(n, dim, 0x9999), { n, dim, k });
+    let untouched = 0;
+    for (let i = 0; i < n; i++) {
+      let rowSum = 0;
+      for (let t = 0; t < k; t++) rowSum += gpu.distances[i * k + t]!;
+      if (rowSum === 0) untouched++;
+    }
+    expect(untouched).toBe(0);
+  });
+});
