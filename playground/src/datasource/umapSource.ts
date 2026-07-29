@@ -107,12 +107,13 @@ export interface StoreLoadOptions {
   /**
    * Cap on cells kept, by uniform random subsample.
    *
-   * Needed because the k-NN is quadratic and a real table is large: the Xenium store this
-   * was developed against has 162,254 cells, and an exact GPU k-NN over all of them takes
-   * over two minutes in the browser — long past the point where the page stops being an
-   * interactive demonstration of anything. Subsampling is the conventional first move for
-   * an interactive view, and a uniform sample preserves the manifold's shape while losing
-   * only the rarest populations.
+   * This used to exist because the k-NN was quadratic: an exact GPU search over the whole
+   * 162,254-cell Xenium table took over two minutes in the browser. With NN-descent on the
+   * device that search is seconds, so the cap is now about the READ and the memory it
+   * costs — a dense `[nCells, nGenes]` block of f64 — rather than about the search.
+   *
+   * A uniform sample preserves the manifold's shape and loses only the rarest populations,
+   * which is the conventional trade for an interactive view.
    */
   readonly maxCells?: number;
   /** Keep this many highest-variance genes of those read. */
@@ -128,9 +129,10 @@ export interface StoreLoadOptions {
   readonly onProgress?: (message: string) => void;
 }
 
-/** `maxCells` 40000 is where the exact GPU k-NN still finishes in a couple of seconds in
- *  the browser; see `docs/umap-on-anndata.md` §10 for the measured curve. */
-const DEFAULTS = { maxGenes: 400, nHvg: 300, nComponents: 30, log1p: true, maxCells: 40000 };
+/** `maxCells` 100000 is set by the dense read, not by the search: at 30 components the
+ *  device k-NN handles that in a couple of seconds (§3), while the matrix it comes from is
+ *  hundreds of MB. Raise it if the store is narrow. */
+const DEFAULTS = { maxGenes: 400, nHvg: 300, nComponents: 30, log1p: true, maxCells: 100000 };
 
 /**
  * Load a real table as a feature matrix.

@@ -354,16 +354,29 @@ gene across every cell's row, so 20 genes cost the same full scan as 2000.
 
 **Cells are capped too, and that came out of trying it.** Pointed at a 162,254-cell Xenium
 table, the first version read and reduced the whole thing in 11.5 s and then sat in an
-exact GPU k-NN for over two minutes with the page looking hung — 162k² × 30 is 7.9·10¹¹
-products, and a script's patience budget is not a page's. So the store path takes
-`maxCells` (default 40,000, a uniform deterministic subsample) and the k-NN selector
-defaults to **auto**, taking the exact GPU path below 40k cells and NN-descent above. The
+exact GPU k-NN for over two minutes with the page looking hung. With NN-descent on the
+device that search is seconds, so `maxCells` (default 100,000, a uniform deterministic
+subsample) is now set by the READ and the memory it costs rather than by the search. The
 subsample happens *after* the variance pass, so highly-variable genes are still chosen from
 every cell — the gene selection is cheap to do properly and is what a subsample would bias
 most.
 
-End to end on that store, at the defaults: 40,000 of 162,254 cells, all 377 genes, 30 PCs,
-graph in 3.2 s, **14.7 s from click to a running layout** at 2.4 ms/epoch over 967k edges.
+**The k-NN selector's `auto` is calibrated in the browser, and that is not the same
+calibration as offline.** NN-descent reads its neighbour lists back once per pass, because
+the next pass's candidate lists are built on the host. In Node a buffer map is nearly free;
+in Chrome it is a round trip that costs more than the kernel it follows. The first version
+of the page read three buffers per pass and a 32k-cell build took **11.3 s** against ~1 s in
+Node; dropping the two that are never used between passes — the distances, which
+`buildCandidates` does not read, and the change counts, which only decide early exit and are
+now sampled every fourth pass — brought that to **4.9 s**. What remains is one map per pass,
+and closing it properly means building the candidate lists on the device too.
+
+So `auto` switches on **predicted exact work** (`n² × features`) rather than a cell count,
+with the threshold set from measurements taken *in the page*: at 32k cells × 42 features the
+exact search wins (3.3 s against 4.9 s); at 60k × 30 it loses badly (9.8 s against 2.9 s).
+
+End to end on that store: 60,000 of 162,254 cells, 150 genes, 30 PCs, k-NN and graph in
+2.9 s, **16 s from click to a running layout**.
 
 ## 9. Testing notes
 
@@ -420,6 +433,13 @@ ms/epoch, which is where the page's cell slider tops out.
   params race, all of which were ruled out. Parked deliberately: NN-descent removed the
   motivation, and a silent wrong answer in the k-NN is the one thing this file keeps having
   to warn about.
+- **Building the candidate lists on the device.** The one remaining per-pass buffer map
+  (§8) is what keeps in-browser descent several times slower than the same code in Node.
+  Moving `buildCandidates` to the GPU would remove it entirely — at the cost of the
+  reverse-neighbour reservoir sampling, which is sequential, and with it the
+  element-for-element agreement with the host that the test currently asserts. Worth doing,
+  but the correctness property is worth more than the constant until someone is actually
+  waiting on it.
 - **A cheap post-condition on the k-NN.** Counting rows whose neighbours are all index 0
   during the readback costs nothing and would have turned both silent-truncation bugs into
   a thrown error. Worth doing regardless of the above.

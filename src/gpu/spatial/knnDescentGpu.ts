@@ -170,6 +170,11 @@ function makeBuffers(root: Root, values: number, cands: number, rows: number, sl
  *  so no state is carried between tiles. */
 const TARGET_PRODUCTS_PER_DISPATCH = 2_000_000_000;
 
+/** How often the early-exit test costs a device read. See the note in the pass loop —
+ *  in a browser a buffer map dominates the pass it follows, so convergence is sampled
+ *  rather than polled. */
+const CHECK_EVERY = 4;
+
 export interface DescentGpuOptions extends DescentOptions {
   /** Rows per dispatch, overriding the budget. A test seam, as in `knn.ts`. */
   readonly rowsPerTile?: number;
@@ -232,19 +237,30 @@ export async function knnDescentGpu(data: ArrayLike<number>, n: number, dim: num
       await device.queue.onSubmittedWorkDone();
     }
 
-    // The heap has to come back anyway: the next pass's candidate lists are built from it
-    // on the host. Convergence is read off the same trip.
+    // **Read back as little as possible, as rarely as possible.** Each `read()` is a
+    // device-to-host map, and in a browser that is a round trip costing far more than the
+    // kernel it follows — the first version read three buffers every pass and a 32k-cell
+    // build took 11.3 s in Chrome against ~1 s in Node, where maps are nearly free. Two of
+    // the three were pure waste:
+    //
+    //   • The DISTANCES are never used between passes. `buildCandidates` reads indices
+    //     only, so they stay on the device until the end.
+    //   • The CHANGE counts only decide early exit, so they are sampled every few passes
+    //     rather than every one. The cost of noticing convergence a little late is at most
+    //     `CHECK_EVERY - 1` extra passes; the cost of asking every time is a round trip
+    //     per pass.
     const gotIdx = (await buf.heapIdx.read()) as ArrayLike<number>;
-    const gotDist = (await buf.heapDist.read()) as ArrayLike<number>;
-    for (let t = 0; t < n * k; t++) {
-      hostIdx[t] = gotIdx[t]!;
-      hostDist[t] = Math.sqrt(gotDist[t]!);
+    for (let t = 0; t < n * k; t++) hostIdx[t] = gotIdx[t]!;
+
+    if (iter % CHECK_EVERY === CHECK_EVERY - 1) {
+      const changes = (await buf.changed.read()) as ArrayLike<number>;
+      let total = 0;
+      for (let i = 0; i < n; i++) total += changes[i]!;
+      if (total <= tol * n * k * CHECK_EVERY) break;
     }
-    const changes = (await buf.changed.read()) as ArrayLike<number>;
-    let total = 0;
-    for (let i = 0; i < n; i++) total += changes[i]!;
-    if (total <= tol * n * k) break;
   }
 
+  const gotDist = (await buf.heapDist.read()) as ArrayLike<number>;
+  for (let t = 0; t < n * k; t++) hostDist[t] = Math.sqrt(gotDist[t]!);
   return finalise({ n, k, indices: hostIdx, distances: hostDist });
 }

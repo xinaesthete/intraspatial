@@ -35,8 +35,18 @@ beforeAll(() => {
 
 describe("knnDescentGpu", () => {
   it("reproduces the host local join exactly", async () => {
-    const cpu = knnDescentCpu(values, N, dim, { k: K, seed: SEED });
-    const gpu = await knnDescentGpu(values, N, dim, { k: K, seed: SEED });
+    // A negative tolerance disables the early exit on both sides, so both run exactly
+    // `maxIters` passes. That is required, not tidiness: the device samples its change
+    // counts every few passes rather than every one (a buffer map costs more than the pass
+    // it follows), so the two can otherwise stop after different numbers of passes.
+    //
+    // And a differing pass count really does change the answer, which is worth knowing:
+    // **"zero changes" is not a fixed point.** The reverse half of each pass's candidate
+    // list is reservoir-sampled, so a pass that improved nothing is followed by one drawing
+    // DIFFERENT reverse candidates, which can improve something after all. `tol: 0` is
+    // therefore not enough to make the two comparable — only switching the exit off is.
+    const cpu = knnDescentCpu(values, N, dim, { k: K, seed: SEED, tol: -1 });
+    const gpu = await knnDescentGpu(values, N, dim, { k: K, seed: SEED, tol: -1 });
     expect(Array.from(gpu.indices)).toEqual(Array.from(cpu.indices));
     let maxDistError = 0;
     for (let t = 0; t < N * K; t++) maxDistError = Math.max(maxDistError, Math.abs(gpu.distances[t]! - cpu.distances[t]!));
@@ -44,11 +54,14 @@ describe("knnDescentGpu", () => {
   });
 
   it("reaches the same recall as the host, and a usable one", async () => {
+    // With the early exit LIVE on both sides, which is how callers run it. Recall is the
+    // property that has to survive the sampled convergence check, and it does — exact
+    // agreement is asserted separately above.
     const cpu = knnDescentCpu(values, N, dim, { k: K, seed: SEED });
     const gpu = await knnDescentGpu(values, N, dim, { k: K, seed: SEED });
     const recall = knnRecall(gpu, exact);
     expect(recall).toBeGreaterThan(0.95);
-    expect(recall).toBeCloseTo(knnRecall(cpu, exact), 5);
+    expect(recall).toBeCloseTo(knnRecall(cpu, exact), 2);
   });
 
   it("returns rows ascending, without self", async () => {

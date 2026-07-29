@@ -34,6 +34,7 @@
 
 import { categoricalHues, deg, oklchToSrgbMapped, rgbBytes } from "../../src/color/ramps";
 import { knnGpu } from "../../src/gpu/spatial/knn";
+import { knnDescentGpu } from "../../src/gpu/spatial/knnDescentGpu";
 import { GpuUmapLayout } from "../../src/gpu/spatial/umapLayoutGpu";
 import { knnDescentCpu } from "../../src/spatial/knnDescent";
 import { MANIFOLDS } from "../../src/spatial/syntheticManifolds";
@@ -201,25 +202,49 @@ function gpuLayoutSelected(): boolean {
   return $<HTMLSelectElement>("layoutBackend").value === "gpu";
 }
 
+/** Switch to the approximate search once the exact one's predicted work — `n² · features`,
+ *  the distance evaluations it must perform — passes this.
+ *
+ *  **Predicted work, not a cell count.** The crossover moves with the feature count as well
+ *  as with n, so a "cells >" rule is wrong at both ends: measured offline, the exact search
+ *  stops winning at about 32k cells at 18 features but already at 16k at 51.
+ *
+ *  **And it is calibrated in the BROWSER, which is not where the offline numbers come
+ *  from.** NN-descent reads its neighbour lists back once per pass, because the next pass's
+ *  candidate lists are built on the host. In Node a buffer map is nearly free; in Chrome it
+ *  is a round trip that costs more than the kernel it follows, so the same descent that
+ *  takes ~1 s offline takes several here and the crossover sits much further out. Measured
+ *  in the page: at 32k cells x 42 features exact wins (3.3 s against 4.9 s); at 60k x 30 it
+ *  loses badly (9.8 s against 2.9 s).
+ *
+ *  Erring towards descent is deliberate — the penalties are not symmetric. Too early costs
+ *  about 1.5x on a search of a few seconds; too late cost 3.3x here and 5.75x offline, and
+ *  it is the large inputs that get the worse deal. */
+const EXACT_WORK_LIMIT = 2e10;
+
 /**
  * The k-NN the graph build will use.
  *
- * Exact on the GPU is the default and stays correct to tens of thousands of points — it
- * tiles its dispatches, so the OS watchdog cannot silently truncate it. It is still
- * O(n²·D), and the page exposes the approximate path because past ~30k the quadratic term
- * is what you are waiting for, not the constant.
+ * Exact on the GPU is right for small inputs and stays correct at any size — it tiles its
+ * dispatches so the OS watchdog cannot silently truncate it. But it is O(n²·D), and past
+ * the crossover above that quadratic is the whole wait: NN-descent on the device is 27x
+ * faster at 100k cells and 51 features, at a recall (0.87) that leaves the embedding's
+ * trustworthiness unchanged to four decimal places. See `docs/umap-on-anndata.md` §3.
  */
-function knnFn(): { fn: (d: ArrayLike<number>, n: number, dim: number, k: number) => Promise<KnnResult> | KnnResult; label: string } {
+function knnFn(features: number): {
+  fn: (d: ArrayLike<number>, n: number, dim: number, k: number) => Promise<KnnResult> | KnnResult;
+  label: string;
+} {
   const choice = $<HTMLSelectElement>("knnBackend").value;
-  // "auto" is the default because the wrong choice is not a slowdown you shrug at: an
-  // exact GPU search over the 162k-cell Xenium table takes over two minutes in the browser,
-  // during which the page looks hung. The threshold is where the exact path still returns
-  // in a few seconds here, well below the ~100k crossover measured offline in
-  // `docs/umap-on-anndata.md` §3 — a page has a much tighter patience budget than a script.
-  const useDescent = choice === "descent" || (choice === "auto" && data.n > 40000);
-  return useDescent
-    ? { fn: (d, n, dim, k) => knnDescentCpu(d, n, dim, { k, seed: 42 }), label: "host NN-descent" }
-    : { fn: (d, n, dim, k) => knnGpu(d, { n, dim, k }), label: "GPU exact" };
+  const auto = data.n * data.n * features > EXACT_WORK_LIMIT ? "descentGpu" : "gpu";
+  switch (choice === "auto" ? auto : choice) {
+    case "descentGpu":
+      return { fn: (d, n, dim, k) => knnDescentGpu(d, n, dim, { k, seed: 42 }), label: "GPU NN-descent" };
+    case "descentHost":
+      return { fn: (d, n, dim, k) => knnDescentCpu(d, n, dim, { k, seed: 42 }), label: "host NN-descent" };
+    default:
+      return { fn: (d, n, dim, k) => knnGpu(d, { n, dim, k }), label: "GPU exact" };
+  }
 }
 
 async function rebuildGraph(carryEmbedding: boolean): Promise<void> {
@@ -234,7 +259,7 @@ async function rebuildGraph(carryEmbedding: boolean): Promise<void> {
     showBanner(`need more cells than n_neighbors (${data.n} <= ${nNeighbors})`);
     return;
   }
-  const knnChoice = knnFn();
+  const knnChoice = knnFn(cols.length);
   busy = true;
   setStatus(`${knnChoice.label} k-NN over ${data.n.toLocaleString()} cells x ${cols.length} features…`);
   const t0 = performance.now();
