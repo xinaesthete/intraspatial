@@ -48,9 +48,16 @@ describe("GpuUmapLayout", () => {
       expect(finite).toBe(true);
 
       const gpuTrust = trustworthiness(fixture.data, emb, fixture.n, DIM, 2, 8);
-      expect(gpuTrust).toBeGreaterThan(0.9);
-      // Allowed to be a little worse than the host — the races cost some precision — but
-      // not materially worse. A large gap means the kernel is wrong, not merely racy.
+      // The absolute bar is deliberately loose. This kernel is Hogwild — the thread
+      // interleaving differs run to run, so the score moves by a few points from nothing
+      // but scheduling, and a bar set close to the typical value is a coin flip rather
+      // than a check. Observed failing at 0.9 under the parallel suite while passing on
+      // its own; 0.85 is far enough below the ~0.92 it actually scores to be meaningful
+      // without being a lottery.
+      expect(gpuTrust).toBeGreaterThan(0.85);
+      // This is the assertion that carries the weight: allowed to be a little worse than
+      // the host, since the races cost some precision, but not materially worse. A large
+      // gap means the kernel is wrong, not merely racy.
       expect(gpuTrust).toBeGreaterThan(hostTrust - 0.05);
     } finally {
       layout.destroy();
@@ -170,5 +177,35 @@ describe("GpuUmapLayout", () => {
       layout.destroy();
     }
     await expect(GpuUmapLayout.create(graph, { dim: 4 })).rejects.toThrow(/dim must be/);
+  });
+  it("folds the dispatch into a 2-D grid without changing the answer", async () => {
+    // WebGPU caps workgroups at 65535 per dimension, so a 1-D dispatch covers at most
+    // 65535 * 64 edges. A branching manifold at 200k cells makes 4.46M and blew straight
+    // past it — and the failure was not a clamp or an exception: Dawn invalidated the
+    // command buffer, the kernel never ran, and the only outward signs were an epoch that
+    // got FASTER as the graph grew (0.17 ms against 1.58 ms at half the size) and
+    // trustworthiness sitting at 0.500.
+    //
+    // Reproducing that honestly needs ~150k cells, which does not belong in a test suite,
+    // so `maxWorkgroupsPerDim` forces the same fold at fixture size. A grid width of 2
+    // puts this graph across hundreds of rows of workgroups — far more aggressive than
+    // production will ever see — and the result must still be a good layout.
+    const score = async (maxWorkgroupsPerDim?: number) => {
+      const l = await GpuUmapLayout.create(graph, { nEpochs: 300, seed: 11, maxWorkgroupsPerDim });
+      try {
+        l.step(300);
+        return trustworthiness(fixture.data, await l.read(), fixture.n, DIM, 2, 8);
+      } finally {
+        l.destroy();
+      }
+    };
+    const flat = await score();
+    const folded = await score(2);
+    // Compared against the unfolded run rather than an absolute bar. Changing the grid
+    // shape changes which threads race with which, so the two layouts are not the same
+    // layout and never will be — what has to hold is that folding costs no QUALITY. A
+    // broken fold would drop entire rows of workgroups and score far below, not slightly.
+    expect(flat).toBeGreaterThan(0.85);
+    expect(folded).toBeGreaterThan(flat - 0.06);
   });
 });

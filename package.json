@@ -28,7 +28,8 @@
     "format": "biome format --write .",
     "build:wasm": "wasm-pack build rust/htj2k-core --target web --out-dir pkg --out-name htj2k_core",
     "build:wasm:dev": "wasm-pack build rust/htj2k-core --dev --target web --out-dir pkg --out-name htj2k_core",
-    "umap:obsm": "tsx scripts/umap-obsm.ts"
+    "umap:obsm": "tsx scripts/umap-obsm.ts",
+    "umap:bench": "tsx scripts/umap-bench.ts"
   },
   "dependencies": {
     "@zarrita/storage": "^0.2.0",

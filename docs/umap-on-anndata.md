@@ -74,27 +74,36 @@ candidate for being my neighbour. Cost is `maxIters · n · candidates²` rather
 recall is measured rather than assumed (`knnRecall`).
 
 **The crossover depends on which exact search you are racing, and this is the honest
-summary:**
+summary** (`pnpm umap:bench`, Apple M2 Max, D=18):
 
 | n | host exact | host descent | recall | `knnGpu` (tiled) |
 | --- | --- | --- | --- | --- |
 | 3000 | 551 ms | 938 ms | 0.990 | — |
 | 6000 | 2197 ms | 1814 ms | 0.970 | — |
-| 16000 | — | ~6.1 s | 0.918 | **739 ms** |
+| 16000 | — | 2.8 s | 0.983 | **270 ms** |
 | 25000 | 38.0 s | 8.9 s | 0.881 | — |
-| 30000 | — | ~11.2 s | — | **3.5 s** |
-| 50000 | — | ~19 s | — | **14.6 s** |
+| 50000 | — | 10.6 s | 0.966 | **3.5 s** |
+| 100000 | — | 24.8 s | 0.951 | **17.3 s** |
+| 200000 | — | **57–78 s** | 0.934 | 94.3 s |
 
-So descent overtakes a *host* brute force around 5–6k points, but the GPU exact search is
-still ahead of it at 50k. `pickKnn` therefore takes the crossover as a parameter rather
-than pretending one number fits both; the CLI passes 5k when forced to the host and 50k
-when it has a GPU.
+So descent overtakes a *host* brute force around 5–6k points — and the tiled GPU exact
+search stays ahead of descent all the way to **100k**, where it is both faster (17.3 s
+against 24.8 s) and exact. The quadratic finally wins out somewhere around 150k; at 200k
+descent is ahead.
+
+That is a much later crossover than the 50k previously recorded here, and it changes the
+advice: **on a machine with a GPU, prefer the exact search up to about 100k cells.**
+`pickKnn` takes the crossover as a parameter rather than pretending one number fits both;
+the CLI passes 5k when forced to the host and 50k when it has a GPU — conservative, since
+the exact path is still winning there.
+
+Note also that descent's recall falls as n grows at a fixed `maxIters` (0.999 → 0.934).
+It is a knob, not a constant, and a recall figure quoted without its n is meaningless.
 
 The consequence worth being clear about: **descent's value today is machines without a
 usable GPU, plus being the algorithm that will actually scale once its inner local join
-moves to the device.** That is the next piece of work, and it is what a full Xenium
-section needs — the flat `NeighbourHeap` and candidate arrays are laid out to upload
-verbatim when it happens.
+moves to the device.** That is the next piece of work — the flat `NeighbourHeap` and
+candidate arrays are laid out to upload verbatim when it happens.
 
 PCA first, always, past ~50 genes ([`pca.ts`](../src/spatial/pca.ts)). The covariance is
 G×G where G is the number of *selected* genes, so the eigenproblem is tiny and
@@ -228,13 +237,102 @@ rather than coordinates. The offline `obsm` path deliberately keeps the **host**
 written `obsm` should be reproducible. The page offers both, which is also the cheapest
 way to confirm the racy kernel agrees with the exact one.
 
-One bug worth recording, because it was silent: batching every epoch's dispatch into a
-single command buffer looks like an obvious win and is wrong. The per-epoch uniform is
-written with `queue.writeBuffer`, so all of those writes land before the single submit
-and every pass runs with the *last* epoch's parameters. The layout still moves and still
-looks plausible — trustworthiness just collapses to ~0.49, barely above random.
+Two bugs worth recording, because both were silent and both reported healthy numbers
+while producing a broken layout.
 
-## 7. Testing notes
+**Batching epochs into one command buffer.** An obvious win, and wrong. The per-epoch
+uniform is written with `queue.writeBuffer`, so all of those writes land before the single
+submit and every pass runs with the *last* epoch's parameters. The layout still moves and
+still looks plausible — trustworthiness just collapses to ~0.49, barely above random.
+Hence one submit per epoch, deliberately.
+
+**The 65535-workgroup limit.** `maxComputeWorkgroupsPerDimension` is 65535, so a 1-D
+dispatch of one thread per edge covers at most 65535 × 64 ≈ 4.19M edges. A branching
+manifold at 200k cells produces 4.46M, and past the cap Dawn *invalidates the command
+buffer*: the kernel never runs. The tells were an epoch that got **faster** as the graph
+grew — 0.17 ms at 4.46M edges against 1.58 ms at half that — and trustworthiness at 0.500.
+Dawn does print a validation message, but a benchmark that only reads timings will happily
+tabulate the result. The dispatch is now a 2-D grid of workgroups folded back into one edge
+index in the kernel, which costs nothing and raises the ceiling to 65535² × 64 workgroups.
+After the fix, 200k cells / 4.5M edges runs at 2.80 ms/epoch with trustworthiness 0.933.
+
+This is the same family as the watchdog bug in §3: **on the GPU, "suspiciously fast" is a
+correctness signal.** Both were found by benchmarking at a size nothing had been run at
+before, which is the argument for `pnpm umap:bench` existing at all.
+
+## 7. What the page shows, and why the shapes changed
+
+The page used to generate isotropic Gaussian blobs. Blobs are the one case where any
+projection works, so the embedding settled into coloured dots and there was nothing to
+watch. [`syntheticManifolds.ts`](../src/spatial/syntheticManifolds.ts) replaces them with
+nine generators chosen so the embedding has something to get right or wrong: a branching
+trajectory, a swiss roll, linked rings, a hollow sphere, clusters-of-clusters, cycling
+types, a 1% rare population, blobs (kept as the baseline), and uniform noise as a null
+control.
+
+Each emits a low-dimensional **latent** plus ground truth, and `expressManifold` maps each
+latent axis onto a block of genes. A gene programme is therefore exactly one latent axis,
+so the page's toggles delete a dimension of the true manifold and the embedding relaxes
+into what is left — the same control works identically on real data, where the blocks are
+principal components instead.
+
+**The finding that shaped all of them: UMAP shatters clean low-dimensional manifolds.** A
+trajectory drawn as a near-exact curve comes out as a few hundred disconnected beads, each
+internally perfect (trustworthiness 1.000) and globally scattered. This was checked against
+umap-learn on the identical matrix, and it produces the same picture — median edge length
+0.199 against our 0.192, extent 33 against 33, largest connected piece 129 points in both,
+with spectral init and with random. It is not our optimiser, and it is not the
+initialisation: seeding the layout with the *true* tree still shatters.
+
+So the generators give their continua the width real data has — cells scatter around a
+trajectory, they do not sit on it. `branching` at noise 0.45 is a clean three-armed tree;
+at 0.10 it is beads. Two related corrections came out of the same exercise, both recorded
+in the module:
+
+- The swiss roll's sheet is **square**. Deriving its height from `n` to hold sampling
+  density fixed produced a 20:1 ribbon, and a ribbon is globally a 1-D object, so it
+  shattered for exactly the reason above.
+- The roll is sampled uniformly in **arc length**, not in angle. Uniform in angle makes the
+  outer turns ~3× sparser, so the graph short-circuits across the gap at the outside of the
+  roll while the inside is fine.
+
+**The null control does not do what folklore says.** Uniform noise was expected to come out
+as an archipelago of fake cell types; at 6, 30 and 80 latent dimensions it comes out as a
+featureless disc every time. The clumping UMAP is criticised for is real, but it is what
+happens to clean low-dimensional *structure*, not to noise. The generator's description and
+the page caption say so, and `syntheticManifolds.test.ts` pins it — largest connected piece
+0.999 for the null against 0.200 for `blobs`.
+
+## 8. Real data in the browser
+
+The same page loads an AnnData table out of a SpatialData store
+([`umapSource.ts`](../playground/src/datasource/umapSource.ts)): genes → `log1p` → highly
+variable → PCA → graph, with the principal components becoming the feature-block toggles.
+Both sources produce the same `UmapDataset`, so nothing downstream knows which it holds —
+which is the point, since the question worth asking is whether the behaviour you learn to
+read on the synthetic shapes still reads the same way on real data.
+
+It is a *selection*, not a full load (ADR-0005): a dense `[nCells, nGenes]` matrix at 100k
+cells and 2000 genes is 1.6 GB as f64, so the gene count is capped. When a panel exceeds
+the cap the genes are drawn as a deterministic **random sample** rather than the first N —
+var order in a store is alphabetical or arbitrary, so "the first 400" is a biased slice
+dressed up as a default. What the cap does *not* bound is the zarr read: CSR scatters each
+gene across every cell's row, so 20 genes cost the same full scan as 2000.
+
+**Cells are capped too, and that came out of trying it.** Pointed at a 162,254-cell Xenium
+table, the first version read and reduced the whole thing in 11.5 s and then sat in an
+exact GPU k-NN for over two minutes with the page looking hung — 162k² × 30 is 7.9·10¹¹
+products, and a script's patience budget is not a page's. So the store path takes
+`maxCells` (default 40,000, a uniform deterministic subsample) and the k-NN selector
+defaults to **auto**, taking the exact GPU path below 40k cells and NN-descent above. The
+subsample happens *after* the variance pass, so highly-variable genes are still chosen from
+every cell — the gene selection is cheap to do properly and is what a subsample would bias
+most.
+
+End to end on that store, at the defaults: 40,000 of 162,254 cells, all 377 genes, 30 PCs,
+graph in 3.2 s, **14.7 s from click to a running layout** at 2.4 ms/epoch over 967k edges.
+
+## 9. Testing notes
 
 The GPU suite is deterministic and runs files in parallel. The only failing files are
 those importing `rust/htj2k-core/pkg`, which need `pnpm build:wasm` first.
@@ -248,7 +346,45 @@ the same neighbourhoods.
 also gives the offline path a cheap cross-check: `--cpu` and the default must produce the
 same graph (they do — 139790 edges on the 6000-cell fixture either way).
 
-## 8. Not done
+## 10. How far it scales
+
+`pnpm umap:bench` sweeps `n` over one generator and times each stage separately, because
+k-NN is O(n²·D) and the layout is O(edges) per epoch — they hit their walls at completely
+different sizes, and a single wall-clock number hides which one you are waiting for.
+Measured on an Apple M2 Max, `branching`, 15 neighbours, 200 epochs, 18 genes:
+
+| cells | edges | knn (gpu, exact) | knn (descent) | graph | epoch host | epoch gpu | speedup | trust | rss |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 1,000 | 20k | 21 ms | 101 ms | 13 ms | 4.51 ms | 0.06 ms | 74× | 0.942 | 129 MB |
+| 4,000 | 85k | 38 ms | 506 ms | 28 ms | 16.29 ms | 0.12 ms | 138× | 0.946 | 192 MB |
+| 16,000 | 349k | 270 ms | 2.8 s | 136 ms | 43.50 ms | 0.28 ms | 157× | 0.941 | 238 MB |
+| 50,000 | 1.11M | 3.5 s | 10.6 s | 519 ms | 68.87 ms | 0.83 ms | 83× | 0.939 | 342 MB |
+| 100,000 | 2.24M | 17.3 s | 24.8 s | 1.55 s | 129.37 ms | 1.54 ms | 84× | 0.938 | 578 MB |
+| 200,000 | 4.50M | 94.3 s | 57.0 s | 3.98 s | 268.70 ms | 2.80 ms | 96× | 0.933 | 604 MB |
+
+Reading it:
+
+- **The layout is not the problem.** 200 epochs at 100k cells is 0.3 s on the GPU. Even at
+  4.5M edges an epoch is 2.8 ms, so the interactive page stays interactive at sizes where
+  the host path (269 ms/epoch) is four frames per second.
+- **The k-NN is the wall**, and it is the quadratic one. Everything above ~100k wants the
+  approximate path, and the approximate path wants its local join on the device (§3).
+- **Quality holds.** Trustworthiness stays at 0.933–0.946 across two orders of magnitude,
+  so the speed is not being bought with a worse embedding.
+- **Memory is not the binding constraint** at these sizes — 604 MB at 200k cells, and the
+  dense feature matrix is the largest single term.
+
+In the browser the same path runs 32k cells with an exact GPU k-NN in 1.2 s and 2.43
+ms/epoch, which is where the page's cell slider tops out.
+
+## 11. Not done
 
 - **NN-descent on the GPU** (§3). The host version is in and correct; the local join is
-  what needs to move to the device for a full section.
+  what needs to move to the device for a full section. The measured crossover (§3) says
+  this only starts to matter past ~100k cells on a machine with a GPU.
+- **A spectral initialiser.** Reference UMAP defaults to one and we use a random init. It
+  was tested as a candidate fix for the shattering in §7 and is *not* one — a perfect
+  init shatters too — so this is a fidelity gap rather than a quality one, and it is
+  cheap to leave open.
+- **The bench sweeps one shape at a time.** The generators differ enough in edge count per
+  cell that a per-shape table would be more useful than the single `branching` column here.

@@ -32,6 +32,11 @@ import { fitAB, makeEpochsPerSample, mulberry32 } from "../../spatial/umapLayout
 import { getDevice } from "../device";
 
 const WG = 64;
+/** WebGPU's floor guarantee for `maxComputeWorkgroupsPerDimension`. Used rather than the
+ *  adapter's reported limit so the dispatch shape is identical on every device — a layout
+ *  that folds its grid differently per machine would be one more thing to rule out when
+ *  two runs disagree. */
+const MAX_WORKGROUPS_PER_DIM = 65535;
 /** Embedding dimensions supported; the inner loops are bounded by this. */
 const MAX_DIM = 3;
 /** Ceiling on negative samples drawn for one edge in one epoch. Without it a long-idle
@@ -52,7 +57,9 @@ const Params = d.struct({
   b: d.f32,
   gamma: d.f32,
   seed: d.u32,
-  _pad: d.u32,
+  /** Workgroups along x in the dispatch grid, so the kernel can fold a 2-D grid back into
+   *  one edge index. See the grid fold in `step()`. */
+  gridX: d.u32,
 });
 
 const layout = tgpu.bindGroupLayout({
@@ -89,7 +96,12 @@ fn clipGrad(v: f32) -> f32 {
 
 @compute @workgroup_size(${WG})
 fn layoutStep(@builtin(global_invocation_id) gid: vec3u) {
-  let e = gid.x;
+  // The dispatch is a 2-D grid of workgroups, folded back into one edge index here.
+  // WebGPU caps workgroups at 65535 PER DIMENSION, so a 1-D dispatch tops out at
+  // 65535 * ${WG} = ${65535 * WG} edges — which a real dataset passes: 200k cells produced
+  // 4.46M. Past the cap Dawn rejects the command buffer and the layout silently does
+  // nothing while every timing still looks healthy.
+  let e = gid.x + gid.y * params.gridX * ${WG}u;
   if (e >= params.nEdges) { return; }
   if (nextSample[e] > params.epoch) { return; }
 
@@ -159,6 +171,17 @@ fn layoutStep(@builtin(global_invocation_id) gid: vec3u) {
 }
 `;
 
+/** `LayoutOptions` plus the a/b curve inputs and one test seam. */
+export interface GpuLayoutOptions extends LayoutOptions {
+  readonly minDist?: number;
+  readonly spread?: number;
+  /** Override the per-dimension workgroup cap that decides how the dispatch grid folds.
+   *  Exists so a test can force the 2-D path at a graph size that fits in a test suite —
+   *  triggering it honestly needs over four million edges, which is roughly 150k cells.
+   *  Not a tuning knob: the fold is arithmetic and costs nothing either way. */
+  readonly maxWorkgroupsPerDim?: number;
+}
+
 interface Pipe {
   device: GPUDevice;
   root: ReturnType<typeof tgpu.initFromDevice>;
@@ -211,6 +234,7 @@ export class GpuUmapLayout {
      *  without reading the device back. `nEdges` floats — trivial next to the graph. */
     private readonly epochsPerSample: Float32Array,
     private readonly epochsPerNeg: Float32Array,
+    private readonly maxWorkgroupsPerDim: number,
   ) {}
 
   /** Epochs completed. Mirrors `LayoutState.epoch` so the two paths read alike. */
@@ -222,11 +246,7 @@ export class GpuUmapLayout {
    * Passing `embedding` is the continuation path — the same one `initLayout` offers on
    * the host, and the reason a gene-subset change relaxes instead of restarting.
    */
-  static async create(
-    graph: GpuLayoutGraph,
-    opts: LayoutOptions & { minDist?: number; spread?: number } = {},
-    embedding?: Float32Array,
-  ): Promise<GpuUmapLayout> {
+  static async create(graph: GpuLayoutGraph, opts: GpuLayoutOptions = {}, embedding?: Float32Array): Promise<GpuUmapLayout> {
     const dim = opts.dim ?? 2;
     if (dim < 1 || dim > MAX_DIM) throw new Error(`umapLayoutGpu: dim must be 1..${MAX_DIM}`);
     if (graph.nEdges === 0) throw new Error("umapLayoutGpu: graph has no edges");
@@ -280,6 +300,7 @@ export class GpuUmapLayout {
       },
       epochsPerSample,
       epochsPerNeg,
+      Math.max(1, opts.maxWorkgroupsPerDim ?? MAX_WORKGROUPS_PER_DIM),
     );
   }
 
@@ -304,6 +325,17 @@ export class GpuUmapLayout {
   step(epochs = 1): void {
     const { device, pipeline } = this.pipe;
     const bind = this.pipe.root.unwrap(this.pipe.root.createBindGroup(layout, this.buffers));
+    // A 2-D grid of workgroups rather than a long 1-D one. WebGPU's
+    // `maxComputeWorkgroupsPerDimension` is 65535, so a 1-D dispatch covers at most
+    // 65535 * WG edges; a branching manifold at 200k cells makes 4.46M, comfortably past
+    // it. Exceeding the limit is not a clamp — Dawn invalidates the command buffer, the
+    // kernel never runs, and the only outward sign is that the epoch got *faster*
+    // (measured: 0.17 ms against the 1.58 ms the same work costs at half the size) with
+    // trustworthiness at 0.500. The 2-D fold has no per-dispatch cost and no upper bound
+    // worth worrying about: 65535^2 workgroups is 2.7e11 edges.
+    const totalGroups = Math.ceil(this.nEdges / WG);
+    const gridX = Math.min(totalGroups, this.maxWorkgroupsPerDim);
+    const gridY = Math.ceil(totalGroups / gridX);
     for (let i = 0; i < epochs; i++) {
       const epoch = this.epoch + i;
       this.buffers.params.write({
@@ -316,13 +348,13 @@ export class GpuUmapLayout {
         b: this.ab.b,
         gamma: this.opts.repulsionStrength,
         seed: this.opts.seed,
-        _pad: 0,
+        gridX,
       });
       const enc = device.createCommandEncoder();
       const pass = enc.beginComputePass();
       pass.setPipeline(pipeline);
       pass.setBindGroup(0, bind);
-      pass.dispatchWorkgroups(Math.ceil(this.nEdges / WG));
+      pass.dispatchWorkgroups(gridX, gridY);
       pass.end();
       device.queue.submit([enc.finish()]);
     }
