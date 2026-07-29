@@ -33,10 +33,20 @@
 //     --dim <n>          embedding dimension               (default 2)
 //     --seed <n>         (default 42)
 //     --cpu              force the host k-NN instead of the GPU
-//     --force            overwrite an existing obsm key
+//     --obsp             also write the neighbour graph to obsp + uns/neighbors
+//     --force            overwrite an existing obsm/obsp key
 //     --dry-run          compute and report, write nothing
 
-import { openStore, readExpressionMatrix, readNObs, writeObsm } from "../src/datasource/annDataObsm";
+import {
+  fuzzyGraphToCsr,
+  knnToCsr,
+  openStore,
+  readExpressionMatrix,
+  readNObs,
+  writeNeighborsUns,
+  writeObsm,
+  writeObsp,
+} from "../src/datasource/annDataIo";
 import { umapGraphFor } from "../src/spatial/umap";
 import type { KnnResult } from "../src/spatial/umapGraph";
 import { fitAB, optimizeLayout } from "../src/spatial/umapLayout";
@@ -54,6 +64,7 @@ interface Args {
   dim: number;
   seed: number;
   cpu: boolean;
+  obsp: boolean;
   force: boolean;
   dryRun: boolean;
 }
@@ -113,6 +124,7 @@ function parseArgs(argv: string[]): Args {
     dim: num("dim", 2),
     seed: num("seed", 42),
     cpu: flags.get("cpu") === true,
+    obsp: flags.get("obsp") === true,
     force: flags.get("force") === true,
     dryRun: flags.get("dry-run") === true,
   };
@@ -197,6 +209,23 @@ async function main(): Promise<void> {
 
   const target = await writeObsm(loc, embedding, matrix.nCells, args.dim, { tablePath, key: args.key, force: args.force });
   // `target` is already store-relative and includes the table path.
+
+  if (args.obsp) {
+    // `obsm` hands over our picture; `obsp` hands over our GRAPH, which is the more
+    // useful half — scanpy's leiden/louvain cluster on `connectivities`, so a
+    // collaborator can re-cluster on this manifold instead of building their own and
+    // wondering why the labels disagree. `uns/neighbors` is what points scanpy at them;
+    // without it the obsp write is only half the handover.
+    const conn = await writeObsp(loc, fuzzyGraphToCsr(graph.graph), { tablePath, key: "connectivities", force: args.force });
+    const dist = await writeObsp(loc, knnToCsr(graph.knn), { tablePath, key: "distances", force: args.force });
+    await writeNeighborsUns(loc, {
+      tablePath,
+      connectivitiesKey: "connectivities",
+      distancesKey: "distances",
+      nNeighbors: args.nNeighbors,
+    });
+    console.log(`obsp     ${conn} + ${dist} + uns/neighbors`);
+  }
   console.log(`wrote    ${target} in ${((Date.now() - started) / 1000).toFixed(1)}s`);
 }
 

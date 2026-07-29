@@ -1,4 +1,4 @@
-// Reading `X` from and writing `obsm/*` into an AnnData zarr store, from Node.
+// Reading `X` from and writing `obsm/*` and `obsp/*` into an AnnData zarr store, from Node.
 //
 // This is the repo's first WRITE path into a zarr store — everything before it reads.
 // That asymmetry is why this module is more careful than its size suggests: a reader
@@ -133,11 +133,11 @@ export async function readExpressionMatrix(loc: zarr.Location<never>, opts: Read
   }
 
   const group = await tryOpenGroup(loc, path);
-  if (!group) throw new Error(`annDataObsm: no ${path} in this store (neither array nor group)`);
+  if (!group) throw new Error(`annDataIo: no ${path} in this store (neither array nor group)`);
   const enc = String(group.attrs["encoding-type"] ?? "");
   const shape = group.attrs.shape;
   if (!Array.isArray(shape) || shape.length < 2) {
-    throw new Error(`annDataObsm: ${path} is a group with no usable 'shape' attribute (encoding-type: ${enc || "absent"})`);
+    throw new Error(`annDataIo: ${path} is a group with no usable 'shape' attribute (encoding-type: ${enc || "absent"})`);
   }
   const nCells = Number(shape[0]);
   const nVars = Number(shape[1]);
@@ -148,7 +148,7 @@ export async function readExpressionMatrix(loc: zarr.Location<never>, opts: Read
     tryOpenArray(loc, `${path}/indices`),
     tryOpenArray(loc, `${path}/data`),
   ]);
-  if (!indptrArr || !indicesArr || !dataArr) throw new Error(`annDataObsm: ${path} is missing indptr/indices/data`);
+  if (!indptrArr || !indicesArr || !dataArr) throw new Error(`annDataIo: ${path} is missing indptr/indices/data`);
   const [indptr, indices, data] = await Promise.all([readWhole1D(indptrArr), readWhole1D(indicesArr), readWhole1D(dataArr)]);
 
   const varNames = await readVarNames(loc, tablePath, nVars);
@@ -241,7 +241,7 @@ export async function writeObsm(
     return target;
   }
 
-  await writeV2Array(
+  await writeV2Obsm(
     store as { set: (key: string, value: Uint8Array) => Promise<void> },
     obsmPath,
     target,
@@ -288,21 +288,69 @@ async function detectZarrFormat(loc: zarr.Location<never>, tablePath: string): P
   return 2;
 }
 
+/** zarr v2 dtype strings for the two element types we write. */
+type V2Dtype = "<f4" | "<i4";
+
 /**
- * Write a `[nObs, dim]` float32 array as **zarr v2**, uncompressed.
+ * Write one zarr **v2** array, uncompressed.
  *
- * Hand-rolled because zarrita cannot emit v2. Uncompressed (`compressor: null`) is a
- * deliberate simplification and is fully valid v2: it costs disk on an array that is
- * `nObs × dim × 4` bytes — 8 MB for a million cells in 2-D — and it removes any
- * dependency on a compressor implementation agreeing byte-for-byte with what
- * zarr-python expects.
+ * Hand-rolled because zarrita cannot emit v2. Uncompressed is a deliberate
+ * simplification and fully valid v2: it costs disk, and it removes any dependency on a
+ * compressor implementation agreeing byte-for-byte with what zarr-python expects.
  *
- * Chunk keys use the v2 default `.` dimension separator, and chunks are **full-size**:
- * v2 requires a trailing partial chunk to be padded out to the declared chunk shape,
- * not truncated. Getting that wrong yields a file zarr-python reads as garbage at the
- * tail rather than an error, so the padding below is load-bearing.
+ * Chunks are **full-size**: v2 requires a trailing partial chunk to be padded out to the
+ * declared chunk shape, not truncated. Getting that wrong yields a file zarr-python reads
+ * as garbage at the tail rather than an error, so the padding below is load-bearing.
+ * Chunk keys use the v2 default `.` dimension separator.
  */
 async function writeV2Array(
+  store: { set: (key: string, value: Uint8Array) => Promise<void> },
+  path: string,
+  values: Float32Array | Int32Array,
+  shape: number[],
+  chunkShape: number[],
+  dtype: V2Dtype,
+  attributes: Record<string, unknown>,
+): Promise<void> {
+  await store.set(
+    `/${path}/.zarray`,
+    json({
+      zarr_format: 2,
+      shape,
+      chunks: chunkShape,
+      dtype,
+      compressor: null,
+      fill_value: 0,
+      order: "C",
+      filters: null,
+    }),
+  );
+  await store.set(`/${path}/.zattrs`, json(attributes));
+
+  // Row-major, chunked along the FIRST axis only (the trailing axes are always whole
+  // here), which keeps the key arithmetic to one index.
+  const rows = shape[0] ?? 0;
+  const rowLen = shape.slice(1).reduce((a, b) => a * b, 1);
+  const rowsPerChunk = chunkShape[0] ?? rows;
+  const nChunks = Math.max(1, Math.ceil(rows / rowsPerChunk));
+  const suffix =
+    shape.length > 1
+      ? `.${shape
+          .slice(1)
+          .map(() => 0)
+          .join(".")}`
+      : "";
+  for (let ci = 0; ci < nChunks; ci++) {
+    const startRow = ci * rowsPerChunk;
+    const take = Math.min(rowsPerChunk, rows - startRow);
+    const chunk = dtype === "<f4" ? new Float32Array(rowsPerChunk * rowLen) : new Int32Array(rowsPerChunk * rowLen);
+    if (take > 0) chunk.set(values.subarray(startRow * rowLen, (startRow + take) * rowLen) as never);
+    await store.set(`/${path}/${ci}${suffix}`, new Uint8Array(chunk.buffer, chunk.byteOffset, chunk.byteLength));
+  }
+}
+
+/** Write the `[nObs, dim]` embedding as v2, plus the `obsm` group it lives in. */
+async function writeV2Obsm(
   store: { set: (key: string, value: Uint8Array) => Promise<void> },
   obsmPath: string,
   target: string,
@@ -313,29 +361,243 @@ async function writeV2Array(
 ): Promise<void> {
   await store.set(`/${obsmPath}/.zgroup`, json({ zarr_format: 2 }));
   await store.set(`/${obsmPath}/.zattrs`, json({ "encoding-type": "dict", "encoding-version": "0.1.0" }));
+  await writeV2Array(store, target, embedding, [nObs, dim], [rowsPerChunk, dim], "<f4", {
+    "encoding-type": "array",
+    "encoding-version": "0.2.0",
+  });
+}
 
-  await store.set(
-    `/${target}/.zarray`,
+// --- obsp: the neighbour graph ------------------------------------------------------
+//
+// `obsm` gives another tool our *picture*; `obsp` gives it our *graph*. That is the more
+// useful of the two to hand over: scanpy's `leiden`/`louvain` cluster on
+// `obsp['connectivities']`, and `sc.pl.umap` will draw edges from it. Writing it means a
+// collaborator can re-cluster on the manifold we built instead of recomputing their own
+// and wondering why the labels disagree.
+//
+// AnnData stores these as scipy CSR matrices: a GROUP carrying `encoding-type:
+// "csr_matrix"` and a `shape` attribute, holding `data` / `indices` / `indptr` arrays.
+
+/** Compressed sparse row, the layout AnnData/scipy expect. */
+export interface CsrMatrix {
+  readonly data: Float32Array;
+  readonly indices: Int32Array;
+  readonly indptr: Int32Array;
+  readonly rows: number;
+  readonly cols: number;
+}
+
+/**
+ * Convert the COO edge list to CSR.
+ *
+ * The graph already carries both directions of every edge, which is exactly what a
+ * symmetric CSR needs — so this is a counting sort, not a symmetrisation. Column indices
+ * are sorted within each row because scipy assumes that (`has_sorted_indices`) and some
+ * of its operations are silently wrong without it.
+ */
+export function fuzzyGraphToCsr(graph: {
+  n: number;
+  head: Uint32Array;
+  tail: Uint32Array;
+  weight: Float32Array;
+  nEdges: number;
+}): CsrMatrix {
+  const { n, nEdges } = graph;
+  const indptr = new Int32Array(n + 1);
+  for (let e = 0; e < nEdges; e++) indptr[graph.head[e]! + 1] = indptr[graph.head[e]! + 1]! + 1;
+  for (let i = 0; i < n; i++) indptr[i + 1] = indptr[i + 1]! + indptr[i]!;
+
+  const indices = new Int32Array(nEdges);
+  const data = new Float32Array(nEdges);
+  const cursor = Int32Array.from(indptr.subarray(0, n));
+  for (let e = 0; e < nEdges; e++) {
+    const row = graph.head[e]!;
+    const at = cursor[row]!;
+    indices[at] = graph.tail[e]!;
+    data[at] = graph.weight[e]!;
+    cursor[row] = at + 1;
+  }
+
+  // Sort each row's columns, carrying the values along. Rows are k-sized (tens), so an
+  // insertion sort per row beats building index arrays to permute.
+  for (let i = 0; i < n; i++) {
+    const from = indptr[i]!;
+    const to = indptr[i + 1]!;
+    for (let p = from + 1; p < to; p++) {
+      const ci = indices[p]!;
+      const cv = data[p]!;
+      let q = p - 1;
+      while (q >= from && indices[q]! > ci) {
+        indices[q + 1] = indices[q]!;
+        data[q + 1] = data[q]!;
+        q--;
+      }
+      indices[q + 1] = ci;
+      data[q + 1] = cv;
+    }
+  }
+  return { data, indices, indptr, rows: n, cols: n };
+}
+
+/** The k-NN distances as CSR — scanpy's `obsp['distances']`, which unlike
+ *  `connectivities` is NOT symmetric: it holds each point's own k neighbours. */
+export function knnToCsr(knn: { n: number; k: number; indices: Uint32Array; distances: Float32Array }): CsrMatrix {
+  const { n, k } = knn;
+  const indptr = new Int32Array(n + 1);
+  for (let i = 0; i <= n; i++) indptr[i] = i * k;
+  const indices = new Int32Array(n * k);
+  const data = new Float32Array(n * k);
+  for (let i = 0; i < n; i++) {
+    // Already ascending by distance; re-sort by column index for scipy.
+    const order = Array.from({ length: k }, (_, t) => t).sort((a, b) => knn.indices[i * k + a]! - knn.indices[i * k + b]!);
+    for (let t = 0; t < k; t++) {
+      indices[i * k + t] = knn.indices[i * k + order[t]!]!;
+      data[i * k + t] = knn.distances[i * k + order[t]!]!;
+    }
+  }
+  return { data, indices, indptr, rows: n, cols: n };
+}
+
+export interface WriteObspOptions {
+  readonly tablePath?: string;
+  /** Key under `obsp`, e.g. `"connectivities"`. */
+  readonly key: string;
+  readonly force?: boolean;
+}
+
+/**
+ * Write a CSR matrix into `obsp/<key>`.
+ *
+ * Same format-matching discipline as `writeObsm`: v2 stores get hand-written v2, because
+ * a v3 group inside a v2 store is unreadable to `anndata.read_zarr`.
+ */
+export async function writeObsp(loc: zarr.Location<never>, csr: CsrMatrix, opts: WriteObspOptions): Promise<string> {
+  const tablePath = opts.tablePath ?? "";
+  const obspPath = tablePath ? `${tablePath}/obsp` : "obsp";
+  const target = `${obspPath}/${opts.key}`;
+
+  if (csr.rows !== csr.cols) throw new Error(`writeObsp: obsp matrices must be square (got ${csr.rows}x${csr.cols})`);
+  const declared = await readNObs(loc, tablePath);
+  if (declared !== undefined && declared !== csr.rows) {
+    throw new Error(`writeObsp: obs has ${declared} rows but the matrix is ${csr.rows}x${csr.cols}`);
+  }
+
+  const store = (
+    loc as unknown as {
+      store: { set?: (key: string, value: Uint8Array) => Promise<void>; get(k: string): Promise<Uint8Array | undefined> };
+    }
+  ).store;
+  if (typeof store.set !== "function") throw new Error("writeObsp: this store is read-only");
+  if (!opts.force && ((await tryOpenGroup(loc, target)) || (await tryOpenArray(loc, target)))) {
+    throw new Error(`writeObsp: ${target} already exists — pass --force to overwrite`);
+  }
+
+  const version = await detectZarrFormat(loc, tablePath);
+  const put = store.set.bind(store) as (key: string, value: Uint8Array) => Promise<void>;
+
+  if (version === 3) {
+    if (!(await tryOpenGroup(loc, obspPath))) {
+      await zarr.create(loc.resolve(obspPath), { attributes: { "encoding-type": "dict", "encoding-version": "0.1.0" } });
+    }
+    await zarr.create(loc.resolve(target), {
+      attributes: { "encoding-type": "csr_matrix", "encoding-version": "0.1.0", shape: [csr.rows, csr.cols] },
+    });
+    for (const [name, arr, dtype] of [
+      ["data", csr.data, "float32"],
+      ["indices", csr.indices, "int32"],
+      ["indptr", csr.indptr, "int32"],
+    ] as const) {
+      const a = await zarr.create(loc.resolve(`${target}/${name}`), {
+        shape: [arr.length],
+        chunkShape: [Math.max(1, Math.min(arr.length, 1 << 20))],
+        dtype,
+        attributes: { "encoding-type": "array", "encoding-version": "0.2.0" },
+      });
+      await zarr.set(a as never, null, { data: arr, shape: [arr.length], stride: [1] } as never);
+    }
+    return target;
+  }
+
+  await put(`/${obspPath}/.zgroup`, json({ zarr_format: 2 }));
+  await put(`/${obspPath}/.zattrs`, json({ "encoding-type": "dict", "encoding-version": "0.1.0" }));
+  await put(`/${target}/.zgroup`, json({ zarr_format: 2 }));
+  await put(`/${target}/.zattrs`, json({ "encoding-type": "csr_matrix", "encoding-version": "0.1.0", shape: [csr.rows, csr.cols] }));
+  const chunk = 1 << 20;
+  await writeV2Array(
+    store as never,
+    `${target}/data`,
+    csr.data,
+    [csr.data.length],
+    [Math.max(1, Math.min(csr.data.length, chunk))],
+    "<f4",
+    {},
+  );
+  await writeV2Array(
+    store as never,
+    `${target}/indices`,
+    csr.indices,
+    [csr.indices.length],
+    [Math.max(1, Math.min(csr.indices.length, chunk))],
+    "<i4",
+    {},
+  );
+  await writeV2Array(
+    store as never,
+    `${target}/indptr`,
+    csr.indptr,
+    [csr.indptr.length],
+    [Math.max(1, Math.min(csr.indptr.length, chunk))],
+    "<i4",
+    {},
+  );
+  return target;
+}
+
+/**
+ * Write the `uns/neighbors` block that tells scanpy which `obsp` keys to use.
+ *
+ * Without it `sc.tl.leiden(adata)` looks for `uns['neighbors']` and either errors or
+ * silently recomputes its own graph — so the `obsp` write is only half the handover.
+ */
+export async function writeNeighborsUns(
+  loc: zarr.Location<never>,
+  opts: { tablePath?: string; connectivitiesKey: string; distancesKey?: string; nNeighbors: number },
+): Promise<void> {
+  const tablePath = opts.tablePath ?? "";
+  const unsPath = tablePath ? `${tablePath}/uns` : "uns";
+  const target = `${unsPath}/neighbors`;
+  const store = (loc as unknown as { store: { set?: (key: string, value: Uint8Array) => Promise<void> } }).store;
+  if (typeof store.set !== "function") throw new Error("writeNeighborsUns: this store is read-only");
+  const put = store.set.bind(store) as (key: string, value: Uint8Array) => Promise<void>;
+
+  const version = await detectZarrFormat(loc, tablePath);
+  const params = { n_neighbors: opts.nNeighbors, method: "umap", metric: "euclidean" };
+  if (version === 3) {
+    if (!(await tryOpenGroup(loc, unsPath))) {
+      await zarr.create(loc.resolve(unsPath), { attributes: { "encoding-type": "dict", "encoding-version": "0.1.0" } });
+    }
+    await zarr.create(loc.resolve(target), {
+      attributes: {
+        "encoding-type": "dict",
+        "encoding-version": "0.1.0",
+        connectivities_key: opts.connectivitiesKey,
+        ...(opts.distancesKey ? { distances_key: opts.distancesKey } : {}),
+        params,
+      },
+    });
+    return;
+  }
+  await put(`/${unsPath}/.zgroup`, json({ zarr_format: 2 }));
+  await put(`/${unsPath}/.zattrs`, json({ "encoding-type": "dict", "encoding-version": "0.1.0" }));
+  await put(`/${target}/.zgroup`, json({ zarr_format: 2 }));
+  await put(
+    `/${target}/.zattrs`,
     json({
-      zarr_format: 2,
-      shape: [nObs, dim],
-      chunks: [rowsPerChunk, dim],
-      dtype: "<f4",
-      compressor: null,
-      fill_value: 0,
-      order: "C",
-      filters: null,
+      "encoding-type": "dict",
+      "encoding-version": "0.1.0",
+      connectivities_key: opts.connectivitiesKey,
+      ...(opts.distancesKey ? { distances_key: opts.distancesKey } : {}),
+      params,
     }),
   );
-  await store.set(`/${target}/.zattrs`, json({ "encoding-type": "array", "encoding-version": "0.2.0" }));
-
-  const nChunks = Math.ceil(nObs / rowsPerChunk);
-  for (let ci = 0; ci < nChunks; ci++) {
-    const startRow = ci * rowsPerChunk;
-    const rows = Math.min(rowsPerChunk, nObs - startRow);
-    // Always allocate the full chunk; the tail is zero-padded, as v2 requires.
-    const chunk = new Float32Array(rowsPerChunk * dim);
-    chunk.set(embedding.subarray(startRow * dim, (startRow + rows) * dim));
-    await store.set(`/${target}/${ci}.0`, new Uint8Array(chunk.buffer, chunk.byteOffset, chunk.byteLength));
-  }
 }

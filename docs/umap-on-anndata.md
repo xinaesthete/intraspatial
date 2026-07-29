@@ -118,6 +118,15 @@ has it at the root), reads `X` or a layer, computes, and writes `obsm/<key>`. Re
 overwrite an existing key without `--force`, and refuses a row count that disagrees with
 `obs`.
 
+`--obsp` additionally writes the **graph**, which is the more useful half of the
+handover: `obsp/connectivities` (the fuzzy simplicial set), `obsp/distances` (the k-NN),
+and the `uns/neighbors` block that points scanpy at them. `sc.tl.leiden` clusters on
+`connectivities`, so a collaborator can re-cluster on our manifold instead of building
+their own and wondering why the labels disagree — and without `uns/neighbors` scanpy
+silently recomputes its own graph, so that block is not optional. Validated by loading
+both matrices with scipy: `connectivities` comes back symmetric with sorted indices,
+`distances` correctly asymmetric with exactly `n * (n_neighbors - 1)` entries.
+
 **Two findings that shaped this.**
 
 *The writer must match the store's zarr format.* `zarrita`'s `create` only emits **zarr
@@ -210,6 +219,3 @@ same graph (they do — 139790 edges on the 6000-cell fixture either way).
 ## 8. Not done
 
 - **Approximate k-NN** (§3) — the blocker for a full section.
-- **`obsp` / the neighbour graph.** Only the embedding is written. scanpy also stores
-  the connectivity graph in `obsp`; writing it would let scanpy re-run clustering on our
-  graph rather than recomputing its own.
