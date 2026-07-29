@@ -322,13 +322,23 @@ export function knnRecall(approx: KnnResult, exact: KnnResult): number {
  */
 export function pickKnn(
   exact: (data: ArrayLike<number>, n: number, dim: number, k: number) => Promise<KnnResult> | KnnResult,
-  /** `crossover` must match the `exact` you passed: ~5k for a host brute force, ~50k+ for
+  /** `crossover` must match the `exact` you passed: ~5k for a host brute force, ~100k for
    *  the tiled `knnGpu`. The default suits the host. */
-  opts: { crossover?: number; seed?: number; maxIters?: number } = {},
+  opts: {
+    crossover?: number;
+    seed?: number;
+    maxIters?: number;
+    /** The approximate path. Defaults to the host descent; pass `knnDescentGpu` where a
+     *  device is available — it is the same algorithm and, being race-free, returns the
+     *  same neighbours, 6-12x faster. Injected rather than imported so this module stays
+     *  free of any dependency on the GPU layer. */
+    approx?: (data: ArrayLike<number>, n: number, dim: number, k: number) => Promise<KnnResult> | KnnResult;
+  } = {},
 ): (data: ArrayLike<number>, n: number, dim: number, k: number) => Promise<KnnResult> | KnnResult {
   const crossover = opts.crossover ?? 5000;
-  return (data, n, dim, k) =>
-    n < crossover ? exact(data, n, dim, k) : knnDescentCpu(data, n, dim, { k, seed: opts.seed, maxIters: opts.maxIters });
+  const approx =
+    opts.approx ?? ((data, n, dim, k) => knnDescentCpu(data, n, dim, { k, seed: opts.seed, maxIters: opts.maxIters }));
+  return (data, n, dim, k) => (n < crossover ? exact(data, n, dim, k) : approx(data, n, dim, k));
 }
 
 /** Which path `pickKnn` would take, for reporting. */

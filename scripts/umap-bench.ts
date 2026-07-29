@@ -28,6 +28,7 @@
 
 import { getDevice, releaseDevice } from "../src/gpu/device";
 import { knnGpu } from "../src/gpu/spatial/knn";
+import { knnDescentGpu } from "../src/gpu/spatial/knnDescentGpu";
 import { GpuUmapLayout } from "../src/gpu/spatial/umapLayoutGpu";
 import { knnDescentCpu, knnRecall } from "../src/spatial/knnDescent";
 import { expressManifold, MANIFOLDS, makeManifold } from "../src/spatial/syntheticManifolds";
@@ -93,7 +94,9 @@ interface Row {
   knnExactGpu?: number;
   knnExactHost?: number;
   knnDescent?: number;
+  knnDescentGpu?: number;
   descentRecall?: number;
+  descentGpuRecall?: number;
   graph: number;
   layoutHost?: number;
   layoutGpu?: number;
@@ -139,6 +142,12 @@ async function runSize(args: Args, n: number): Promise<Row> {
     approx = res;
     row.knnDescent = ms;
     if (exact) row.descentRecall = knnRecall(res, exact);
+  }
+  if (args.gpu && args.descent) {
+    const [res, ms] = await time(() => knnDescentGpu(values, n, dim, { k, seed: 42 }));
+    approx = res;
+    row.knnDescentGpu = ms;
+    if (exact) row.descentGpuRecall = knnRecall(res, exact);
   }
 
   const knn = exact ?? approx;
@@ -195,9 +204,10 @@ function report(args: Args, rows: Row[]): void {
   const header = [
     "cells",
     "edges",
-    "knn gpu",
-    "knn host",
-    "descent",
+    "exact gpu",
+    "exact host",
+    "descent host",
+    "descent gpu",
     "recall",
     "graph",
     "epoch host",
@@ -212,7 +222,8 @@ function report(args: Args, rows: Row[]): void {
     r.knnExactGpu === undefined ? "—" : `${fmt(r.knnExactGpu)} ms`,
     r.knnExactHost === undefined ? "—" : `${fmt(r.knnExactHost)} ms`,
     r.knnDescent === undefined ? "—" : `${fmt(r.knnDescent)} ms`,
-    r.descentRecall === undefined ? "—" : r.descentRecall.toFixed(3),
+    r.knnDescentGpu === undefined ? "—" : `${fmt(r.knnDescentGpu)} ms`,
+    (r.descentGpuRecall ?? r.descentRecall) === undefined ? "—" : (r.descentGpuRecall ?? r.descentRecall)!.toFixed(3),
     `${fmt(r.graph)} ms`,
     r.layoutHost === undefined ? "—" : `${fmt(r.layoutHost, 2)} ms`,
     r.layoutGpu === undefined ? "—" : `${fmt(r.layoutGpu, 2)} ms`,

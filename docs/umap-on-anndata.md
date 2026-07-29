@@ -73,37 +73,70 @@ and `knnInvariants.gpu.test.ts` pins the tiled path.
 candidate for being my neighbour. Cost is `maxIters · n · candidates²` rather than n², and
 recall is measured rather than assumed (`knnRecall`).
 
-**The crossover depends on which exact search you are racing, and this is the honest
-summary** (`pnpm umap:bench`, Apple M2 Max, D=18):
+**The crossover depends on which exact search you are racing** (`pnpm umap:bench`, Apple
+M2 Max, idle — see the note below on why that matters):
 
-| n | host exact | host descent | recall | `knnGpu` (tiled) |
-| --- | --- | --- | --- | --- |
-| 3000 | 551 ms | 938 ms | 0.990 | — |
-| 6000 | 2197 ms | 1814 ms | 0.970 | — |
-| 16000 | — | 2.8 s | 0.983 | **270 ms** |
-| 25000 | 38.0 s | 8.9 s | 0.881 | — |
-| 50000 | — | 10.6 s | 0.966 | **3.5 s** |
-| 100000 | — | 24.8 s | 0.951 | **17.3 s** |
-| 200000 | — | **57–78 s** | 0.934 | 94.3 s |
+| n | host exact | host descent | `knnGpu` (tiled) |
+| --- | --- | --- | --- |
+| 3000 | 551 ms | 938 ms | — |
+| 6000 | 2197 ms | 1814 ms | — |
+| 16,000 | — | 2.7 s | **255 ms** |
+| 50,000 | — | 9.5 s | **2.5 s** |
+| 100,000 | — | 17.7 s | **14.0 s** |
+| 100,000 (D=51) | — | 39.8 s | 103.8 s |
+| 200,000 | — | 50.1 s | — |
 
-So descent overtakes a *host* brute force around 5–6k points — and the tiled GPU exact
-search stays ahead of descent all the way to **100k**, where it is both faster (17.3 s
-against 24.8 s) and exact. The quadratic finally wins out somewhere around 150k; at 200k
-descent is ahead.
+Against a *host* brute force descent wins from about 5–6k points. Against the tiled
+`knnGpu` the exact search holds on much longer at low dimension — still ahead at 100k
+cells — but D matters as much as n: at D=51 the quadratic is already four times slower at
+100k, and D≈50 is what the real pipeline produces.
 
-That is a much later crossover than the 50k previously recorded here, and it changes the
-advice: **on a machine with a GPU, prefer the exact search up to about 100k cells.**
-`pickKnn` takes the crossover as a parameter rather than pretending one number fits both;
-the CLI passes 5k when forced to the host and 50k when it has a GPU — conservative, since
-the exact path is still winning there.
+**Benchmark on an idle machine.** An earlier version of this table was taken while the GPU
+had other work on it, and every figure in it was wrong by up to 3× in both directions —
+including some that were fast because the kernel had been silently killed and returned
+zeros. On an idle machine the same measurements repeat to within 2%. Timings taken under
+contention are not conservative, they are meaningless.
 
-Note also that descent's recall falls as n grows at a fixed `maxIters` (0.999 → 0.934).
-It is a knob, not a constant, and a recall figure quoted without its n is meaningless.
+**NN-descent now runs its local join on the GPU** ([`knnDescentGpu.ts`](../src/gpu/spatial/knnDescentGpu.ts)),
+and that is the change that lifts the ceiling — it replaces the O(N²·D) term with a fixed
+number of O(N·c²·D) passes, where `c` is the candidate width (~21) rather than N:
 
-The consequence worth being clear about: **descent's value today is machines without a
-usable GPU, plus being the algorithm that will actually scale once its inner local join
-moves to the device.** That is the next piece of work — the flat `NeighbourHeap` and
-candidate arrays are laid out to upload verbatim when it happens.
+| n | dim | exact (GPU) | descent (host) | descent (GPU) | recall |
+| --- | --- | --- | --- | --- | --- |
+| 16,000 | 18 | 255 ms | 2.7 s | **445 ms** | 0.983 |
+| 50,000 | 18 | 2.5 s | 9.5 s | **1.4 s** | 0.966 |
+| 100,000 | 18 | 14.0 s | 17.7 s | **2.7 s** | 0.951 |
+| 100,000 | 51 | 103.8 s | 39.8 s | **3.9 s** | 0.798 |
+| 200,000 | 51 | — | 94.5 s | **7.7 s** | — |
+
+6–12× over the host descent, and **27× over the exact search at n=100k, dim=51** — which is
+the realistic shape, since the pipeline reduces to 30–50 principal components. A full
+200k-cell section is 7.7 s.
+
+**It parallelises cleanly for a reason worth stating.** The textbook local join updates both
+endpoints of every pair, which on a device means many threads writing one point's list. The
+host implementation here never did that: thread `i` walks its own candidates and their
+candidates and offers them **only to `i`'s own list**. So there are no atomics, no locks and
+no races — and the kernel can be held to a far stronger contract than any other GPU code
+here. `knnDescentGpu.gpu.test.ts` asserts the device result is **element-for-element
+identical** to the host's, which is the opposite of `umapLayoutGpu`, where the racy kernel
+can only be tested statistically.
+
+At large n the two do drift apart (81% per-slot agreement at 100k), because the device
+compares squared distances and the host rooted ones; one differently-ordered near-tie
+changes a list, which changes the candidate lists built from it. Recall is unmoved — 0.951
+on both — so recall is the property to hold it to at scale, and exact agreement the one to
+hold it to in tests.
+
+**Is the approximation good enough? Measured, not assumed.** At n=50,000, dim=51, recall
+0.867, the final embedding scores **trustworthiness 0.9486 against the exact search's
+0.9484** — indistinguishable. That is the claim this document previously asserted about
+UMAP tolerating recall loss; it is now a measurement.
+
+Recall does fall with n at a fixed `maxIters`, and more passes only partly buy it back:
+at n=100k, dim=51 it goes 0.798 → 0.835 → 0.853 → 0.860 for 12 → 20 → 30 → 45 iterations,
+plateauing. Closing the rest would need a wider candidate list or better seeding, and on the
+evidence above it is not worth doing for UMAP.
 
 PCA first, always, past ~50 genes ([`pca.ts`](../src/spatial/pca.ts)). The covariance is
 G×G where G is the number of *selected* genes, so the eigenproblem is tiny and
@@ -353,22 +386,22 @@ k-NN is O(n²·D) and the layout is O(edges) per epoch — they hit their walls 
 different sizes, and a single wall-clock number hides which one you are waiting for.
 Measured on an Apple M2 Max, `branching`, 15 neighbours, 200 epochs, 18 genes:
 
-| cells | edges | knn (gpu, exact) | knn (descent) | graph | epoch host | epoch gpu | speedup | trust | rss |
+| cells | edges | exact (gpu) | descent (gpu) | graph | epoch host | epoch gpu | speedup | trust | rss |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| 1,000 | 20k | 21 ms | 101 ms | 13 ms | 4.51 ms | 0.06 ms | 74× | 0.942 | 129 MB |
-| 4,000 | 85k | 38 ms | 506 ms | 28 ms | 16.29 ms | 0.12 ms | 138× | 0.946 | 192 MB |
-| 16,000 | 349k | 270 ms | 2.8 s | 136 ms | 43.50 ms | 0.28 ms | 157× | 0.941 | 238 MB |
-| 50,000 | 1.11M | 3.5 s | 10.6 s | 519 ms | 68.87 ms | 0.83 ms | 83× | 0.939 | 342 MB |
-| 100,000 | 2.24M | 17.3 s | 24.8 s | 1.55 s | 129.37 ms | 1.54 ms | 84× | 0.938 | 578 MB |
-| 200,000 | 4.50M | 94.3 s | 57.0 s | 3.98 s | 268.70 ms | 2.80 ms | 96× | 0.933 | 604 MB |
+| 16,000 | 349k | 255 ms | 445 ms | 121 ms | 41.83 ms | 0.27 ms | 157× | 0.940 | 244 MB |
+| 50,000 | 1.11M | 2.5 s | 1.4 s | 467 ms | 65.49 ms | 0.67 ms | 98× | 0.938 | 394 MB |
+| 100,000 | 2.23M | 14.0 s | 2.7 s | 1.41 s | 124.87 ms | 1.31 ms | 95× | 0.938 | 536 MB |
+| 200,000 | 4.50M | — | 5.3 s | 3.31 s | 259.57 ms | 2.56 ms | 101× | 0.938 | 732 MB |
 
 Reading it:
 
 - **The layout is not the problem.** 200 epochs at 100k cells is 0.3 s on the GPU. Even at
   4.5M edges an epoch is 2.8 ms, so the interactive page stays interactive at sizes where
   the host path (269 ms/epoch) is four frames per second.
-- **The k-NN is the wall**, and it is the quadratic one. Everything above ~100k wants the
-  approximate path, and the approximate path wants its local join on the device (§3).
+- **The k-NN is no longer the wall.** With the local join on the device, 200k cells is
+  5.3 s of k-NN — less than twice the cost of the graph build that follows it. The
+  quadratic exact search is now the fallback for small n and for checking recall, not the
+  path anything large takes.
 - **Quality holds.** Trustworthiness stays at 0.933–0.946 across two orders of magnitude,
   so the speed is not being bought with a worse embedding.
 - **Memory is not the binding constraint** at these sizes — 604 MB at 200k cells, and the
@@ -379,9 +412,17 @@ ms/epoch, which is where the page's cell slider tops out.
 
 ## 11. Not done
 
-- **NN-descent on the GPU** (§3). The host version is in and correct; the local join is
-  what needs to move to the device for a full section. The measured crossover (§3) says
-  this only starts to matter past ~100k cells on a machine with a GPU.
+- **Candidate-tiled exact k-NN.** Restructuring `knnGpu` to keep every query row resident
+  and tile over candidates instead measured 1.8× at 100k/D=18 and 4.6× at D=51, because
+  the current row tiling shrinks the dispatch as `1/n` (35 workgroups at 100k). It also
+  returns silently wrong results at n ≥ 45k about one run in three, and the cause is not
+  understood — not contention, device loss, a validation error, buffer lifetime, or a
+  params race, all of which were ruled out. Parked deliberately: NN-descent removed the
+  motivation, and a silent wrong answer in the k-NN is the one thing this file keeps having
+  to warn about.
+- **A cheap post-condition on the k-NN.** Counting rows whose neighbours are all index 0
+  during the readback costs nothing and would have turned both silent-truncation bugs into
+  a thrown error. Worth doing regardless of the above.
 - **A spectral initialiser.** Reference UMAP defaults to one and we use a random init. It
   was tested as a candidate fix for the shattering in §7 and is *not* one — a perfect
   init shatters too — so this is a fidelity gap rather than a quality one, and it is
