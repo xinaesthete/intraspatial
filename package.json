@@ -2,7 +2,7 @@
   "name": "tgpu-htj2k",
   "version": "0.0.0",
   "type": "module",
-  "description": "WebGPU HTJ2K (JPEG 2000 Part 15) codec — Rust/wasm CPU core + TypeScript/TypeGPU GPU layer.",
+  "description": "WebGPU HTJ2K (JPEG 2000 Part 15) codec \u2014 Rust/wasm CPU core + TypeScript/TypeGPU GPU layer.",
   "packageManager": "pnpm@11.12.0",
   "engines": {
     "node": ">=20.11"
@@ -27,13 +27,16 @@
     "lint:fix": "biome check --write . && biome check --write test",
     "format": "biome format --write .",
     "build:wasm": "wasm-pack build rust/htj2k-core --target web --out-dir pkg --out-name htj2k_core",
-    "build:wasm:dev": "wasm-pack build rust/htj2k-core --dev --target web --out-dir pkg --out-name htj2k_core"
+    "build:wasm:dev": "wasm-pack build rust/htj2k-core --dev --target web --out-dir pkg --out-name htj2k_core",
+    "umap:obsm": "tsx scripts/umap-obsm.ts"
   },
   "dependencies": {
+    "@zarrita/storage": "^0.2.0",
     "geotiff": "^3.0.5",
     "typegpu": "catalog:",
     "webgpu": "^0.4.0",
-    "wgpu-matrix": "^3.4.2"
+    "wgpu-matrix": "^3.4.2",
+    "zarrita": "^0.7.3"
   },
   "optionalDependencies": {
     "openjph-wasm": "file:../openjph-wasm"
@@ -42,6 +45,7 @@
     "@biomejs/biome": "2.5.2",
     "@types/node": "^22.0.0",
     "@webgpu/types": "^0.1.40",
+    "tsx": "^4.23.1",
     "typescript": "catalog:",
     "unplugin-typegpu": "catalog:",
     "vitest": "^4.1.10"
