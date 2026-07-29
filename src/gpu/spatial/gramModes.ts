@@ -180,6 +180,16 @@ export interface ModePaintOptions {
   readonly vectors: Float64Array;
   /** How many standard deviations of each mode's own spread saturate the ramp. Larger = flatter. */
   readonly saturate?: number;
+  /** How the two chroma modes (2 and 3) are weighted against mode 1, in `[0, 1]`.
+   *
+   *  `1` (default) is fully **whitened**: each mode is scaled by its own σ, so the picture equalises
+   *  them and colour distance stands in for the whitened (Mahalanobis) distance — good for *seeing*
+   *  faint secondary structure, but it amplifies modes that carry little variance, so a 6%-variance
+   *  mode can look as colourful as a 61%-variance one. `0` is **variance-weighted**: the chroma axes
+   *  share mode 1's σ, so colour appears only in proportion to `σ_k/σ₁` — faithful to importance,
+   *  often near-greyscale when mode 1 dominates. Between, the chroma amplitude is scaled by
+   *  `(σ_k/σ₁)^(1−w)`. Mode 1 → lightness is never touched. See docs/cell-stats.md §4. */
+  readonly chromaWeight?: number;
   /** Where the wand sample was taken, in raster pixels. Drawn as haloed rule lines so the point a
    *  similarity field is measured *from* stays visible in the map it was picked on. */
   readonly marker?: { readonly col: number; readonly row: number };
@@ -236,6 +246,15 @@ export async function paintGramModes(canvas: HTMLCanvasElement, res: GramMatrixG
     sigmas[k] = Math.sqrt(Math.max(q, 0));
   }
   const scales = sigmas.map((s) => (s > 0 ? 1 / (saturate * s) : 0)) as [number, number, number];
+
+  // Chroma weighting: mute modes 2 and 3 towards their variance share. `w=1` leaves them whitened
+  // (factor 1); `w=0` scales them by σ_k/σ₁ so colour reflects importance. Folded into the chroma
+  // scales here because the flat map's scales drive colour only — the terrain, whose scales also set
+  // relief, applies the same factor in its colour path instead. Mode 1 (lightness) is untouched.
+  const w = Math.max(0, Math.min(1, opts.chromaWeight ?? 1));
+  const chromaFactor = (k: number) => (sigmas[0]! > 0 && sigmas[k]! > 0 ? (sigmas[k]! / sigmas[0]!) ** (1 - w) : 1);
+  scales[1] *= chromaFactor(1);
+  scales[2] *= chromaFactor(2);
 
   // The wand buffer, in the layout `similarityWgsl` expects: K floats of reference z, then the m×K
   // whitening matrix. `sigmas` above is √λ for the leading three; the metric needs λ for however

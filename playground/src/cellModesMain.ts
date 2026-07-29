@@ -69,6 +69,7 @@ const radiusInput = $<HTMLInputElement>("radius");
 const scaleInput = $<HTMLInputElement>("scale");
 const resSelect = $<HTMLSelectElement>("res");
 const satInput = $<HTMLInputElement>("sat");
+const chromaWInput = $<HTMLInputElement>("chromaW");
 const windowSel = $<HTMLSelectElement>("windowSel");
 const heightSel = $<HTMLSelectElement>("height");
 const colourBySel = $<HTMLSelectElement>("colourBy");
@@ -443,6 +444,7 @@ function drawTerrain(): void {
     colourBy: colourBySel.value as ColourBy,
     heightScale: Number(hscaleInput.value) || 0,
     saturate: Number(satInput.value) || 2.5,
+    chromaWeight: Number(chromaWInput.value),
     step: Number(stepSel.value) || 1,
     reference: wand?.z,
     // "all" is stored as 0 so the option does not have to know K at authoring time.
@@ -528,6 +530,7 @@ async function paintMap(): Promise<ModePaintInfo | null> {
   return paintGramModes(modeCanvas, live.res, {
     vectors: live.vectors,
     saturate: Number(satInput.value) || 2.5,
+    chromaWeight: Number(chromaWInput.value),
     marker: wand ? { col: wand.col, row: wand.row } : undefined,
     image: imageOverlay(),
     // The selection outline needs the same reference and metric the terrain's similarity uses, or
@@ -1162,6 +1165,9 @@ for (const el of [heightSel, colourBySel, stepSel]) el.addEventListener("change"
 hscaleInput.addEventListener("input", drawTerrain);
 modesUsedSel.addEventListener("change", redrawBoth);
 dspanInput.addEventListener("input", redrawBoth);
+// Chroma weighting shapes the colour of BOTH views, so it redraws both — the map's chroma axes and
+// the terrain's colour mute together, exactly as saturate would if it were live.
+chromaWInput.addEventListener("input", redrawBoth);
 resetCamBtn.addEventListener("click", () => {
   cam = DEFAULT_CAM;
   drawTerrain();

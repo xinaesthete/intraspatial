@@ -60,8 +60,8 @@ struct Uni {
   heightScale: f32, heightSource: f32, colourBy: f32, m: f32,
   scaleL: f32, scaleA: f32, scaleB: f32, distScale: f32,
   markerX: f32, markerY: f32, markerOn: f32, lineW: f32,
-  imageMix: f32, selTol: f32, selOn: f32, pad0: f32,
-  uv0: vec3f, pad3: f32,
+  imageMix: f32, selTol: f32, selOn: f32, chromaA: f32,
+  uv0: vec3f, chromaB: f32,
   uv1: vec3f, pad4: f32,
 };
 @group(0) @binding(0) var<uniform> U: Uni;
@@ -158,7 +158,9 @@ fn fs(in: VOut) -> @location(0) vec4f {
 
   var lab: vec3f;
   if (U.colourBy < 0.5) {
-    let t = clamp(in.y * vec3f(U.scaleL, U.scaleA, U.scaleB), vec3f(-1.0), vec3f(1.0));
+    // chromaA/chromaB mute modes 2 and 3 towards their variance share — colour only, so the height
+    // path above keeps the unweighted scaleA/scaleB. Mode 1 -> lightness is untouched.
+    let t = clamp(in.y * vec3f(U.scaleL, U.scaleA * U.chromaA, U.scaleB * U.chromaB), vec3f(-1.0), vec3f(1.0));
     lab = vec3f(${BASE_L} + ${SPAN_L} * t.x, ${MAX_CHROMA} * t.y, ${MAX_CHROMA} * t.z);
   } else {
     // Similarity: 1 at the reference, falling to 0. Chroma AND lightness both carry it, so the
@@ -232,6 +234,10 @@ export interface TerrainOptions {
   readonly heightScale: number;
   /** How many σ of each mode's own spread saturate the ramp — shared with `paintGramModes`. */
   readonly saturate?: number;
+  /** Chroma weighting in `[0, 1]`, shared with `paintGramModes` so both views agree: `1` whitened
+   *  (each mode by its own σ), `0` variance-weighted (chroma by σ_k/σ₁). Colour only — the relief
+   *  keeps the unweighted per-mode scale. */
+  readonly chromaWeight?: number;
   /** Grid decimation: sample every `step`-th pixel. 1 is one vertex per pixel. */
   readonly step?: number;
   /** The wand: the standardised channel vector to measure distance FROM, plus how many modes the
@@ -457,6 +463,13 @@ export async function paintGramTerrain(canvas: HTMLCanvasElement, res: GramMatri
   }
   const scales = sigmas.map((s) => (s > 0 ? 1 / (saturate * s) : 0)) as [number, number, number];
 
+  // Chroma weighting, applied in the shader's COLOUR branch only (the relief keeps `scales`): `w=1`
+  // whitened (factor 1), `w=0` variance-weighted (σ_k/σ₁). Same formula as `paintGramModes`, so the
+  // map and the terrain mute the chroma together.
+  const chromaW = Math.max(0, Math.min(1, opts.chromaWeight ?? 1));
+  const chromaA = sigmas[0]! > 0 && sigmas[1]! > 0 ? (sigmas[1]! / sigmas[0]!) ** (1 - chromaW) : 1;
+  const chromaB = sigmas[0]! > 0 && sigmas[2]! > 0 ? (sigmas[2]! / sigmas[0]!) ** (1 - chromaW) : 1;
+
   // zRef then A, one buffer: the shader walks both per channel and a single binding keeps that loop
   // to one storage access pattern.
   const wandData = new Float32Array(K + m * K);
@@ -560,11 +573,11 @@ export async function paintGramTerrain(canvas: HTMLCanvasElement, res: GramMatri
       // in step.
       opts.distanceSpan ?? 1.2,
       opts.reference ? 1 : 0,
-      0,
+      chromaA, // was pad0
       ov.uv[0]!,
       ov.uv[1]!,
       ov.uv[2]!,
-      0,
+      chromaB, // was pad3
       ov.uv[3]!,
       ov.uv[4]!,
       ov.uv[5]!,

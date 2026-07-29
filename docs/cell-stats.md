@@ -408,6 +408,22 @@ is fewer than about two raster pixels, the map and the terrain show aliasing rat
 smoothed field, while the statistic itself stays perfectly well defined. `cellmodes.html` reports
 pixels-per-radius and warns below 2, because nothing else in the numbers gives it away.
 
+**Chroma weighting: what the colour is honest about.** The map assigns mode 1 → L, modes 2–3 → the
+two chroma axes, and scales each mode by *its own* σ (`= √λ`). That is deliberate — eigenvalues fall
+off fast, so a shared scale would render modes 2–3 as flat grey — but it has a consequence the eye
+does not see: it **removes the eigenvalue weighting from the picture**. Colour distance then stands
+in for the *whitened* distance (every mode counted equally per its own spread, the same metric the
+wand uses), not for variance share. So when mode 1 dominates — 61% vs 16% vs 6% on the lung set — a
+6%-variance difference in mode 3 can look as colourful as a 61%-variance difference in mode 1 looks
+in lightness, and the chroma amplifies whatever noise the low-`λ` modes carry. The `chroma` control
+interpolates out of that: the two chroma axes are scaled by `(σ_k/σ₁)^{1−w}`, so `w = 1` is the
+whitened view above and `w = 0` is **variance-weighted** — colour appears only in proportion to
+`σ_k/σ₁`, faithful to importance but near-greyscale when mode 1 dominates. Mode 1 → lightness is
+never touched, and it is **colour only**: the terrain's relief keeps the unweighted per-mode scale,
+so dialling chroma down mutes the map's and the terrain's colour together without flattening a mode
+chosen as the height source. The scree chart and its null band remain where the true variance
+weighting lives; the map shows the whitened geometry, and `w` is the dial between the two readings.
+
 ### ROI and edge effects
 
 `crossPcf.ts` and `tcm.ts` still run **Mode 1**: a fixed ROI, a *global* `ρ_B`, and full-disk /

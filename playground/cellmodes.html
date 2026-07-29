@@ -132,6 +132,8 @@
         </select>
         <label for="sat">saturate ±σ</label>
         <input id="sat" type="text" value="2.5" style="flex:0 1 60px" />
+        <label for="chromaW" title="How the two colour (chroma) modes are weighted against the dominant mode. 1 = whitened (every mode shown equally, by its own spread); 0 = variance-weighted (colour only in proportion to how much variance a mode actually carries).">chroma</label>
+        <input id="chromaW" type="range" min="0" max="1" step="0.05" value="1" style="flex:0 1 110px" />
         <label for="windowSel">analysis window</label>
         <select id="windowSel">
           <option value="apron" selected>inset by range — apron populated</option>
