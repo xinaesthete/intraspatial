@@ -21,12 +21,18 @@
 // across a graph swap shows the layout actually relaxing. See
 // `docs/umap-on-anndata.md` §4.
 
-import { type PcaOptions, pca } from "./pca";
+import { type PcaOptions, type PcaResult, pca } from "./pca";
 import { type FuzzyGraph, type FuzzyGraphOptions, fuzzySimplicialSet, type KnnResult, knnBruteForceCpu } from "./umapGraph";
 import { type AbParams, fitAB, type LayoutOptions, optimizeLayout } from "./umapLayout";
 
 /** Injected k-NN. `knnBruteForceCpu` is the default; pass `knnGpu` in the browser. */
 export type KnnFn = (data: ArrayLike<number>, n: number, dim: number, k: number) => Promise<KnnResult> | KnnResult;
+
+/** Injected PCA, for the same reason and on the same terms as `KnnFn`: the host `pca` is
+ *  the default and `pcaGpu` is the drop-in where a device exists. Both heavy steps of the
+ *  reduction are O(N·G·…) and the host runs them synchronously, so on a real table this is
+ *  the difference between a second and half a minute — see the table in `pca.ts`. */
+export type PcaFn = (data: ArrayLike<number>, n: number, dim: number, opts: PcaOptions) => Promise<PcaResult> | PcaResult;
 
 export interface UmapOptions extends Omit<FuzzyGraphOptions, "nNeighbors">, LayoutOptions, PcaOptions {
   /** `n_neighbors` in reference semantics (counts the point itself). Default 15. */
@@ -37,6 +43,7 @@ export interface UmapOptions extends Omit<FuzzyGraphOptions, "nNeighbors">, Layo
    *  reduction would not be reducing anything. */
   readonly pcaThreshold?: number;
   readonly knn?: KnnFn;
+  readonly pcaFn?: PcaFn;
   /** Reuse an existing layout as the starting point (the continuation path). */
   readonly initialEmbedding?: Float32Array;
   readonly minDist?: number;
@@ -83,7 +90,10 @@ export async function umapGraphFor(
   let reduced: Float32Array | undefined;
   const wantPca = opts.pca ?? dim > (opts.pcaThreshold ?? DEFAULTS.pcaThreshold);
   if (wantPca && dim > 1) {
-    const res = pca(data, n, dim, { nComponents: opts.nComponents ?? DEFAULTS.nComponents, standardise: opts.standardise });
+    const res = await (opts.pcaFn ?? pca)(data, n, dim, {
+      nComponents: opts.nComponents ?? DEFAULTS.nComponents,
+      standardise: opts.standardise,
+    });
     reduced = res.scores;
     searchData = res.scores;
     searchDim = res.nComponents;

@@ -478,20 +478,21 @@ function draw(): void {
 
 async function frame(): Promise<void> {
   if (running && driver && graph && !busy) {
+    const d = driver; //hold onto a driver reference in case adopt unassigns during some async
     const steps = Number($<HTMLInputElement>("steps").value);
     const initialAlpha = Number($<HTMLInputElement>("alpha").value);
     const minDist = Number($<HTMLInputElement>("minDist").value);
     // `LAYOUT_EPOCHS` is the decay horizon, not a stopping point: the loop keeps running
     // and the rate keeps falling, so a settled layout stays put until something changes.
     const t0 = performance.now();
-    driver.step(steps, { initialAlpha, minDist });
+    d.step(steps, { initialAlpha, minDist });
     // One readback per FRAME, not per epoch — the whole point of the resident buffer.
-    await driver.sync();
+    await d.sync();
     stepMs = stepMs * 0.9 + ((performance.now() - t0) / Math.max(1, steps)) * 0.1;
     updateSpeed();
-    if (driver.epoch % 8 === 0) updateStress();
-    $<HTMLSpanElement>("sEpoch").textContent = String(driver.epoch);
-    $<HTMLSpanElement>("sAlpha").textContent = driver.alphaNow(initialAlpha).toFixed(3);
+    if (d.epoch % 8 === 0) updateStress();
+    $<HTMLSpanElement>("sEpoch").textContent = String(d.epoch);
+    $<HTMLSpanElement>("sAlpha").textContent = d.alphaNow(initialAlpha).toFixed(3);
     $<HTMLSpanElement>("sStep").textContent = `${stepMs.toFixed(2)} ms`;
   }
   draw();

@@ -50,6 +50,7 @@ import {
   writeObsp,
 } from "../src/datasource/annDataIo";
 import { knnDescentCpu, knnStrategyFor } from "../src/spatial/knnDescent";
+import type { PcaOptions } from "../src/spatial/pca";
 import { umapGraphFor } from "../src/spatial/umap";
 import type { KnnResult } from "../src/spatial/umapGraph";
 import { fitAB, optimizeLayout } from "../src/spatial/umapLayout";
@@ -219,10 +220,25 @@ async function main(): Promise<void> {
   // All GPU work happens in this call. The device is NOT released here: the k-NN's
   // pooled buffers and pipelines outlive the call, and dropping the Instance while they
   // are still alive faults on their finalisers. Release happens once, at the very end.
+  // PCA follows the k-NN's choice of device rather than having its own flag: both are the
+  // same trade (identical result to f32, an order of magnitude or two faster), and a run
+  // that asked for `--cpu` asked for a host run, not a mostly-host one.
+  const pcaFn = args.cpu
+    ? undefined
+    : async (d: ArrayLike<number>, n: number, dim: number, o: PcaOptions) => {
+        // Set here rather than alongside `knn` above: this flag decides whether the Dawn
+        // Instance gets released at the end, and it must reflect whether the device was
+        // actually touched — `umapGraphFor` skips the PCA entirely for a narrow matrix.
+        usedGpu = true;
+        const { pcaGpu } = await import("../src/gpu/spatial/pcaGpu");
+        return pcaGpu(d, n, dim, o);
+      };
+
   const graph = await umapGraphFor(matrix.values, matrix.nCells, matrix.nVars, {
     nNeighbors: args.nNeighbors,
     nComponents: args.components,
     knn,
+    pcaFn,
   });
   console.log(`graph    ${graph.graph.nEdges} directed edges${graph.reducedDim ? `, after PCA to ${graph.reducedDim} dims` : ", no PCA"}`);
 

@@ -13,7 +13,8 @@
 // zarr read: a CSR matrix scatters each gene across every cell's row, so pulling 20 genes
 // costs the same full scan as pulling 2000 (`selectionCost` reports it).
 
-import { pca } from "../../../src/spatial/pca";
+import { pcaGpu } from "../../../src/gpu/spatial/pcaGpu";
+import { type PcaResult, pca } from "../../../src/spatial/pca";
 import { expressManifold, type FeatureBlock, type Manifold, makeManifold } from "../../../src/spatial/syntheticManifolds";
 import {
   type ColumnInfo,
@@ -212,7 +213,7 @@ export async function storeDataset(url: string, opts: StoreLoadOptions): Promise
 
   say(`PCA over ${hvg.length} variable genes…`);
   const comps = Math.min(nComponents, hvg.length, outCells);
-  const reduced = pca(dense, outCells, hvg.length, { nComponents: comps, standardise: true });
+  const reduced = await reducePca(dense, outCells, hvg.length, comps, say);
 
   const full = await readObsLabels(sdata, opts.table, nCells, opts.labelColumn);
   const label = rows ? Uint8Array.from(rows, (r) => full.label[r]!) : full.label;
@@ -230,6 +231,26 @@ export async function storeDataset(url: string, opts: StoreLoadOptions): Promise
       `${outCells.toLocaleString()}${rows ? ` of ${nCells.toLocaleString()}` : ""} cells · ${hvg.length} of ${cat.nVars} genes · ` +
       `${reduced.nComponents} PCs${log1p ? " · log1p" : ""}${full.column ? ` · coloured by ${full.column}` : ""}`,
   };
+}
+
+/**
+ * PCA on the device, falling back to the host if there is no usable GPU.
+ *
+ * The fallback is not politeness — it is the difference between a page that loads slowly
+ * and a page that does not load. But it is worth *saying* when it happens, because the two
+ * are very far apart: the host path is 6 seconds of frozen tab at 60k x 300 and 24 at 200k
+ * (`src/spatial/pca.ts` has the table), against well under a second on the device. A user
+ * who thinks the page has hung deserves to know it is a fallback rather than the norm.
+ */
+async function reducePca(dense: Float32Array, n: number, dim: number, nComponents: number, say: (msg: string) => void): Promise<PcaResult> {
+  try {
+    return await pcaGpu(dense, n, dim, { nComponents, standardise: true });
+  } catch (err) {
+    say(
+      `PCA on the GPU failed (${err instanceof Error ? err.message : String(err)}); falling back to the host — this will block for a few seconds…`,
+    );
+    return pca(dense, n, dim, { nComponents, standardise: true });
+  }
 }
 
 /** Deterministic sample of `count` distinct indices below `n`, in ascending order. */

@@ -378,6 +378,53 @@ exact search wins (3.3 s against 4.9 s); at 60k × 30 it loses badly (9.8 s agai
 End to end on that store: 60,000 of 162,254 cells, 150 genes, 30 PCs, k-NN and graph in
 2.9 s, **16 s from click to a running layout**.
 
+### 8.1 PCA on the device
+
+With the k-NN dealt with, the reduction became the slowest thing in the load, and the worst
+kind of slow: `pca` is synchronous, so its cost is not "the page takes a while" but "the
+page is frozen". Loading 100,000 cells × 377 genes from the Xenium table blocked Chrome's
+main thread for **14.4 seconds in one unbroken block**.
+
+Two of PCA's four steps are O(N·G·…) and both are now tiled matmuls in
+[`pcaGpu.ts`](../src/gpu/spatial/pcaGpu.ts) — the covariance `CᵀC` and the projection onto
+the retained components. Measured on an M2 Max, 30 components, standardised:
+
+| n × G | cov host | cov gpu | proj host | proj gpu | **pca host** | **pca gpu** | cov residual |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 20,000 × 150 | 521 ms | 11 ms | 196 ms | 25 ms | 806 ms | 117 ms | 1.6e-6 |
+| 60,000 × 150 | 1,559 ms | 17 ms | 559 ms | 63 ms | 2,230 ms | 181 ms | 2.7e-6 |
+| 60,000 × 300 | 6,008 ms | 45 ms | 1,108 ms | 69 ms | 7,533 ms | 701 ms | 1.9e-6 |
+| 100,000 × 300 | 9,793 ms | 45 ms | 1,861 ms | 126 ms | 12,199 ms | 756 ms | 1.6e-6 |
+| 200,000 × 300 | 20,165 ms | 80 ms | 3,726 ms | 246 ms | 24,167 ms | 1,008 ms | 1.3e-6 |
+
+In the browser, on the real table, 14.4 s → **1.4 s**.
+
+Three things are worth reading off that rather than just the speedup.
+
+**The naive kernel shape would have wasted most of it.** One thread per covariance entry
+`(p, q)` striding the rows reads *columns* of a row-major matrix, so consecutive threads
+touch addresses `G` floats apart and every memory transaction is discarded. The 16×16 tile
+stages a block of rows in workgroup memory, where each thread's load is contiguous along
+the gene axis, and gets 16 multiply-adds per element loaded.
+
+**f32 is fine here, and that is a measurement rather than a hope.** The host oracle is f64
+and the device is not, so the contract is a residual, not equality. The interesting column
+is the last one: the residual **does not grow with n** (1.3e-6 at 200k against 1.6e-6 at
+20k), because the products go into a per-tile accumulator that folds into the running total
+once per 16 rows — the longest dependent add chain is `n/16`, not `n`. Kahan compensation
+was therefore not needed. Downstream, the eigenvalues agree with the host's to 3 decimal
+places and the scores to a relative 1e-3.
+
+**The remaining cost is now the eigensolve, and more GPU work will not touch it.**
+`eigenSym` is O(G³) and does not care how many cells there are: invisible at G=150, about
+500 ms at G=300, which is most of what the device path still spends. The next move for PCA,
+if one is wanted, is a truncated Lanczos or randomised solve for the leading d components
+instead of the full G×G Jacobi.
+
+Both the page and `pnpm umap:obsm` use the device path; the page falls back to the host if
+there is no usable GPU and *says so in the status line*, because a 14-second freeze and a
+1.4-second pause are different enough that the user should know which one they got.
+
 ## 9. Testing notes
 
 The GPU suite is deterministic and runs files in parallel. The only failing files are
@@ -391,6 +438,25 @@ the same neighbourhoods.
 `knnGpu` and `knnBruteForceCpu` are drop-in substitutes and are diffed directly, which
 also gives the offline path a cheap cross-check: `--cpu` and the default must produce the
 same graph (they do — 139790 edges on the 6000-cell fixture either way).
+
+**Which GPU kernels can be held to exact agreement, and why it differs, is worth being
+explicit about** — three kernels here sit in three different places:
+
+- `knnDescentGpu` **is** diffed element for element against the host, because it is
+  race-free by construction: thread `i` offers candidates only to `i`'s own list.
+- `pcaGpu` cannot be, because the host accumulates in f64 and the device in f32. Its
+  contract is a *measured residual* (§8.1). What is asserted exactly instead are the
+  structural properties a tiling bug would break while leaving the numbers plausible: the
+  covariance is bit-exactly symmetric, and the projection is bit-identical however the rows
+  are split across dispatches.
+- `umapLayoutGpu` cannot be either, for a different reason — it is deliberately racy
+  (Hogwild!), so it is checked statistically on trustworthiness. Note that its
+  `gpuTrust > hostTrust - 0.05` assertion is genuinely marginal and fails roughly one run in
+  six *in the full suite* (never in isolation), which is a real flake predating this work.
+
+Row tiling exists in every one of them for the watchdog reason, and in all three it is
+forced in a test rather than trusted, because at test sizes a single dispatch covers
+everything and the tiling would otherwise never run.
 
 ## 10. How far it scales
 
@@ -440,6 +506,14 @@ ms/epoch, which is where the page's cell slider tops out.
   element-for-element agreement with the host that the test currently asserts. Worth doing,
   but the correctness property is worth more than the constant until someone is actually
   waiting on it.
+- **A truncated eigensolve.** After §8.1, `eigenSym`'s full G×G Jacobi is the largest
+  remaining term in the device PCA (~500 ms at G=300, independent of cell count). A Lanczos
+  or randomised solve for just the leading d components would remove most of it. Not urgent:
+  the whole reduction is now under 1.5 s in the page.
+- **The `columnStats` pass is still on the host.** O(N·G) and 100–200 ms, so it is the
+  smallest of PCA's four steps by an order of magnitude — but it is *synchronous*, and it is
+  the last synchronous O(N·G) loop in the load. Cheap to move if the freeze budget ever gets
+  tight.
 - **A cheap post-condition on the k-NN.** Counting rows whose neighbours are all index 0
   during the readback costs nothing and would have turned both silent-truncation bugs into
   a thrown error. Worth doing regardless of the above.
