@@ -76,7 +76,48 @@ let knn: KnnResult | undefined;
 let driver: LayoutDriver | undefined;
 let running = true;
 let rebuildToken = 0;
-let busy = false;
+
+/**
+ * How many swaps are in flight. The animation loop must not run while one is.
+ *
+ * **A depth, not a flag.** Everything the loop touches — `data`, `driver`, `graph`,
+ * `previous` — is module-level mutable state swapped by `adopt`, which awaits partway
+ * through. `adopt` therefore has to hold the guard across its own mutations *and* across
+ * the `rebuildGraph` it delegates to, which takes the guard again; with a boolean, the
+ * inner release would reopen the loop while the outer swap was still half-done.
+ */
+let busyDepth = 0;
+const isBusy = () => busyDepth > 0;
+function enterBusy(): void {
+  busyDepth++;
+}
+function leaveBusy(): void {
+  busyDepth = Math.max(0, busyDepth - 1);
+}
+
+/** The async half of the frame currently in flight, if any. See `beginSwap`. */
+let framePending: Promise<void> | undefined;
+
+/**
+ * Take the guard and wait for any frame already in flight to finish.
+ *
+ * **The second half is the one that matters, and it is not obvious.** `busyDepth` stops the
+ * NEXT frame from starting, but it cannot retract a frame that is already suspended inside
+ * `driver.sync()` — a real buffer map that takes milliseconds. Disposing the driver under
+ * that frame destroys the buffers it is about to read, and the symptoms are a matched pair
+ * depending on exactly where the swap lands:
+ *
+ *   • during the readback  → `Error: This buffer has been destroyed`
+ *   • after it, in the continuation → `cannot read properties of undefined (reading 'epoch')`
+ *
+ * Both were reproduced deterministically by widening `sync()` with an artificial delay and
+ * firing a regenerate inside the window; the guard alone fixed only the second. So a swap
+ * waits the frame out rather than assuming there isn't one.
+ */
+async function beginSwap(): Promise<void> {
+  enterBusy();
+  await framePending;
+}
 
 /** Previous frame's coordinates, for the per-point speed channel. */
 let previous: Float32Array | undefined;
@@ -260,7 +301,8 @@ async function rebuildGraph(carryEmbedding: boolean): Promise<void> {
     return;
   }
   const knnChoice = knnFn(cols.length);
-  busy = true;
+  // Disposes and replaces the driver below, so it must wait out any in-flight frame.
+  await beginSwap();
   setStatus(`${knnChoice.label} k-NN over ${data.n.toLocaleString()} cells x ${cols.length} features…`);
   const t0 = performance.now();
 
@@ -285,7 +327,10 @@ async function rebuildGraph(carryEmbedding: boolean): Promise<void> {
 
     // Carry the coordinates across the swap — this is the whole animation model.
     const carried = carryEmbedding && driver && driver.coords().length === data.n * 2 ? Float32Array.from(driver.coords()) : undefined;
+    // Cleared, not just replaced: `gpuDriver` awaits, and leaving `driver` pointing at a
+    // disposed object across that await is the same latent hazard `restartWith` had.
     driver?.dispose();
+    driver = undefined;
     driver = gpuLayoutSelected() ? await gpuDriver(graph, carried) : hostDriver(graph, carried);
     if (token !== rebuildToken) return;
     if (!carried) {
@@ -298,7 +343,7 @@ async function rebuildGraph(carryEmbedding: boolean): Promise<void> {
   } catch (err) {
     setStatus(`graph build failed: ${err instanceof Error ? err.message : String(err)}`);
   } finally {
-    busy = false;
+    leaveBusy();
   }
 }
 
@@ -477,17 +522,36 @@ function draw(): void {
 // --- main loop ------------------------------------------------------------------------
 
 async function frame(): Promise<void> {
-  if (running && driver && graph && !busy) {
-    const d = driver; //hold onto a driver reference in case adopt unassigns during some async
+  if (running && driver && graph && !isBusy()) {
+    // Pinned for the whole frame: `driver` is module-level, and the frame's assumption is
+    // "one driver, start to finish".
+    const d = driver;
     const steps = Number($<HTMLInputElement>("steps").value);
     const initialAlpha = Number($<HTMLInputElement>("alpha").value);
     const minDist = Number($<HTMLInputElement>("minDist").value);
     // `LAYOUT_EPOCHS` is the decay horizon, not a stopping point: the loop keeps running
     // and the rate keeps falling, so a settled layout stays put until something changes.
     const t0 = performance.now();
-    d.step(steps, { initialAlpha, minDist });
-    // One readback per FRAME, not per epoch — the whole point of the resident buffer.
-    await d.sync();
+    // Published so a concurrent swap can wait for it — this is the half of the fix that
+    // `busyDepth` cannot provide. Everything that touches the device goes inside: the step
+    // queues work against `d`'s buffers and the sync maps one of them.
+    const inFlight = (async () => {
+      d.step(steps, { initialAlpha, minDist });
+      // One readback per FRAME, not per epoch — the whole point of the resident buffer.
+      await d.sync();
+    })();
+    framePending = inFlight;
+    try {
+      await inFlight;
+    } finally {
+      framePending = undefined;
+    }
+    // Belt and braces now that swaps wait: if one landed anyway, `d` is disposed and the
+    // channels below would describe a dataset that is no longer on screen.
+    if (driver !== d) {
+      requestAnimationFrame(() => void frame());
+      return;
+    }
     stepMs = stepMs * 0.9 + ((performance.now() - t0) / Math.max(1, steps)) * 0.1;
     updateSpeed();
     if (d.epoch % 8 === 0) updateStress();
@@ -500,12 +564,24 @@ async function frame(): Promise<void> {
 }
 
 /** Rebuild the driver around new coordinates (the GPU one owns a device buffer, so a
- *  host-side perturbation has to be re-uploaded rather than written in place). */
+ *  host-side perturbation has to be re-uploaded rather than written in place).
+ *
+ *  This had the widest version of the swap hazard: no guard at all, and `dispose()` followed
+ *  by an `await` left `driver` pointing at a destroyed driver for the whole of it, which the
+ *  animation loop was free to step. Clearing it before the await is as load-bearing as the
+ *  guard — `frame`'s `driver && …` test is then what keeps the loop off it. */
 async function restartWith(coords: Float32Array, epoch: number): Promise<void> {
   if (!graph) return;
-  driver?.dispose();
-  driver = gpuLayoutSelected() ? await gpuDriver(graph, coords) : hostDriver(graph, coords);
-  driver.reheat(epoch);
+  await beginSwap();
+  try {
+    driver?.dispose();
+    driver = undefined;
+    const next = gpuLayoutSelected() ? await gpuDriver(graph, coords) : hostDriver(graph, coords);
+    next.reheat(epoch);
+    driver = next;
+  } finally {
+    leaveBusy();
+  }
 }
 
 // --- wiring ---------------------------------------------------------------------------
@@ -579,20 +655,29 @@ function describeDataset(): void {
 }
 
 async function adopt(next: UmapDataset, carry: boolean): Promise<void> {
-  data = next;
-  active = data.blocks.map(() => true);
-  if (!carry) {
-    driver?.dispose();
-    driver = undefined;
-    previous = undefined;
-    speed = undefined;
-    stress = undefined;
+  // The guard covers the WHOLE swap, including the rebuild it delegates to. Between the
+  // `data = next` below and the new driver existing, the module's state is inconsistent by
+  // construction — a new cell count against an old embedding — and the animation loop must
+  // not observe it. See `busyDepth` and `beginSwap`.
+  await beginSwap();
+  try {
+    data = next;
+    active = data.blocks.map(() => true);
+    if (!carry) {
+      driver?.dispose();
+      driver = undefined;
+      previous = undefined;
+      speed = undefined;
+      stress = undefined;
+    }
+    paletteCache = undefined;
+    renderBlockButtons();
+    renderColourOptions();
+    describeDataset();
+    await rebuildGraph(false);
+  } finally {
+    leaveBusy();
   }
-  paletteCache = undefined;
-  renderBlockButtons();
-  renderColourOptions();
-  describeDataset();
-  await rebuildGraph(false);
 }
 
 async function regenerate(): Promise<void> {
@@ -640,7 +725,7 @@ function refreshStoreControls(): void {
 async function inspect(): Promise<void> {
   const url = $<HTMLInputElement>("store").value.trim();
   if (!url) return;
-  busy = true;
+  enterBusy();
   setStatus("inspecting store…");
   try {
     catalog = await inspectStore(url);
@@ -655,7 +740,7 @@ async function inspect(): Promise<void> {
   } catch (err) {
     setStatus(`inspect failed: ${err instanceof Error ? err.message : String(err)}`);
   } finally {
-    busy = false;
+    leaveBusy();
   }
 }
 
@@ -666,7 +751,7 @@ async function loadStore(): Promise<void> {
     showBanner("inspect a store first");
     return;
   }
-  busy = true;
+  enterBusy();
   try {
     const next = await storeDataset(url, {
       table,
@@ -679,11 +764,13 @@ async function loadStore(): Promise<void> {
       labelColumn: $<HTMLSelectElement>("labelSel").value || undefined,
       onProgress: setStatus,
     });
-    busy = false;
+    // The guard is NOT released before this. It used to be, which is how a half-applied
+    // swap became visible to the animation loop in the first place.
     await adopt(next, false);
   } catch (err) {
     setStatus(`load failed: ${err instanceof Error ? err.message : String(err)}`);
-    busy = false;
+  } finally {
+    leaveBusy();
   }
 }
 
