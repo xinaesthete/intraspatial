@@ -69,22 +69,61 @@ interface LayoutDriver {
   dispose(): void;
 }
 
-let data: UmapDataset;
-let active: boolean[] = [];
-let graph: FuzzyGraph | undefined;
-let knn: KnnResult | undefined;
-let driver: LayoutDriver | undefined;
+/**
+ * Per-point channels derived from the current layout, recomputed as it moves.
+ *
+ * Mutable, but **owned by exactly one `Session`**. That ownership is what makes the mutation
+ * safe rather than merely conventional: a frame that computes these into a superseded
+ * session's `channels` is writing to an object nothing can reach again, so there is no
+ * "check before you write" rule to remember and no way to leave a new dataset wearing an old
+ * dataset's speeds.
+ */
+interface Channels {
+  /** Previous frame's coordinates, for the per-point speed channel. */
+  previous?: Float32Array;
+  speed?: Float32Array;
+  stress?: Float32Array;
+}
+
+/**
+ * Everything about the current dataset that has to be mutually consistent.
+ *
+ * **Replaced as a whole, never patched in place**, and that is the entire point. This page
+ * previously held these as ten independent module-level bindings, which is a thousand
+ * representable states and a handful of valid ones — and every swap bug it had was an invalid
+ * combination being briefly observable (a new `data.n` against the previous embedding, a
+ * `driver` that had been disposed, motion channels sized for the dataset before last). As one
+ * frozen value those states cannot be written down, so they cannot be observed.
+ *
+ * **Object identity is the generation.** Anything asynchronous captures the session it began
+ * with and compares by identity after each await; if `session` no longer points at it, the
+ * work is stale and is dropped. That replaces the previous `rebuildToken` counter, which
+ * checked staleness *after* installing its driver and so let a superseded rebuild clobber a
+ * newer one.
+ *
+ * See `docs/state-discipline-and-fp.md` for why this rather than an effect system.
+ */
+interface Session {
+  readonly data: UmapDataset;
+  /** Which feature blocks are enabled — the feature subset the graph was built from. */
+  readonly active: readonly boolean[];
+  /** Built for exactly this `data` and `active`. Absent until the first build completes. */
+  readonly graph?: FuzzyGraph;
+  readonly knn?: KnnResult;
+  readonly driver?: LayoutDriver;
+  readonly channels: Channels;
+}
+
+/** The one mutable binding that matters. Everything below reads it once and holds the value. */
+let session: Session | undefined;
+
 let running = true;
-let rebuildToken = 0;
 
 /**
  * How many swaps are in flight. The animation loop must not run while one is.
  *
- * **A depth, not a flag.** Everything the loop touches — `data`, `driver`, `graph`,
- * `previous` — is module-level mutable state swapped by `adopt`, which awaits partway
- * through. `adopt` therefore has to hold the guard across its own mutations *and* across
- * the `rebuildGraph` it delegates to, which takes the guard again; with a boolean, the
- * inner release would reopen the loop while the outer swap was still half-done.
+ * A depth, not a flag: a swap that delegates to another swap-scoped step would otherwise have
+ * the inner release reopen the loop while the outer swap was still half-done.
  */
 let busyDepth = 0;
 const isBusy = () => busyDepth > 0;
@@ -119,12 +158,44 @@ async function beginSwap(): Promise<void> {
   await framePending;
 }
 
-/** Previous frame's coordinates, for the per-point speed channel. */
-let previous: Float32Array | undefined;
-let speed: Float32Array | undefined;
-let stress: Float32Array | undefined;
+/** Newest swap request. A queued job whose number has been superseded never starts. */
+let requestSeq = 0;
+/** Serialises swaps: each waits for the previous to settle. */
+let swapChain: Promise<unknown> = Promise.resolve();
+
+/**
+ * Run `job` as the newest swap request, serialised against every other swap.
+ *
+ * Two properties, and the second is a bug fix rather than tidiness:
+ *
+ *   • **Serialised.** Two rebuilds running concurrently can install their drivers in either
+ *     order, so the older one can win. The chain makes that unrepresentable.
+ *   • **Coalescing.** A request superseded before it starts is dropped entirely. Without this,
+ *     holding down a control queued one full k-NN build per event, each running to completion
+ *     before discovering it was stale — a click storm at 60 ms intervals stalled the page for
+ *     30 seconds behind ~166 redundant builds. Now the backlog collapses to the newest.
+ *
+ * `job` gets a `live()` predicate: false once a newer request has arrived. It must be checked
+ * after every await, and anything already allocated must be released on the stale path.
+ */
+function scheduleSwap(job: (live: () => boolean) => Promise<void>): Promise<void> {
+  const mine = ++requestSeq;
+  const run = swapChain.then(async () => {
+    if (mine !== requestSeq) return;
+    await beginSwap();
+    try {
+      await job(() => mine === requestSeq);
+    } finally {
+      leaveBusy();
+    }
+  });
+  swapChain = run.catch(() => {});
+  return run;
+}
+
 /** True once the canvas holds a frame worth fading into. Cleared on resize and on a
- *  cold restart so trails never smear across a discontinuity. */
+ *  cold restart so trails never smear across a discontinuity. Canvas state, not dataset
+ *  state — which is why it is not in `Session`. */
 let canFade = false;
 /** Rolling mean of the per-frame step cost, for the throughput readout. */
 let stepMs = 0;
@@ -178,10 +249,10 @@ function cyclic(t: number): Rgb {
 
 /** Columns of the currently-enabled feature blocks. Order is stable so a toggle changes
  *  the feature set without permuting what stays. */
-function activeColumns(): number[] {
+function activeColumns(s: Session): number[] {
   const cols: number[] = [];
-  data.blocks.forEach((b, i) => {
-    if (active[i]) cols.push(...b.columns);
+  s.data.blocks.forEach((b, i) => {
+    if (s.active[i]) cols.push(...b.columns);
   });
   return cols;
 }
@@ -272,12 +343,15 @@ const EXACT_WORK_LIMIT = 2e10;
  * faster at 100k cells and 51 features, at a recall (0.87) that leaves the embedding's
  * trustworthiness unchanged to four decimal places. See `docs/umap-on-anndata.md` §3.
  */
-function knnFn(features: number): {
+function knnFn(
+  n: number,
+  features: number,
+): {
   fn: (d: ArrayLike<number>, n: number, dim: number, k: number) => Promise<KnnResult> | KnnResult;
   label: string;
 } {
   const choice = $<HTMLSelectElement>("knnBackend").value;
-  const auto = data.n * data.n * features > EXACT_WORK_LIMIT ? "descentGpu" : "gpu";
+  const auto = n * n * features > EXACT_WORK_LIMIT ? "descentGpu" : "gpu";
   switch (choice === "auto" ? auto : choice) {
     case "descentGpu":
       return { fn: (d, n, dim, k) => knnDescentGpu(d, n, dim, { k, seed: 42 }), label: "GPU NN-descent" };
@@ -288,9 +362,21 @@ function knnFn(features: number): {
   }
 }
 
-async function rebuildGraph(carryEmbedding: boolean): Promise<void> {
-  const token = ++rebuildToken;
-  const cols = activeColumns();
+/**
+ * Build the graph and layout for `base`, and publish the result as a new session.
+ *
+ * Takes the session it is building for as an argument rather than reading the module binding,
+ * so it is a function of an immutable value: everything it computes belongs to `base`, and if
+ * `base` has been superseded by the time a result exists, that result is discarded — including
+ * disposing the driver it just created, which the previous token-based version leaked because
+ * it installed the driver before checking staleness.
+ *
+ * Callers reach this through `requestRebuild` / `adopt`, never directly, so it always runs
+ * inside a `scheduleSwap` slot.
+ */
+async function buildFor(base: Session, carryEmbedding: boolean, live: () => boolean): Promise<void> {
+  const { data } = base;
+  const cols = activeColumns(base);
   if (cols.length === 0) {
     showBanner("no feature blocks selected");
     return;
@@ -300,9 +386,7 @@ async function rebuildGraph(carryEmbedding: boolean): Promise<void> {
     showBanner(`need more cells than n_neighbors (${data.n} <= ${nNeighbors})`);
     return;
   }
-  const knnChoice = knnFn(cols.length);
-  // Disposes and replaces the driver below, so it must wait out any in-flight frame.
-  await beginSwap();
+  const knnChoice = knnFn(data.n, cols.length);
   setStatus(`${knnChoice.label} k-NN over ${data.n.toLocaleString()} cells x ${cols.length} features…`);
   const t0 = performance.now();
 
@@ -316,56 +400,68 @@ async function rebuildGraph(carryEmbedding: boolean): Promise<void> {
       pca: false,
       knn: knnChoice.fn,
     });
-    // A slower rebuild must not clobber a newer one — the sliders can outpace the GPU.
-    if (token !== rebuildToken) return;
-
-    graph = built.graph;
-    knn = built.knn;
-    $<HTMLSpanElement>("sBuild").textContent = `${(performance.now() - t0).toFixed(0)} ms`;
-    $<HTMLSpanElement>("sKnn").textContent = knnChoice.label;
-    $<HTMLSpanElement>("sEdges").textContent = graph.nEdges.toLocaleString();
+    if (!live() || session !== base) return;
 
     // Carry the coordinates across the swap — this is the whole animation model.
-    const carried = carryEmbedding && driver && driver.coords().length === data.n * 2 ? Float32Array.from(driver.coords()) : undefined;
-    // Cleared, not just replaced: `gpuDriver` awaits, and leaving `driver` pointing at a
-    // disposed object across that await is the same latent hazard `restartWith` had.
-    driver?.dispose();
-    driver = undefined;
-    driver = gpuLayoutSelected() ? await gpuDriver(graph, carried) : hostDriver(graph, carried);
-    if (token !== rebuildToken) return;
-    if (!carried) {
-      previous = undefined;
-      speed = undefined;
-      stress = undefined;
-      canFade = false;
+    const carried =
+      carryEmbedding && base.driver && base.driver.coords().length === data.n * 2 ? Float32Array.from(base.driver.coords()) : undefined;
+    const driver = gpuLayoutSelected() ? await gpuDriver(built.graph, carried) : hostDriver(built.graph, carried);
+    if (!live() || session !== base) {
+      // Ours, and nobody will ever read it — so we own the cleanup.
+      driver.dispose();
+      return;
     }
+
+    base.driver?.dispose();
+    // One assignment. Nothing can observe a graph that disagrees with its driver, or motion
+    // channels sized for a different dataset, because there is no moment at which they exist
+    // apart. Fresh channels on a cold restart; the old ones carry when the coordinates do.
+    session = { ...base, graph: built.graph, knn: built.knn, driver, channels: carried ? base.channels : {} };
+    if (!carried) canFade = false;
+
+    $<HTMLSpanElement>("sBuild").textContent = `${(performance.now() - t0).toFixed(0)} ms`;
+    $<HTMLSpanElement>("sKnn").textContent = knnChoice.label;
+    $<HTMLSpanElement>("sEdges").textContent = built.graph.nEdges.toLocaleString();
     setStatus("");
   } catch (err) {
     setStatus(`graph build failed: ${err instanceof Error ? err.message : String(err)}`);
-  } finally {
-    leaveBusy();
   }
+}
+
+/** Rebuild for the current dataset — a feature toggle, an `n_neighbors` change, a backend
+ *  switch. Coalesced and serialised; see `scheduleSwap`. */
+function requestRebuild(carryEmbedding: boolean): Promise<void> {
+  return scheduleSwap(async (live) => {
+    const base = session;
+    if (base) await buildFor(base, carryEmbedding, live);
+  });
 }
 
 // --- per-frame derived channels -------------------------------------------------------
 
-function updateSpeed(): void {
-  if (!driver) return;
-  const emb = driver.coords();
-  if (!speed || speed.length !== data.n) speed = new Float32Array(data.n);
-  if (!previous || previous.length !== emb.length) {
-    previous = Float32Array.from(emb);
+/** Both of these write into `s.channels`, which `s` owns — so the length checks below are
+ *  about first use, not about a stale dataset. A session's channels can only ever have been
+ *  sized for that session's `data`. */
+function updateSpeed(s: Session): void {
+  const { data, channels } = s;
+  if (!s.driver) return;
+  const emb = s.driver.coords();
+  if (!channels.speed || channels.speed.length !== data.n) channels.speed = new Float32Array(data.n);
+  const speed = channels.speed;
+  if (!channels.previous || channels.previous.length !== emb.length) {
+    channels.previous = Float32Array.from(emb);
     speed.fill(0);
     return;
   }
+  const previous = channels.previous;
   let total = 0;
   for (let i = 0; i < data.n; i++) {
     const dx = emb[i * 2]! - previous[i * 2]!;
     const dy = emb[i * 2 + 1]! - previous[i * 2 + 1]!;
-    const s = Math.hypot(dx, dy);
+    const d = Math.hypot(dx, dy);
     // Smooth so the colour reads as "unsettled", not as single-frame jitter.
-    speed[i] = speed[i]! * 0.85 + s * 0.15;
-    total += s;
+    speed[i] = speed[i]! * 0.85 + d * 0.15;
+    total += d;
   }
   previous.set(emb);
   $<HTMLSpanElement>("sSpeed").textContent = (total / data.n).toFixed(4);
@@ -373,10 +469,12 @@ function updateSpeed(): void {
 
 /** Mean embedded length of each point's k-NN edges — how far its high-dimensional
  *  neighbours ended up. Recomputed lazily; it changes slowly compared to speed. */
-function updateStress(): void {
-  if (!driver || !knn) return;
-  if (!stress || stress.length !== data.n) stress = new Float32Array(data.n);
-  const emb = driver.coords();
+function updateStress(s: Session): void {
+  const { data, knn, channels } = s;
+  if (!s.driver || !knn) return;
+  if (!channels.stress || channels.stress.length !== data.n) channels.stress = new Float32Array(data.n);
+  const stress = channels.stress;
+  const emb = s.driver.coords();
   const k = knn.k;
   for (let i = 0; i < data.n; i++) {
     let acc = 0;
@@ -390,12 +488,12 @@ function updateStress(): void {
 
 // --- rendering ------------------------------------------------------------------------
 
-function fitTransform(emb: Float32Array): { s: number; ox: number; oy: number } {
+function fitTransform(emb: Float32Array, n: number): { s: number; ox: number; oy: number } {
   let minX = Infinity;
   let maxX = -Infinity;
   let minY = Infinity;
   let maxY = -Infinity;
-  for (let i = 0; i < data.n; i++) {
+  for (let i = 0; i < n; i++) {
     const x = emb[i * 2]!;
     const y = emb[i * 2 + 1]!;
     if (x < minX) minX = x;
@@ -435,17 +533,21 @@ const RECT_DRAW_LIMIT = 20000;
 let pixels: ImageData | undefined;
 
 /** Per-point colour as bytes, so both draw paths share one decision. */
-function colourOf(i: number, mode: string, speedScale: number, stressMedian: number, pal: Rgb[]): Rgb {
-  if (mode === "motion") return heat((speed?.[i] ?? 0) / speedScale);
-  if (mode === "stress") return heat(stressRamp(stress?.[i] ?? 0, stressMedian));
+function colourOf(sn: Session, i: number, mode: string, speedScale: number, stressMedian: number, pal: Rgb[]): Rgb {
+  const { data, channels } = sn;
+  if (mode === "motion") return heat((channels.speed?.[i] ?? 0) / speedScale);
+  if (mode === "stress") return heat(stressRamp(channels.stress?.[i] ?? 0, stressMedian));
   if (mode === "truth" && data.truth) return data.truthCyclic ? cyclic(data.truth[i]!) : heat(data.truth[i]!);
   return pal[data.label[i]! % pal.length]!;
 }
 
 function draw(): void {
+  // Read once. A swap landing mid-draw cannot half-apply, because there is nothing to
+  // half-apply: `sn` either is the whole new state or the whole old one.
+  const sn = session;
   const w = canvas.width;
   const h = canvas.height;
-  const bulk = data && data.n > RECT_DRAW_LIMIT;
+  const bulk = !!sn && sn.data.n > RECT_DRAW_LIMIT;
   const showTrails = $<HTMLInputElement>("showTrails").checked && !bulk;
 
   if (showTrails && canFade) {
@@ -458,11 +560,12 @@ function draw(): void {
     ctx2d.fillRect(0, 0, w, h);
   }
   canFade = true;
-  if (!driver) return;
+  if (!sn?.driver) return;
+  const { data, graph, channels } = sn;
 
-  const emb = driver.coords();
+  const emb = sn.driver.coords();
   if (emb.length < data.n * 2) return;
-  const { s, ox, oy } = fitTransform(emb);
+  const { s, ox, oy } = fitTransform(emb, data.n);
   const mode = $<HTMLSelectElement>("colourBy").value;
 
   if ($<HTMLInputElement>("showEdges").checked && graph && !bulk) {
@@ -480,8 +583,8 @@ function draw(): void {
     ctx2d.stroke();
   }
 
-  const speedScale = mode === "motion" && speed ? percentile(speed, 0.95) : 1;
-  const stressMedian = mode === "stress" && stress ? percentile(stress, 0.5) : 1;
+  const speedScale = mode === "motion" && channels.speed ? percentile(channels.speed, 0.95) : 1;
+  const stressMedian = mode === "stress" && channels.stress ? percentile(channels.stress, 0.5) : 1;
   const pal = palette(data.labelNames.length);
 
   if (bulk) {
@@ -500,7 +603,7 @@ function draw(): void {
       const x = Math.round(emb[i * 2]! * s + ox);
       const y = Math.round(emb[i * 2 + 1]! * s + oy);
       if (x < 0 || y < 0 || x >= w || y >= h) continue;
-      const [r, g, b] = colourOf(i, mode, speedScale, stressMedian, pal);
+      const [r, g, b] = colourOf(sn, i, mode, speedScale, stressMedian, pal);
       const p = (y * w + x) * 4;
       buf[p] = r;
       buf[p + 1] = g;
@@ -513,7 +616,7 @@ function draw(): void {
   for (let i = 0; i < data.n; i++) {
     const x = emb[i * 2]! * s + ox;
     const y = emb[i * 2 + 1]! * s + oy;
-    const [r, g, b] = colourOf(i, mode, speedScale, stressMedian, pal);
+    const [r, g, b] = colourOf(sn, i, mode, speedScale, stressMedian, pal);
     ctx2d.fillStyle = `rgb(${r},${g},${b})`;
     ctx2d.fillRect(x - 1.5, y - 1.5, 3, 3);
   }
@@ -522,10 +625,12 @@ function draw(): void {
 // --- main loop ------------------------------------------------------------------------
 
 async function frame(): Promise<void> {
-  if (running && driver && graph && !isBusy()) {
-    // Pinned for the whole frame: `driver` is module-level, and the frame's assumption is
-    // "one driver, start to finish".
-    const d = driver;
+  const sn = session;
+  if (running && sn?.driver && sn.graph && !isBusy()) {
+    // The frame's assumption — "one dataset and one driver, start to finish" — is now
+    // expressed by holding a single immutable value rather than by hoping five bindings stay
+    // in step.
+    const d = sn.driver;
     const steps = Number($<HTMLInputElement>("steps").value);
     const initialAlpha = Number($<HTMLInputElement>("alpha").value);
     const minDist = Number($<HTMLInputElement>("minDist").value);
@@ -547,14 +652,16 @@ async function frame(): Promise<void> {
       framePending = undefined;
     }
     // Belt and braces now that swaps wait: if one landed anyway, `d` is disposed and the
-    // channels below would describe a dataset that is no longer on screen.
-    if (driver !== d) {
+    // channels below would describe a dataset that is no longer on screen. One identity
+    // comparison covers the dataset, the graph, the driver and the channels at once, because
+    // they are one value.
+    if (session !== sn) {
       requestAnimationFrame(() => void frame());
       return;
     }
     stepMs = stepMs * 0.9 + ((performance.now() - t0) / Math.max(1, steps)) * 0.1;
-    updateSpeed();
-    if (d.epoch % 8 === 0) updateStress();
+    updateSpeed(sn);
+    if (d.epoch % 8 === 0) updateStress(sn);
     $<HTMLSpanElement>("sEpoch").textContent = String(d.epoch);
     $<HTMLSpanElement>("sAlpha").textContent = d.alphaNow(initialAlpha).toFixed(3);
     $<HTMLSpanElement>("sStep").textContent = `${stepMs.toFixed(2)} ms`;
@@ -566,22 +673,24 @@ async function frame(): Promise<void> {
 /** Rebuild the driver around new coordinates (the GPU one owns a device buffer, so a
  *  host-side perturbation has to be re-uploaded rather than written in place).
  *
- *  This had the widest version of the swap hazard: no guard at all, and `dispose()` followed
- *  by an `await` left `driver` pointing at a destroyed driver for the whole of it, which the
- *  animation loop was free to step. Clearing it before the await is as load-bearing as the
- *  guard — `frame`'s `driver && …` test is then what keeps the loop off it. */
-async function restartWith(coords: Float32Array, epoch: number): Promise<void> {
-  if (!graph) return;
-  await beginSwap();
-  try {
-    driver?.dispose();
-    driver = undefined;
-    const next = gpuLayoutSelected() ? await gpuDriver(graph, coords) : hostDriver(graph, coords);
+ *  This had the widest version of the swap hazard: no guard at all, and `dispose()` followed by
+ *  an `await` left `driver` pointing at a destroyed driver for the whole of it, which the
+ *  animation loop was free to step. Now the old driver stays live and untouched until the new
+ *  one exists — there is no window in which the visible session references a disposed object,
+ *  because the session is only replaced once the replacement is ready. */
+function restartWith(coords: Float32Array, epoch: number): Promise<void> {
+  return scheduleSwap(async (live) => {
+    const base = session;
+    if (!base?.graph) return;
+    const next = gpuLayoutSelected() ? await gpuDriver(base.graph, coords) : hostDriver(base.graph, coords);
+    if (!live() || session !== base) {
+      next.dispose();
+      return;
+    }
     next.reheat(epoch);
-    driver = next;
-  } finally {
-    leaveBusy();
-  }
+    base.driver?.dispose();
+    session = { ...base, driver: next };
+  });
 }
 
 // --- wiring ---------------------------------------------------------------------------
@@ -610,19 +719,26 @@ function bindSlider(id: string, fmt: (v: number) => string, onChange?: () => voi
  *  its travel in sizes that all behave identically. */
 const CELL_STEPS = [500, 1000, 2000, 4000, 8000, 16000, 32000];
 
-function renderBlockButtons(): void {
+function renderBlockButtons(s: Session): void {
   const host = $<HTMLDivElement>("blocks");
   host.textContent = "";
-  data.blocks.forEach((b, i) => {
+  s.data.blocks.forEach((b, i) => {
     const btn = document.createElement("button");
     btn.textContent = b.name;
-    btn.className = active[i] ? "on" : "";
+    btn.className = s.active[i] ? "on" : "";
     btn.title = `${b.columns.length} feature${b.columns.length === 1 ? "" : "s"} (columns ${b.columns[0]}–${b.columns[b.columns.length - 1]})`;
-    btn.addEventListener("click", async () => {
-      active[i] = !active[i];
-      btn.className = active[i] ? "on" : "";
-      showBanner(`${b.name} ${active[i] ? "on" : "off"} — relaxing`);
-      await rebuildGraph(true);
+    btn.addEventListener("click", () => {
+      // A new `active` array and a new session, rather than mutating in place: the enabled
+      // set is what the graph was built from, so changing it has to be a state transition the
+      // rest of the page can see as one. Read `session`, not the captured `s` — these handlers
+      // outlive the session they were rendered for.
+      const now = session;
+      if (!now) return;
+      const next = now.active.map((on, j) => (j === i ? !on : on));
+      btn.className = next[i] ? "on" : "";
+      showBanner(`${b.name} ${next[i] ? "on" : "off"} — relaxing`);
+      session = { ...now, active: next };
+      void requestRebuild(true);
     });
     host.appendChild(btn);
   });
@@ -630,7 +746,8 @@ function renderBlockButtons(): void {
 
 /** Colour options depend on the dataset: a continuous ground truth only exists for the
  *  generators that have one, and offering a dead entry is worse than omitting it. */
-function renderColourOptions(): void {
+function renderColourOptions(s: Session): void {
+  const { data } = s;
   const sel = $<HTMLSelectElement>("colourBy");
   const wanted = sel.value;
   sel.textContent = "";
@@ -647,46 +764,46 @@ function renderColourOptions(): void {
   sel.value = [...sel.options].some((o) => o.value === wanted) ? wanted : "cluster";
 }
 
-function describeDataset(): void {
+function describeDataset(s: Session): void {
+  const { data } = s;
   $<HTMLDivElement>("datasetNote").textContent = data.note;
   $<HTMLDivElement>("expect").textContent = data.expect ?? "";
   $<HTMLDivElement>("expect").style.display = data.expect ? "block" : "none";
   $<HTMLSpanElement>("sCells").textContent = data.n.toLocaleString();
 }
 
-async function adopt(next: UmapDataset, carry: boolean): Promise<void> {
-  // The guard covers the WHOLE swap, including the rebuild it delegates to. Between the
-  // `data = next` below and the new driver existing, the module's state is inconsistent by
-  // construction — a new cell count against an old embedding — and the animation loop must
-  // not observe it. See `busyDepth` and `beginSwap`.
-  await beginSwap();
-  try {
-    data = next;
-    active = data.blocks.map(() => true);
-    if (!carry) {
-      driver?.dispose();
-      driver = undefined;
-      previous = undefined;
-      speed = undefined;
-      stress = undefined;
-    }
-    paletteCache = undefined;
-    renderBlockButtons();
-    renderColourOptions();
-    describeDataset();
-    await rebuildGraph(false);
-  } finally {
-    leaveBusy();
-  }
+/**
+ * Switch to a new dataset.
+ *
+ * The old driver is disposed *here*, before the new session is installed, because a new
+ * dataset has a different cell count — there is nothing for the old layout to carry into and
+ * keeping it alive would only give `draw` an embedding of the wrong length to find. That is the
+ * one case where the outgoing driver dies before its replacement exists, and it is safe
+ * because `scheduleSwap` has already waited out the in-flight frame.
+ *
+ * `paletteCache` deliberately is NOT cleared: it is keyed by label count and therefore
+ * self-invalidating. Resetting it here was belt-and-braces that read as a required step.
+ */
+function adopt(next: UmapDataset): Promise<void> {
+  return scheduleSwap(async (live) => {
+    session?.driver?.dispose();
+    const fresh: Session = { data: next, active: next.blocks.map(() => true), channels: {} };
+    session = fresh;
+    canFade = false;
+    renderBlockButtons(fresh);
+    renderColourOptions(fresh);
+    describeDataset(fresh);
+    await buildFor(fresh, false, live);
+  });
 }
 
-async function regenerate(): Promise<void> {
+function regenerate(): Promise<void> {
   const key = $<HTMLSelectElement>("generator").value;
   const n = CELL_STEPS[Number($<HTMLInputElement>("nCells").value)]!;
   const noise = Number($<HTMLInputElement>("noise").value);
   // 0 means "whatever the generator asked for" — each shape needs a different amount, and
   // a single default across all of them would blur the thin ones and glue the fat ones.
-  await adopt(syntheticDataset(key, { n, seed: 11, noise: noise > 0 ? noise : undefined }), false);
+  return adopt(syntheticDataset(key, { n, seed: 11, noise: noise > 0 ? noise : undefined }));
 }
 
 // --- real data ------------------------------------------------------------------------
@@ -764,9 +881,12 @@ async function loadStore(): Promise<void> {
       labelColumn: $<HTMLSelectElement>("labelSel").value || undefined,
       onProgress: setStatus,
     });
-    // The guard is NOT released before this. It used to be, which is how a half-applied
-    // swap became visible to the animation loop in the first place.
-    await adopt(next, false);
+    // The guard is held across this, and nesting is fine — `adopt` takes it again via
+    // `scheduleSwap` and `busyDepth` is a depth for exactly this reason. It does not deadlock:
+    // `beginSwap` waits on a frame already in flight, whose GPU work does not depend on the
+    // guard and so settles on its own. Holding it through the read is what keeps the loop off a
+    // dataset that is being replaced.
+    await adopt(next);
   } catch (err) {
     setStatus(`load failed: ${err instanceof Error ? err.message : String(err)}`);
   } finally {
@@ -800,7 +920,7 @@ async function main(): Promise<void> {
   bindSlider(
     "nNeighbors",
     (v) => String(v),
-    () => void rebuildGraph(true),
+    () => void requestRebuild(true),
   );
   bindSlider("minDist", (v) => v.toFixed(2));
   bindSlider("alpha", (v) => v.toFixed(2));
@@ -818,11 +938,11 @@ async function main(): Promise<void> {
 
   $<HTMLSelectElement>("layoutBackend").addEventListener("change", () => {
     showBanner(`layout on ${gpuLayoutSelected() ? "GPU" : "host"}`);
-    void rebuildGraph(true);
+    void requestRebuild(true);
   });
-  $<HTMLSelectElement>("knnBackend").addEventListener("change", () => void rebuildGraph(true));
+  $<HTMLSelectElement>("knnBackend").addEventListener("change", () => void requestRebuild(true));
   $<HTMLButtonElement>("regen").addEventListener("click", () => void regenerate());
-  $<HTMLButtonElement>("reseed").addEventListener("click", () => void rebuildGraph(false));
+  $<HTMLButtonElement>("reseed").addEventListener("click", () => void requestRebuild(false));
   $<HTMLButtonElement>("pause").addEventListener("click", (e) => {
     running = !running;
     (e.target as HTMLButtonElement).textContent = running ? "Pause" : "Resume";
@@ -830,15 +950,16 @@ async function main(): Promise<void> {
   $<HTMLButtonElement>("kick").addEventListener("click", () => {
     // Jitter the layout to show it re-converging — the cheapest way to see that what is
     // on screen is a live optimum rather than a stored picture.
-    if (!driver || !graph) return;
-    const jittered = Float32Array.from(driver.coords());
-    const rnd = mulberry32(driver.epoch + 1);
+    const sn = session;
+    if (!sn?.driver || !sn.graph) return;
+    const jittered = Float32Array.from(sn.driver.coords());
+    const rnd = mulberry32(sn.driver.epoch + 1);
     for (let t = 0; t < jittered.length; t++) jittered[t] = jittered[t]! + (rnd() - 0.5) * 6;
     // Rewind the anneal, or nothing happens: a settled layout has no learning rate left,
     // AND its per-edge sampling schedule has run past the horizon. Both drivers expose
     // `reheat` for exactly this — setting the epoch alone leaves every edge un-due and
     // the layout frozen.
-    const at = Math.min(driver.epoch, 200);
+    const at = Math.min(sn.driver.epoch, 200);
     void restartWith(jittered, at);
     showBanner("kicked — watch it re-converge");
   });
