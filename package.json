@@ -2,7 +2,7 @@
   "name": "tgpu-htj2k",
   "version": "0.0.0",
   "type": "module",
-  "description": "WebGPU HTJ2K (JPEG 2000 Part 15) codec \u2014 Rust/wasm CPU core + TypeScript/TypeGPU GPU layer.",
+  "description": "WebGPU HTJ2K (JPEG 2000 Part 15) codec — Rust/wasm CPU core + TypeScript/TypeGPU GPU layer.",
   "packageManager": "pnpm@11.12.0",
   "engines": {
     "node": ">=20.11"
@@ -32,7 +32,8 @@
     "mdv:parity": "tsx scripts/mdv-pcf-parity.ts",
     "mdv:quadrat": "tsx scripts/mdv-quadrat-parity.ts",
     "umap:obsm": "tsx scripts/umap-obsm.ts",
-    "umap:bench": "tsx scripts/umap-bench.ts"
+    "umap:bench": "tsx scripts/umap-bench.ts",
+    "qcm:bench": "tsx scripts/qcm-bench.ts"
   },
   "dependencies": {
     "@zarrita/storage": "^0.2.0",

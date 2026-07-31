@@ -138,9 +138,11 @@
         <label for="contactUm">contact µm</label>
         <input id="contactUm" type="text" value="20" style="flex:0 1 70px" />
         <label for="qcmSims">QCM sims</label>
-        <input id="qcmSims" type="text" value="999" style="flex:0 1 70px" />
+        <input id="qcmSims" type="text" value="9999" style="flex:0 1 70px" />
         <label for="qcmGate">gate q&lt;α</label>
         <input id="qcmGate" type="checkbox" checked style="flex:0 0 auto" />
+        <label for="qcmGpu">GPU null</label>
+        <input id="qcmGpu" type="checkbox" checked style="flex:0 0 auto" />
       </div>
       <p class="note"><b>One matrix, several statistics — they disagree, and that is the point.</b>
         <code>MH_PC</code> is the paper's headline: a <b>partial</b> correlation, measuring A against B
@@ -151,10 +153,20 @@
         on COVID_SAMPLE_16_ROI_3, 68 of 1,128 pairs exceed |r| = 0.3 but only 8 exceed |partial| = 0.3, and after
         Benjamini–Hochberg 226 pairs survive on the plain correlation against 23 on the partial.
         <b>gate q&lt;α</b> dims the pairs that fail BH — 1,128 simultaneous tests on one ROI, so the correction is
-        not optional. <b>1000 shuffles is the paper's number, and the default here for a reason</b>: a permutation
-        p cannot fall below 1/(S+1), so BH can declare nothing at all until enough pairs pile up at that floor.
-        At 199 shuffles that bar is 113 pairs and the partial correlation returns <i>zero</i> discoveries — which
-        looks exactly like "no associations" and is not. The panel says so when it applies.</p>
+        not optional.</p>
+      <p class="note"><b>The shuffle count is the resolution, and that is why the null runs on the GPU.</b>
+        A permutation p cannot fall below 1/(S+1), so BH can declare nothing at all until
+        m/((S+1)·α) pairs pile up at that floor. At the paper's 1000 shuffles that bar is 23 pairs and exactly
+        23 clear it — the discovery set sits <i>on</i> the threshold, so it is unstable: two runs of the same
+        null disagree on 6 of 1,128 pairs from Monte Carlo noise alone. At 199 shuffles the bar is 113 and the
+        partial correlation returns <i>zero</i> discoveries, which looks exactly like "no associations" and is
+        not. The panel says so whenever the floor binds.
+        <b>GPU null</b> is what makes the fix affordable: the permutation is a Feistel cipher over the cell
+        indices, so π(i) is O(1) per thread with no Fisher-Yates and no scratch, and the count, correlation and
+        49×49 inverse all run per-shuffle on the device. Measured back to back on COVID_SAMPLE_16_ROI_3,
+        <b>9,999 shuffles in 668 ms against 42,364 ms on the CPU — 63×</b>. The observed MH_PC is the identical
+        f64 value either way (0.022 for the pair above, from both); only the null is sampled on the device, and
+        the two agree to Monte Carlo error (SES −0.07 against −0.09).</p>
       <p class="note"><b>The g(r) chart carries two bands, and they answer different questions.</b>
         The <span class="chipA">cyan</span> one hugging the curve is a <b>bootstrap confidence interval</b>
         — how well g(r) itself is known, from resampling the anchor cells; it says nothing about whether

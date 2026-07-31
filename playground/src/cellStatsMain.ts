@@ -44,6 +44,7 @@ import { Graph, pullResident, registerBuiltinOps } from "../../src/gpu/graph";
 import { browserBackend } from "../../src/gpu/graph/backend.browser";
 import type { FieldValue, GpuField } from "../../src/gpu/graph/handle";
 import { paintFieldTexture } from "../../src/gpu/spatial/paintField";
+import { quadratCorrelationGpu, quadratCorrelationGpuSupported } from "../../src/gpu/spatial/quadratCorrelationGpu";
 import { computeTcmRender, renderTcm, type TcmRenderParams } from "../../src/gpu/spatial/tcmRender";
 import { CONTACT_RADIUS_UM, type ContactNetworkResult, contactNetwork } from "../../src/spatial/contactNetwork";
 import { equivalentRadius, KERNELS, type KernelSpec, kernelLabel } from "../../src/spatial/kernels";
@@ -120,6 +121,7 @@ const quadratUmInput = $<HTMLInputElement>("quadratUm");
 const contactUmInput = $<HTMLInputElement>("contactUm");
 const qcmSimsInput = $<HTMLInputElement>("qcmSims");
 const qcmGateInput = $<HTMLInputElement>("qcmGate");
+const qcmGpuInput = $<HTMLInputElement>("qcmGpu");
 const nameMatrixLayerEl = $<HTMLSpanElement>("nameMatrixLayer");
 const matrixScaleEl = $<HTMLSpanElement>("matrixScale");
 const qcmReadoutEl = $<HTMLDivElement>("qcmReadout");
@@ -582,17 +584,48 @@ let lastNet: { key: string; res: ContactNetworkResult } | null = null;
  *  two silently transposes the answer whenever a type is absent from the ROI. */
 const typeIdAt = (i: number): number => lastMatrix?.types[i] ?? i;
 
-function ensureQcm(): QuadratCorrelationResult | null {
+/** Cache key for the QCM: everything that changes its value. */
+function qcmKey(): string | null {
   const t = current;
   if (!t) return null;
-  const bbox = tableRoi(t);
-  const sizeWorld = toWorld(quadratUm());
-  const sims = qcmSims();
-  const key = `${t.tableName}/${t.typeColumn}/${bbox.join(",")}/${sizeWorld}/${sims}`;
-  if (lastQcm?.key === key) return lastQcm.res;
+  return `${t.tableName}/${t.typeColumn}/${tableRoi(t).join(",")}/${toWorld(quadratUm())}/${qcmSims()}/${qcmGpuInput.checked}`;
+}
+
+/** The QCM if it has already been computed for the current settings, else null. Layers are built
+ *  synchronously during a draw, so the compute itself lives in `refreshMatrixLayer`. */
+const qcmCached = (): QuadratCorrelationResult | null => (lastQcm && lastQcm.key === qcmKey() ? lastQcm.res : null);
+
+/**
+ * Compute the QCM, on the GPU when asked for and eligible.
+ *
+ * Both paths return the SAME observed `r` and `pc` — the GPU one computes them with the identical
+ * f64 CPU code and only samples the null on the device. What differs is how many shuffles are
+ * affordable, and that is not a convenience: at 999 shuffles the BH discovery set sits right on the
+ * permutation floor (`m/((S+1)α)` pairs must tie at the minimum p before anything passes), so it is
+ * unstable — CPU and GPU agree on 1122 of 1128 pairs but disagree on 6, purely from Monte Carlo.
+ * Raising S is the fix, and 19× makes it free.
+ */
+async function computeQcm(): Promise<QuadratCorrelationResult | null> {
+  const t = current;
+  const key = qcmKey();
+  if (!t || !key) return null;
+  const cached = qcmCached();
+  if (cached) return cached;
   const cells = allCells(t);
   const nTypes = Math.max(...cells.typeId) + 1;
-  const res = quadratCorrelation(cells, { bbox, quadratSize: sizeWorld, nTypes, simulations: sims, seed: 0x5eed });
+  const p = { bbox: tableRoi(t), quadratSize: toWorld(quadratUm()), nTypes, simulations: qcmSims(), seed: 0x5eed };
+  let res: QuadratCorrelationResult;
+  if (qcmGpuInput.checked && quadratCorrelationGpuSupported(nTypes)) {
+    try {
+      res = await quadratCorrelationGpu(cells, p);
+    } catch (err) {
+      // A GPU that declines is a reason to be slower, never a reason to show nothing.
+      setStatus(`GPU QCM unavailable (${(err as Error).message}) — falling back to the CPU.`, true);
+      res = quadratCorrelation(cells, p);
+    }
+  } else {
+    res = quadratCorrelation(cells, p);
+  }
   lastQcm = { key, res };
   return res;
 }
@@ -641,7 +674,7 @@ function buildLayer(): MatrixLayer {
   }
 
   if (id === "qcmPc" || id === "qcmR" || id === "qcmSes") {
-    const qcm = ensureQcm();
+    const qcm = qcmCached();
     const K = qcm?.nTypes ?? 0;
     const src = id === "qcmR" ? qcm?.r : id === "qcmPc" ? qcm?.pc : qcm?.pcSes;
     // Gate on the q-value of the statistic being SHOWN: the partial correlation has its own null, so
@@ -1559,46 +1592,51 @@ scaleInput.addEventListener("change", () => {
 /**
  * Redraw the matrix under a (possibly new) layer, computing its statistic if this is the first ask.
  *
- * The QCM's simulations are the expensive part — hundreds of milliseconds, enough to look like a
- * hang — so the status line is set BEFORE the work and the work is deferred one tick, otherwise the
- * message and the result paint in the same frame and the user sees only the freeze.
+ * The QCM's shuffles are the expensive part, so the status line is set BEFORE the work and the work
+ * is yielded to — otherwise the message and the result paint in the same frame and all the user
+ * sees is the freeze. On the GPU path the yield also lets the device dispatch begin.
  */
-function refreshMatrixLayer(): void {
+async function refreshMatrixLayer(): Promise<void> {
   const res = lastMatrix;
   if (!res) return;
   const id = layerId();
-  const heavy = (id.startsWith("qcm") && !lastQcm && qcmSims() > 0) || ((id === "phi" || id === "bigPhi") && !lastNet);
-  const run = () => {
-    const t0 = performance.now();
-    const layer = buildLayer();
-    const ms = performance.now() - t0;
-    drawMatrix(matrixCanvas, res, hoverCell, pinnedCell, layer);
-    const cell = hoverCell ?? pinnedCell;
-    if (cell) describePairStats(cell.a, cell.b);
-    setStatus(`${layer.title} — ${ms.toFixed(0)} ms.`);
-  };
-  if (heavy) {
-    setStatus(`computing ${id.startsWith("qcm") ? `the QCM (${qcmSims()} shuffles)` : "the contact network"} …`);
-    setTimeout(run, 0);
-  } else run();
+  const needsQcm = id.startsWith("qcm") && !qcmCached();
+  if (needsQcm && qcmSims() > 0) {
+    const how = qcmGpuInput.checked && quadratCorrelationGpuSupported(res.types.length) ? "GPU" : "CPU";
+    setStatus(`computing the QCM on the ${how} — ${qcmSims()} shuffles …`);
+    await new Promise((r) => setTimeout(r, 0));
+  }
+  const t0 = performance.now();
+  if (id.startsWith("qcm")) await computeQcm();
+  const layer = buildLayer();
+  const ms = performance.now() - t0;
+  // A stale draw would fight a newer one; the layer select is the only trigger that can overtake.
+  if (lastMatrix !== res) return;
+  drawMatrix(matrixCanvas, res, hoverCell, pinnedCell, layer);
+  const cell = hoverCell ?? pinnedCell;
+  if (cell) describePairStats(cell.a, cell.b);
+  const qcm = qcmCached();
+  const where = id.startsWith("qcm") && qcm && qcm.simulations > 0 ? ` (${qcmGpuInput.checked ? "GPU" : "CPU"} null)` : "";
+  setStatus(`${layer.title}${where} — ${ms.toFixed(0)} ms.`);
 }
 
-matrixLayerSelect.addEventListener("change", refreshMatrixLayer);
-qcmGateInput.addEventListener("change", refreshMatrixLayer);
+matrixLayerSelect.addEventListener("change", () => void refreshMatrixLayer());
+qcmGateInput.addEventListener("change", () => void refreshMatrixLayer());
 for (const [input, drop] of [
   [quadratUmInput, () => (lastQcm = null)],
   [qcmSimsInput, () => (lastQcm = null)],
+  [qcmGpuInput, () => (lastQcm = null)],
   [contactUmInput, () => (lastNet = null)],
 ] as const) {
   input.addEventListener("change", () => {
     drop();
-    refreshMatrixLayer();
+    void refreshMatrixLayer();
   });
 }
 // α is shared with the g(r) envelope, and it also sets the significance gate — so changing it has to
 // repaint the matrix, not just the chart.
 envAlphaInput.addEventListener("change", () => {
-  if (layerId().startsWith("qcm")) refreshMatrixLayer();
+  if (layerId().startsWith("qcm")) void refreshMatrixLayer();
 });
 
 // --- coordinated view: hover the N-way matrix to link the scatter, cross-PCF, and (on settle) Γ ---
