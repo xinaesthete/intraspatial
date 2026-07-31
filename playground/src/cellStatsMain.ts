@@ -368,6 +368,8 @@ interface PcfView {
 
 let lastPcf: PcfView | null = null;
 let pcfHoverBin: number | null = null;
+/** Width the chart was last drawn at, in CSS px — the hover has to invert the same mapping. */
+let pcfPlotW = 760;
 
 /**
  * g(r) with, optionally, a bootstrap CI and a null envelope.
@@ -379,17 +381,28 @@ let pcfHoverBin: number | null = null;
  * is "barely measured, but extreme".
  */
 function drawPcfCurve(c: HTMLCanvasElement, view: PcfView | null, hoverBin: number | null): void {
-  const W = 760;
+  // Draw in CSS pixels at the canvas's ACTUAL displayed width, with the backing store scaled by the
+  // device pixel ratio. The chart used to be a fixed 760×260 store that CSS then squeezed into a
+  // ~340 px tile, so every label was rendered at under half the size it was specified at — a "10px"
+  // font arriving on screen at about 4.5 px, which is what made the hover box unreadable. Sizing to
+  // the tile means one canvas pixel is one CSS pixel (times DPR for sharpness) and a 12 px font is
+  // 12 px.
+  const dpr = Math.min(2, globalThis.devicePixelRatio || 1);
+  // Floor low enough that a real tile width is never rounded UP (which would reintroduce a
+  // downscale); it only guards against drawing into a collapsed layout.
+  const W = Math.max(240, Math.round(c.clientWidth || 760));
   const H = 260;
   const padL = 46;
   const padB = 26;
   const padT = 12;
   const padR = 12;
-  c.width = W;
-  c.height = H;
+  c.width = Math.round(W * dpr);
+  c.height = Math.round(H * dpr);
   const ctx = c.getContext("2d")!;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.fillStyle = "#0f172a";
   ctx.fillRect(0, 0, W, H);
+  pcfPlotW = W;
   if (!view) return;
   const { r, g } = view;
   const rMax = (r[r.length - 1] ?? 1) + (r.length > 1 ? (r[1]! - r[0]!) / 2 : 0);
@@ -485,24 +498,25 @@ function drawPcfCurve(c: HTMLCanvasElement, view: PcfView | null, hoverBin: numb
       const inside = g[k]! >= view.env.lo[k]! && g[k]! <= view.env.hi[k]!;
       lines.push(`null: [${view.env.lo[k]!.toFixed(3)}, ${view.env.hi[k]!.toFixed(3)}] ${inside ? "— inside" : "— OUTSIDE"}`);
     }
-    ctx.font = "10px ui-sans-serif, system-ui, sans-serif";
-    const wBox = Math.max(...lines.map((l) => ctx.measureText(l).width)) + 10;
+    ctx.font = "12px ui-sans-serif, system-ui, sans-serif";
+    const wBox = Math.max(...lines.map((l) => ctx.measureText(l).width)) + 12;
     // Flip the box to the other side of the guide near the right edge, so it never runs off.
     const bx = X + 8 + wBox > W - padR ? X - 8 - wBox : X + 8;
-    const hBox = lines.length * 13 + 6;
+    const hBox = lines.length * 16 + 8;
     ctx.fillStyle = "rgba(2,6,23,0.88)";
     ctx.fillRect(bx, padT + 2, wBox, hBox);
     ctx.strokeStyle = "#334155";
     ctx.strokeRect(bx, padT + 2, wBox, hBox);
     ctx.fillStyle = "#e2e8f0";
-    for (let i = 0; i < lines.length; i++) ctx.fillText(lines[i]!, bx + 5, padT + 15 + i * 13);
+    for (let i = 0; i < lines.length; i++) ctx.fillText(lines[i]!, bx + 6, padT + 18 + i * 16);
   }
 
   ctx.fillStyle = "#94a3b8";
-  ctx.font = "10px ui-sans-serif, system-ui, sans-serif";
+  ctx.font = "11px ui-sans-serif, system-ui, sans-serif";
   ctx.fillText("g=1", padL + 4, py(1) - 3);
-  ctx.fillText(`g (0…${gMax})`, 4, padT + 8);
-  ctx.fillText(`r → ${rMax.toPrecision(3)}${view.unit}`, W - padR - 150, H - 8);
+  ctx.fillText(`g (0…${gMax})`, 4, padT + 9);
+  const axis = `r → ${rMax.toPrecision(3)}${view.unit}`;
+  ctx.fillText(axis, W - padR - ctx.measureText(axis).width, H - 8);
 }
 
 /** N×N diverging heatmap of the cross-PCF matrix: log₂(g) through the OKLCh ramp, with hover/pin
@@ -889,6 +903,11 @@ function setPair(idA: number, idB: number, doTcm: boolean): void {
   nameKdeBEl.textContent = nameB;
   nameTcmEl.textContent = `${nameA} → ${nameB}`;
   namePcfEl.textContent = `${nameA} → ${nameB}`;
+  // The headings are clipped to one line so the grid holds still; `title` is where the full text
+  // goes when a cell-type name is long enough to be cut.
+  for (const el of [nameKdeAEl, nameKdeBEl, nameTcmEl, namePcfEl]) {
+    el.closest("h2")?.setAttribute("title", el.textContent ?? "");
+  }
   drawScatterPair(t, tableBounds(t), idA, idB);
   // `doTcm` also gates the envelope: both are the "settled on this pair" work.
   computePcf(doTcm);
@@ -1218,13 +1237,14 @@ for (const el of [envToggle, envNullSelect, envSimsInput, envAlphaInput]) {
 pcfCanvas.addEventListener("mousemove", (ev) => {
   if (!lastPcf) return;
   const rect = pcfCanvas.getBoundingClientRect();
-  // The canvas is CSS-scaled to its tile, so map through the displayed size, not the backing store.
-  const x = ((ev.clientX - rect.left) / rect.width) * 760;
+  // The chart is drawn in CSS px at `pcfPlotW`, so this inverts exactly the mapping `drawPcfCurve`
+  // used — no backing-store constant to keep in sync.
+  const x = ((ev.clientX - rect.left) / rect.width) * pcfPlotW;
   const padL = 46;
   const padR = 12;
   const n = lastPcf.r.length;
   const rMax = (lastPcf.r[n - 1] ?? 1) + (n > 1 ? (lastPcf.r[1]! - lastPcf.r[0]!) / 2 : 0);
-  const rv = ((x - padL) / (760 - padL - padR)) * rMax;
+  const rv = ((x - padL) / (pcfPlotW - padL - padR)) * rMax;
   const bin = Math.round((rv / rMax) * n - 0.5);
   const clamped = bin < 0 || bin >= n ? null : bin;
   if (clamped === pcfHoverBin) return;
@@ -1235,6 +1255,17 @@ pcfCanvas.addEventListener("mouseleave", () => {
   if (pcfHoverBin === null) return;
   pcfHoverBin = null;
   drawPcfCurve(pcfCanvas, lastPcf, null);
+});
+// The chart is sized to its tile, so a viewport change has to redraw it or the text goes back to
+// being the wrong size. Coalesced to one redraw per frame — resize fires far faster than that.
+let pcfResizePending = false;
+globalThis.addEventListener("resize", () => {
+  if (pcfResizePending || !lastPcf) return;
+  pcfResizePending = true;
+  requestAnimationFrame(() => {
+    pcfResizePending = false;
+    drawPcfCurve(pcfCanvas, lastPcf, pcfHoverBin);
+  });
 });
 
 mdvInspectBtn.addEventListener("click", () => void inspectMdv());
