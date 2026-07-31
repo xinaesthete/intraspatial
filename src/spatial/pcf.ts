@@ -8,7 +8,14 @@
 // r_{k+1}); here the FULL annulus (edge correction deferred — exact for anchors ≥r_max inside the
 // ROI, biased near the boundary; the Mode-2 viewport-apron path removes that bias). g>1 clustering
 // of A around B at range r, g<1 exclusion, g=1 CSR. Radii are in the clouds' own world units.
+//
+// The deferral above applies to `crossPCF` and `crossPCFMatrix` only. `crossPCFMatrixBinned` (below)
+// takes `edgeCorrected`, which applies the real per-anchor `A_{r_k}(x_a)` from `edgeCorrection.ts`;
+// that is what reproduces published numbers on a FIXED ROI, where the uncorrected estimator is low by
+// an amount set by the ROI's perimeter-to-area ratio rather than by anything biological. See the
+// step-3 validation block in docs/muspan-cell-stats-plan.md §6.
 
+import { annulusAreasInto } from "./edgeCorrection";
 import type { CellCloud } from "./tcm";
 
 export interface PcfParams {
@@ -187,4 +194,156 @@ export function crossPCFMatrix(cells: LabelledCells, p: PcfMatrixParams): PcfMat
     }
   }
   return { types, counts: nPer, g };
+}
+
+export interface PcfMatrixBinnedParams {
+  /** ROI `[minX, minY, maxX, maxY]`. Also the clipping rectangle when `edgeCorrected`. */
+  readonly bbox: readonly [number, number, number, number];
+  /** Maximum radius; bins are equal width `dr = rMax / nBins`. */
+  readonly rMax: number;
+  readonly nBins: number;
+  /** Length of the type axis. Type ids must lie in `[0, nTypes)`. Defaults to `max(typeId) + 1`.
+   *
+   *  Pass it whenever the axis is defined elsewhere — comparing against a precomputed table means
+   *  every one of its cell types must occupy its own row and column even in an ROI where that type
+   *  has no cells, or the matrix silently shifts. */
+  readonly nTypes?: number;
+  /** Area used for `ρ_B = N_B / area`. Defaults to the bbox area; pass the ROI's own recorded area
+   *  when the source defines one (MDV carries `roi_area`, which is not always the bbox). */
+  readonly roiArea?: number;
+  /** Clip each anchor's annulus to `bbox` — the paper's `A_{r_k}(x_a)` (eq 8). Default `false`,
+   *  which is the full annulus: exact for anchors ≥`rMax` inside the ROI, low near the boundary. */
+  readonly edgeCorrected?: boolean;
+}
+
+export interface PcfMatrixBinnedResult {
+  readonly nTypes: number;
+  readonly nBins: number;
+  /** Cell count per type id. */
+  readonly counts: number[];
+  /** Bin centres (world units). */
+  readonly r: number[];
+  /** `g[a·K·B + b·B + k]` = g_{a→b}(r_k). Asymmetric in (a,b). */
+  readonly g: Float64Array;
+  /** Raw ordered pair counts, same layout — the diagnostic that says whether a `g` rests on 3
+   *  pairs or 3000. */
+  readonly pairs: Float64Array;
+}
+
+/**
+ * N-way cross-PCF **binned in r**: g_{a→b}(r_k) for every ordered type pair and every annulus, in
+ * one bucket-grid pass. This is `crossPCFMatrix` (a single cumulative disk) crossed with `crossPCF`
+ * (annulus bins for one pair) — the `[type_a][type_b][r_bin]` 3-D histogram of
+ * docs/muspan-cell-stats-plan.md §7, and the shape a published g(r=20) table is read out of.
+ *
+ * With `edgeCorrected`, each pair is weighted by `1/A_{r_k}(x_a)` for its own anchor rather than by
+ * a per-bin constant, which is what eq (8) actually says and what closes the gap to the published
+ * numbers near an ROI boundary. Anchors further than `rMax` from every edge take a fast path — their
+ * annuli are uncut, so the per-anchor geometry is skipped for the bulk of a large ROI.
+ */
+export function crossPCFMatrixBinned(cells: LabelledCells, p: PcfMatrixBinnedParams): PcfMatrixBinnedResult {
+  const [minX, minY, maxX, maxY] = p.bbox;
+  const roiArea = Math.max(p.roiArea ?? (maxX - minX) * (maxY - minY), 1e-12);
+  const n = cells.xs.length;
+  const B = p.nBins;
+  const dr = p.rMax / B;
+  const rMax2 = p.rMax * p.rMax;
+
+  let K = p.nTypes ?? 0;
+  if (!p.nTypes) for (let i = 0; i < n; i++) K = Math.max(K, cells.typeId[i]! + 1);
+  const nPer = new Array<number>(K).fill(0);
+  for (let i = 0; i < n; i++) {
+    const t = cells.typeId[i]!;
+    if (t < 0 || t >= K) throw new Error(`crossPCFMatrixBinned: type id ${t} outside [0, ${K})`);
+    nPer[t]!++;
+  }
+
+  // Bucket grid over the cells, cell size = rMax, so every in-range neighbour is in the 3×3
+  // neighbourhood. Built over the cells' own extent rather than the bbox: an ROI whose recorded
+  // rectangle is larger than the data (a padded image) would otherwise allocate empty buckets.
+  let gMinX = Infinity;
+  let gMinY = Infinity;
+  let gMaxX = -Infinity;
+  let gMaxY = -Infinity;
+  for (let i = 0; i < n; i++) {
+    const x = cells.xs[i]!;
+    const y = cells.ys[i]!;
+    if (x < gMinX) gMinX = x;
+    if (x > gMaxX) gMaxX = x;
+    if (y < gMinY) gMinY = y;
+    if (y > gMaxY) gMaxY = y;
+  }
+  const cell = Math.max(p.rMax, 1e-9);
+  const cols = n > 0 ? Math.max(1, Math.ceil((gMaxX - gMinX) / cell) + 1) : 1;
+  const rows = n > 0 ? Math.max(1, Math.ceil((gMaxY - gMinY) / cell) + 1) : 1;
+  const buckets: number[][] = Array.from({ length: cols * rows }, () => []);
+  const colOf = (x: number) => Math.min(cols - 1, Math.max(0, Math.floor((x - gMinX) / cell)));
+  const rowOf = (y: number) => Math.min(rows - 1, Math.max(0, Math.floor((y - gMinY) / cell)));
+  for (let i = 0; i < n; i++) buckets[rowOf(cells.ys[i]!) * cols + colOf(cells.xs[i]!)]!.push(i);
+
+  // Reciprocal annulus areas: the interior (uncut) case once, the per-anchor case into a scratch
+  // buffer only for anchors the boundary actually reaches.
+  const invFull = new Float64Array(B);
+  for (let k = 0; k < B; k++) {
+    const r0 = k * dr;
+    const r1 = r0 + dr;
+    invFull[k] = 1 / (Math.PI * (r1 * r1 - r0 * r0));
+  }
+  const areaScratch = new Float64Array(B);
+  const invAnchor = new Float64Array(B);
+
+  const weighted = new Float64Array(K * K * B);
+  const pairs = new Float64Array(K * K * B);
+
+  for (let i = 0; i < n; i++) {
+    const ax = cells.xs[i]!;
+    const ay = cells.ys[i]!;
+    const a = cells.typeId[i]!;
+    let inv = invFull;
+    if (p.edgeCorrected) {
+      const interior = ax - minX >= p.rMax && maxX - ax >= p.rMax && ay - minY >= p.rMax && maxY - ay >= p.rMax;
+      if (!interior) {
+        annulusAreasInto(areaScratch, ax, ay, dr, B, minX, minY, maxX, maxY);
+        for (let k = 0; k < B; k++) invAnchor[k] = areaScratch[k]! > 0 ? 1 / areaScratch[k]! : 0;
+        inv = invAnchor;
+      }
+    }
+    const rowBase = a * K * B;
+    const c0 = colOf(ax);
+    const r0 = rowOf(ay);
+    for (let dRow = -1; dRow <= 1; dRow++) {
+      const rr = r0 + dRow;
+      if (rr < 0 || rr >= rows) continue;
+      for (let dCol = -1; dCol <= 1; dCol++) {
+        const cc = c0 + dCol;
+        if (cc < 0 || cc >= cols) continue;
+        for (const j of buckets[rr * cols + cc]!) {
+          if (j === i) continue; // exclude self-pairs
+          const dx = cells.xs[j]! - ax;
+          const dy = cells.ys[j]! - ay;
+          const d2 = dx * dx + dy * dy;
+          if (d2 >= rMax2) continue;
+          const k = Math.min(B - 1, Math.floor(Math.sqrt(d2) / dr));
+          const at = rowBase + cells.typeId[j]! * B + k;
+          weighted[at]! += inv[k]!;
+          pairs[at]! += 1;
+        }
+      }
+    }
+  }
+
+  const r: number[] = [];
+  for (let k = 0; k < B; k++) r.push((k + 0.5) * dr);
+  const g = new Float64Array(K * K * B);
+  for (let a = 0; a < K; a++) {
+    const nA = nPer[a]!;
+    for (let b = 0; b < K; b++) {
+      const rhoB = nPer[b]! / roiArea;
+      const denom = nA * rhoB;
+      if (denom <= 0) continue;
+      const base = a * K * B + b * B;
+      for (let k = 0; k < B; k++) g[base + k] = weighted[base + k]! / denom;
+    }
+  }
+  return { nTypes: K, nBins: B, counts: nPer, r, g, pairs };
 }

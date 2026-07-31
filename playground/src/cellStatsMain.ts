@@ -1,9 +1,15 @@
 // Cell-type spatial statistics — a coordinated view over one cell table
 // (docs/cell-stats.md, docs/muspan-cell-stats-plan.md).
 //
-// SOURCES. Three, all producing the same `CellTable`, so nothing downstream knows the difference:
+// SOURCES. Four, all producing the same `CellTable`, so nothing downstream knows the difference:
 // a SpatialData store (inspected first — tables and candidate type columns are enumerated, not
-// hard-coded), a CSV export, or a synthetic fixture for offline use.
+// hard-coded), a converted MDV project, a CSV export, or a synthetic fixture for offline use.
+//
+// The MDV path is the one that differs in kind rather than in format, and the difference is the ROI
+// picker. An MDV cell table holds MANY regions — the covid project is 545,400 cells across 32 — and
+// every statistic here is per-ROI: ρ_B is a density over one ROI, and the edge correction is against
+// one ROI's boundary. Pooling the regions would not be a larger dataset, it would be a wrong one,
+// measuring the gaps between tissue sections. See `datasource/mdvCellTable.ts`.
 //
 // STATISTICS. Every view is driven by ONE cell-type pair (A, B): the centroid scatter, a KDE of each
 // type through the registered `splatDensity` op in a shared world frame, the TCM Γ_AB(x), the
@@ -44,9 +50,13 @@ import {
   syntheticCellTable,
   type TableInfo,
 } from "./datasource/cellTable";
+import { inspectMdvTable, MdvStore, type MdvTableInfo, readMdvCellTable, spatialDatasources } from "./datasource/mdvCellTable";
 
 /** The live Leap034 SpatialData store (zarr v3, CORS `*`). Configurable — not hard-coded downstream. */
 const DEFAULT_STORE = "http://localhost:5055/project/289/spatial/leap034_layers.zarr/";
+/** A converted MDV project (`pnpm mdv:zarr <project-dir> <out.zarr>`), served CORS-enabled. Like
+ *  DEFAULT_STORE this is a convenience default, not a dependency — nothing downstream knows it. */
+const DEFAULT_MDV_STORE = "http://localhost:5056/covid.mdv.zarr";
 /** Raster sizes are given for the LONGER axis; the other follows the world box's aspect, so world
  *  cells stay square. A fixed square raster over a non-square ROI stretches every spatial view and
  *  — worse than ugly — makes the mark raster anisotropic, so the kernel is sampled at different
@@ -72,6 +82,10 @@ const typeColSelect = $<HTMLSelectElement>("typeCol");
 const runBtn = $<HTMLButtonElement>("run");
 const fixtureBtn = $<HTMLButtonElement>("fixture");
 const csvInput = $<HTMLInputElement>("csvFile");
+const mdvStoreInput = $<HTMLInputElement>("mdvStore");
+const mdvInspectBtn = $<HTMLButtonElement>("mdvInspect");
+const mdvRegionSelect = $<HTMLSelectElement>("mdvRegion");
+const mdvRunBtn = $<HTMLButtonElement>("mdvRun");
 const typeSelect = $<HTMLSelectElement>("type");
 const typeSelectB = $<HTMLSelectElement>("typeB");
 const kernelSelect = $<HTMLSelectElement>("kernel");
@@ -814,9 +828,93 @@ async function loadCsv(file: File): Promise<void> {
   }
 }
 
+// ---- MDV projects ------------------------------------------------------------------------------
+
+/** The opened MDV store and the spatial table chosen from it, held between inspect and load so the
+ *  region dropdown can be populated without re-reading. */
+let mdvStore: MdvStore | undefined;
+let mdvTable: MdvTableInfo | undefined;
+
+/** Open an MDV zarr store and report what it holds: spatial tables, their type columns, their ROIs.
+ *  Metadata only — no column data — so this is fast even on the 545,400-row covid table. */
+async function inspectMdv(): Promise<void> {
+  const url = mdvStoreInput.value.trim();
+  if (!url) return;
+  setStatus(`opening ${url} …`);
+  mdvRegionSelect.innerHTML = "";
+  try {
+    const store = await MdvStore.open(url);
+    const spatial = spatialDatasources(store);
+    if (spatial.length === 0) {
+      setStatus(`${url}: no datasource declares position fields — nothing spatial to load.`, true);
+      return;
+    }
+    const info = inspectMdvTable(spatial[0]!);
+    mdvStore = store;
+    mdvTable = info;
+
+    // Reflect the MDV project's own axes in the shared pickers, so the choice is visible rather than
+    // magic — same contract as the CSV path.
+    tableSelect.innerHTML = "";
+    for (const d of spatial) {
+      const opt = document.createElement("option");
+      opt.value = d.name;
+      opt.textContent = `${d.name} — ${d.rows} rows`;
+      tableSelect.appendChild(opt);
+    }
+    tableSelect.value = info.name;
+    typeColSelect.innerHTML = "";
+    for (const c of info.typeColumns) {
+      const opt = document.createElement("option");
+      opt.value = c.name;
+      opt.textContent = `${c.name} — ${c.nCategories} categories${c.score <= 0 ? " (unlikely)" : ""}`;
+      typeColSelect.appendChild(opt);
+    }
+    if (info.suggested) typeColSelect.value = info.suggested;
+
+    for (const r of info.regions) {
+      const opt = document.createElement("option");
+      opt.value = r;
+      opt.textContent = r;
+      mdvRegionSelect.appendChild(opt);
+    }
+    const unit = info.micrometres !== undefined ? `${info.micrometres} µm/unit (from regions.scale)` : "no physical scale declared";
+    setStatus(
+      `${info.name}: ${info.rows} rows · ${info.regions.length} ROIs on '${info.regionColumn}' · ` +
+        `type column '${info.suggested ?? info.typeColumns[0]?.name}' · ${unit}. Pick an ROI and load.`,
+    );
+  } catch (e) {
+    setStatus(`MDV open failed: ${(e as Error).message}`, true);
+  }
+}
+
+/** Load the selected ROI of the selected MDV table through the same `present` path as every other
+ *  source. */
+async function loadMdvRegion(): Promise<void> {
+  if (!mdvStore || !mdvTable) {
+    setStatus("inspect an MDV store first.", true);
+    return;
+  }
+  const region = mdvRegionSelect.value;
+  const typeColumn = typeColSelect.value || mdvTable.suggested || mdvTable.typeColumns[0]?.name;
+  if (!region || !typeColumn) {
+    setStatus("no ROI or cell-type column selected.", true);
+    return;
+  }
+  setStatus(`reading ${region} …`);
+  try {
+    const t = await readMdvCellTable(mdvStore, { datasource: tableSelect.value || mdvTable.name, typeColumn, region });
+    present(t);
+    setStatus(`${t.label} — hover the N-way matrix to link every view.`);
+  } catch (e) {
+    setStatus(`MDV read failed: ${(e as Error).message}`, true);
+  }
+}
+
 // ---- wiring ------------------------------------------------------------------------------------
 
 storeInput.value = DEFAULT_STORE;
+mdvStoreInput.value = DEFAULT_MDV_STORE;
 for (const [i, k] of KERNELS.entries()) {
   const opt = document.createElement("option");
   opt.value = String(i);
@@ -835,6 +933,11 @@ csvInput.addEventListener("change", () => {
   const f = csvInput.files?.[0];
   if (f) void loadCsv(f);
 });
+mdvInspectBtn.addEventListener("click", () => void inspectMdv());
+mdvRunBtn.addEventListener("click", () => void loadMdvRegion());
+// An ROI is one click, and re-reading is cheap (the columns are already fetched), so changing the
+// ROI loads it rather than arming a second button.
+mdvRegionSelect.addEventListener("change", () => void loadMdvRegion());
 tableSelect.addEventListener("change", () => fillColumnSelect(storeTables.find((t) => t.name === tableSelect.value)));
 typeSelect.addEventListener("change", () => setPair(Number(typeSelect.value), Number(typeSelectB.value), true));
 typeSelectB.addEventListener("change", () => setPair(Number(typeSelect.value), Number(typeSelectB.value), true));

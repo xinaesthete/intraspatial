@@ -122,6 +122,40 @@ the store genuinely carries no unit. Wire the B2 ingestion to read this.
 4. **Mode 2 (viewport-apron)** for both — constant-area interior normalisation via the ADR-0008 halo,
    window-local ρ_B, and the **live per-viewport permutation envelope**. Prove interior agreement with Mode 1.
 
+> **Step 3 is validated (2026-07-31), and the oracle was better than the one this plan imagined.** It
+> assumed a SpOOx/MuSpAn run would have to be produced. It did not: the Nature-COVID MDV project
+> ships a `spatial_stats` table of 32 ROIs × 49² cell-type pairs whose 70,742 finite `gr10`/`gr20`
+> values *are* the published pipeline's output for the same centroids. `scripts/mdv-pcf-parity.ts`
+> compares against all of them, via the columnar reader in `src/datasource/mdvStore.ts`.
+>
+> Two conventions were recovered from the data rather than assumed — `gr20` is the annulus **[20,30)**
+> with 10 µm bins (found by scanning every bin), and ρ_B uses the ROI's recorded `roi_area`, which for
+> 30 of 32 ROIs is exactly the region image's W×H.
+>
+> **Result, over the 27 ROIs whose recorded area matches the region their cells occupy** (74,567
+> comparisons, min(n_A,n_B) ≥ 50): **median |Δ| 0.26%, 88.6% within 1%, 99.5% within 5%**, median
+> ratio 0.9990. The whole sweep runs in ~2 s on one CPU core.
+>
+> **The edge correction is what earns that, and it is now built** (`src/spatial/edgeCorrection.ts` —
+> exact disk/annulus ∩ rectangle, no sampling). Without it the same sweep reads median 1.48% low with
+> a median ratio of 0.9854: a *signed* error scaling as perimeter·r/area, i.e. 0.9% on a 2 mm² ROI and
+> 11.7% on a 648,000 µm² one. §5 defers this correction to Mode 2's apron, which remains right for a
+> viewport; for a fixed published ROI it is not optional, because it makes cross-ROI comparison a
+> comparison of ROI geometry.
+>
+> The 5 excluded ROIs are a **data** finding, not an implementation one. `COVID_SAMPLE_6_ROI_1`'s
+> `roi_area` is 0.795× the region its cells occupy (every other ROI: ~1.003) and it drops 28.1% → 1.9%
+> under the bounding-box area. The four `COVID_SAMPLE_17_*` ROIs do not respond to the area convention
+> at all and their residual grows monotonically as the ROI shrinks (1.5 / 2.5 / 4.0 / 7.8%) — the
+> signature of a **non-rectangular ROI**, which the rectangular clip cannot represent. Closing those
+> needs the polygon mask §5 already anticipates (`annot_region`).
+>
+> One more thing worth keeping: agreement is markedly worse for small populations — median 0.98% and
+> p95 12.3% at min(n) < 50, against 0.26% / 1.7% above it. Both pipelines compute the same quantity
+> from the same points, so this is bin-boundary sensitivity, not error: at small n a single pair
+> crossing r = 20 µm moves g a long way. It is the same fact that makes 30.6% of the project's
+> published chart images rest on min(n) < 30.
+
 ## 7. N-way extension + visualising the high-D output (direction — specifics pending external notes)
 
 Pairwise A→B generalises to **all N cell types at once**, and the GPU makes this nearly free: one splat per

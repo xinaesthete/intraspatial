@@ -49,8 +49,9 @@
     <h1>Cell-type spatial statistics — TCM · cross-PCF · N-way matrix (Stream B2)</h1>
     <p class="sub">A SpatialData store is <b>inspected</b> for its tables and their candidate cell-type columns
       (auto-selected when there is only one); <code>obsm/spatial</code> centroids are then grouped into
-      per-type clouds (ADR-0018 — never merged), each carrying a resolved <code>placement</code>. A CSV
-      export or the offline fixture take the identical path.
+      per-type clouds (ADR-0018 — never merged), each carrying a resolved <code>placement</code>. A
+      <b>converted MDV project</b> (one ROI at a time), a CSV export, or the offline fixture take the
+      identical path.
       <b>Hover the N-way matrix</b> to link every view to that cell-type pair; <b>click to pin</b> it (leaving
       the matrix returns to the pinned pair). MuSpAn eqs 8–14, Mode 1 (faithful, global ρ<sub>B</sub>).
       Γ is rendered as two additive GPU passes — B through a radial kernel, then A splatted with the
@@ -74,6 +75,14 @@
         <button id="run">load</button>
       </div>
       <div class="row">
+        <label for="mdvStore">MDV zarr</label>
+        <input id="mdvStore" type="text" style="flex:1 1 260px" />
+        <button id="mdvInspect">inspect</button>
+        <label for="mdvRegion">ROI</label>
+        <select id="mdvRegion" style="flex:1 1 220px"></select>
+        <button id="mdvRun">load ROI</button>
+      </div>
+      <div class="row">
         <label for="type">type A</label>
         <select id="type"></select>
         <label for="typeB">type B</label>
@@ -94,6 +103,14 @@
         scale (μ₂) fixed, so "smoother" never quietly becomes "more local". α=5, world units.
         ⚠ The store must be CORS-enabled (default: the local MDV server at <code>localhost:5055</code>);
         if unreachable, use <b>fixture</b> or open a <b>CSV</b>.</p>
+      <p class="note">The <b>MDV zarr</b> row loads a converted MDV project (<code>pnpm mdv:zarr</code>).
+        Such a project holds many ROIs — the covid project is 545,400 cells across 32 — and every
+        statistic here is <b>per ROI</b>: ρ<sub>B</sub> is a density over one ROI and the edge correction is
+        against one ROI's boundary, so pooling them would measure the gaps between tissue sections.
+        Hence the ROI picker. Scale comes from the project's own <code>regions.scale</code> rather than a
+        default of 1; for covid that is exactly 1&nbsp;µm/unit, so r=100&nbsp;µm and σ=50&nbsp;µm are literal.
+        The g(r) this path produces is validated against the project's own published
+        <code>gr10</code>/<code>gr20</code> — 74,567 comparisons, median 0.26% (<code>pnpm mdv:parity</code>).</p>
       <div id="status">idle</div>
     </div>
 
