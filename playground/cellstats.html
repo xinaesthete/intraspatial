@@ -72,6 +72,20 @@
     .tile canvas { width: 100%; height: auto; max-height: 440px; object-fit: contain;
       image-rendering: pixelated; border: 1px solid #334155; border-radius: 6px; background: #0f172a; }
     .legend { font-size: 10px; color: #94a3b8; margin-top: 5px; }
+
+    /* Per-figure "what am I looking at" help. The legends say what the ink IS; these say how to read
+       it, in plain language and without assuming the method. Deliberately inline rather than an
+       overlay: an overlay would hide the very figure it describes, and this stays keyboard-reachable
+       and reflows predictably. */
+    .help { margin-top: 6px; border-top: 1px dashed #1e293b; padding-top: 5px; }
+    .help summary { cursor: pointer; color: #7dd3fc; font-size: 10px; letter-spacing: 0.02em; }
+    .help summary:hover { color: #bae6fd; }
+    .help p { font-size: 11px; line-height: 1.55; color: #cbd5e1; margin: 6px 0 2px 12px; }
+    .help p + p { margin-top: 5px; }
+    .help b { color: #e2e8f0; }
+    /* Amber keeps its meaning from the panel above: not "important", but "here is how this gets read
+       wrong". `b` inside one must not fall back to the neutral emphasis colour. */
+    .help .trap, .help .trap b { color: #fcd34d; }
     #matrix, #pcf { cursor: crosshair; }
     /* The g(r) chart is drawn at its displayed size (times DPR), so there is no upscaling to make
        crisp — `pixelated` would only hurt its text. */
@@ -173,6 +187,27 @@
       <p class="note caution" id="units">—</p>
 
       <div class="notes">
+        <!-- Orientation first. The disclosures below it justify the numbers, which is a different job
+             and no use to someone who does not yet know what the six pictures are. -->
+        <details>
+          <summary>New here? What the six panels are, and the order to read them</summary>
+          <p class="note">Everything on this page is about <b>one pair of cell types at a time</b>, inside
+            <b>one ROI</b>. The N-way matrix is the index: every square is a pair, hovering one points the
+            other five panels at it, and clicking pins it. So the usual loop is <i>scan the matrix for a
+            square that stands out → hover it → look at what the other panels say about that pair</i>.</p>
+          <p class="note">Reading them in this order gets you from evidence to claim:</p>
+          <p class="note"><b>1. centroids</b> — the actual cells, so you can see how many there are and
+            whether the section has holes in it. <b>2. the two KDE panels</b> — where each type is
+            concentrated; do the bright patches coincide? <b>3. Γ(x)</b> — the same question answered as
+            one signed map, red where A sits in B-rich surroundings. <b>4. g(r)</b> — the same question
+            again as a function of distance, with the two uncertainty bands, which is where the pair
+            either is or is not statistically interesting. <b>5. the matrix</b> — that whole judgement
+            compressed to one square, for all pairs at once.</p>
+          <p class="note">Each panel has its own <b>how to read this</b> underneath it. They are worth
+            opening at least once: three of the six have a way of being read wrong that looks perfectly
+            reasonable.</p>
+        </details>
+
         <details>
           <summary>Reading the two bands on g(r) — a confidence interval is not an envelope</summary>
           <p class="note">The <span class="chipA">cyan</span> band hugging the curve is a <b>bootstrap
@@ -259,33 +294,99 @@
         <div class="legend fixed"><b>Hover to link · click to pin.</b> rows = A (the anchor type), cols = B ·
           <span id="matrixScale">diverging log₂(g): red = clustering, blue = exclusion, white = CSR</span> ·
           white box = hover, dashed = pinned</div>
+        <details class="help">
+          <summary>how to read this</summary>
+          <p>One square per <b>ordered</b> pair of cell types: the row picks type A, the column picks type
+            B. Hover a square and every other panel on the page jumps to that pair; click to keep it there
+            while you look around.</p>
+          <!-- Filled per layer — the tile shows six different statistics and they are not read alike. -->
+          <p id="matrixHelp">—</p>
+          <p class="trap">Squares left as plain background have <b>no answer</b> for that pair — a type
+            missing from this ROI, or a calculation that could not be done. That is not the same as "no
+            association", which is the pale colour in the middle of the ramp.</p>
+        </details>
       </div>
       <div class="tile">
         <h2>centroids — pair highlighted</h2>
         <canvas id="scatter"></canvas>
         <div class="legend fixed"><span class="chipA">■</span> <span id="nameScatterA">type A</span> · <span class="chipB">■</span> <span id="nameScatterB">type B</span> · other cells faint</div>
+        <details class="help">
+          <summary>how to read this</summary>
+          <p>One dot per cell, placed where that cell actually sits in the tissue. Cyan is the A type,
+            orange is B, and every other cell is faint grey so you can see the shape of the section they
+            sit in.</p>
+          <p>This is the raw material that every other panel summarises into colours and curves, which
+            makes it the one to glance at first. A striking result computed from eleven cells is still a
+            result computed from eleven cells — here you can see that, and nowhere else on the page.</p>
+        </details>
       </div>
       <div class="tile">
         <h2>TCM Γ(x) — <span id="nameTcm">A → B</span></h2>
         <canvas id="tcm"></canvas>
         <div class="legend">Two additive GPU render passes · OKLCh diverging ramp, lightness from |Γ| and hue from the sign — so equal clustering
           and exclusion are equally prominent · red = A associated with B here, blue = excluded</div>
+        <details class="help">
+          <summary>how to read this</summary>
+          <p>A <b>map</b>, not a chart: same tissue and same orientation as the centroids above, so you can
+            put the two side by side. Each A cell is asked how crowded with B its own surroundings are
+            compared with the ROI as a whole, and those answers are smoothed into a continuous surface.
+            <b>Red</b> = A cells sitting somewhere unusually rich in B; <b>blue</b> = A cells sitting
+            somewhere unusually poor in it.</p>
+          <p>The matrix gives one number for the entire ROI. This shows <b>where that number came
+            from</b> — and a pair can average out to almost nothing while being strongly red at one edge
+            of the section and blue at the other.</p>
+          <p class="trap">Pale means one of two quite different things: "nothing unusual here" or "no A
+            cells here at all". The centroid panel is how you tell which.</p>
+        </details>
       </div>
       <div class="tile">
         <h2><span class="chipA">KDE — <span id="nameKdeA">type A</span></span></h2>
         <canvas id="kdeA"></canvas>
         <div class="legend fixed">Gaussian density of <span id="nameKdeALeg">type A</span>, splatted on the GPU (<code>splatDensity</code> op)</div>
+        <details class="help">
+          <summary>how to read this</summary>
+          <p>A smoothed picture of where this one type is, in the same frame as the panels around it:
+            <b>bright where cells of that type are packed closely together</b>, dark where they are
+            sparse or absent. Individual cells are deliberately blurred away — the question it answers is
+            "where is this type concentrated", not "where is each cell".</p>
+          <p class="trap">Each of the two KDE panels is scaled to <b>its own</b> brightest spot. So
+            brightness compares one place with another <i>within</i> a panel, and never compares counts
+            <i>between</i> the two: a rare type at its own maximum is drawn just as bright as a common one
+            at its.</p>
+        </details>
       </div>
       <div class="tile">
         <h2><span class="chipB">KDE — <span id="nameKdeB">type B</span></span></h2>
         <canvas id="kdeB"></canvas>
-        <div class="legend">same op, same world frame, same lightness ramp — brightness means density, not identity</div>
+        <div class="legend">same op, same world frame, same ramp — but each panel is scaled to its <b>own</b> maximum</div>
+        <details class="help">
+          <summary>how to read this</summary>
+          <p>The same density picture as the panel to the left, for the other half of the pair. Compare the
+            two by <b>shape</b> — do the bright regions sit on top of one another, or in different parts of
+            the section? That overlap is what the Γ map turns into a single signed surface.</p>
+          <p class="trap">Do not compare the two by brightness. Each panel is scaled to its own maximum, so
+            equal brightness does not mean equal numbers of cells.</p>
+        </details>
       </div>
       <div class="tile">
         <h2>cross-PCF g(r) — <span id="namePcf">A → B</span></h2>
         <canvas id="pcf" style="image-rendering:auto"></canvas>
         <div class="legend fixed"><b>Hover for values at that radius.</b> Dashed = g=1 (CSR) ·
           <span class="chipA">■</span> cyan = bootstrap CI · grey dashed = null envelope</div>
+        <details class="help">
+          <summary>how to read this</summary>
+          <p>Left to right is <b>distance away from an A cell</b>. The curve says how many B cells are
+            found at that distance, compared with how many an even scattering would put there. The flat
+            dashed line at 1 is "nothing going on": <b>above it</b>, B cells crowd towards A at that
+            distance; <b>below it</b>, they keep away. Hover anywhere to read the numbers off.</p>
+          <p>Most patterns say the most at short range, so the interesting part is usually the left-hand
+            end — a curve that starts at 3 and settles to 1 means the two types touch, not that they share
+            a neighbourhood.</p>
+          <p>The two bands answer <b>different questions</b>. Cyan is how precisely the curve itself is
+            pinned down by this much data. Grey dashed is how far the curve could wander by chance alone.
+            So a tight cyan band sitting inside a wide grey one means "measured well, nothing unusual" —
+            it is the curve <i>leaving</i> the grey band that means something.</p>
+        </details>
       </div>
     </div>
 

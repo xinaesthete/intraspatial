@@ -125,6 +125,7 @@ const qcmGpuInput = $<HTMLInputElement>("qcmGpu");
 const qcmNullSelect = $<HTMLSelectElement>("qcmNull");
 const nameMatrixLayerEl = $<HTMLSpanElement>("nameMatrixLayer");
 const matrixScaleEl = $<HTMLSpanElement>("matrixScale");
+const matrixHelpEl = $<HTMLParagraphElement>("matrixHelp");
 const qcmReadoutEl = $<HTMLDivElement>("qcmReadout");
 const netReadoutEl = $<HTMLDivElement>("netReadout");
 const statusEl = $<HTMLDivElement>("status");
@@ -550,6 +551,10 @@ type LayerId = "pcf" | "qcmPc" | "qcmR" | "qcmSes" | "phi" | "bigPhi";
 interface MatrixLayer {
   readonly title: string;
   readonly scaleNote: string;
+  /** Plain-language "what does a red square here mean", for the tile's help disclosure. The six
+   *  layers share a grid and a colour ramp but are NOT read alike — two of them are directional, one
+   *  answers "how surprising" rather than "how strong" — so the help has to follow the select. */
+  readonly howToRead: string;
   /** Value for the pair at dense matrix indices (a, b), or NaN when undefined for that pair. */
   value(a: number, b: number): number;
   /** Map a value onto the LUT's [0, 1]. */
@@ -674,6 +679,11 @@ function buildLayer(): MatrixLayer {
         id === "phi"
           ? "sequential 0–100%: the paper's eq 15, the share of A cells with at least one B neighbour"
           : `sequential 0–${top.toPrecision(3)}: the paper's eq 16 · scaled to the largest off-diagonal, so the diagonal saturates`,
+      howToRead:
+        (id === "phi"
+          ? `Of all the A cells in this ROI, <b>what share has at least one B cell within ${contactUm().toPrecision(3)}${unitSuffix()}</b> — i.e. is touching one. Brighter = a larger share.`
+          : `The <b>average number of B cells within ${contactUm().toPrecision(3)}${unitSuffix()}</b> of an A cell. Brighter = more neighbours. The diagonal — a type against itself — is normally several times any cross-type figure, so the ramp is set by the largest off-diagonal square and the diagonal simply saturates.`) +
+        ` <span class="trap">This one is <b>directional</b>: read along a row, and do not assume the square opposite says the same. Nearly every cell of a rare type may touch a common one while hardly any of the common type touches a rare one.</span>`,
       value: (a, b) => (src ? at(src, K, a, b) : Number.NaN),
       unit: (v) => Math.max(0, Math.min(1, v / top)),
       lut: SEQ_A_LUT,
@@ -729,8 +739,21 @@ function buildLayer(): MatrixLayer {
         : id === "qcmPc"
           ? `QCM partial correlation (MH_PC) — ${quadratUm().toPrecision(3)}${unitSuffix()} quadrats`
           : `QCM effect size (MH_SES) — ${qcm?.simulations ?? 0} shuffles`;
+    // All three start from the same picture — a grid of counting squares — so the help says that once
+    // and then splits on what each layer does with it.
+    const grid = `Chop the ROI into squares ${quadratUm().toPrecision(3)}${unitSuffix()} across and count how many cells of each type land in each square.`;
+    const gateNote = gate
+      ? ` <span class="trap">Dimmed squares did not clear the multiple-testing correction. Over a thousand pairs are tested at once here, so a few would look convincing by chance alone; the dimming is what keeps those out — the value is still real, it just has not earned a claim.</span>`
+      : "";
+    const howToRead =
+      id === "qcmR"
+        ? `${grid} This layer asks whether A and B <b>rise and fall together</b> from square to square. Red = they do; blue = where one is common the other is scarce. <span class="trap">Expect this panel to fill up: anything that piles into the same busy regions of tissue ends up correlated with everything else that does. The partial layer is the one that strips that out.</span>${gateNote}`
+        : id === "qcmPc"
+          ? `${grid} A and B are then compared <b>after taking out everything the other ~47 types already explain</b>, so a pair stays red only if it tracks beyond simply being where the cells are. Red = together, blue = apart. This is the paper's headline number.${gateNote}`
+          : `${grid} Instead of the strength of the association, this layer shows <b>how surprising</b> it is: how far the observed value sits from what reshuffling the same cells produces, counted in widths of that shuffled spread. Past about ±2 is the usual mark of "not what chance does". The colours mean the same as the other layers — red together, blue apart.${gateNote}`;
     return {
       title,
+      howToRead,
       scaleNote:
         `diverging ±${span.toPrecision(2)} (98th pct of |value|) · red = co-located, blue = segregated` +
         (gate ? ` · dimmed = q ≥ ${alpha}` : "") +
@@ -749,6 +772,11 @@ function buildLayer(): MatrixLayer {
   return {
     title: "cross-PCF g(r) at the contact radius",
     scaleNote: "diverging log₂(g) clipped to ±2: red = clustering, blue = exclusion, white = CSR",
+    howToRead:
+      `Each square asks: right next to a typical A cell — within ${contactUm().toPrecision(3)}${unitSuffix()} — are there <b>more B cells than there would be if the two types took no notice of each other</b>? ` +
+      `Red = more (they crowd together), blue = fewer (they avoid each other), pale = just as expected. ` +
+      `The ramp counts in doublings, so full red is about four times as many as expected and full blue about a quarter. ` +
+      `This is the same quantity the g(r) panel plots as a curve, read off at one distance.`,
     value: (a, b) => (res ? (res.g[a * N + b] ?? Number.NaN) : Number.NaN),
     // log₂(g) clipped to ±2, i.e. a 4-fold enrichment or depletion saturates the ramp.
     unit: (v) => (v > 0 ? (Math.max(-2, Math.min(2, Math.log2(v))) / 2 + 1) / 2 : 0),
@@ -779,6 +807,9 @@ function drawMatrix(
   nameMatrixLayerEl.textContent = layer.title;
   nameMatrixLayerEl.closest("h2")?.setAttribute("title", layer.title);
   matrixScaleEl.textContent = layer.scaleNote;
+  // Static author-written strings with a formatted radius/quadrat size spliced in — no data-derived
+  // text reaches this, so the markup in them is ours.
+  matrixHelpEl.innerHTML = layer.howToRead;
   for (let a = 0; a < N; a++) {
     for (let b = 0; b < N; b++) {
       const v = layer.value(a, b);
