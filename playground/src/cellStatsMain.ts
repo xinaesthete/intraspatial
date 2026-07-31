@@ -46,7 +46,8 @@ import type { FieldValue, GpuField } from "../../src/gpu/graph/handle";
 import { paintFieldTexture } from "../../src/gpu/spatial/paintField";
 import { computeTcmRender, renderTcm, type TcmRenderParams } from "../../src/gpu/spatial/tcmRender";
 import { equivalentRadius, KERNELS, type KernelSpec, kernelLabel } from "../../src/spatial/kernels";
-import { crossPCF, crossPCFMatrix, type LabelledCells } from "../../src/spatial/pcf";
+import { crossPCFMatrix, type LabelledCells } from "../../src/spatial/pcf";
+import { crossPCFBootstrap } from "../../src/spatial/pcfBootstrap";
 import { crossPCFEnvelopeRunner, type PcfEnvelopeRunner, type PcfNullModel } from "../../src/spatial/pcfEnvelope";
 import { tcmKernelField } from "../../src/spatial/tcmKernel";
 import { csvToCellTable, inspectCsv, parseCsv } from "./datasource/cellCsv";
@@ -122,6 +123,14 @@ const tcmReadoutEl = $<HTMLDivElement>("tcmReadout");
 const pcfCanvas = $<HTMLCanvasElement>("pcf");
 const pcfReadoutEl = $<HTMLDivElement>("pcfReadout");
 const matrixCanvas = $<HTMLCanvasElement>("matrix");
+// Tile headings and legends that name the selected pair rather than saying "type A".
+const nameScatterAEl = $<HTMLSpanElement>("nameScatterA");
+const nameScatterBEl = $<HTMLSpanElement>("nameScatterB");
+const nameKdeAEl = $<HTMLSpanElement>("nameKdeA");
+const nameKdeALegEl = $<HTMLSpanElement>("nameKdeALeg");
+const nameKdeBEl = $<HTMLSpanElement>("nameKdeB");
+const nameTcmEl = $<HTMLSpanElement>("nameTcm");
+const namePcfEl = $<HTMLSpanElement>("namePcf");
 const matrixReadoutEl = $<HTMLDivElement>("matrixReadout");
 
 // ---- colour ------------------------------------------------------------------------------------
@@ -344,7 +353,32 @@ function drawScatterPair(t: CellTable, bbox: [number, number, number, number], i
 }
 
 /** Line plot of g(r) vs r with a dashed g=1 (CSR) reference. */
-function drawPcfCurve(c: HTMLCanvasElement, r: number[], g: number[], band?: { lo: Float64Array; hi: Float64Array }): void {
+/** Everything the g(r) panel draws, kept so a hover can redraw without recomputing anything. */
+interface PcfView {
+  readonly r: number[];
+  readonly g: number[];
+  readonly labelA: string;
+  readonly labelB: string;
+  readonly unit: string;
+  /** Bootstrap CI for the estimate — straddles the curve. */
+  ci?: { lo: Float64Array; hi: Float64Array; alpha: number };
+  /** Global rank envelope under a null — sits where the null lives, not on the curve. */
+  env?: { lo: Float64Array; hi: Float64Array; alpha: number; nullModel: PcfNullModel };
+}
+
+let lastPcf: PcfView | null = null;
+let pcfHoverBin: number | null = null;
+
+/**
+ * g(r) with, optionally, a bootstrap CI and a null envelope.
+ *
+ * The two bands answer different questions and are deliberately drawn so they cannot be mistaken for
+ * one another: the CI is filled in the curve's own hue because it belongs to the curve, and the
+ * envelope is neutral grey with a dashed edge because it belongs to the null. Both at once is the
+ * informative case — a tight CI inside a wide envelope is "well measured, not unusual", the reverse
+ * is "barely measured, but extreme".
+ */
+function drawPcfCurve(c: HTMLCanvasElement, view: PcfView | null, hoverBin: number | null): void {
   const W = 760;
   const H = 260;
   const padL = 46;
@@ -356,30 +390,49 @@ function drawPcfCurve(c: HTMLCanvasElement, r: number[], g: number[], band?: { l
   const ctx = c.getContext("2d")!;
   ctx.fillStyle = "#0f172a";
   ctx.fillRect(0, 0, W, H);
-  const rMax = r[r.length - 1] ?? 1;
+  if (!view) return;
+  const { r, g } = view;
+  const rMax = (r[r.length - 1] ?? 1) + (r.length > 1 ? (r[1]! - r[0]!) / 2 : 0);
   let gMax = 1.2;
   for (const v of g) if (v > gMax) gMax = v;
-  // The band has to fit too, or a curve that exits upward would be clipped out of the picture —
-  // exactly the case the envelope exists to show.
-  if (band) for (const v of band.hi) if (Number.isFinite(v) && v > gMax) gMax = v;
+  // Both bands have to fit, or a curve that leaves one would be clipped out of the picture — exactly
+  // the case they exist to show.
+  for (const band of [view.ci, view.env]) {
+    if (band) for (const v of band.hi) if (Number.isFinite(v) && v > gMax) gMax = v;
+  }
   gMax = Math.ceil(gMax * 1.1);
   const px = (rv: number) => padL + (rv / rMax) * (W - padL - padR);
   const py = (gv: number) => H - padB - (gv / gMax) * (H - padB - padT);
 
-  // Band first, so the observed curve is drawn over it and stays legible where it crosses.
-  if (band) {
-    ctx.fillStyle = "rgba(148,163,184,0.22)";
+  const fillBand = (lo: Float64Array, hi: Float64Array, style: string, edge?: string) => {
+    ctx.fillStyle = style;
     ctx.beginPath();
-    for (let i = 0; i < r.length; i++) ctx[i === 0 ? "moveTo" : "lineTo"](px(r[i]!), py(band.hi[i]!));
-    for (let i = r.length - 1; i >= 0; i--) ctx.lineTo(px(r[i]!), py(band.lo[i]!));
+    for (let i = 0; i < r.length; i++) ctx[i === 0 ? "moveTo" : "lineTo"](px(r[i]!), py(hi[i]!));
+    for (let i = r.length - 1; i >= 0; i--) ctx.lineTo(px(r[i]!), py(lo[i]!));
     ctx.closePath();
     ctx.fill();
-    // Points where the observed curve is outside get a marker: the test is "does it leave the band
-    // anywhere", so where it leaves is the finding and should not need squinting.
+    if (edge) {
+      ctx.strokeStyle = edge;
+      ctx.lineWidth = 1;
+      ctx.setLineDash([3, 3]);
+      for (const arr of [lo, hi]) {
+        ctx.beginPath();
+        for (let i = 0; i < r.length; i++) ctx[i === 0 ? "moveTo" : "lineTo"](px(r[i]!), py(arr[i]!));
+        ctx.stroke();
+      }
+      ctx.setLineDash([]);
+    }
+  };
+
+  // Envelope first (widest, furthest back), then the CI, then the curve on top.
+  if (view.env) fillBand(view.env.lo, view.env.hi, "rgba(148,163,184,0.18)", "rgba(148,163,184,0.45)");
+  if (view.ci) fillBand(view.ci.lo, view.ci.hi, "rgba(34,211,238,0.26)");
+
+  if (view.env) {
     ctx.fillStyle = "#f87171";
     for (let i = 0; i < r.length; i++) {
       const v = g[i]!;
-      if (v < band.lo[i]! || v > band.hi[i]!) {
+      if (v < view.env.lo[i]! || v > view.env.hi[i]!) {
         ctx.beginPath();
         ctx.arc(px(r[i]!), py(v), 3, 0, Math.PI * 2);
         ctx.fill();
@@ -410,11 +463,46 @@ function drawPcfCurve(c: HTMLCanvasElement, r: number[], g: number[], band?: { l
     else ctx.lineTo(X, Y);
   }
   ctx.stroke();
+
+  // ---- hover: a guide, a dot, and the numbers at that radius ------------------------------------
+  if (hoverBin !== null && hoverBin >= 0 && hoverBin < r.length) {
+    const k = hoverBin;
+    const X = px(r[k]!);
+    ctx.strokeStyle = "rgba(226,232,240,0.35)";
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(X, padT);
+    ctx.lineTo(X, H - padB);
+    ctx.stroke();
+    ctx.fillStyle = A_CSS;
+    ctx.beginPath();
+    ctx.arc(X, py(g[k]!), 3.5, 0, Math.PI * 2);
+    ctx.fill();
+
+    const lines = [`r = ${r[k]!.toPrecision(3)}${view.unit}   g = ${g[k]!.toFixed(3)}`];
+    if (view.ci) lines.push(`CI ${(100 * (1 - view.ci.alpha)).toFixed(0)}%: [${view.ci.lo[k]!.toFixed(3)}, ${view.ci.hi[k]!.toFixed(3)}]`);
+    if (view.env) {
+      const inside = g[k]! >= view.env.lo[k]! && g[k]! <= view.env.hi[k]!;
+      lines.push(`null: [${view.env.lo[k]!.toFixed(3)}, ${view.env.hi[k]!.toFixed(3)}] ${inside ? "— inside" : "— OUTSIDE"}`);
+    }
+    ctx.font = "10px ui-sans-serif, system-ui, sans-serif";
+    const wBox = Math.max(...lines.map((l) => ctx.measureText(l).width)) + 10;
+    // Flip the box to the other side of the guide near the right edge, so it never runs off.
+    const bx = X + 8 + wBox > W - padR ? X - 8 - wBox : X + 8;
+    const hBox = lines.length * 13 + 6;
+    ctx.fillStyle = "rgba(2,6,23,0.88)";
+    ctx.fillRect(bx, padT + 2, wBox, hBox);
+    ctx.strokeStyle = "#334155";
+    ctx.strokeRect(bx, padT + 2, wBox, hBox);
+    ctx.fillStyle = "#e2e8f0";
+    for (let i = 0; i < lines.length; i++) ctx.fillText(lines[i]!, bx + 5, padT + 15 + i * 13);
+  }
+
   ctx.fillStyle = "#94a3b8";
   ctx.font = "10px ui-sans-serif, system-ui, sans-serif";
   ctx.fillText("g=1", padL + 4, py(1) - 3);
   ctx.fillText(`g (0…${gMax})`, 4, padT + 8);
-  ctx.fillText(`r → ${rMax.toPrecision(3)} (world units)`, W - padR - 150, H - 8);
+  ctx.fillText(`r → ${rMax.toPrecision(3)}${view.unit}`, W - padR - 150, H - 8);
 }
 
 /** N×N diverging heatmap of the cross-PCF matrix: log₂(g) through the OKLCh ramp, with hover/pin
@@ -672,13 +760,32 @@ function computePcf(withEnvelope: boolean): void {
   // property of the ROI's shape rather than of the biology (see the step-3 block in
   // docs/muspan-cell-stats-plan.md §6).
   const pcfParams = { bbox, rMax, nBins: PCF_BINS, edgeCorrected: true } as const;
-  const res = crossPCF({ xs: A.xs, ys: A.ys }, { xs: B.xs, ys: B.ys }, pcfParams);
-  drawPcfCurve(pcfCanvas, res.r, res.g);
+  // The bootstrap comes for free with the curve: g(r) is a mean over anchors, so one pair search
+  // yields every anchor's contribution and a resample is a mean over an array already in memory
+  // (999 resamples of 2821 anchors: 153 ms). That is why the CI is always on and the envelope is not.
+  const boot = crossPCFBootstrap({ xs: A.xs, ys: A.ys }, { xs: B.xs, ys: B.ys }, pcfParams, {
+    resamples: 999,
+    alpha: Math.min(0.5, Math.max(0.001, Number(envAlphaInput.value) || 0.05)),
+    seed: 0xb0075,
+  });
+  const res = { r: boot.r, g: [...boot.g] };
+  lastPcf = {
+    r: boot.r,
+    g: res.g,
+    labelA: labelOfId(idA),
+    labelB: labelOfId(idB),
+    unit: unitSuffix(),
+    ci: { lo: boot.lo, hi: boot.hi, alpha: boot.alpha },
+  };
+  pcfHoverBin = null;
+  drawPcfCurve(pcfCanvas, lastPcf, null);
+  namePcfEl.textContent = `${labelOfId(idA)} → ${labelOfId(idB)}`;
   const binUm = toUm(rMax / PCF_BINS);
   const head =
     `<b>g<sub>AB</sub>(r)</b> — A = ${labelOfId(idA)} (${A.n} cells), B = ${labelOfId(idB)} (${B.n} cells)<br>` +
     `r → ${toUm(rMax).toPrecision(3)}${unitSuffix()}, ${PCF_BINS} bins of ${binUm.toPrecision(3)}${unitSuffix()}` +
-    `${known ? " (the paper's binning)" : ""} · edge-corrected · g(r→0) = ${(res.g[0] ?? 0).toFixed(2)} · g&gt;1 clustering, g&lt;1 exclusion`;
+    `${known ? " (the paper's binning)" : ""} · edge-corrected · g(r→0) = ${(res.g[0] ?? 0).toFixed(2)} · ` +
+    `<span style="color:${A_CSS}">shaded</span> = ${(100 * (1 - boot.alpha)).toFixed(0)}% bootstrap CI over ${boot.nA.toLocaleString()} anchor cells · <b>hover the chart</b> for values`;
   pcfReadoutEl.innerHTML = head;
 
   const token = ++envelopeToken;
@@ -728,7 +835,10 @@ function computePcf(withEnvelope: boolean): void {
     }
     try {
       const env = runner.finish();
-      drawPcfCurve(pcfCanvas, res.r, res.g, env.envelope);
+      if (lastPcf) {
+        lastPcf.env = { lo: env.envelope.lo, hi: env.envelope.hi, alpha: env.envelope.alpha, nullModel };
+        drawPcfCurve(pcfCanvas, lastPcf, pcfHoverBin);
+      }
       const e = env.envelope;
       const floor = 1 / (sims + 1);
       const pStr = e.p <= floor + 1e-12 ? `≤ ${floor.toFixed(3)} (the floor at ${sims} simulations)` : e.p.toFixed(3);
@@ -767,6 +877,18 @@ function setPair(idA: number, idB: number, doTcm: boolean): void {
   typeSelectB.value = String(idB);
   const t = current;
   if (!t) return;
+  const nameA = labelOfId(idA);
+  const nameB = labelOfId(idB);
+  // Say WHICH cell types are on screen. "type A" is only meaningful next to the dropdown that set
+  // it; on a tile three panels away it is a puzzle, and screenshots of these tiles end up in
+  // conversations where the dropdown is not visible at all.
+  nameScatterAEl.textContent = nameA;
+  nameScatterBEl.textContent = nameB;
+  nameKdeAEl.textContent = nameA;
+  nameKdeALegEl.textContent = nameA;
+  nameKdeBEl.textContent = nameB;
+  nameTcmEl.textContent = `${nameA} → ${nameB}`;
+  namePcfEl.textContent = `${nameA} → ${nameB}`;
   drawScatterPair(t, tableBounds(t), idA, idB);
   // `doTcm` also gates the envelope: both are the "settled on this pair" work.
   computePcf(doTcm);
@@ -1091,6 +1213,30 @@ csvInput.addEventListener("change", () => {
 for (const el of [envToggle, envNullSelect, envSimsInput, envAlphaInput]) {
   el.addEventListener("change", () => computePcf(true));
 }
+// Hover the g(r) chart for the numbers at that radius. Redrawing is free — every band is already
+// computed and held in `lastPcf` — so this needs no recompute and no debounce.
+pcfCanvas.addEventListener("mousemove", (ev) => {
+  if (!lastPcf) return;
+  const rect = pcfCanvas.getBoundingClientRect();
+  // The canvas is CSS-scaled to its tile, so map through the displayed size, not the backing store.
+  const x = ((ev.clientX - rect.left) / rect.width) * 760;
+  const padL = 46;
+  const padR = 12;
+  const n = lastPcf.r.length;
+  const rMax = (lastPcf.r[n - 1] ?? 1) + (n > 1 ? (lastPcf.r[1]! - lastPcf.r[0]!) / 2 : 0);
+  const rv = ((x - padL) / (760 - padL - padR)) * rMax;
+  const bin = Math.round((rv / rMax) * n - 0.5);
+  const clamped = bin < 0 || bin >= n ? null : bin;
+  if (clamped === pcfHoverBin) return;
+  pcfHoverBin = clamped;
+  drawPcfCurve(pcfCanvas, lastPcf, pcfHoverBin);
+});
+pcfCanvas.addEventListener("mouseleave", () => {
+  if (pcfHoverBin === null) return;
+  pcfHoverBin = null;
+  drawPcfCurve(pcfCanvas, lastPcf, null);
+});
+
 mdvInspectBtn.addEventListener("click", () => void inspectMdv());
 mdvRunBtn.addEventListener("click", () => void loadMdvRegion());
 // An ROI is one click, and re-reading is cheap (the columns are already fetched), so changing the

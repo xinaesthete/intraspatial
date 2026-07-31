@@ -38,7 +38,7 @@
     .tile canvas { width: 100%; height: auto; max-height: 440px; object-fit: contain;
       image-rendering: pixelated; border: 1px solid #334155; border-radius: 6px; background: #0f172a; }
     .legend { font-size: 10px; color: #94a3b8; margin-top: 5px; }
-    #matrix { cursor: crosshair; }
+    #matrix, #pcf { cursor: crosshair; }
     .readouts { font-size: 11.5px; color: #cbd5e1; font-variant-numeric: tabular-nums; display: grid; grid-template-columns: repeat(auto-fit, minmax(330px, 1fr)); gap: 10px 18px; }
     .readouts > div { min-width: 0; }
     .chipA { color: #22d3ee; } .chipB { color: #f59e0b; }
@@ -141,35 +141,39 @@
       <div class="tile">
         <h2>N-way cross-PCF matrix — hover to link · click to pin</h2>
         <canvas id="matrix"></canvas>
-        <div class="legend">rows = A, cols = B (axes labelled when the store names its types) · diverging log₂(g): red = clustering, blue = exclusion, white = CSR · white box = hover, dashed = pinned</div>
+        <div class="legend">rows = A (the anchor type), cols = B (axes labelled when the store names its types) · diverging log₂(g): red = clustering, blue = exclusion, white = CSR · white box = hover, dashed = pinned</div>
       </div>
       <div class="tile">
         <h2>centroids — pair highlighted</h2>
         <canvas id="scatter"></canvas>
-        <div class="legend"><span class="chipA">■</span> type A · <span class="chipB">■</span> type B · other cells faint</div>
+        <div class="legend"><span class="chipA">■</span> <span id="nameScatterA">type A</span> · <span class="chipB">■</span> <span id="nameScatterB">type B</span> · other cells faint</div>
       </div>
       <div class="tile">
-        <h2>TCM Γ<sub>AB</sub>(x) — two GPU render passes</h2>
+        <h2>TCM Γ(x) — <span id="nameTcm">A → B</span> · two GPU render passes</h2>
         <canvas id="tcm"></canvas>
         <div class="legend">OKLCh diverging ramp, lightness from |Γ| and hue from the sign — so equal clustering
           and exclusion are equally prominent · red = A associated with B here, blue = excluded</div>
       </div>
       <div class="tile">
-        <h2><span class="chipA">KDE — type A</span></h2>
+        <h2><span class="chipA">KDE — <span id="nameKdeA">type A</span></span></h2>
         <canvas id="kdeA"></canvas>
-        <div class="legend">Gaussian density of type A, splatted on the GPU (<code>splatDensity</code> op)</div>
+        <div class="legend">Gaussian density of <span id="nameKdeALeg">type A</span>, splatted on the GPU (<code>splatDensity</code> op)</div>
       </div>
       <div class="tile">
-        <h2><span class="chipB">KDE — type B</span></h2>
+        <h2><span class="chipB">KDE — <span id="nameKdeB">type B</span></span></h2>
         <canvas id="kdeB"></canvas>
         <div class="legend">same op, same world frame, same lightness ramp — brightness means density, not identity</div>
       </div>
       <div class="tile">
-        <h2>cross-PCF g<sub>AB</sub>(r)</h2>
+        <h2>cross-PCF g(r) — <span id="namePcf">A → B</span></h2>
         <canvas id="pcf" style="image-rendering:auto"></canvas>
-        <div class="legend">g(r) vs radius; dashed = g=1 (CSR). g&gt;1 clustering at range r, g&lt;1 exclusion ·
-          shaded band = <b>global rank envelope</b> under the selected null — a curve leaving it
-          <i>anywhere</i> is significant at α, which a pointwise band cannot claim</div>
+        <div class="legend"><b>Hover for values at that radius.</b> Dashed = g=1 (CSR); g&gt;1 clustering at
+          range r, g&lt;1 exclusion. Two bands, deliberately unalike because they answer different
+          questions: <span class="chipA">■</span> <b>cyan, hugging the curve</b> = bootstrap CI, how well
+          g(r) itself is known (resampling the anchor cells); <b>grey, dashed edges</b> = global rank
+          envelope, where g(r) would lie under the null — a curve leaving it <i>anywhere</i> is significant
+          at α, which a pointwise band cannot claim. A tight CI inside a wide envelope means "well
+          measured, not unusual"; the reverse means "barely measured, but extreme".</div>
       </div>
     </div>
 
