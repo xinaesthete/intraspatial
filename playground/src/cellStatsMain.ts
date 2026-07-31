@@ -47,7 +47,7 @@ import { paintFieldTexture } from "../../src/gpu/spatial/paintField";
 import { computeTcmRender, renderTcm, type TcmRenderParams } from "../../src/gpu/spatial/tcmRender";
 import { equivalentRadius, KERNELS, type KernelSpec, kernelLabel } from "../../src/spatial/kernels";
 import { crossPCF, crossPCFMatrix, type LabelledCells } from "../../src/spatial/pcf";
-import { crossPCFEnvelope, type PcfNullModel } from "../../src/spatial/pcfEnvelope";
+import { crossPCFEnvelopeRunner, type PcfEnvelopeRunner, type PcfNullModel } from "../../src/spatial/pcfEnvelope";
 import { tcmKernelField } from "../../src/spatial/tcmKernel";
 import { csvToCellTable, inspectCsv, parseCsv } from "./datasource/cellCsv";
 import {
@@ -82,6 +82,9 @@ const TCM_TARGET = 256;
 const MARK_TARGET = 512;
 const SCATTER_TARGET = 900;
 const PCF_BINS = 30;
+/** The paper's cross-PCF range: 30 bins of 10 µm over [0, 300). Used whenever the store states a
+ *  physical scale, so a curve here can be laid straight beside a published one. */
+const PAPER_RMAX_UM = 300;
 const MATRIX_CELL = 22;
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -262,7 +265,23 @@ function applyUnits(t: CellTable): void {
 }
 
 /** World-bounds over ALL types (so scatter + every KDE + Γ share one frame). */
+/** The ROI for STATISTICS: the cells' own extent, with no padding.
+ *
+ *  `tableBounds` pads by 4% so a splat is not clipped at the raster edge — right for rendering, wrong
+ *  here, and wrong twice. The padding inflates |ROI|, so ρ_B falls and EVERY g scales up by the same
+ *  factor (17% on a covid ROI: g(r→0) read 0.14 against the reference's 0.13). It also moves the
+ *  boundary away from every cell, so the edge correction finds no anchor to correct and quietly does
+ *  nothing. The published numbers this is checked against use the ROI, so this does too. */
+function tableRoi(t: CellTable): [number, number, number, number] {
+  return boundsOf(t, 0);
+}
+
+/** Render extent: padded, so splats near the edge are not clipped. */
 function tableBounds(t: CellTable): [number, number, number, number] {
+  return boundsOf(t, 0.04);
+}
+
+function boundsOf(t: CellTable, padFrac: number): [number, number, number, number] {
   let minX = Infinity;
   let minY = Infinity;
   let maxX = -Infinity;
@@ -278,7 +297,7 @@ function tableBounds(t: CellTable): [number, number, number, number] {
     }
   }
   if (!Number.isFinite(minX)) return [0, 0, 1, 1];
-  const pad = 0.04 * Math.max(maxX - minX, maxY - minY, 1);
+  const pad = padFrac * Math.max(maxX - minX, maxY - minY, 1);
   return [minX - pad, minY - pad, maxX + pad, maxY + pad];
 }
 
@@ -642,13 +661,24 @@ function computePcf(withEnvelope: boolean): void {
   const A = t.types.find((x) => x.id === idA);
   const B = t.types.find((x) => x.id === idB);
   if (!A || !B) return;
-  const bbox = tableBounds(t);
-  const rMax = spanOf(bbox) / 8;
-  const res = crossPCF({ xs: A.xs, ys: A.ys }, { xs: B.xs, ys: B.ys }, { bbox, rMax, nBins: PCF_BINS });
+  const bbox = tableRoi(t);
+  // Match the paper's binning whenever the store states a physical scale: 10 µm bins over [0, 300),
+  // which is what its published charts plot. The old `span/8` gave ~8.3 µm bins over a ~250 µm axis,
+  // so every curve here was sampled at different radii from the reference and could not be laid
+  // beside it. Without a scale there is no µm to honour, and the span-relative default stands.
+  const known = t.units.micrometres !== undefined;
+  const rMax = known ? toWorld(PAPER_RMAX_UM) : spanOf(bbox) / 8;
+  // Edge-corrected, like the reference: uncorrected runs low by perimeter·r/area, which is a
+  // property of the ROI's shape rather than of the biology (see the step-3 block in
+  // docs/muspan-cell-stats-plan.md §6).
+  const pcfParams = { bbox, rMax, nBins: PCF_BINS, edgeCorrected: true } as const;
+  const res = crossPCF({ xs: A.xs, ys: A.ys }, { xs: B.xs, ys: B.ys }, pcfParams);
   drawPcfCurve(pcfCanvas, res.r, res.g);
+  const binUm = toUm(rMax / PCF_BINS);
   const head =
     `<b>g<sub>AB</sub>(r)</b> — A = ${labelOfId(idA)} (${A.n} cells), B = ${labelOfId(idB)} (${B.n} cells)<br>` +
-    `rMax ${rMax.toPrecision(3)} (world units), ${PCF_BINS} bins · g(r→0) = ${(res.g[0] ?? 0).toFixed(2)} · g&gt;1 clustering, g&lt;1 exclusion`;
+    `r → ${toUm(rMax).toPrecision(3)}${unitSuffix()}, ${PCF_BINS} bins of ${binUm.toPrecision(3)}${unitSuffix()}` +
+    `${known ? " (the paper's binning)" : ""} · edge-corrected · g(r→0) = ${(res.g[0] ?? 0).toFixed(2)} · g&gt;1 clustering, g&lt;1 exclusion`;
   pcfReadoutEl.innerHTML = head;
 
   const token = ++envelopeToken;
@@ -658,41 +688,68 @@ function computePcf(withEnvelope: boolean): void {
     return;
   }
 
-  pcfReadoutEl.innerHTML = `${head}<br>simulating the random-labelling null …`;
-  // Yield once so the curve paints before the simulation blocks the thread.
-  setTimeout(() => {
-    if (token !== envelopeToken) return;
-    const sims = Math.max(19, Math.min(999, Math.round(Number(envSimsInput.value) || 199)));
-    const alpha = Math.min(0.5, Math.max(0.001, Number(envAlphaInput.value) || 0.05));
-    const nullModel = envNullSelect.value as PcfNullModel;
+  const sims = Math.max(19, Math.min(999, Math.round(Number(envSimsInput.value) || 199)));
+  const alpha = Math.min(0.5, Math.max(0.001, Number(envAlphaInput.value) || 0.05));
+  const nullModel = envNullSelect.value as PcfNullModel;
+  let runner: PcfEnvelopeRunner;
+  try {
+    runner = crossPCFEnvelopeRunner(
+      { xs: A.xs, ys: A.ys },
+      { xs: B.xs, ys: B.ys },
+      { ...pcfParams, nullModel, simulations: sims, alpha, seed: 0x5eed },
+    );
+  } catch (err) {
+    pcfReadoutEl.innerHTML = `${head}<br><span class="warn">envelope failed: ${(err as Error).message}</span>`;
+    return;
+  }
+
+  // Drive the simulation in slices rather than one blocking call. 199 shift simulations over 300 µm
+  // is seconds of straight-line work on a large ROI, and doing it in one go freezes the page —
+  // including the hover that would cancel it. Each tick spends at most SLICE_MS and then yields, so
+  // the UI stays live and the token check can abandon the work the moment a newer pair arrives.
+  //
+  // `setTimeout`, not `requestAnimationFrame`: rAF does not fire in a hidden tab, so a run started
+  // just before the page was backgrounded would sit at 0/199 forever instead of finishing. Nothing
+  // here is tied to paint — only a line of text changes between slices — so there is nothing to gain
+  // from frame sync and a stall to lose.
+  const SLICE_MS = 24;
+  const batch = Math.max(1, Math.round(runner.total / 40));
+  const tick = () => {
+    if (token !== envelopeToken) return; // superseded — drop it, half-run
+    const t0 = performance.now();
+    do {
+      runner.step(batch);
+    } while (runner.done < runner.total && performance.now() - t0 < SLICE_MS);
+
+    if (runner.done < runner.total) {
+      pcfReadoutEl.innerHTML = `${head}<br>simulating the ${nullModel === "shift" ? "random-shift" : "random-labelling"} null … ${runner.done}/${runner.total}`;
+      setTimeout(tick, 0);
+      return;
+    }
     try {
-      const env = crossPCFEnvelope(
-        { xs: A.xs, ys: A.ys },
-        { xs: B.xs, ys: B.ys },
-        { bbox, rMax, nBins: PCF_BINS, nullModel, simulations: sims, alpha, seed: 0x5eed },
-      );
-      if (token !== envelopeToken) return; // a newer pair won while this ran
+      const env = runner.finish();
       drawPcfCurve(pcfCanvas, res.r, res.g, env.envelope);
       const e = env.envelope;
       const floor = 1 / (sims + 1);
       const pStr = e.p <= floor + 1e-12 ? `≤ ${floor.toFixed(3)} (the floor at ${sims} simulations)` : e.p.toFixed(3);
       pcfReadoutEl.innerHTML =
         `${head}<br><b>global rank envelope</b> — p = ${pStr}, ${e.exits ? "<b>curve exits the band</b>" : "curve stays inside"} ` +
-        `at α=${e.alpha} · ${sims} relabellings of ${env.pairs.toLocaleString()} pairs in ${env.simulateMs.toFixed(0)} ms<br>` +
+        `at α=${e.alpha} · ${sims} simulations over ${env.pairs.toLocaleString()} pairs in ${env.simulateMs.toFixed(0)} ms<br>` +
         `<span class="note">Null: ${NULL_BLURB[nullModel]} ` +
         `The band is a whole-curve test, so leaving it <i>anywhere</i> is significant at α; a pointwise band drawn over the same simulations would not be.</span>`;
     } catch (err) {
-      if (token !== envelopeToken) return;
       pcfReadoutEl.innerHTML = `${head}<br><span class="warn">envelope failed: ${(err as Error).message}</span>`;
     }
-  }, 0);
+  };
+  pcfReadoutEl.innerHTML = `${head}<br>simulating … 0/${runner.total}`;
+  setTimeout(tick, 0);
 }
 
 /** Compute + render the N-way cross-PCF association matrix for all cell types (one batched pass). */
 function computeMatrix(): void {
   const t = current;
   if (!t) return;
-  const bbox = tableBounds(t);
+  const bbox = tableRoi(t); // statistics use the ROI, not the padded render box — see `tableRoi`
   const radius = defaultRadius(bbox);
   const t0 = performance.now();
   const res = crossPCFMatrix(allCells(t), { bbox, radius });

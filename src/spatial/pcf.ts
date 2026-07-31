@@ -19,12 +19,19 @@ import { annulusAreasInto } from "./edgeCorrection";
 import type { CellCloud } from "./tcm";
 
 export interface PcfParams {
-  /** ROI `[minX, minY, maxX, maxY]` — sets ρ_B = N_B/|ROI|. */
+  /** ROI `[minX, minY, maxX, maxY]` — sets ρ_B = N_B/|ROI|, and the clipping rectangle when
+   *  `edgeCorrected`. */
   readonly bbox: readonly [number, number, number, number];
   /** Maximum radius (world units). Bins are equal width `dr = rMax / nBins`. */
   readonly rMax: number;
   /** Number of radial bins. */
   readonly nBins: number;
+  /** Area for ρ_B. Defaults to the bbox area; pass the ROI's own recorded area where one exists. */
+  readonly roiArea?: number;
+  /** Clip each anchor's annulus to `bbox` — the paper's `A_{r_k}(x_a)` (eq 8). Default `false`, the
+   *  full annulus, which is exact for anchors ≥`rMax` inside the ROI and low near the boundary by an
+   *  amount set by the ROI's perimeter-to-area ratio. See `edgeCorrection.ts`. */
+  readonly edgeCorrected?: boolean;
 }
 
 export interface PcfResult {
@@ -38,13 +45,24 @@ export interface PcfResult {
 
 export function crossPCF(a: CellCloud, b: CellCloud, p: PcfParams): PcfResult {
   const [minX, minY, maxX, maxY] = p.bbox;
-  const roiArea = Math.max((maxX - minX) * (maxY - minY), 1e-12);
+  const roiArea = Math.max(p.roiArea ?? (maxX - minX) * (maxY - minY), 1e-12);
   const rhoB = b.xs.length / roiArea; // global density of B (Mode 1)
   const dr = p.rMax / p.nBins;
   const rMax2 = p.rMax * p.rMax;
   const nA = a.xs.length;
   const nB = b.xs.length;
   const counts = new Float64Array(p.nBins);
+  // Σ_a Σ_b 1/A_{r_k}(x_a) — equal to counts/(full annulus area) when uncorrected, but the anchor's
+  // own clipped area when it is not, so the two cases share one accumulation.
+  const weighted = new Float64Array(p.nBins);
+  const invFull = new Float64Array(p.nBins);
+  for (let k = 0; k < p.nBins; k++) {
+    const r0 = k * dr;
+    const r1 = r0 + dr;
+    invFull[k] = 1 / (Math.PI * (r1 * r1 - r0 * r0));
+  }
+  const areaScratch = new Float64Array(p.nBins);
+  const invAnchor = new Float64Array(p.nBins);
 
   // Bucket grid over B, cell size = rMax: every B within rMax of an anchor lies in the anchor's 3×3
   // bucket neighbourhood (same argument as computeTcm), so the exact per-pair distance test runs
@@ -72,6 +90,15 @@ export function crossPCF(a: CellCloud, b: CellCloud, p: PcfParams): PcfResult {
   for (let i = 0; i < nA; i++) {
     const ax = a.xs[i]!;
     const ay = a.ys[i]!;
+    let inv = invFull;
+    if (p.edgeCorrected) {
+      const interior = ax - minX >= p.rMax && maxX - ax >= p.rMax && ay - minY >= p.rMax && maxY - ay >= p.rMax;
+      if (!interior) {
+        annulusAreasInto(areaScratch, ax, ay, dr, p.nBins, minX, minY, maxX, maxY);
+        for (let k = 0; k < p.nBins; k++) invAnchor[k] = areaScratch[k]! > 0 ? 1 / areaScratch[k]! : 0;
+        inv = invAnchor;
+      }
+    }
     const c0 = colOf(ax);
     const r0 = rowOf(ay);
     for (let dRow = -1; dRow <= 1; dRow++) {
@@ -87,6 +114,7 @@ export function crossPCF(a: CellCloud, b: CellCloud, p: PcfParams): PcfResult {
           if (d2 >= rMax2) continue;
           const bin = Math.min(p.nBins - 1, Math.floor(Math.sqrt(d2) / dr));
           counts[bin]! += 1;
+          weighted[bin]! += inv[bin]!;
         }
       }
     }
@@ -95,13 +123,12 @@ export function crossPCF(a: CellCloud, b: CellCloud, p: PcfParams): PcfResult {
   const r: number[] = [];
   const g: number[] = [];
   const out: number[] = [];
+  const denom = nA * rhoB; // Σ_a of ρ_B, with the per-anchor area already folded into `weighted`
   for (let k = 0; k < p.nBins; k++) {
     const r0 = k * dr;
     const r1 = (k + 1) * dr;
-    const annulus = Math.PI * (r1 * r1 - r0 * r0);
-    const expected = nA * rhoB * annulus; // Σ_a of (ρ_B · annulus) under CSR
     r.push((r0 + r1) / 2);
-    g.push(expected > 0 ? counts[k]! / expected : 0);
+    g.push(denom > 0 ? weighted[k]! / denom : 0);
     out.push(counts[k]!);
   }
   return { r, g, counts: out };

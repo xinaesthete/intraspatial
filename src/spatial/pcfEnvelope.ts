@@ -100,6 +100,36 @@ export interface PcfEnvelopeResult {
   readonly simulateMs: number;
 }
 
+/** A simulation in progress. Built once (the expensive part is the neighbour structure), then driven
+ *  in batches so a caller on a UI thread can yield between them.
+ *
+ *  199 shift simulations over a 300 µm range on the largest covid ROI is a couple of seconds of
+ *  straight-line work, and doing that synchronously freezes the page. Nothing here is asynchronous —
+ *  the runner just lets the caller decide how much to do before handing control back. */
+export interface PcfEnvelopeRunner {
+  readonly r: number[];
+  readonly observed: Float64Array;
+  readonly nullModel: PcfNullModel;
+  /** Simulations requested. */
+  readonly total: number;
+  readonly pairs: number;
+  readonly nA: number;
+  readonly nB: number;
+  /** Simulations completed so far. */
+  readonly done: number;
+  /** Run up to `n` more simulations; returns the new `done`. */
+  step(n: number): number;
+  /** Envelope over the simulations run so far. Throws if too few for `alpha`. */
+  finish(): PcfEnvelopeResult;
+}
+
+/** What each null needs to expose: the observed curve, a cost figure, and one draw from the null. */
+interface Prepared {
+  observed: Float64Array;
+  pairs: number;
+  simulate(out: Float64Array): void;
+}
+
 const DEFAULT_MAX_PAIRS = 40_000_000;
 
 /** Reciprocal clipped annulus areas for every anchor, `[i*nBins + k]`. The anchor never moves under
@@ -167,7 +197,7 @@ class BucketGrid {
   }
 }
 
-export function crossPCFEnvelope(a: CellCloud, b: CellCloud, p: PcfEnvelopeParams): PcfEnvelopeResult {
+export function crossPCFEnvelopeRunner(a: CellCloud, b: CellCloud, p: PcfEnvelopeParams): PcfEnvelopeRunner {
   const nA = a.xs.length;
   const nB = b.xs.length;
   if (nA === 0 || nB === 0) throw new Error("crossPCFEnvelope: both populations must be non-empty");
@@ -189,22 +219,47 @@ export function crossPCFEnvelope(a: CellCloud, b: CellCloud, p: PcfEnvelopeParam
   const r: number[] = [];
   for (let k = 0; k < B; k++) r.push((k + 0.5) * dr);
 
-  const result = (observed: Float64Array, simulated: Float64Array[], pairs: number, simulateMs: number): PcfEnvelopeResult => ({
+  const prepared: Prepared = nullModel === "shift" ? prepareShift() : prepareLabel();
+  const simulated: Float64Array[] = [];
+  let simulateMs = 0;
+
+  return {
     r,
-    observed,
-    envelope: globalRankEnvelope(observed, simulated, { alpha }),
+    observed: prepared.observed,
     nullModel,
-    pairs,
+    total: s,
+    pairs: prepared.pairs,
     nA,
     nB,
-    simulateMs,
-  });
-
-  if (nullModel === "shift") return shiftNull();
-  return labelNull();
+    get done() {
+      return simulated.length;
+    },
+    step(n: number): number {
+      const t0 = performance.now();
+      for (let i = 0; i < n && simulated.length < s; i++) {
+        const out = new Float64Array(B);
+        prepared.simulate(out);
+        simulated.push(out);
+      }
+      simulateMs += performance.now() - t0;
+      return simulated.length;
+    },
+    finish(): PcfEnvelopeResult {
+      return {
+        r,
+        observed: prepared.observed,
+        envelope: globalRankEnvelope(prepared.observed, simulated, { alpha }),
+        nullModel,
+        pairs: prepared.pairs,
+        nA,
+        nB,
+        simulateMs,
+      };
+    },
+  };
 
   // ---- shift null: A fixed, B rigidly translated with wraparound ---------------------------------
-  function shiftNull(): PcfEnvelopeResult {
+  function prepareShift(): Prepared {
     const W = maxX - minX;
     const H = maxY - minY;
     if (!(W > 0 && H > 0)) throw new Error("crossPCFEnvelope: the shift null needs a bbox with positive extent");
@@ -222,8 +277,14 @@ export function crossPCFEnvelope(a: CellCloud, b: CellCloud, p: PcfEnvelopeParam
     const bx = new Float64Array(nB);
     const by = new Float64Array(nB);
 
-    const cols = Math.max(1, Math.ceil(W / p.rMax));
-    const rows = Math.max(1, Math.ceil(H / p.rMax));
+    // Finer than one cell per rMax. A 3×3 neighbourhood of rMax-sized cells covers 9·rMax² to find
+    // the π·rMax² that can actually be in range — 2.9× wasted distance tests. Halving the cell makes
+    // it a 5×5 of rMax/2, covering 6.25·rMax², so ~30% fewer candidates for the same answer. Finer
+    // still keeps helping in theory (the limit is 4·rMax²) but the per-bucket loop overhead grows,
+    // and this is the pass that runs `simulations` times.
+    const CELLS_PER_RMAX = 2;
+    const cols = Math.max(1, Math.ceil((W / p.rMax) * CELLS_PER_RMAX));
+    const rows = Math.max(1, Math.ceil((H / p.rMax) * CELLS_PER_RMAX));
     const cw = W / cols;
     const ch = H / rows;
     const grid = new BucketGrid(cols, rows, nB);
@@ -280,18 +341,11 @@ export function crossPCFEnvelope(a: CellCloud, b: CellCloud, p: PcfEnvelopeParam
 
     const observed = new Float64Array(B);
     const pairs = pass(0, 0, observed);
-    const simulated: Float64Array[] = [];
-    const t0 = performance.now();
-    for (let sim = 0; sim < s; sim++) {
-      const out = new Float64Array(B);
-      pass(rnd() * W, rnd() * H, out);
-      simulated.push(out);
-    }
-    return result(observed, simulated, pairs, performance.now() - t0);
+    return { observed, pairs, simulate: (out) => void pass(rnd() * W, rnd() * H, out) };
   }
 
   // ---- label null: positions fixed, A/B shuffled within the union --------------------------------
-  function labelNull(): PcfEnvelopeResult {
+  function prepareLabel(): Prepared {
     const m = nA + nB;
     const xs = new Float64Array(m);
     const ys = new Float64Array(m);
@@ -397,18 +451,27 @@ export function crossPCFEnvelope(a: CellCloud, b: CellCloud, p: PcfEnvelopeParam
     const observed = curve(observedLabel, new Float64Array(B));
 
     const perm = new Uint8Array(m);
-    const simulated: Float64Array[] = [];
-    const t0 = performance.now();
-    for (let sim = 0; sim < s; sim++) {
-      perm.set(observedLabel);
-      for (let i = m - 1; i > 0; i--) {
-        const j = Math.floor(rnd() * (i + 1));
-        const t = perm[i]!;
-        perm[i] = perm[j]!;
-        perm[j] = t;
-      }
-      simulated.push(curve(perm, new Float64Array(B)));
-    }
-    return result(observed, simulated, nPairs, performance.now() - t0);
+    return {
+      observed,
+      pairs: nPairs,
+      simulate: (out) => {
+        perm.set(observedLabel);
+        for (let i = m - 1; i > 0; i--) {
+          const j = Math.floor(rnd() * (i + 1));
+          const t = perm[i]!;
+          perm[i] = perm[j]!;
+          perm[j] = t;
+        }
+        curve(perm, out);
+      },
+    };
   }
+}
+
+/** Run every simulation and build the envelope, in one blocking call. The convenient form for tests
+ *  and offline work; a UI should drive `crossPCFEnvelopeRunner` in batches instead. */
+export function crossPCFEnvelope(a: CellCloud, b: CellCloud, p: PcfEnvelopeParams): PcfEnvelopeResult {
+  const run = crossPCFEnvelopeRunner(a, b, p);
+  run.step(run.total);
+  return run.finish();
 }

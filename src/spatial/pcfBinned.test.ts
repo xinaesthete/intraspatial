@@ -87,6 +87,24 @@ describe("crossPCFMatrixBinned", () => {
     expect(total).toBe(brute);
   });
 
+  it("agrees with edge-corrected crossPCF pair by pair", () => {
+    // Ties the single-pair path to the batched one under the correction too — the batched one is
+    // what the 74,567-comparison parity sweep validated, so this is how that result reaches the
+    // function the g(r) panel actually calls.
+    const rMax = 60;
+    const nBins = 6;
+    const binned = crossPCFMatrixBinned(cells, { bbox, rMax, nBins, nTypes: 3, edgeCorrected: true });
+    for (const [a, b] of [
+      [0, 1],
+      [2, 0],
+    ] as const) {
+      const pair = crossPCF(subset(cells, a), subset(cells, b), { bbox, rMax, nBins, edgeCorrected: true });
+      for (let k = 0; k < nBins; k++) {
+        expect(binned.g[a * 3 * nBins + b * nBins + k]!).toBeCloseTo(pair.g[k]!, 9);
+      }
+    }
+  });
+
   it("keeps a fixed type axis when nTypes is given", () => {
     // Type 3 has no cells anywhere; it must still occupy a row and a column.
     const r = crossPCFMatrixBinned(cells, { bbox, rMax: 30, nBins: 2, nTypes: 5 });
