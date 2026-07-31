@@ -1707,6 +1707,23 @@ matrixCanvas.addEventListener("click", (e) => {
 });
 matrixCanvas.style.cursor = "crosshair";
 
+/**
+ * Show only the selected source's controls.
+ *
+ * Four sources used to be on screen at once across three rows, with two `inspect` buttons and two
+ * `load` buttons visible simultaneously and no indication of which belonged to which. The handlers
+ * are unchanged — this only decides what is visible, so the wiring stays where it was.
+ */
+const sourceKindSelect = $<HTMLSelectElement>("sourceKind");
+function applySourceKind(): void {
+  const kind = sourceKindSelect.value;
+  for (const el of document.querySelectorAll<HTMLElement>(".srcgroup")) {
+    el.classList.toggle("on", el.dataset.src === kind);
+  }
+}
+sourceKindSelect.addEventListener("change", applySourceKind);
+applySourceKind();
+
 // Auto-inspect the default store on load and open its (single) table; the fixture and CSV paths are
 // always available offline.
 void inspectStore(true);

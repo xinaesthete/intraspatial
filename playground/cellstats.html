@@ -17,15 +17,42 @@
     h1 { font-size: 17px; font-weight: 600; margin: 0 0 4px; }
     .sub { color: #94a3b8; font-size: 12px; margin: 0 0 14px; max-width: 900px; }
     .panel { background: rgba(15, 23, 42, 0.82); border: 1px solid #1e293b; border-radius: 10px; padding: 12px 14px; margin-bottom: 14px; }
-    .row { display: flex; align-items: center; gap: 8px; margin: 6px 0; flex-wrap: wrap; }
+    /* The group label sits in the row's left padding and the row is indented past it, so a wrapped
+       line lines up under the controls instead of restarting at the margin and reading as a new
+       group. */
+    .row { display: flex; align-items: center; gap: 8px; margin: 6px 0; flex-wrap: wrap; padding-left: 92px; }
     .row label { color: #cbd5e1; flex: 0 0 auto; }
     input[type="text"] { flex: 1 1 260px; background: #0f172a; color: #cbd5e1; border: 1px solid #334155; border-radius: 6px; padding: 4px 7px; font-size: 12px; }
     select { background: #0f172a; color: #cbd5e1; border: 1px solid #334155; border-radius: 6px; padding: 4px 7px; font-size: 12px; }
     button { background: #1e293b; color: #e2e8f0; border: 1px solid #334155; border-radius: 6px; padding: 5px 12px; font-size: 12px; cursor: pointer; }
     button:hover { background: #334155; }
-    .note { color: #fcd34d; font-size: 11px; line-height: 1.5; }
+    /* Explanatory prose is GREY. Amber is reserved for things that are actually wrong or assumed —
+       an unstated scale, an unreachable store, a shuffle count too low to resolve anything. When
+       every paragraph was amber the genuine warnings were invisible, which is the opposite of what
+       the colour is for. */
+    .note { color: #94a3b8; font-size: 11px; line-height: 1.5; }
+    .caution { color: #fcd34d; }
     .warn { color: #fca5a5; }
-    .note code { background: #0f172a; border: 1px solid #334155; border-radius: 3px; padding: 0 3px; }
+    .note code, .caution code { background: #0f172a; border: 1px solid #334155; border-radius: 3px; padding: 0 3px; }
+
+    /* The reasoning behind these numbers is worth keeping and not worth reading every time. */
+    .notes { margin-top: 10px; border-top: 1px solid #1e293b; padding-top: 8px; }
+    .notes details { margin: 3px 0; }
+    .notes summary { cursor: pointer; color: #7dd3fc; font-size: 11px; letter-spacing: 0.02em; padding: 2px 0; }
+    .notes summary:hover { color: #bae6fd; }
+    .notes details > *:not(summary) { margin: 4px 0 8px 14px; max-width: 105ch; }
+
+    /* Source rows: one visible at a time, chosen by the `source` select. */
+    .srcgroup { display: none; align-items: center; gap: 8px; flex: 1 1 auto; flex-wrap: wrap; }
+    .srcgroup.on { display: flex; }
+    /* Names the group a control row belongs to, so the panel reads as sections rather than a list. */
+    /* A label and the control it names must never be split across a wrapped line — that is what
+       put "σ µm" at the end of one row and its input at the start of the next. */
+    .ctl { display: inline-flex; align-items: center; gap: 6px; flex: 0 1 auto; min-width: 0; }
+    .ctl input[type="text"] { flex: 0 1 auto; width: 74px; }
+    .ctl select { max-width: 100%; }
+    .rowlab { flex: 0 0 84px; margin-left: -92px; color: #64748b; font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em; }
+    .panel hr { border: 0; border-top: 1px solid #1e293b; margin: 10px 0 8px; }
     #status { margin-top: 6px; font-size: 12px; white-space: pre-wrap; color: #94a3b8; }
 
     /* Dense tile grid: as many stats on screen at once as the viewport allows. */
@@ -58,156 +85,170 @@
 <body>
   <div id="wrap">
     <h1>Cell-type spatial statistics — TCM · cross-PCF · N-way matrix (Stream B2)</h1>
-    <p class="sub">A SpatialData store is <b>inspected</b> for its tables and their candidate cell-type columns
-      (auto-selected when there is only one); <code>obsm/spatial</code> centroids are then grouped into
-      per-type clouds (ADR-0018 — never merged), each carrying a resolved <code>placement</code>. A
-      <b>converted MDV project</b> (one ROI at a time), a CSV export, or the offline fixture take the
-      identical path.
-      <b>Hover the N-way matrix</b> to link every view to that cell-type pair; <b>click to pin</b> it (leaving
-      the matrix returns to the pinned pair). MuSpAn eqs 8–14, Mode 1 (faithful, global ρ<sub>B</sub>).
-      Γ is rendered as two additive GPU passes — B through a radial kernel, then A splatted with the
-      transformed mark fetched per cell — with the exact CPU oracle one button away.
-      The derivation is in <code>docs/cell-stats.md</code>.</p>
+    <p class="sub"><b>Hover the N-way matrix</b> to point every panel at that cell-type pair; <b>click to
+      pin</b> it. Four sources — a SpatialData store, a converted MDV project, a CSV, or an offline fixture —
+      all take the identical path to per-type clouds (ADR-0018: never merged). MuSpAn eqs 8–14, Mode 1;
+      derivation in <code>docs/cell-stats.md</code>, and the reasoning behind each number is under the
+      panel.</p>
 
     <div class="panel">
+      <!-- FOUR sources, one at a time. They used to sit in three rows with two `inspect` buttons and
+           two `load` buttons visible at once, which gave no clue which button belonged to which
+           path. Every id is unchanged, so the handlers are untouched; only what is on screen is. -->
       <div class="row">
-        <label for="store">store url</label>
-        <input id="store" type="text" />
-        <button id="inspect">inspect</button>
-        <button id="fixture">fixture (offline)</button>
-        <label for="csvFile">or CSV</label>
-        <input id="csvFile" type="file" accept=".csv,text/csv" style="flex:0 1 210px" />
+        <span class="rowlab">source</span>
+        <select id="sourceKind" style="flex:0 1 210px">
+          <option value="spatialdata" selected>SpatialData store</option>
+          <option value="mdv">MDV project (zarr)</option>
+          <option value="csv">CSV file</option>
+          <option value="fixture">synthetic fixture</option>
+        </select>
+
+        <span class="srcgroup" data-src="spatialdata">
+          <input id="store" type="text" style="flex:1 1 300px" />
+          <button id="inspect">inspect</button>
+          <select id="tableSel" style="flex:1 1 200px" title="table"></select>
+          <select id="typeCol" style="flex:1 1 200px" title="cell-type column"></select>
+          <button id="run">load</button>
+        </span>
+
+        <span class="srcgroup" data-src="mdv">
+          <input id="mdvStore" type="text" style="flex:1 1 300px" />
+          <button id="mdvInspect">inspect</button>
+          <select id="mdvRegion" style="flex:1 1 220px" title="ROI — every statistic here is per-ROI"></select>
+          <button id="mdvRun">load ROI</button>
+        </span>
+
+        <span class="srcgroup" data-src="csv">
+          <input id="csvFile" type="file" accept=".csv,text/csv" style="flex:0 1 260px" />
+        </span>
+
+        <span class="srcgroup" data-src="fixture">
+          <button id="fixture">load fixture (offline)</button>
+        </span>
       </div>
+      <hr />
       <div class="row">
-        <label for="tableSel">table</label>
-        <select id="tableSel" style="flex:1 1 240px"></select>
-        <label for="typeCol">cell-type column</label>
-        <select id="typeCol" style="flex:1 1 240px"></select>
-        <button id="run">load</button>
-      </div>
-      <div class="row">
-        <label for="mdvStore">MDV zarr</label>
-        <input id="mdvStore" type="text" style="flex:1 1 260px" />
-        <button id="mdvInspect">inspect</button>
-        <label for="mdvRegion">ROI</label>
-        <select id="mdvRegion" style="flex:1 1 220px"></select>
-        <button id="mdvRun">load ROI</button>
-      </div>
-      <div class="row">
-        <label for="type">type A</label>
-        <select id="type"></select>
-        <label for="typeB">type B</label>
-        <select id="typeB"></select>
-        <label for="kernel">mark kernel</label>
-        <select id="kernel"></select>
-        <label for="radius">radius µm</label>
-        <input id="radius" type="text" style="flex:0 1 80px" />
-        <label for="sigma">σ µm</label>
-        <input id="sigma" type="text" style="flex:0 1 80px" />
-        <label for="scale">µm/unit</label>
-        <input id="scale" type="text" value="1" style="flex:0 1 70px" />
+        <span class="rowlab">pair &amp; Γ</span>
+        <span class="ctl"><label for="type">type A</label> <select id="type"></select></span>
+        <span class="ctl"><label for="typeB">type B</label> <select id="typeB"></select></span>
+        <span class="ctl"><label for="kernel">mark kernel</label> <select id="kernel"></select></span>
+        <span class="ctl"><label for="radius">radius µm</label> <input id="radius" type="text" style="flex:0 1 80px" /></span>
+        <span class="ctl"><label for="sigma">σ µm</label> <input id="sigma" type="text" style="flex:0 1 80px" /></span>
+        <span class="ctl"><label for="scale">µm/unit</label> <input id="scale" type="text" value="1" style="flex:0 1 70px" /></span>
         <button id="tcmBtn">render Γ<sub>AB</sub></button>
         <button id="oracleBtn">check vs CPU oracle</button>
       </div>
       <div class="row">
-        <label for="envToggle">g(r) envelope</label>
-        <input id="envToggle" type="checkbox" checked style="flex:0 0 auto" />
-        <label for="envNull">null</label>
-        <select id="envNull" style="flex:0 1 240px">
+        <span class="rowlab">g(r) band</span>
+        <span class="ctl"><label for="envToggle">envelope</label> <input id="envToggle" type="checkbox" checked style="flex:0 0 auto" /></span>
+        <span class="ctl"><label for="envNull">null</label> <select id="envNull" style="flex:0 1 240px">
           <option value="shift" selected>random shift of B — tests association</option>
           <option value="label">random labelling in A∪B — tests exchangeability</option>
-        </select>
-        <label for="envSims">simulations</label>
-        <input id="envSims" type="text" value="199" style="flex:0 1 70px" />
-        <label for="envAlpha">α</label>
-        <input id="envAlpha" type="text" value="0.05" style="flex:0 1 60px" />
+        </select></span>
+        <span class="ctl"><label for="envSims">simulations</label> <input id="envSims" type="text" value="199" style="flex:0 1 70px" /></span>
+        <span class="ctl"><label for="envAlpha">α</label> <input id="envAlpha" type="text" value="0.05" style="flex:0 1 60px" /></span>
         <span class="note" style="flex:1 1 auto">Computed on <b>settle or click</b>, like Γ.</span>
       </div>
       <div class="row">
-        <label for="matrixLayer">matrix shows</label>
-        <select id="matrixLayer" style="flex:1 1 250px">
+        <span class="rowlab">N-way matrix</span>
+        <span class="ctl"><label for="matrixLayer">shows</label> <select id="matrixLayer" style="flex:1 1 250px">
           <option value="pcf" selected>cross-PCF g(r) at the contact radius</option>
           <option value="qcmPc">QCM partial correlation — MH_PC (Morueta-Holme)</option>
           <option value="qcmR">QCM Pearson correlation — quadratCounts</option>
           <option value="qcmSes">QCM effect size vs the shuffle null — MH_SES</option>
           <option value="phi">φ — % of A touching a B (eq 15)</option>
           <option value="bigPhi">Φ — mean B neighbours per A (eq 16)</option>
-        </select>
-        <label for="quadratUm">quadrat µm</label>
-        <input id="quadratUm" type="text" value="100" style="flex:0 1 70px" />
-        <label for="contactUm">contact µm</label>
-        <input id="contactUm" type="text" value="20" style="flex:0 1 70px" />
-        <label for="qcmSims">QCM sims</label>
-        <input id="qcmSims" type="text" value="9999" style="flex:0 1 70px" />
-        <label for="qcmGate">gate q&lt;α</label>
-        <input id="qcmGate" type="checkbox" checked style="flex:0 0 auto" />
-        <label for="qcmGpu">GPU null</label>
-        <input id="qcmGpu" type="checkbox" checked style="flex:0 0 auto" />
-        <label for="qcmNull">QCM null</label>
-        <select id="qcmNull" style="flex:0 1 210px">
+        </select></span>
+        <span class="ctl"><label for="quadratUm">quadrat µm</label> <input id="quadratUm" type="text" value="100" style="flex:0 1 70px" /></span>
+        <span class="ctl"><label for="contactUm">contact µm</label> <input id="contactUm" type="text" value="20" style="flex:0 1 70px" /></span>
+        <span class="ctl"><label for="qcmSims">QCM sims</label> <input id="qcmSims" type="text" value="9999" style="flex:0 1 70px" /></span>
+        <span class="ctl"><label for="qcmGate">gate q&lt;α</label> <input id="qcmGate" type="checkbox" checked style="flex:0 0 auto" /></span>
+        <span class="ctl"><label for="qcmGpu">GPU null</label> <input id="qcmGpu" type="checkbox" checked style="flex:0 0 auto" /></span>
+        <span class="ctl"><label for="qcmNull">QCM null</label> <select id="qcmNull" style="flex:0 1 210px">
           <option value="label" selected>label shuffle (fast)</option>
           <option value="swap">2×2 swap chain — SpOOx's</option>
-        </select>
+        </select></span>
       </div>
-      <p class="note"><b>One matrix, several statistics — they disagree, and that is the point.</b>
-        <code>MH_PC</code> is the paper's headline: a <b>partial</b> correlation, measuring A against B
-        <i>after conditioning on all 47 other types</i>. Plain correlation is transitive, so everything that
-        crowds into the same inflamed quadrats correlates with everything else and the matrix fills with one
-        "this is where the cells are" factor; the partial version keeps only what survives that. Switch
-        between <code>QCM partial</code> and <code>QCM Pearson</code> to watch the induced associations drop out:
-        on COVID_SAMPLE_16_ROI_3, 68 of 1,128 pairs exceed |r| = 0.3 but only 8 exceed |partial| = 0.3, and after
-        Benjamini–Hochberg 226 pairs survive on the plain correlation against 23 on the partial.
-        <b>gate q&lt;α</b> dims the pairs that fail BH — 1,128 simultaneous tests on one ROI, so the correction is
-        not optional.</p>
-      <p class="note"><b>The shuffle count is the resolution, and that is why the null runs on the GPU.</b>
-        A permutation p cannot fall below 1/(S+1), so BH can declare nothing at all until
-        m/((S+1)·α) pairs pile up at that floor. At the paper's 1000 shuffles that bar is 23 pairs and exactly
-        23 clear it — the discovery set sits <i>on</i> the threshold, so it is unstable: two runs of the same
-        null disagree on 6 of 1,128 pairs from Monte Carlo noise alone. At 199 shuffles the bar is 113 and the
-        partial correlation returns <i>zero</i> discoveries, which looks exactly like "no associations" and is
-        not. The panel says so whenever the floor binds.
-        <b>GPU null</b> is what makes the fix affordable: the permutation is a Feistel cipher over the cell
-        indices, so π(i) is O(1) per thread with no Fisher-Yates and no scratch, and the count, correlation and
-        49×49 inverse all run per-shuffle on the device. Measured back to back on COVID_SAMPLE_16_ROI_3,
-        <b>9,999 shuffles in 668 ms against 42,364 ms on the CPU — 63×</b>. The observed MH_PC is the identical
-        f64 value either way (0.022 for the pair above, from both); only the null is sampled on the device, and
-        the two agree to Monte Carlo error (SES −0.07 against −0.09).</p>
-      <p class="note"><b>The g(r) chart carries two bands, and they answer different questions.</b>
-        The <span class="chipA">cyan</span> one hugging the curve is a <b>bootstrap confidence interval</b>
-        — how well g(r) itself is known; it says nothing about whether the arrangement is unusual. The grey
-        dashed one is the <b>global rank envelope</b> — where g(r) would lie under the null; a curve leaving
-        it <i>anywhere</i> is significant at α, which a pointwise band cannot claim. Neither implies the
-        other: a tight CI inside a wide envelope means "well measured, not unusual", and the reverse means
-        "barely measured, but extreme".
-        <b>Only the CI has a published counterpart.</b> It is SpOOx's Loh spatial block bootstrap —
-        resample 100&nbsp;µm <i>tiles</i> with replacement, not anchor cells, and take the ratio
-        Σcontributions/Σanchors. That choice is the difference between a band that works and one that
-        lies: on a clustered pattern, resampling anchors independently covers the truth <b>40%</b> of the
-        time while claiming 95%, because neighbouring anchors see the same cells. The tiled version
-        measures 98%. (The paper says a 20&nbsp;µm lattice; the source says 100 — the second place the
-        two disagree.) The envelope has no counterpart in SpOOx at all — there is no null simulation for
-        the cross-PCF there, so it is a stronger inference offered here, not a reproduction.</p>
-      <p class="note">Which null decides what is being tested, and the difference is not cosmetic.
-        <b>Random shift</b> (Lotwick &amp; Silverman 1982) translates B by a random vector, wrapping around
-        the ROI: each type keeps its own clustering exactly and only the two patterns' relative position is
-        destroyed, so what is tested is <b>association</b>. <b>Random labelling</b> shuffles the A/B labels
-        between the same cells — right when A and B are nested or exchangeable subsets of one population
-        (<code>Fibroblast</code> vs <code>Prolif fibroblast</code>), but for two distinct self-clustered types
-        it asks "are these one interleaved population?", to which the answer is trivially no: on independent
-        synthetic patterns that are each clustered it rejects 20 times out of 20, where the shift null rejects 3.</p>
-      <p class="note" id="units">—</p>
-      <p class="note">Radius is <b>top-hat-equivalent</b>: switching kernel rescales it to hold the probed
-        scale (μ₂) fixed, so "smoother" never quietly becomes "more local". α=5, world units.
-        ⚠ The store must be CORS-enabled (default: the local MDV server at <code>localhost:5055</code>);
-        if unreachable, use <b>fixture</b> or open a <b>CSV</b>.</p>
-      <p class="note">The <b>MDV zarr</b> row loads a converted MDV project (<code>pnpm mdv:zarr</code>).
-        Such a project holds many ROIs — the covid project is 545,400 cells across 32 — and every
-        statistic here is <b>per ROI</b>: ρ<sub>B</sub> is a density over one ROI and the edge correction is
-        against one ROI's boundary, so pooling them would measure the gaps between tissue sections.
-        Hence the ROI picker. Scale comes from the project's own <code>regions.scale</code> rather than a
-        default of 1; for covid that is exactly 1&nbsp;µm/unit, so r=100&nbsp;µm and σ=50&nbsp;µm are literal.
-        The g(r) this path produces is validated against the project's own published
-        <code>gr10</code>/<code>gr20</code> — 74,567 comparisons, median 0.26% (<code>pnpm mdv:parity</code>).</p>
+      <p class="note caution" id="units">—</p>
+
+      <div class="notes">
+        <details>
+          <summary>Reading the two bands on g(r) — a confidence interval is not an envelope</summary>
+          <p class="note">The <span class="chipA">cyan</span> band hugging the curve is a <b>bootstrap
+            confidence interval</b>: how well g(r) itself is known. It says nothing about whether the
+            arrangement is unusual. The grey dashed band is the <b>global rank envelope</b>: where g(r) would
+            lie under the null, so a curve leaving it <i>anywhere</i> is significant at α — which a pointwise
+            band cannot claim. Neither implies the other. A tight CI inside a wide envelope means "well
+            measured, not unusual"; the reverse means "barely measured, but extreme".</p>
+          <p class="note"><b>Only the CI has a published counterpart.</b> It is SpOOx's Loh spatial block
+            bootstrap: resample 100&nbsp;µm <i>tiles</i> with replacement, not anchor cells, and take the
+            ratio Σcontributions/Σanchors. That choice is the difference between a band that works and one
+            that lies — on a clustered pattern, resampling anchors independently covers the truth
+            <b>40%</b> of the time while claiming 95%, because neighbouring anchors see the same cells. The
+            tiled version measures 98%. (The paper says a 20&nbsp;µm lattice; the source hard-codes 100.)
+            The envelope has no counterpart at all: SpOOx runs no null simulation for the cross-PCF, so it is
+            a stronger inference offered here, not a reproduction.</p>
+        </details>
+
+        <details>
+          <summary>Which envelope null — shift tests association, labelling tests exchangeability</summary>
+          <p class="note"><b>Random shift</b> (Lotwick &amp; Silverman 1982) translates B by a random vector,
+            wrapping around the ROI: each type keeps its own clustering exactly and only the two patterns'
+            relative position is destroyed, so what is tested is <b>association</b>. <b>Random labelling</b>
+            shuffles the A/B labels between the same cells — right when A and B are nested or exchangeable
+            subsets of one population (<code>Fibroblast</code> vs <code>Prolif fibroblast</code>), but for two
+            distinct self-clustered types it asks "are these one interleaved population?", to which the answer
+            is trivially no: on independent synthetic patterns that are each clustered it rejects 20 times out
+            of 20, where the shift null rejects 3.</p>
+        </details>
+
+        <details>
+          <summary>The matrix layers disagree with each other, and that is the point</summary>
+          <p class="note"><code>MH_PC</code> is the paper's headline: a <b>partial</b> correlation, measuring
+            A against B <i>after conditioning on all 47 other types</i>. Plain correlation is transitive, so
+            everything crowding into the same inflamed quadrats correlates with everything else and the matrix
+            fills with one "this is where the cells are" factor; the partial version keeps only what survives
+            that. Switch between <code>QCM partial</code> and <code>QCM Pearson</code> to watch the induced
+            associations drop out: on COVID_SAMPLE_16_ROI_3, 68 of 1,128 pairs exceed |r|&nbsp;=&nbsp;0.3 but
+            only 8 exceed |partial|&nbsp;=&nbsp;0.3, and after Benjamini–Hochberg 226 pairs survive on the plain
+            correlation against 23 on the partial. <b>gate q&lt;α</b> dims the pairs that fail BH — 1,128
+            simultaneous tests on one ROI, so the correction is not optional.</p>
+        </details>
+
+        <details>
+          <summary>Shuffle count sets what BH can resolve — and why the null runs on the GPU</summary>
+          <p class="note">A permutation p cannot fall below 1/(S+1), so BH can declare nothing at all until
+            m/((S+1)·α) pairs pile up at that floor. At the paper's 1000 shuffles that bar is 23 pairs and
+            exactly 23 clear it — the discovery set sits <i>on</i> the threshold, so it is unstable: two runs
+            of the same null disagree on 6 of 1,128 pairs from Monte Carlo noise alone. At 199 shuffles the bar
+            is 113 and the partial correlation returns <i>zero</i> discoveries, which looks exactly like "no
+            associations" and is not. The matrix legend says so whenever the floor binds.</p>
+          <p class="note"><b>GPU null</b> makes the fix affordable: the permutation is a Feistel cipher over
+            the cell indices, so π(i) is O(1) per thread with no Fisher-Yates and no scratch, and the count,
+            correlation and 49×49 inverse all run per-shuffle on the device. Measured back to back on
+            COVID_SAMPLE_16_ROI_3, <b>9,999 shuffles in 668&nbsp;ms against 42,364&nbsp;ms on the CPU — 63×</b>.
+            The observed MH_PC is the identical f64 value either way; only the null is sampled on the device.
+            <b>QCM null</b> picks the sampler: the label shuffle, or SpOOx's 2×2 swap chain, which reproduces
+            the published <code>MH_SES</code> to within its own reproducibility.</p>
+        </details>
+
+        <details>
+          <summary>Units, the radius convention, and what each source guarantees</summary>
+          <p class="note">Radius is <b>top-hat-equivalent</b>: switching kernel rescales it to hold the probed
+            scale (μ₂) fixed, so "smoother" never quietly becomes "more local". α=5, world units.</p>
+          <p class="note">The <b>MDV project</b> source loads a converted project (<code>pnpm mdv:zarr</code>).
+            Such a project holds many ROIs — covid is 545,400 cells across 32 — and every statistic here is
+            <b>per ROI</b>: ρ<sub>B</sub> is a density over one ROI and the edge correction is against one
+            ROI's boundary, so pooling them would measure the gaps between tissue sections. Hence the ROI
+            picker. Scale comes from the project's own <code>regions.scale</code> rather than a default of 1;
+            for covid that is exactly 1&nbsp;µm/unit, so r=100&nbsp;µm and σ=50&nbsp;µm are literal. The g(r)
+            this path produces is validated against the project's published <code>gr10</code>/<code>gr20</code>
+            — 74,567 comparisons, median 0.26% (<code>pnpm mdv:parity</code>).</p>
+          <p class="note caution">⚠ A remote store must be CORS-enabled. If it is unreachable, switch the
+            source to <b>synthetic fixture</b> or open a <b>CSV</b>.</p>
+        </details>
+      </div>
       <div id="status">idle</div>
     </div>
 
