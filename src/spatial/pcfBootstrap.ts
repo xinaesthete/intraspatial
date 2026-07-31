@@ -26,24 +26,83 @@
 // is the difference between this and the envelope, where each simulation MOVES the points and so has
 // to search again — and it is why a CI can be offered by default while the envelope is gated.
 //
-// The resampling unit is the anchor cell, which is the standard choice for a mean-over-anchors
-// estimator and the one that treats the A cells as the sample. It conditions on B, so it reports the
-// uncertainty from having observed these particular A cells; a scheme resampling both would report
-// something wider, and the papers' own resampling scheme is not documented in the project this is
-// checked against. So this reproduces the KIND of band those charts carry, at the same α — treat
-// close agreement in width as a good sign rather than as parity.
+// ## The resampling unit is a TILE, not an anchor
+//
+// SpOOx's `plotPCFWithBootstrappedConfidenceInterval` implements Loh's spatial block bootstrap, and
+// it is the published scheme, so it is the default here. Tile the ROI, sum each tile's anchors and
+// their contributions, resample TILES with replacement, and form the ratio Σcontributions /
+// Σanchors. Two details of it are easy to get wrong and both are deliberate below: the denominator
+// is the number of anchors actually drawn (a ratio estimator, not a renormalisation to N_A), and
+// EMPTY tiles stay in the pool.
+//
+// This matters because the obvious scheme — resample anchor cells independently — is wrong whenever
+// the pattern is clustered, which is the case the statistic exists for. Nearby anchors see largely
+// the same B cells, so their contributions are correlated; drawing them independently destroys that
+// and the interval comes out too narrow. Measured over 300 realisations of a Thomas cluster process,
+// at a nominal 95%:
+//
+//                            coverage          mean width
+//     clustered   block        98%              0.484
+//                 anchor       40%              0.100
+//     independent block        99%              0.109
+//                 anchor       93%              0.046
+//
+// The anchor scheme covers 40% of the time while claiming 95% — its band is five times too narrow
+// on exactly the patterns tissue produces. The block scheme is mildly CONSERVATIVE instead, on
+// independent points as well (99% at a nominal 95%), because with a 400 µm ROI at 100 µm tiles its
+// effective sample size is 16 units however many cells there are. That trade is the right way round:
+// conservative when the data are independent, correct when they are clustered, and real tissue is
+// clustered. `scheme: "anchor"` is kept so the comparison can be made.
+//
+// The difference is not confined to synthetic clusters. On COVID_SAMPLE_16_ROI_3, Fibroblast →
+// Endothelial (2,821 anchors, a 1998 × 1999 µm ROI, so exactly 400 tiles — SpOOx's own comment says
+// "sum down each of the 400 boxes"), the block band is 1.4× wider at r = 15 µm rising to 2.6× by
+// r = 95 µm. Every CI this module drew before was that much too narrow on real data.
+//
+// An earlier version of this file said the published resampling scheme "is not documented in the
+// project this is checked against". That was true of the paper and false of the code.
 
 import { annulusAreasInto } from "./edgeCorrection";
 import { mulberry32 } from "./kernelAnalysis";
 import type { PcfParams } from "./pcf";
 import type { CellCloud } from "./tcm";
 
+/**
+ * What gets resampled.
+ *
+ * `"block"` — SpOOx's, and the right one. Loh's spatial block bootstrap: tile the ROI, add up each
+ * tile's anchors and their contributions, then resample TILES with replacement and form the ratio
+ * Σcontributions / Σanchors. Because whole neighbourhoods move together, the spatial dependence
+ * between nearby anchors is carried into the resample instead of being destroyed by it.
+ *
+ * `"anchor"` — resample anchor cells independently. Kept because it is what this module used to do
+ * and because the comparison is the argument: on a clustered pattern, nearby anchors see the same
+ * neighbours, so treating them as independent draws understates the variance and the interval is
+ * too narrow. `pcfBootstrap.test.ts` measures that undercoverage rather than asserting it.
+ */
+export type PcfBootstrapScheme = "block" | "anchor";
+
+/**
+ * SpOOx's tile size, in µm — **100, not the 20 the paper states.**
+ *
+ * The methods section says confidence intervals come from "resampling grid sites within a 20μm
+ * square lattice"; `utils_alt.py` hard-codes `rectangleWidthX = rectangleWidthY = 100`, with a TODO
+ * noting the method becomes unsuitable below roughly 300 µm domains. 100 is what produced the
+ * published figures, so it is the default here. This is the second place SpOOx's source contradicts
+ * its own methods section — see `quadratCorrelation.ts` for the first.
+ */
+export const LOH_BLOCK_UM = 100;
+
 export interface PcfBootstrapOptions {
-  /** Resamples. 999 is cheap here and makes the percentile edges stable. */
+  /** Resamples. 999 is cheap here and matches SpOOx. */
   readonly resamples?: number;
-  /** Two-sided level; the band is the α/2 and 1−α/2 percentiles. */
+  /** Two-sided level. */
   readonly alpha?: number;
   readonly seed?: number;
+  /** Defaults to `"block"`. */
+  readonly scheme?: PcfBootstrapScheme;
+  /** Tile side for the block scheme, in world units. Defaults to `LOH_BLOCK_UM`. */
+  readonly blockSize?: number;
 }
 
 export interface PcfBootstrapResult {
@@ -58,6 +117,9 @@ export interface PcfBootstrapResult {
   readonly nA: number;
   readonly resamples: number;
   readonly alpha: number;
+  readonly scheme: PcfBootstrapScheme;
+  /** Tiles in the resampling pool, INCLUDING empty ones. 0 for the anchor scheme. */
+  readonly blocks: number;
 }
 
 /**
@@ -82,8 +144,9 @@ export function crossPCFBootstrap(a: CellCloud, b: CellCloud, p: PcfParams, opts
   const lo = new Float64Array(B);
   const hi = new Float64Array(B);
   const resamples = Math.max(1, opts.resamples ?? 999);
+  const scheme = opts.scheme ?? "block";
   const alpha = Math.min(0.5, Math.max(1e-6, opts.alpha ?? 0.05));
-  if (nA === 0 || nB === 0) return { r, g, lo, hi, nA, resamples, alpha };
+  if (nA === 0 || nB === 0) return { r, g, lo, hi, nA, resamples, alpha, scheme, blocks: 0 };
 
   // ---- one pass: per-anchor contributions --------------------------------------------------------
   let bMinX = Infinity;
@@ -152,29 +215,79 @@ export function crossPCFBootstrap(a: CellCloud, b: CellCloud, p: PcfParams, opts
   for (let i = 0; i < nA; i++) for (let k = 0; k < B; k++) g[k] = g[k]! + contrib[i * B + k]!;
   for (let k = 0; k < B; k++) g[k] = g[k]! / nA;
 
-  // ---- resample the anchors ----------------------------------------------------------------------
+  // ---- resample ------------------------------------------------------------------------------------
   const rnd = mulberry32(opts.seed ?? 0xb0075);
   const draws = new Float64Array(resamples * B);
   const acc = new Float64Array(B);
-  for (let s = 0; s < resamples; s++) {
-    acc.fill(0);
-    for (let d = 0; d < nA; d++) {
-      const base = ((rnd() * nA) | 0) * B;
-      for (let k = 0; k < B; k++) acc[k] = acc[k]! + contrib[base + k]!;
+  let blocks = 0;
+
+  if (scheme === "anchor") {
+    for (let s = 0; s < resamples; s++) {
+      acc.fill(0);
+      for (let d = 0; d < nA; d++) {
+        const base = ((rnd() * nA) | 0) * B;
+        for (let k = 0; k < B; k++) acc[k] = acc[k]! + contrib[base + k]!;
+      }
+      const at = s * B;
+      for (let k = 0; k < B; k++) draws[at + k] = acc[k]! / nA;
     }
-    const at = s * B;
-    for (let k = 0; k < B; k++) draws[at + k] = acc[k]! / nA;
+  } else {
+    const bs = Math.max(1e-9, opts.blockSize ?? LOH_BLOCK_UM);
+    const bCols = Math.max(1, Math.ceil((maxX - minX) / bs));
+    const bRows = Math.max(1, Math.ceil((maxY - minY) / bs));
+    blocks = bCols * bRows;
+    const blockContrib = new Float64Array(blocks * B);
+    const blockN = new Float64Array(blocks);
+    for (let i = 0; i < nA; i++) {
+      const bx = Math.min(bCols - 1, Math.max(0, Math.floor((a.xs[i]! - minX) / bs)));
+      const by = Math.min(bRows - 1, Math.max(0, Math.floor((a.ys[i]! - minY) / bs)));
+      const blk = by * bCols + bx;
+      blockN[blk] = blockN[blk]! + 1;
+      const src = i * B;
+      const dst = blk * B;
+      for (let k = 0; k < B; k++) blockContrib[dst + k] = blockContrib[dst + k]! + contrib[src + k]!;
+    }
+    for (let s = 0; s < resamples; s++) {
+      // A RATIO estimator: the denominator is the number of anchors actually drawn, not N_A. That is
+      // what makes the tile the sampling unit — a draw that happens to pick sparse tiles has fewer
+      // anchors behind it and says so, instead of being renormalised back to the observed count.
+      let n = 0;
+      acc.fill(0);
+      for (let d = 0; d < blocks; d++) {
+        // Empty tiles stay in the pool. They contribute nothing to either sum, so drawing one simply
+        // means this resample rests on fewer anchors — real variability in a patchy ROI, and
+        // excluding them would quietly narrow the interval.
+        const blk = (rnd() * blocks) | 0;
+        n += blockN[blk]!;
+        const src = blk * B;
+        for (let k = 0; k < B; k++) acc[k] = acc[k]! + blockContrib[src + k]!;
+      }
+      const at = s * B;
+      if (n > 0) for (let k = 0; k < B; k++) draws[at + k] = acc[k]! / n;
+      else for (let k = 0; k < B; k++) draws[at + k] = g[k]!; // every tile drawn was empty
+    }
   }
 
-  // Percentiles per bin. Sorting a column at a time keeps this a single small allocation.
+  // The interval is REFLECTED about the resample mean, as SpOOx does it:
+  //     lo = 2·mean − q(1−α/2),  hi = 2·mean − q(α/2)
+  // not the plain percentile interval. On a symmetric resample distribution the two coincide; on a
+  // skewed one this flips the asymmetry, which is the basic-bootstrap idea applied about the
+  // resample mean rather than the observed statistic. Reproducing the published band means
+  // reproducing that choice.
   const column = new Float64Array(resamples);
   const loIdx = Math.max(0, Math.min(resamples - 1, Math.floor((alpha / 2) * (resamples - 1))));
   const hiIdx = Math.max(0, Math.min(resamples - 1, Math.ceil((1 - alpha / 2) * (resamples - 1))));
   for (let k = 0; k < B; k++) {
-    for (let s = 0; s < resamples; s++) column[s] = draws[s * B + k]!;
+    let mean = 0;
+    for (let s = 0; s < resamples; s++) {
+      const v = draws[s * B + k]!;
+      column[s] = v;
+      mean += v;
+    }
+    mean /= resamples;
     column.sort();
-    lo[k] = column[loIdx]!;
-    hi[k] = column[hiIdx]!;
+    lo[k] = 2 * mean - column[hiIdx]!;
+    hi[k] = 2 * mean - column[loIdx]!;
   }
-  return { r, g, lo, hi, nA, resamples, alpha };
+  return { r, g, lo, hi, nA, resamples, alpha, scheme, blocks };
 }

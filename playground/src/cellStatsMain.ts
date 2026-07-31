@@ -49,7 +49,7 @@ import { computeTcmRender, renderTcm, type TcmRenderParams } from "../../src/gpu
 import { CONTACT_RADIUS_UM, type ContactNetworkResult, contactNetwork } from "../../src/spatial/contactNetwork";
 import { equivalentRadius, KERNELS, type KernelSpec, kernelLabel } from "../../src/spatial/kernels";
 import { crossPCFMatrix, type LabelledCells } from "../../src/spatial/pcf";
-import { crossPCFBootstrap } from "../../src/spatial/pcfBootstrap";
+import { crossPCFBootstrap, LOH_BLOCK_UM } from "../../src/spatial/pcfBootstrap";
 import { crossPCFEnvelopeRunner, type PcfEnvelopeRunner, type PcfNullModel } from "../../src/spatial/pcfEnvelope";
 import { type QcmNullModel, type QuadratCorrelationResult, quadratCorrelation } from "../../src/spatial/quadratCorrelation";
 import { tcmKernelField } from "../../src/spatial/tcmKernel";
@@ -1028,12 +1028,16 @@ function computePcf(withEnvelope: boolean): void {
   // docs/muspan-cell-stats-plan.md §6).
   const pcfParams = { bbox, rMax, nBins: PCF_BINS, edgeCorrected: true } as const;
   // The bootstrap comes for free with the curve: g(r) is a mean over anchors, so one pair search
-  // yields every anchor's contribution and a resample is a mean over an array already in memory
-  // (999 resamples of 2821 anchors: 153 ms). That is why the CI is always on and the envelope is not.
+  // yields every anchor's contribution and a resample is a sum over an array already in memory. That
+  // is why the CI is always on and the envelope is not.
+  //
+  // The scheme is SpOOx's Loh block bootstrap (the module default): resample 100 µm TILES, not
+  // anchors. Not a detail — on clustered patterns the anchor version covers 40% at a nominal 95%.
   const boot = crossPCFBootstrap({ xs: A.xs, ys: A.ys }, { xs: B.xs, ys: B.ys }, pcfParams, {
     resamples: 999,
     alpha: Math.min(0.5, Math.max(0.001, Number(envAlphaInput.value) || 0.05)),
     seed: 0xb0075,
+    blockSize: toWorld(LOH_BLOCK_UM),
   });
   const res = { r: boot.r, g: [...boot.g] };
   lastPcf = {
@@ -1052,7 +1056,9 @@ function computePcf(withEnvelope: boolean): void {
     `<b>g<sub>AB</sub>(r)</b> — A = ${labelOfId(idA)} (${A.n} cells), B = ${labelOfId(idB)} (${B.n} cells)<br>` +
     `r → ${toUm(rMax).toPrecision(3)}${unitSuffix()}, ${PCF_BINS} bins of ${binUm.toPrecision(3)}${unitSuffix()}` +
     `${known ? " (the paper's binning)" : ""} · edge-corrected · g(r→0) = ${(res.g[0] ?? 0).toFixed(2)} · ` +
-    `<span style="color:${A_CSS}">shaded</span> = ${(100 * (1 - boot.alpha)).toFixed(0)}% bootstrap CI over ${boot.nA.toLocaleString()} anchor cells · <b>hover the chart</b> for values`;
+    `<span style="color:${A_CSS}">shaded</span> = ${(100 * (1 - boot.alpha)).toFixed(0)}% Loh block bootstrap — ` +
+    `${boot.blocks} tiles of ${LOH_BLOCK_UM}${unitSuffix()} resampled (${boot.nA.toLocaleString()} anchors), NOT anchors independently · ` +
+    `<b>hover the chart</b> for values`;
   pcfReadoutEl.innerHTML = head;
 
   const token = ++envelopeToken;

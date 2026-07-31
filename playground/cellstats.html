@@ -174,11 +174,19 @@
         the two agree to Monte Carlo error (SES −0.07 against −0.09).</p>
       <p class="note"><b>The g(r) chart carries two bands, and they answer different questions.</b>
         The <span class="chipA">cyan</span> one hugging the curve is a <b>bootstrap confidence interval</b>
-        — how well g(r) itself is known, from resampling the anchor cells; it says nothing about whether
-        the arrangement is unusual. The grey dashed one is the <b>global rank envelope</b> — where g(r)
-        would lie under the null; a curve leaving it <i>anywhere</i> is significant at α, which a pointwise
-        band cannot claim. Neither implies the other: a tight CI inside a wide envelope means "well
-        measured, not unusual", and the reverse means "barely measured, but extreme".</p>
+        — how well g(r) itself is known; it says nothing about whether the arrangement is unusual. The grey
+        dashed one is the <b>global rank envelope</b> — where g(r) would lie under the null; a curve leaving
+        it <i>anywhere</i> is significant at α, which a pointwise band cannot claim. Neither implies the
+        other: a tight CI inside a wide envelope means "well measured, not unusual", and the reverse means
+        "barely measured, but extreme".
+        <b>Only the CI has a published counterpart.</b> It is SpOOx's Loh spatial block bootstrap —
+        resample 100&nbsp;µm <i>tiles</i> with replacement, not anchor cells, and take the ratio
+        Σcontributions/Σanchors. That choice is the difference between a band that works and one that
+        lies: on a clustered pattern, resampling anchors independently covers the truth <b>40%</b> of the
+        time while claiming 95%, because neighbouring anchors see the same cells. The tiled version
+        measures 98%. (The paper says a 20&nbsp;µm lattice; the source says 100 — the second place the
+        two disagree.) The envelope has no counterpart in SpOOx at all — there is no null simulation for
+        the cross-PCF there, so it is a stronger inference offered here, not a reproduction.</p>
       <p class="note">Which null decides what is being tested, and the difference is not cosmetic.
         <b>Random shift</b> (Lotwick &amp; Silverman 1982) translates B by a random vector, wrapping around
         the ROI: each type keeps its own clustering exactly and only the two patterns' relative position is
