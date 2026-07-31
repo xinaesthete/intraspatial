@@ -38,6 +38,28 @@
 // exact and order-independent — the one place in this file where f32 would have been a silent
 // approximation for no gain.
 //
+// ## The swap null here is BETTER than SpOOx's, which means it does not match it
+//
+// A swap chain is sequential, so the device's parallelism has to come from running many chains at
+// once — 256 of them, each supplying every 256th draw. SpOOx runs exactly ONE chain, with only 500
+// successful swaps between consecutive draws on a 19,600-entry table, so its 1000 nulls are a short
+// slice of a single trajectory rather than a sample of the stationary distribution. That
+// under-mixing does not merely add noise, it BIASES the null's spread downward and so inflates the
+// effect sizes.
+//
+// Measured on COVID_SAMPLE_16_ROI_3, 1000 draws, median |Δ| against the published `MH_SES`, with
+// each path's own run-to-run spread beside it:
+//
+//     CPU, one chain (SpOOx's shape) .. 0.144   self 0.145   1397 ms
+//     GPU, 256 chains ................. 0.168   self 0.060    106 ms
+//
+// The CPU path lands ON the published column — its disagreement equals its own reproducibility, so
+// the two are statistically the same answer. The GPU path is three times more precise and therefore
+// visibly different, because it is estimating the quantity SpOOx was approximating rather than the
+// approximation. So: **use the CPU swap path to reproduce the published numbers, and this one to get
+// the number the published one was trying to be.** SpOOx's chain is cheap in absolute terms
+// (~510,000 swaps for all 1000 draws), so parity never needs the GPU.
+//
 // ## Why the keep-set is recomputed per shuffle
 //
 // A type with no variance across quadrats cannot enter the inverse. A label shuffle preserves every
@@ -65,7 +87,8 @@ import {
   type QuadratCorrelationResult,
   quadratCounts,
   rowCorrelation,
-  wellMixedSwapSteps,
+  SWAP_BETWEEN,
+  SWAP_BURN_IN,
 } from "../../spatial/quadratCorrelation";
 import { getDevice } from "../device";
 
@@ -190,9 +213,13 @@ fn nextRand(state: ptr<function, u32>) -> u32 {
   return mix32(*state);
 }
 
-// One thread per chain. The chain is sequential by nature — each move reads what the last one wrote
-// — so the parallelism has to come from running many INDEPENDENT chains at once, which is why the
-// swap path uses a much larger batch than the label path. Each thread owns its own K*Q slice
+// One thread per chain, transcribing SpOOx's 'changeSomeElements': adaptive diagonal, step drawn
+// from {1, …, minDiag}, and — the part that changes the arithmetic — 'swapSteps' counts SUCCESSFUL
+// moves, not attempts. On a sparse table most attempts land on a 2×2 block with a zero on both
+// diagonals and do nothing.
+//
+// A chain is sequential by nature, so the parallelism comes from running many INDEPENDENT chains at
+// once, which is why the swap path uses a much larger batch. Each thread owns its own K*Q slice
 // outright, so the atomics here are only the buffer's type, never contention.
 @compute @workgroup_size(${PAIR_WG})
 fn swapChain(@builtin(global_invocation_id) gid: vec3u) {
@@ -201,30 +228,43 @@ fn swapChain(@builtin(global_invocation_id) gid: vec3u) {
   if (U.K < 2u || U.Q < 2u) { return; }
   let base = s * U.K * U.Q;
   var rng = mix32(U.seedBase ^ (s * 0x9e3779b9u) ^ 0x5bf03635u);
-  for (var step = 0u; step < U.swapSteps; step = step + 1u) {
-    // Rows and columns drawn DISTINCT: a == b or c == d makes the four updates cancel, which would
-    // spend a step doing nothing and silently shorten the chain.
-    let a = nextRand(&rng) % U.K;
-    var b = nextRand(&rng) % (U.K - 1u);
-    if (b >= a) { b = b + 1u; }
-    let c = nextRand(&rng) % U.Q;
-    var dd = nextRand(&rng) % (U.Q - 1u);
-    if (dd >= c) { dd = dd + 1u; }
-    let iac = base + a * U.Q + c;
-    let ibc = base + b * U.Q + c;
-    let ibd = base + b * U.Q + dd;
-    let iad = base + a * U.Q + dd;
-    let bc = atomicLoad(&counts[ibc]);
-    let ad = atomicLoad(&counts[iad]);
-    let lim = min(bc, ad);
-    if (lim == 0u) { continue; }
-    // p uniform on the integers {0, …, lim} — the paper's interval, closed at both ends.
-    let p = nextRand(&rng) % (lim + 1u);
-    if (p == 0u) { continue; }
-    atomicStore(&counts[iac], atomicLoad(&counts[iac]) + p);
-    atomicStore(&counts[ibc], bc - p);
-    atomicStore(&counts[ibd], atomicLoad(&counts[ibd]) + p);
-    atomicStore(&counts[iad], ad - p);
+  var done = 0u;
+  var attempts = 0u;
+  let cap = 200u * U.swapSteps + 1000u;
+  loop {
+    if (done >= U.swapSteps || attempts >= cap) { break; }
+    attempts = attempts + 1u;
+    let r0 = nextRand(&rng) % U.K;
+    var r1 = nextRand(&rng) % (U.K - 1u);
+    if (r1 >= r0) { r1 = r1 + 1u; }
+    let c0 = nextRand(&rng) % U.Q;
+    var c1 = nextRand(&rng) % (U.Q - 1u);
+    if (c1 >= c0) { c1 = c1 + 1u; }
+    let iaa = base + r0 * U.Q + c0;
+    let ibb = base + r0 * U.Q + c1;
+    let icc = base + r1 * U.Q + c0;
+    let idd = base + r1 * U.Q + c1;
+    let a = atomicLoad(&counts[iaa]);
+    let b = atomicLoad(&counts[ibb]);
+    let c = atomicLoad(&counts[icc]);
+    let d = atomicLoad(&counts[idd]);
+    let minDiag1 = min(a, d);
+    let minDiag2 = min(b, c);
+    if (minDiag1 == 0u && minDiag2 == 0u) { continue; }
+    if (minDiag1 > 0u) {
+      let step = 1u + nextRand(&rng) % minDiag1;
+      atomicStore(&counts[iaa], a - step);
+      atomicStore(&counts[idd], d - step);
+      atomicStore(&counts[ibb], b + step);
+      atomicStore(&counts[icc], c + step);
+    } else {
+      let step = 1u + nextRand(&rng) % minDiag2;
+      atomicStore(&counts[iaa], a + step);
+      atomicStore(&counts[idd], d + step);
+      atomicStore(&counts[ibb], b - step);
+      atomicStore(&counts[icc], c - step);
+    }
+    done = done + 1u;
   }
 }
 
@@ -542,7 +582,8 @@ export async function quadratCorrelationGpu(cells: LabelledCells, p: QuadratCorr
   const halfMask = (1 << halfBits) - 1;
 
   const swap = (p.nullModel ?? "label") === "swap";
-  const steps = p.swapSteps ?? wellMixedSwapSteps(K, Q);
+  const burnIn = p.swapBurnIn ?? SWAP_BURN_IN;
+  const between = p.swapBetween ?? SWAP_BETWEEN;
   const batchCap = swap ? SWAP_BATCH : BATCH;
 
   const quadBuf = ensureBuf(device, "cellQuadrat", n * 4, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST);
@@ -593,13 +634,20 @@ export async function quadratCorrelationGpu(cells: LabelledCells, p: QuadratCorr
     const batch = Math.min(batchCap, sims - done);
     // Uniforms are rewritten per batch and the batch is submitted before the next write — the
     // writeBuffer-before-submit ordering that a single fused command buffer would get wrong.
-    device.queue.writeBuffer(uniBuf, 0, new Uint32Array([n, K, Q, batch, (seed + done) >>> 0, halfBits, halfMask, steps]));
+    device.queue.writeBuffer(uniBuf, 0, new Uint32Array([n, K, Q, batch, (seed + done) >>> 0, halfBits, halfMask, burnIn]));
     let enc = device.createCommandEncoder();
     let pass = enc.beginComputePass();
     pass.setBindGroup(0, bind);
     if (swap) {
-      pass.setPipeline(pipes.seedChains);
-      pass.dispatchWorkgroups(Math.ceil((batch * K * Q) / SCATTER_WG));
+      // Seed ONCE. Each slot is its own continuous chain: it is burnt in on the first batch and only
+      // ADVANCED thereafter, so slot j supplies draws j, j+B, j+2B, … spaced `swapBetween` apart —
+      // the same autocorrelation structure SpOOx's single chain has, spread over B chains so the
+      // device has something to do. B independent chains also mix better than one, which makes this
+      // estimate more precise than the published column rather than merely different from it.
+      if (done === 0) {
+        pass.setPipeline(pipes.seedChains);
+        pass.dispatchWorkgroups(Math.ceil((batch * K * Q) / SCATTER_WG));
+      }
     } else {
       pass.setPipeline(pipes.clearCounts);
       pass.dispatchWorkgroups(Math.ceil((batch * K * Q) / SCATTER_WG));
@@ -613,6 +661,7 @@ export async function quadratCorrelationGpu(cells: LabelledCells, p: QuadratCorr
     // only thing that must not repeat is the randomness: `seedBase` is advanced per chunk, or every
     // chunk would replay the same moves and the chain would go nowhere.
     if (swap) {
+      const steps = done === 0 ? burnIn : between;
       for (let step = 0; step < steps; step += SWAP_CHUNK) {
         const chunk = Math.min(SWAP_CHUNK, steps - step);
         pass.end();

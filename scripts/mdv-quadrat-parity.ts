@@ -12,13 +12,14 @@
 // stored values rather than assumed, and both agree to floating-point. This script re-checks them on
 // every ROI.
 //
-// `MH_SES` is the standard effect size of the PARTIAL correlation — an SES computed here on `pc`
-// correlates 0.978 with it against 0.663 for the plain `r`, which settles which statistic it
-// standardises. It is NOT matched, and the paper's own swap null narrows the gap without closing it.
-// On COVID_SAMPLE_16_ROI_3 at 999 draws, median |Δ|: label shuffle 0.154; the paper's 10,000-step
-// swap chain 0.486 (worse than no swap — that budget is half a move per table entry, so the chain
-// never leaves the observed matrix); a well-mixed chain 0.107, plateauing there. The Monte Carlo
-// floor is 0.035. Pass `--null swap` to run it; the residual is reported, not claimed.
+// `MH_SES` is the standard effect size of the PARTIAL correlation, and `--null swap` reproduces it
+// as closely as it reproduces itself. Getting there needed SpOOx's source, not the paper: the null
+// is ONE continuous chain, burnt in for 10,000 successful swaps and then advanced only 500 between
+// consecutive draws, so the 1000 nulls are heavily autocorrelated. Reading the paper's "repeated for
+// s = 0 … 10,000" as the whole chain, restarted per draw, gives median |Δ| 0.486 — worse than not
+// swapping at all. Reproducing the real structure gives **0.144, against a self-vs-self spread of
+// 0.145 for the same configuration**: our disagreement with the published column equals the
+// sampler's disagreement with itself, which is as close as any estimate can get.
 //
 // ## Contact network — the derived columns are exact, the graph is not
 //

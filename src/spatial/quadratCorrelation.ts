@@ -24,23 +24,29 @@
 // ## What is NOT matched, measured rather than glossed
 //
 // The third column, `MH_SES`, standardises the PARTIAL correlation — SES computed on `pc` here
-// correlates 0.978 with it against 0.663 for the plain `r`, so the choice of statistic is settled.
-// The remaining gap is NOT settled, and the swap chain was built to close it. It narrows it and does
-// not close it. Measured on COVID_SAMPLE_16_ROI_3 at 999 draws, median |Δ| against the stored column:
+// correlates 0.978 with it against 0.663 for the plain `r`. With the null below it is reproduced
+// **as closely as the published column reproduces itself**, which took reading SpOOx's source
+// rather than the paper, because the paper describes the null incorrectly.
 //
-//     label shuffle .............. 0.154
-//     swap, 10k steps (the paper's) 0.486     ← WORSE than no swap at all
-//     swap, 200k (~10 per entry) .. 0.115
-//     swap, 600k (~30 per entry) .. 0.107     ← best
-//     swap, 2M   (~100 per entry) . 0.112     ← plateau; the chain has equilibrated
+// Measured on COVID_SAMPLE_16_ROI_3, median |Δ| against the stored column, with a second run of the
+// SAME configuration alongside as the reference for what agreement is even possible:
 //
-// against a Monte Carlo floor (two runs of the same null) of 0.035. So three things are now known
-// rather than assumed. The swap chain IS a different null from the label shuffle and IS closer to
-// the published one, by about 30%. The paper's stated 10,000 steps cannot be what generated the
-// column — on a 49 × 400 table that is half a move per entry, the chain never leaves the observed
-// matrix, and the effect sizes collapse toward zero (see `swapChain`). And a residual of ~0.10, three
-// times the sampling floor, survives every null tried, so something in SpOOx's pipeline is still
-// unaccounted for. It is reported, not papered over.
+//                                          vs MH_SES   vs a second run of itself
+//     label shuffle ....................      0.155        0.038
+//     SpOOx chain, 10k burn-in / 500 apart     0.144        0.145   ← identical
+//     …             10k /  100 apart ....      0.254        0.329
+//     …             10k / 2000 apart ....      0.113        0.077
+//
+// The second row is the finding: **our disagreement with the published column equals the sampler's
+// disagreement with itself.** The residual is not a systematic difference, it is the published
+// column's own Monte Carlo error — which is large because SpOOx's 1000 draws are only 500 swaps
+// apart on a 19,600-entry table and are therefore heavily autocorrelated, not independent.
+//
+// Two configurations infer that error independently and agree: treating median |Δ| as 0.674·√(σ² +
+// σ_theirs²) gives σ_theirs = 0.150 from the 500-apart row and 0.147 from the 2000-apart row. So
+// `MH_SES` is only ever determined to about ±0.15, and nothing implemented here can do better
+// against it. Spacing the draws further apart (the fourth row) gives a MORE precise estimate of the
+// same quantity, which is why it lands closer to the truth and no closer to their number.
 //
 // ## Inference
 //
@@ -222,17 +228,12 @@ export function partialCorrelation(r: Float64Array, k: number): Float64Array {
  * `"label"` shuffles the type labels between cells. It is the natural "random allocation" null and
  * it is fully mixed: the result is independent of the observed arrangement.
  *
- * `"swap"` is the paper's (eqs 1–6): walk a Markov chain of 2×2 swaps starting FROM the observed
- * matrix. Pick rows a, b and columns c, d, draw an integer p uniformly from [0, min(N_bc, N_ad)],
- * and move p between the four corners — N_ac += p, N_bc −= p, N_bd += p, N_ad −= p — which is
- * margin-preserving by construction and cannot go negative given that bound.
- *
- * The chain runs `swapSteps` (the paper: 10,000) and is restarted from the observed matrix for every
- * simulation. **That budget is small on purpose and it is not a detail.** A covid ROI's table is
- * 49 × 400 = 19,600 cells, so 10,000 steps is about half a move per cell: the null is deliberately
- * UNDER-MIXED and stays near what was observed, which makes it a tighter reference distribution than
- * a full label shuffle and therefore reports larger effect sizes. Reproducing `MH_SES` means
- * reproducing the step count, not just the move.
+ * `"swap"` is the published one: a Markov chain of margin-preserving 2×2 swaps (`swapMove`), seeded
+ * from the observed table, burnt in for `swapBurnIn` successful moves and then advanced by
+ * `swapBetween` between consecutive draws — ONE chain, never restarted. That structure is from
+ * SpOOx's source rather than the paper's description of it, and the difference is not cosmetic:
+ * restarting per draw caps how far the null can ever get from the observation, and reproduces
+ * nothing.
  */
 export type QcmNullModel = "label" | "swap";
 
@@ -242,60 +243,89 @@ export interface QuadratCorrelationParams extends QuadratParams {
   readonly seed?: number;
   /** Defaults to `"label"`. Use `"swap"` to match the published `MH_SES`. */
   readonly nullModel?: QcmNullModel;
-  /** Swap-chain length per draw. Defaults to `wellMixedSwapSteps`; ignored by the label null. */
-  readonly swapSteps?: number;
+  /** Successful swaps before the first draw. SpOOx's 10,000. */
+  readonly swapBurnIn?: number;
+  /** Successful swaps between consecutive draws. SpOOx's 500. */
+  readonly swapBetween?: number;
 }
 
 /**
- * The paper's literal chain length (eqs 1–6, "repeated for s = 0, 1, … 10,000").
+ * SpOOx's burn-in: 10,000 successful swaps from the observed table before the first draw.
  *
- * Kept, and NOT the default, because it is measurably not what produced the published column. On
- * COVID_SAMPLE_16_ROI_3 the table is 49 × 400 = 19,600 entries, so 10,000 moves is half a move per
- * entry: the chain barely leaves the observed matrix, the null mean lands almost on the observation
- * and the effect sizes collapse. Median |Δ| against the stored `MH_SES` is then **0.486** — far
- * worse than a plain label shuffle's 0.154 — while a well-mixed chain reaches 0.107. Use this
- * constant to reproduce the paper's stated procedure, not to match its numbers.
+ * The paper reads as though this were the whole chain — "repeated for s = 0, 1, … 10,000 to ensure
+ * that the final matrix is well shuffled" — and taking it that way, restarting from the observed
+ * table for every draw, does NOT reproduce the published column (median |Δ| 0.486 against a label
+ * shuffle's 0.154). The source shows why: it is a burn-in for ONE continuous chain.
  */
-export const SWAP_STEPS = 10_000;
+export const SWAP_BURN_IN = 10_000;
 
 /**
- * Chain length that actually mixes: 30 moves per table entry.
+ * SpOOx's spacing: 500 successful swaps between consecutive draws, on the SAME chain.
  *
- * Chosen by measurement rather than taste. Sweeping the chain on the real ROI, agreement with the
- * published `MH_SES` improves monotonically — 0.486 at 10k, 0.115 at 200k (~10/entry), 0.107 at
- * 600k (~30/entry) — and then stops: 2M (~100/entry) gives 0.112, no better. So ~30 per entry is
- * where the chain has equilibrated, and more is only cost.
+ * So draw 1000 has accumulated 10,000 + 500·1000 ≈ 510,000 swaps, and — the part that matters for
+ * the variance the effect size divides by — consecutive draws are only 500 swaps apart on a 19,600
+ * entry table, about 0.03 moves per entry. The 1000 nulls are therefore heavily autocorrelated, not
+ * independent samples. That is a property of the published pipeline, not a bug to fix here.
  */
-export const wellMixedSwapSteps = (nTypes: number, quadrats: number): number => 30 * nTypes * quadrats;
+export const SWAP_BETWEEN = 500;
 
 /**
- * One margin-preserving swap chain, in place, starting from whatever `m` already holds.
+ * One swap attempt, in place — a transcription of SpOOx's `changeSomeElements`, whose behaviour
+ * differs from the paper's description of it in three ways that all change the answer.
  *
- * Rows and columns are drawn distinct: a == b or c == d makes the four updates cancel, so it would
- * burn a step doing nothing and quietly shorten the chain.
+ * Returns whether the move happened. That matters: the chain lengths below count SUCCESSES, not
+ * attempts, and on a sparse table most attempts land on a 2×2 block that cannot move.
+ *
+ *   1. **k is drawn from {1, …, minDiag}, never 0.** The paper writes the interval as [0, min(…)];
+ *      the code is `np.random.randint(1, minDiag+1)`, which excludes it. Every success really moves.
+ *   2. **The diagonal is chosen adaptively.** Whichever diagonal has no zero is the one subtracted
+ *      from, preferring the main one when both are free ("wlog pick diag1"). Only when BOTH contain
+ *      a zero is the attempt abandoned. Always using one fixed diagonal — the obvious reading of the
+ *      paper — refuses moves this accepts, and refuses them in a value-dependent way.
+ *   3. Because of (2) the move is not symmetric, so the chain does not have detailed balance and is
+ *      not uniform over fixed-margin tables. That is a property of the published pipeline, and
+ *      reproducing its output means reproducing it rather than correcting it.
+ *
+ * Margins are preserved either way: each row and each column gains k once and loses it once.
  */
-export function swapChain(m: Float64Array, k: number, q: number, steps: number, rnd: () => number): void {
-  if (k < 2 || q < 2) return;
-  for (let s = 0; s < steps; s++) {
-    const a = Math.floor(rnd() * k);
-    let b = Math.floor(rnd() * (k - 1));
-    if (b >= a) b++;
-    const c = Math.floor(rnd() * q);
-    let dd = Math.floor(rnd() * (q - 1));
-    if (dd >= c) dd++;
-    const bc = m[b * q + c]!;
-    const ad = m[a * q + dd]!;
-    const lim = Math.min(bc, ad);
-    if (lim <= 0) continue;
-    // Uniform on the INTEGERS {0, …, lim}: p = 0 is a legal draw and a no-op, which is part of the
-    // chain's stationary behaviour rather than a rejection to retry.
-    const p = Math.floor(rnd() * (lim + 1));
-    if (p === 0) continue;
-    m[a * q + c]! += p;
-    m[b * q + c]! -= p;
-    m[b * q + dd]! += p;
-    m[a * q + dd]! -= p;
+export function swapMove(m: Float64Array, k: number, q: number, rnd: () => number): boolean {
+  if (k < 2 || q < 2) return false;
+  const r0 = Math.floor(rnd() * k);
+  let r1 = Math.floor(rnd() * (k - 1));
+  if (r1 >= r0) r1++;
+  const c0 = Math.floor(rnd() * q);
+  let c1 = Math.floor(rnd() * (q - 1));
+  if (c1 >= c0) c1++;
+  const a = m[r0 * q + c0]!;
+  const b = m[r0 * q + c1]!;
+  const c = m[r1 * q + c0]!;
+  const d = m[r1 * q + c1]!;
+  const minDiag1 = Math.min(a, d);
+  const minDiag2 = Math.min(b, c);
+  if (minDiag1 === 0 && minDiag2 === 0) return false;
+  if (minDiag1 > 0) {
+    const step = 1 + Math.floor(rnd() * minDiag1);
+    m[r0 * q + c0] = a - step;
+    m[r1 * q + c1] = d - step;
+    m[r0 * q + c1] = b + step;
+    m[r1 * q + c0] = c + step;
+  } else {
+    const step = 1 + Math.floor(rnd() * minDiag2);
+    m[r0 * q + c0] = a + step;
+    m[r1 * q + c1] = d + step;
+    m[r0 * q + c1] = b - step;
+    m[r1 * q + c0] = c - step;
   }
+  return true;
+}
+
+/** Advance `m` by `successes` successful swaps. The attempt cap only exists so a table where almost
+ *  nothing can move cannot spin forever; it is never reached on real data. */
+export function swapChain(m: Float64Array, k: number, q: number, successes: number, rnd: () => number): void {
+  let done = 0;
+  let attempts = 0;
+  const cap = 200 * successes + 1000;
+  while (done < successes && attempts++ < cap) if (swapMove(m, k, q, rnd)) done++;
 }
 
 export interface QuadratCorrelationResult {
@@ -385,13 +415,20 @@ export function quadratCorrelation(cells: LabelledCells, p: QuadratCorrelationPa
   };
 
   const model = p.nullModel ?? "label";
-  const steps = p.swapSteps ?? wellMixedSwapSteps(K, q);
+  const burnIn = p.swapBurnIn ?? SWAP_BURN_IN;
+  const between = p.swapBetween ?? SWAP_BETWEEN;
   for (let s = 0; s < sims; s++) {
     if (model === "swap") {
-      // Every draw restarts from the OBSERVED table, so the chain length is the whole distance the
-      // null is allowed to travel — it does not accumulate across simulations.
-      m.set(counts.counts);
-      swapChain(m, K, q, steps, rnd);
+      // ONE continuous chain: seed from the observed table and burn in once, then advance between
+      // draws. Restarting per draw — the natural reading of the paper — is a different null and a
+      // measurably worse match, because the chain then never gets further from the observation than
+      // the burn-in allows.
+      if (s === 0) {
+        m.set(counts.counts);
+        swapChain(m, K, q, burnIn, rnd);
+      } else {
+        swapChain(m, K, q, between, rnd);
+      }
     } else {
       shuffled.set(labels);
       for (let i = n - 1; i > 0; i--) {

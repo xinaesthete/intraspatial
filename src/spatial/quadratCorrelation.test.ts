@@ -290,15 +290,27 @@ describe("swapChain", () => {
     for (const v of m) expect(v).toBeGreaterThanOrEqual(0);
   });
 
-  it("actually moves — and moves further the longer it runs", () => {
-    const start = table();
-    const near = table();
-    swapChain(near, K, Q, 20, mulberry32(7));
-    const far = table();
-    swapChain(far, K, Q, 20_000, mulberry32(7));
-    const dist = (m: Float64Array) => m.reduce((a, v, i) => a + Math.abs(v - start[i]!), 0);
-    expect(dist(near)).toBeGreaterThan(0);
-    expect(dist(far)).toBeGreaterThan(dist(near));
+  it("reaches more of the table the longer it runs", () => {
+    // Measured as the COUNT OF ENTRIES TOUCHED, not the distance moved. Distance saturates once the
+    // chain equilibrates — it is a random walk on a bounded set, so a longer chain is not a more
+    // distant one — and asserting otherwise fails for the right reason on a small table. Coverage
+    // does grow monotonically until every entry has been visited, so the table here is big enough
+    // (6 × 30 = 180 entries) that 40 moves cannot yet have reached all of it.
+    const bigK = 6;
+    const bigQ = 30;
+    const start = new Float64Array(bigK * bigQ);
+    for (let i = 0; i < start.length; i++) start[i] = 5 + ((i * 7) % 11);
+    const touched = (successes: number) => {
+      const m = Float64Array.from(start);
+      swapChain(m, bigK, bigQ, successes, mulberry32(7));
+      let n = 0;
+      for (let i = 0; i < m.length; i++) if (m[i] !== start[i]) n++;
+      return n;
+    };
+    const few = touched(10);
+    const many = touched(40);
+    expect(few).toBeGreaterThan(0);
+    expect(many).toBeGreaterThan(few);
   });
 
   it("collapses the effect size when under-mixed — the mechanism behind the MH_SES gap", () => {
@@ -314,8 +326,8 @@ describe("swapChain", () => {
     // was not produced by the step count the paper states.
     const cells = buildTypes(31);
     const p = { bbox: BBOX, quadratSize: 100, nTypes: 3, simulations: 99, seed: 8 } as const;
-    const starved = quadratCorrelation(cells, { ...p, nullModel: "swap", swapSteps: 3 });
-    const mixed = quadratCorrelation(cells, { ...p, nullModel: "swap", swapSteps: 100_000 });
+    const starved = quadratCorrelation(cells, { ...p, nullModel: "swap", swapBurnIn: 3, swapBetween: 1 });
+    const mixed = quadratCorrelation(cells, { ...p, nullModel: "swap", swapBurnIn: 100_000, swapBetween: 2000 });
     expect(Math.abs(starved.ses[1]!)).toBeLessThan(Math.abs(mixed.ses[1]!) / 2);
   });
 
@@ -327,8 +339,8 @@ describe("swapChain", () => {
     const cells = buildTypes(23);
     const p = { bbox: BBOX, quadratSize: 100, nTypes: 3, simulations: 149, seed: 4 } as const;
     const label = quadratCorrelation(cells, p);
-    const short = quadratCorrelation(cells, { ...p, nullModel: "swap", swapSteps: 200 });
-    const long = quadratCorrelation(cells, { ...p, nullModel: "swap", swapSteps: 200_000 });
+    const short = quadratCorrelation(cells, { ...p, nullModel: "swap", swapBurnIn: 200, swapBetween: 20 });
+    const long = quadratCorrelation(cells, { ...p, nullModel: "swap", swapBurnIn: 200_000, swapBetween: 2000 });
     const gap = (a: Float64Array) => Math.abs(a[1]! - label.ses[1]!);
     expect(gap(long.ses)).toBeLessThan(gap(short.ses));
   });

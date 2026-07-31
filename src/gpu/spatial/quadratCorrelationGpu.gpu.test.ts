@@ -139,7 +139,7 @@ describe("quadratCorrelationGpu", () => {
     // not by a number picked in advance — and a fixed threshold would silently become a different
     // test the moment the fixture or the draw count changed.
     const cells = build("apart", 29, 4);
-    const p = { ...params(2000, 4), nullModel: "swap", swapSteps: 20_000 } as const;
+    const p = { ...params(2000, 4), nullModel: "swap", swapBurnIn: 20_000, swapBetween: 2_000 } as const;
     const gpu = await quadratCorrelationGpu(cells, p);
     const cpu = quadratCorrelation(cells, p);
     const cpu2 = quadratCorrelation(cells, { ...p, seed: p.seed + 1 });
@@ -162,7 +162,7 @@ describe("quadratCorrelationGpu", () => {
     // would still come back looking like a number. The observable proxy: every type stays present
     // and variance-bearing across all draws, so no effect size goes undefined.
     const cells = build("together", 37, 5);
-    const res = await quadratCorrelationGpu(cells, { ...params(256, 5), nullModel: "swap", swapSteps: 5_000 });
+    const res = await quadratCorrelationGpu(cells, { ...params(256, 5), nullModel: "swap", swapBurnIn: 5_000, swapBetween: 500 });
     for (let a = 0; a < 5; a++) {
       for (let b = 0; b < 5; b++) {
         if (a === b) continue;
