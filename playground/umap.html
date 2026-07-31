@@ -1,0 +1,311 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>UMAP — the embedding as it forms</title>
+    <style>
+      :root {
+        --bg: #12141a;
+        --panel: #1b1e27;
+        --line: #2c313f;
+        --ink: #dfe3ee;
+        --dim: #8d96ad;
+        --accent: #7aa2f7;
+        --warn: #e0af68;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--ink);
+        font: 13px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+        display: grid;
+        grid-template-columns: 340px 1fr;
+        height: 100vh;
+        overflow: hidden;
+      }
+      aside {
+        background: var(--panel);
+        border-right: 1px solid var(--line);
+        padding: 14px 16px;
+        overflow-y: auto;
+      }
+      h1 { font-size: 15px; margin: 0 0 2px; }
+      h2 {
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        color: var(--dim);
+        margin: 18px 0 8px;
+        border-bottom: 1px solid var(--line);
+        padding-bottom: 4px;
+      }
+      p.lede { color: var(--dim); margin: 0 0 4px; font-size: 12px; }
+      .row { display: flex; align-items: center; gap: 8px; margin: 7px 0; }
+      .row label { flex: 0 0 92px; color: var(--dim); }
+      .row input[type="range"] { flex: 1; min-width: 0; }
+      .row input[type="text"], .row input[type="number"], .row select {
+        flex: 1;
+        min-width: 0;
+        background: #262b38;
+        color: var(--ink);
+        border: 1px solid var(--line);
+        border-radius: 5px;
+        padding: 4px 6px;
+        font: inherit;
+      }
+      .row .val { flex: 0 0 52px; text-align: right; font-variant-numeric: tabular-nums; }
+      button {
+        background: #262b38;
+        color: var(--ink);
+        border: 1px solid var(--line);
+        border-radius: 5px;
+        padding: 6px 10px;
+        cursor: pointer;
+        font: inherit;
+      }
+      button:hover { background: #2f3546; }
+      button.primary { background: var(--accent); color: #10131a; border-color: var(--accent); font-weight: 600; }
+      .blocks { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 6px; }
+      .blocks button { padding: 3px 8px; font-size: 12px; opacity: 0.45; }
+      .blocks button.on { opacity: 1; border-color: var(--accent); }
+      table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+      td { padding: 2px 0; }
+      td.k { color: var(--dim); }
+      td.v { text-align: right; }
+      main { position: relative; }
+      canvas { display: block; width: 100%; height: 100%; }
+      #datasetNote { color: var(--dim); font-size: 11.5px; margin-top: 6px; font-variant-numeric: tabular-nums; }
+      #generatorNote { color: var(--dim); font-size: 11.5px; margin: 4px 0 2px; min-height: 2.4em; }
+      #expect {
+        margin-top: 8px;
+        padding: 7px 9px;
+        border-left: 2px solid var(--accent);
+        background: rgba(122, 162, 247, 0.07);
+        color: var(--ink);
+        font-size: 11.5px;
+      }
+      #status {
+        position: absolute;
+        top: 12px;
+        left: 14px;
+        color: var(--dim);
+        font-size: 12px;
+        background: rgba(18, 20, 26, 0.85);
+        padding: 5px 10px;
+        border-radius: 5px;
+        max-width: 60ch;
+      }
+      #status:empty { display: none; }
+      #legend {
+        position: absolute;
+        left: 14px;
+        bottom: 12px;
+        color: var(--dim);
+        font-size: 12px;
+        background: rgba(18, 20, 26, 0.75);
+        padding: 8px 10px;
+        border-radius: 6px;
+        border: 1px solid var(--line);
+        max-width: 460px;
+        opacity: 0.55;
+        transition: opacity 0.2s;
+      }
+      #legend:hover { opacity: 1; }
+      #banner {
+        position: absolute;
+        top: 12px;
+        left: 50%;
+        transform: translateX(-50%);
+        background: var(--warn);
+        color: #10131a;
+        padding: 5px 12px;
+        border-radius: 5px;
+        font-weight: 600;
+        opacity: 0;
+        transition: opacity 0.25s;
+        pointer-events: none;
+      }
+      #banner.show { opacity: 1; }
+    </style>
+  </head>
+  <body>
+    <aside>
+      <h1>UMAP — the embedding as it forms</h1>
+      <p class="lede">
+        One embedding, continuously optimised. Changing the feature subset swaps the graph underneath and lets
+        the layout <em>relax</em> into it — the motion you see is the optimiser, not a tween.
+      </p>
+
+      <h2>Source</h2>
+      <div class="row">
+        <label for="sourceMode">from</label>
+        <select id="sourceMode">
+          <option value="synthetic">synthetic manifold</option>
+          <option value="store">SpatialData / AnnData store</option>
+        </select>
+      </div>
+
+      <div id="syntheticPanel">
+        <div class="row">
+          <label for="generator">shape</label>
+          <select id="generator"></select>
+        </div>
+        <div id="generatorNote"></div>
+        <div class="row">
+          <label for="nCells">cells</label>
+          <input type="range" id="nCells" min="0" max="6" step="1" value="2" />
+          <span class="val" id="nCellsV">2,000</span>
+        </div>
+        <div class="row">
+          <label for="noise">noise</label>
+          <input type="range" id="noise" min="0" max="0.4" step="0.005" value="0" />
+          <span class="val" id="noiseV">auto</span>
+        </div>
+        <div class="row">
+          <button id="regen" class="primary">Regenerate</button>
+          <button id="reseed">Re-init layout</button>
+        </div>
+      </div>
+
+      <div id="storePanel" style="display: none">
+        <p class="lede">
+          The same pipeline on a real table: genes → log1p → highly variable → PCA → graph. Needs a store
+          served with CORS.
+        </p>
+        <div class="row">
+          <label for="store">url</label>
+          <input id="store" type="text" value="http://localhost:8080/xenium_2.q0.001.htj2k.index-permutations.zarr" />
+        </div>
+        <div class="row">
+          <button id="inspect" class="primary">Inspect</button>
+        </div>
+        <div class="row">
+          <label for="tableSel">table</label>
+          <select id="tableSel"></select>
+        </div>
+        <div class="row">
+          <label for="matrixSel">matrix</label>
+          <select id="matrixSel"></select>
+        </div>
+        <div class="row">
+          <label for="labelSel">colour by</label>
+          <select id="labelSel"></select>
+        </div>
+        <div class="row">
+          <label for="maxCells">max cells</label>
+          <input type="number" id="maxCells" min="200" max="200000" step="1000" value="100000" />
+        </div>
+        <div class="row">
+          <label for="maxGenes">max genes</label>
+          <input type="number" id="maxGenes" min="20" max="2000" step="20" value="400" />
+        </div>
+        <div class="row">
+          <label for="nComps">components</label>
+          <input type="number" id="nComps" min="2" max="100" step="1" value="30" />
+        </div>
+        <div class="row">
+          <label for="log1p">log1p</label>
+          <input type="checkbox" id="log1p" checked />
+        </div>
+        <div class="row">
+          <button id="loadStore" class="primary">Load table</button>
+        </div>
+      </div>
+
+      <div id="datasetNote"></div>
+      <div id="expect"></div>
+
+      <h2>Feature blocks</h2>
+      <p class="lede">
+        Each block is one axis of the underlying structure — a gene programme for a generator, a principal
+        component for a real table. Toggle them to change what the manifold is built from; the embedding
+        relaxes rather than restarting.
+      </p>
+      <div class="blocks" id="blocks"></div>
+
+      <h2>Graph</h2>
+      <div class="row">
+        <label for="nNeighbors">n_neighbors</label>
+        <input type="range" id="nNeighbors" min="3" max="32" step="1" value="15" />
+        <span class="val" id="nNeighborsV">15</span>
+      </div>
+      <div class="row">
+        <label for="minDist">min_dist</label>
+        <input type="range" id="minDist" min="0" max="0.9" step="0.01" value="0.1" />
+        <span class="val" id="minDistV">0.10</span>
+      </div>
+      <div class="row">
+        <label for="knnBackend">k-NN</label>
+        <select id="knnBackend">
+          <option value="auto">auto (by predicted cost)</option>
+          <option value="gpu">GPU, exact</option>
+          <option value="descentGpu">GPU, NN-descent (approximate)</option>
+          <option value="descentHost">host, NN-descent (approximate)</option>
+        </select>
+      </div>
+
+      <h2>Optimiser</h2>
+      <div class="row">
+        <label for="alpha">learning rate</label>
+        <input type="range" id="alpha" min="0.02" max="1.5" step="0.02" value="1" />
+        <span class="val" id="alphaV">1.00</span>
+      </div>
+      <div class="row">
+        <label for="steps">epochs/frame</label>
+        <input type="range" id="steps" min="1" max="8" step="1" value="2" />
+        <span class="val" id="stepsV">2</span>
+      </div>
+      <div class="row">
+        <label for="layoutBackend">layout on</label>
+        <select id="layoutBackend">
+          <option value="gpu">GPU (resident)</option>
+          <option value="host">host (reproducible)</option>
+        </select>
+      </div>
+      <div class="row">
+        <button id="pause" class="primary">Pause</button>
+        <button id="kick">Kick</button>
+      </div>
+
+      <h2>Show</h2>
+      <div class="row">
+        <label for="showEdges">edges</label>
+        <input type="checkbox" id="showEdges" />
+        <label for="showTrails" style="flex: 0 0 auto">trails</label>
+        <input type="checkbox" id="showTrails" checked />
+      </div>
+      <div class="row">
+        <label for="colourBy">colour</label>
+        <select id="colourBy"></select>
+      </div>
+
+      <h2>State</h2>
+      <table>
+        <tr><td class="k">cells</td><td class="v" id="sCells">-</td></tr>
+        <tr><td class="k">epoch</td><td class="v" id="sEpoch">0</td></tr>
+        <tr><td class="k">alpha</td><td class="v" id="sAlpha">-</td></tr>
+        <tr><td class="k">edges</td><td class="v" id="sEdges">-</td></tr>
+        <tr><td class="k">mean speed</td><td class="v" id="sSpeed">-</td></tr>
+        <tr><td class="k">per epoch</td><td class="v" id="sStep">-</td></tr>
+        <tr><td class="k">graph build</td><td class="v" id="sBuild">-</td></tr>
+        <tr><td class="k">k-NN</td><td class="v" id="sKnn">-</td></tr>
+        <tr><td class="k">device</td><td class="v" id="sBackend">-</td></tr>
+      </table>
+    </aside>
+
+    <main>
+      <canvas id="view"></canvas>
+      <div id="status"></div>
+      <div id="banner"></div>
+      <div id="legend">
+        <strong>Speed</strong> = still negotiating. <strong>Stress</strong> = graph neighbours ended up far
+        apart, i.e. where 2-D cannot honour the real structure. Above 20k cells trails and edges switch off and
+        points draw one pixel each. <em>(hover to read)</em>
+      </div>
+    </main>
+
+    <script type="module" src="./src/umapMain.ts"></script>
+  </body>
+</html>

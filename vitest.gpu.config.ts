@@ -2,24 +2,36 @@ import typegpu from "unplugin-typegpu/vite";
 import { defineConfig } from "vitest/config";
 
 // GPU tests (`*.gpu.test.ts`) — run via the Dawn (`webgpu`) native addon.
-// Each file runs in its OWN fork process, serially (fileParallelism: false):
-// Dawn's process-exit teardown segfaults once a single process has created a
-// device and done enough work across multiple files, so we isolate each file
-// to a fresh process that creates one device and exits cleanly. Forks (not
-// worker threads) keep the native GPU handle out of a shared thread.
 //
-// Two findings from the 2026-07 toolchain bump, so this isn't re-litigated:
-//   • Per-file isolation is OPTIMAL, not incidental. The tempting inverse — one
-//     shared fork (`maxWorkers:1, isolate:false`) — is catastrophic: a mid-run
-//     Dawn crash takes the remaining files down with it (a run collapsed to 2
-//     tests). No single file crashes when run alone; the crash is a teardown
-//     race that only emerges under the churn of many device-creating forks.
-//   • Do NOT bump Node past 22 while on Dawn 0.4.0 (latest). Newer V8/Node
-//     shutdown interacts worse with Dawn's atexit: measured ~3 teardown crashes
-//     on Node 22 vs 6–8 on 24 and 8 on 26 — and the extra crashes silently DROP
-//     passing GPU results (counted tests 50 → ~40). Revisit when a newer Dawn
-//     tears down cleanly. (Deno's wgpu backend has the same device-destroy crash
-//     class — not an escape.)
+// **2026-07-29: the Dawn instability this config was built around was a bug in our own
+// `src/gpu/device.ts`, and it is fixed.** `create([])` returns Dawn's Instance, which
+// owns the native event loop and the mutexes every later device call takes — and we
+// were letting it fall out of scope as soon as `getDevice()` resolved. V8 then collected
+// it whenever it felt like it and the N-API finaliser destroyed the Instance out from
+// under a live device, producing `mutex lock failed: Invalid argument` or a plain
+// segfault. Because it was GC-timing dependent it looked like ambient flakiness, which
+// is how it survived so long. `device.ts` now holds the Instance and adapter for the
+// process lifetime; see the comment there.
+//
+// What that changed, measured over 5 runs each:
+//   • `fileParallelism: false` → `true`   — 9.5s to 3.2s, identical results.
+//   • `dangerouslyIgnoreUnhandledErrors`  — removed. Zero "Worker exited unexpectedly"
+//                                           errors now occur, so the suite gets the same
+//                                           strictness as the CPU one, and a genuine
+//                                           worker crash will fail the run again
+//                                           instead of being silently tolerated.
+//   • 93 tests pass deterministically. The only failing files are the ones that import
+//     `rust/htj2k-core/pkg` and need `pnpm build:wasm` first — not a GPU issue.
+//
+// The historical notes are kept because they remain the reason for two choices:
+//   • **Forks, not worker threads.** Keeps the native GPU handle out of a shared thread.
+//   • **Node pinned at 22 (volta).** Measured during the 2026-07 toolchain bump: newer
+//     V8/Node shutdown interacted worse with Dawn's atexit. That was probably the same
+//     lifetime bug seen from another angle, so it is worth re-testing on Node 24/26 now
+//     — but it has NOT been re-tested, so the pin stands.
+//
+// If flakiness reappears, suspect a native object we are failing to keep alive before
+// concluding that Dawn is unreliable.
 export default defineConfig({
   // Transpiles `"use gpu"` TS kernels to WGSL at build time (TGSL). Compute
   // primitives that fit TGSL are authored in TypeScript; ones needing atomics /
@@ -27,15 +39,8 @@ export default defineConfig({
   plugins: [typegpu()],
   test: {
     pool: "forks",
-    fileParallelism: false,
+    fileParallelism: true,
     testTimeout: 30_000,
     include: ["test/**/*.gpu.test.ts", "src/**/*.gpu.test.ts"],
-    // Dawn's native atexit teardown still segfaults a few fork processes AFTER their
-    // tests have passed and reported (the isolation above shrinks it to a couple of
-    // files, not all). Vitest 2 tolerated that dirty worker exit; Vitest 4 escalates
-    // it to a run-failing "Worker exited unexpectedly" unhandled error. This flag
-    // restores the v2 behaviour — scoped to this GPU config ONLY (the CPU suite keeps
-    // full strictness) — so a benign post-report segfault no longer fails a green run.
-    dangerouslyIgnoreUnhandledErrors: true,
   },
 });

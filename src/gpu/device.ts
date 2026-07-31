@@ -7,14 +7,40 @@ import { create, globals } from "webgpu";
 
 let devicePromise: Promise<GPUDevice> | undefined;
 
+/**
+ * Strong references to the Dawn **Instance** and adapter, held for the process lifetime.
+ *
+ * These are not tidiness — they are the fix for the crash that made GPU work outside
+ * vitest look impossible. `create([])` returns Dawn's Instance, which owns the native
+ * event loop and the mutexes every later device call takes. If it is left as a local it
+ * becomes unreachable the moment `getDevice()` resolves, V8 collects it whenever it next
+ * feels like it, and the N-API finaliser destroys the Instance *out from under the still
+ * live device*. The next dispatch then locks a destroyed mutex:
+ *
+ *     libc++abi: terminating due to uncaught exception of type std::__1::system_error:
+ *     mutex lock failed: Invalid argument
+ *
+ * — or simply segfaults, depending on where the collection lands. That is why the
+ * failures looked random and environment-dependent: they were GC-timing dependent. It is
+ * also why a *non-allocating* busy loop never reproduced it while `knnBruteForceCpu` or
+ * writing zarr chunks did — allocation is what triggers the collection.
+ *
+ * The adapter is retained for the same reason: it sits between the Instance and the
+ * device and is likewise dropped by the spec-shaped API once a device exists.
+ */
+let instanceRef: GPU | undefined;
+let adapterRef: GPUAdapter | undefined;
+
 /** Get (and cache) a headless GPUDevice. */
 export function getDevice(): Promise<GPUDevice> {
   devicePromise ??= (async () => {
     // Make GPUBufferUsage, GPUMapMode, etc. available as globals.
     Object.assign(globalThis, globals);
     const gpu: GPU = (globalThis as { navigator?: { gpu?: GPU } }).navigator?.gpu ?? create([]);
+    instanceRef = gpu;
     const adapter = await gpu.requestAdapter();
     if (!adapter) throw new Error("tgpu-htj2k: no WebGPU adapter available");
+    adapterRef = adapter;
     // Request float32-blendable when available so the spatial front can additively
     // blend density into an r32float render target (the no-atomics splat path).
     // Harmless for the compute kernels; falls back cleanly if unsupported.
@@ -35,6 +61,42 @@ export function getDevice(): Promise<GPUDevice> {
     return device;
   })();
   return devicePromise;
+}
+
+/**
+ * Release the device, adapter and Dawn Instance so a batch process can exit.
+ *
+ * **Call this exactly once, as the last thing the process does.** It is not a general
+ * "I'm done with the GPU for now" — releasing while any GPU object is still reachable
+ * (a pooled buffer, a cached pipeline, a TypeGPU root) faults when those objects are
+ * finalised against a destroyed Instance. Measured: releasing right after the k-NN and
+ * then writing zarr crashed 3 runs of 3; moving the same call to the end of the process
+ * gave exit 0, 3 of 3.
+ *
+ * The pairing with `instanceRef` is the whole story:
+ *   • hold the Instance while any GPU work or GPU object may still exist — otherwise
+ *     the finaliser can destroy it mid-flight and the next dispatch faults;
+ *   • drop it once the process is finished — otherwise the retained handle keeps the
+ *     event loop alive and the process computes its answer correctly and never exits.
+ *
+ * A browser page wants neither half: it holds one device for its lifetime and there is
+ * no process to exit. Long-running servers should simply never call this.
+ *
+ * Best-effort: `destroy()` failures are swallowed, because by the time a caller asks for
+ * this it already has its readbacks and a noisy teardown should not fail work that has
+ * already succeeded.
+ */
+export async function releaseDevice(): Promise<void> {
+  const pending = devicePromise;
+  devicePromise = undefined;
+  adapterRef = undefined;
+  instanceRef = undefined;
+  if (!pending) return;
+  try {
+    (await pending).destroy();
+  } catch {
+    // Teardown is advisory; the caller already has its readbacks.
+  }
 }
 
 /**

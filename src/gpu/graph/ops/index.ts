@@ -92,6 +92,19 @@ export async function registerElementOps(): Promise<void> {
   reg(calc.structureOrientationOp);
 }
 
+let umapRegistered = false;
+
+/** Register the manifold-learning op pack (k-NN, fuzzy simplicial set, UMAP layout, and
+ *  the composed `umap` node). Opt-in and dynamic-import based, for the same reason as
+ *  `registerElementOps`: these modules pull in the PCA/eigensolver and the layout SGD,
+ *  and an unrelated GPU test fork should not pay to load them. Idempotent. */
+export async function registerUmapOps(): Promise<void> {
+  if (umapRegistered) return;
+  umapRegistered = true;
+  const mod = await import("./umapOps");
+  for (const op of mod.UMAP_OPS) reg(op);
+}
+
 let waveletRegistered = false;
 
 /** Register the wavelet-domain op pack (forward/inverse DWT + detail thresholding,

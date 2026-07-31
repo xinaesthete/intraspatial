@@ -1,4 +1,5 @@
-// Register the opt-in op packs (element algebra + wavelet, ADR-0004/0006) into the
+// Register the opt-in op packs (element algebra + wavelet + manifold, ADR-0004/0006)
+// into the
 // composer's op registry. In `src/` these are registered via async, dynamic-import
 // registrars (`registerElementOps`/`registerWaveletOps`) kept off the Node test-fork
 // module graph for Dawn-on-Node teardown reasons. In the browser there is no such
@@ -21,9 +22,10 @@ import {
 } from "../../src/gpu/graph/ops/fieldArithmetic";
 import { divergenceOp, gradientMagnitudeOp, gradientOp, laplacianOp, structureOrientationOp } from "../../src/gpu/graph/ops/fieldCalculus";
 import { reactionDiffusionComplexOp } from "../../src/gpu/graph/ops/reactionDiffusionComplex";
+import { UMAP_OPS } from "../../src/gpu/graph/ops/umapOps";
 import { fdwtOp, idwtOp, thresholdDetailOp } from "../../src/gpu/graph/ops/waveletOps";
 
-/** Idempotently register the element-algebra and wavelet op packs. Guards on the
+/** Idempotently register the element-algebra, wavelet and manifold op packs. Guards on the
  *  registry's actual state (`hasOp`) rather than a module-local flag, so it survives
  *  Vite HMR re-evaluation of this module (the registry module itself persists, so a
  *  blind re-register would throw "duplicate op"). */
@@ -51,6 +53,10 @@ export function registerExtraOps(): void {
     divergenceOp,
     structureOrientationOp,
     ...FORCE_OPS,
+    // Manifold pack: knn / fuzzyGraph / umapLayout primitives plus the composed `umap`
+    // node. Registered here rather than through `registerUmapOps` for the module-instance
+    // reason above.
+    ...UMAP_OPS,
   ];
   for (const op of ops) if (!hasOp(op.name)) registerOp(op);
 }
