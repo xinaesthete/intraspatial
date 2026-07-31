@@ -51,7 +51,7 @@ import { equivalentRadius, KERNELS, type KernelSpec, kernelLabel } from "../../s
 import { crossPCFMatrix, type LabelledCells } from "../../src/spatial/pcf";
 import { crossPCFBootstrap } from "../../src/spatial/pcfBootstrap";
 import { crossPCFEnvelopeRunner, type PcfEnvelopeRunner, type PcfNullModel } from "../../src/spatial/pcfEnvelope";
-import { type QuadratCorrelationResult, quadratCorrelation } from "../../src/spatial/quadratCorrelation";
+import { type QcmNullModel, type QuadratCorrelationResult, quadratCorrelation } from "../../src/spatial/quadratCorrelation";
 import { tcmKernelField } from "../../src/spatial/tcmKernel";
 import { csvToCellTable, inspectCsv, parseCsv } from "./datasource/cellCsv";
 import {
@@ -122,6 +122,7 @@ const contactUmInput = $<HTMLInputElement>("contactUm");
 const qcmSimsInput = $<HTMLInputElement>("qcmSims");
 const qcmGateInput = $<HTMLInputElement>("qcmGate");
 const qcmGpuInput = $<HTMLInputElement>("qcmGpu");
+const qcmNullSelect = $<HTMLSelectElement>("qcmNull");
 const nameMatrixLayerEl = $<HTMLSpanElement>("nameMatrixLayer");
 const matrixScaleEl = $<HTMLSpanElement>("matrixScale");
 const qcmReadoutEl = $<HTMLDivElement>("qcmReadout");
@@ -588,7 +589,7 @@ const typeIdAt = (i: number): number => lastMatrix?.types[i] ?? i;
 function qcmKey(): string | null {
   const t = current;
   if (!t) return null;
-  return `${t.tableName}/${t.typeColumn}/${tableRoi(t).join(",")}/${toWorld(quadratUm())}/${qcmSims()}/${qcmGpuInput.checked}`;
+  return `${t.tableName}/${t.typeColumn}/${tableRoi(t).join(",")}/${toWorld(quadratUm())}/${qcmSims()}/${qcmGpuInput.checked}/${qcmNullSelect.value}`;
 }
 
 /** The QCM if it has already been computed for the current settings, else null. Layers are built
@@ -613,7 +614,14 @@ async function computeQcm(): Promise<QuadratCorrelationResult | null> {
   if (cached) return cached;
   const cells = allCells(t);
   const nTypes = Math.max(...cells.typeId) + 1;
-  const p = { bbox: tableRoi(t), quadratSize: toWorld(quadratUm()), nTypes, simulations: qcmSims(), seed: 0x5eed };
+  const p = {
+    bbox: tableRoi(t),
+    quadratSize: toWorld(quadratUm()),
+    nTypes,
+    simulations: qcmSims(),
+    seed: 0x5eed,
+    nullModel: qcmNullSelect.value as QcmNullModel,
+  };
   let res: QuadratCorrelationResult;
   if (qcmGpuInput.checked && quadratCorrelationGpuSupported(nTypes)) {
     try {
@@ -1626,6 +1634,7 @@ for (const [input, drop] of [
   [quadratUmInput, () => (lastQcm = null)],
   [qcmSimsInput, () => (lastQcm = null)],
   [qcmGpuInput, () => (lastQcm = null)],
+  [qcmNullSelect, () => (lastQcm = null)],
   [contactUmInput, () => (lastNet = null)],
 ] as const) {
   input.addEventListener("change", () => {

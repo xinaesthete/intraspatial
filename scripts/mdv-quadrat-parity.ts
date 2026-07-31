@@ -14,10 +14,11 @@
 //
 // `MH_SES` is the standard effect size of the PARTIAL correlation — an SES computed here on `pc`
 // correlates 0.978 with it against 0.663 for the plain `r`, which settles which statistic it
-// standardises. It is not matched exactly, and the reason is the null SAMPLER rather than noise:
-// both nulls fix the same margins, but the paper walks a chain of 2×2 swaps (uniform over
-// fixed-margin matrices) where this walks a label shuffle. Going from 199 to 999 shuffles moved the
-// median |Δ| from 0.154 to 0.146 — i.e. not at all. So it is reported, not claimed.
+// standardises. It is NOT matched, and the paper's own swap null narrows the gap without closing it.
+// On COVID_SAMPLE_16_ROI_3 at 999 draws, median |Δ|: label shuffle 0.154; the paper's 10,000-step
+// swap chain 0.486 (worse than no swap — that budget is half a move per table entry, so the chain
+// never leaves the observed matrix); a well-mixed chain 0.107, plateauing there. The Monte Carlo
+// floor is 0.035. Pass `--null swap` to run it; the residual is reported, not claimed.
 //
 // ## Contact network — the derived columns are exact, the graph is not
 //
@@ -41,6 +42,7 @@ import { quadratCorrelation } from "../src/spatial/quadratCorrelation";
 
 interface Args {
   store: string;
+  nullModel: "label" | "swap";
   quadrat: number;
   sims: number;
   limit?: number;
@@ -48,7 +50,7 @@ interface Args {
 }
 
 function parseArgs(argv: string[]): Args {
-  const a: Args = { store: "", quadrat: 100, sims: 0, quiet: false };
+  const a: Args = { store: "", quadrat: 100, sims: 0, quiet: false, nullModel: "label" };
   const pos: string[] = [];
   for (let i = 0; i < argv.length; i++) {
     const t = argv[i]!;
@@ -56,10 +58,11 @@ function parseArgs(argv: string[]): Args {
     else if (t === "--sims") a.sims = Number(argv[++i]);
     else if (t === "--limit") a.limit = Number(argv[++i]);
     else if (t === "--quiet") a.quiet = true;
+    else if (t === "--null") a.nullModel = argv[++i] === "swap" ? "swap" : "label";
     else if (t.startsWith("--")) throw new Error(`unknown option ${t}`);
     else pos.push(t);
   }
-  if (pos.length !== 1) throw new Error("usage: pnpm mdv:quadrat <store.zarr> [--quadrat n] [--sims n] [--limit n] [--quiet]");
+  if (pos.length !== 1) throw new Error("usage: pnpm mdv:quadrat <store.zarr> [--quadrat n] [--sims n] [--limit n] [--quiet] [--null label|swap]");
   a.store = pos[0]!;
   return a;
 }
@@ -136,7 +139,7 @@ async function main() {
     // quadrat grid is only reproducible if its origin is too.
     const bbox = [0, 0, Math.max(maxX, 1), Math.max(maxY, 1)] as [number, number, number, number];
 
-    const qc = quadratCorrelation(cells, { bbox, quadratSize: args.quadrat, nTypes: K, simulations: args.sims, seed: 1 });
+    const qc = quadratCorrelation(cells, { bbox, quadratSize: args.quadrat, nTypes: K, simulations: args.sims, seed: 1, nullModel: args.nullModel });
     const nets = new Map(RADII.map((r) => [r, contactNetwork(cells, { radius: r, nTypes: K })]));
 
     const regionQcm: number[] = [];
@@ -186,7 +189,7 @@ async function main() {
   );
   if (mhsesAbs.length) {
     console.log(
-      `  vs stored 'MH_SES'        : n=${mhsesAbs.length}  median |Δ| = ${median(mhsesAbs).toFixed(3)}   (right statistic, different null sampler — see the header)`,
+      `  vs stored 'MH_SES'        : n=${mhsesAbs.length}  median |Δ| = ${median(mhsesAbs).toFixed(3)}  [${args.nullModel} null]   (right statistic; the gap is not closed — see the header)`,
     );
   } else {
     console.log("  vs stored 'MH_SES'        : skipped — pass --sims to compare the effect size");

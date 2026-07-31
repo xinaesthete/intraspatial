@@ -130,6 +130,47 @@ describe("quadratCorrelationGpu", () => {
     expect(Number.isFinite(res.ses[0 * 4 + 1]!)).toBe(true);
   });
 
+  it("runs the paper's swap null and agrees with the CPU chain", async () => {
+    // The swap chain is sequential per draw and the GPU runs one thread per chain, so this checks
+    // the port rather than the statistic: same moves, same bound, same restart-from-observed. Two
+    // independent chains cannot match draw for draw, so the test is again on the two moments.
+    // Calibrated against the CPU's OWN run-to-run spread rather than a constant. These effect sizes
+    // run to 8-9, so what counts as "agreeing" is set by the Monte Carlo error at this many draws,
+    // not by a number picked in advance — and a fixed threshold would silently become a different
+    // test the moment the fixture or the draw count changed.
+    const cells = build("apart", 29, 4);
+    const p = { ...params(2000, 4), nullModel: "swap", swapSteps: 20_000 } as const;
+    const gpu = await quadratCorrelationGpu(cells, p);
+    const cpu = quadratCorrelation(cells, p);
+    const cpu2 = quadratCorrelation(cells, { ...p, seed: p.seed + 1 });
+    const worst = (a: Float64Array, b: Float64Array) => {
+      let w = 0;
+      for (let i = 0; i < 4; i++) {
+        for (let j = i + 1; j < 4; j++) {
+          const k = i * 4 + j;
+          if (Number.isFinite(a[k]!) && Number.isFinite(b[k]!)) w = Math.max(w, Math.abs(a[k]! - b[k]!));
+        }
+      }
+      return w;
+    };
+    const selfNoise = worst(cpu.pcSes, cpu2.pcSes);
+    expect(worst(gpu.pcSes, cpu.pcSes)).toBeLessThan(Math.max(3 * selfNoise, 0.5));
+  });
+
+  it("holds both margins fixed on the device, which is what makes it a valid null", async () => {
+    // A swap that leaked would change a type's abundance or a quadrat's total, and the correlation
+    // would still come back looking like a number. The observable proxy: every type stays present
+    // and variance-bearing across all draws, so no effect size goes undefined.
+    const cells = build("together", 37, 5);
+    const res = await quadratCorrelationGpu(cells, { ...params(256, 5), nullModel: "swap", swapSteps: 5_000 });
+    for (let a = 0; a < 5; a++) {
+      for (let b = 0; b < 5; b++) {
+        if (a === b) continue;
+        expect(Number.isFinite(res.ses[a * 5 + b]!)).toBe(true);
+      }
+    }
+  });
+
   it("skips the null entirely when no simulations are asked for", async () => {
     const res = await quadratCorrelationGpu(build("apart", 19), params(0));
     expect(res.simulations).toBe(0);

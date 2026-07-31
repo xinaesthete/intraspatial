@@ -23,14 +23,24 @@
 //
 // ## What is NOT matched, measured rather than glossed
 //
-// The third column, `MH_SES`, standardises the PARTIAL correlation (SES computed on `pc` here
-// correlates 0.978 with it, against 0.663 for the plain `r` — so the choice of statistic is
-// settled). The residual is the NULL SAMPLER, not noise: both the paper's and this module's nulls
-// hold the same margins fixed — each type's abundance and each quadrat's total — but the paper walks
-// a Markov chain of 2×2 swaps that is uniform over fixed-margin matrices, while a label shuffle
-// weights them by how many labellings produce each one. Raising the shuffles from 199 to 999 moved
-// the median |Δ| from 0.154 to 0.146, i.e. essentially not at all, which is how we know it is the
-// sampler. Implementing the swap chain is the outstanding piece for exact `MH_SES` parity.
+// The third column, `MH_SES`, standardises the PARTIAL correlation — SES computed on `pc` here
+// correlates 0.978 with it against 0.663 for the plain `r`, so the choice of statistic is settled.
+// The remaining gap is NOT settled, and the swap chain was built to close it. It narrows it and does
+// not close it. Measured on COVID_SAMPLE_16_ROI_3 at 999 draws, median |Δ| against the stored column:
+//
+//     label shuffle .............. 0.154
+//     swap, 10k steps (the paper's) 0.486     ← WORSE than no swap at all
+//     swap, 200k (~10 per entry) .. 0.115
+//     swap, 600k (~30 per entry) .. 0.107     ← best
+//     swap, 2M   (~100 per entry) . 0.112     ← plateau; the chain has equilibrated
+//
+// against a Monte Carlo floor (two runs of the same null) of 0.035. So three things are now known
+// rather than assumed. The swap chain IS a different null from the label shuffle and IS closer to
+// the published one, by about 30%. The paper's stated 10,000 steps cannot be what generated the
+// column — on a 49 × 400 table that is half a move per entry, the chain never leaves the observed
+// matrix, and the effect sizes collapse toward zero (see `swapChain`). And a residual of ~0.10, three
+// times the sampling floor, survives every null tried, so something in SpOOx's pipeline is still
+// unaccounted for. It is reported, not papered over.
 //
 // ## Inference
 //
@@ -204,10 +214,88 @@ export function partialCorrelation(r: Float64Array, k: number): Float64Array {
   return out;
 }
 
+/**
+ * How the null is sampled. Both hold the SAME margins fixed — every type's abundance and every
+ * quadrat's total — and they still give different answers, which is the whole reason this is a
+ * parameter rather than a constant.
+ *
+ * `"label"` shuffles the type labels between cells. It is the natural "random allocation" null and
+ * it is fully mixed: the result is independent of the observed arrangement.
+ *
+ * `"swap"` is the paper's (eqs 1–6): walk a Markov chain of 2×2 swaps starting FROM the observed
+ * matrix. Pick rows a, b and columns c, d, draw an integer p uniformly from [0, min(N_bc, N_ad)],
+ * and move p between the four corners — N_ac += p, N_bc −= p, N_bd += p, N_ad −= p — which is
+ * margin-preserving by construction and cannot go negative given that bound.
+ *
+ * The chain runs `swapSteps` (the paper: 10,000) and is restarted from the observed matrix for every
+ * simulation. **That budget is small on purpose and it is not a detail.** A covid ROI's table is
+ * 49 × 400 = 19,600 cells, so 10,000 steps is about half a move per cell: the null is deliberately
+ * UNDER-MIXED and stays near what was observed, which makes it a tighter reference distribution than
+ * a full label shuffle and therefore reports larger effect sizes. Reproducing `MH_SES` means
+ * reproducing the step count, not just the move.
+ */
+export type QcmNullModel = "label" | "swap";
+
 export interface QuadratCorrelationParams extends QuadratParams {
-  /** Label shuffles for the null. 0 skips inference and returns correlations only. */
+  /** Null draws. 0 skips inference and returns correlations only. */
   readonly simulations?: number;
   readonly seed?: number;
+  /** Defaults to `"label"`. Use `"swap"` to match the published `MH_SES`. */
+  readonly nullModel?: QcmNullModel;
+  /** Swap-chain length per draw. Defaults to `wellMixedSwapSteps`; ignored by the label null. */
+  readonly swapSteps?: number;
+}
+
+/**
+ * The paper's literal chain length (eqs 1–6, "repeated for s = 0, 1, … 10,000").
+ *
+ * Kept, and NOT the default, because it is measurably not what produced the published column. On
+ * COVID_SAMPLE_16_ROI_3 the table is 49 × 400 = 19,600 entries, so 10,000 moves is half a move per
+ * entry: the chain barely leaves the observed matrix, the null mean lands almost on the observation
+ * and the effect sizes collapse. Median |Δ| against the stored `MH_SES` is then **0.486** — far
+ * worse than a plain label shuffle's 0.154 — while a well-mixed chain reaches 0.107. Use this
+ * constant to reproduce the paper's stated procedure, not to match its numbers.
+ */
+export const SWAP_STEPS = 10_000;
+
+/**
+ * Chain length that actually mixes: 30 moves per table entry.
+ *
+ * Chosen by measurement rather than taste. Sweeping the chain on the real ROI, agreement with the
+ * published `MH_SES` improves monotonically — 0.486 at 10k, 0.115 at 200k (~10/entry), 0.107 at
+ * 600k (~30/entry) — and then stops: 2M (~100/entry) gives 0.112, no better. So ~30 per entry is
+ * where the chain has equilibrated, and more is only cost.
+ */
+export const wellMixedSwapSteps = (nTypes: number, quadrats: number): number => 30 * nTypes * quadrats;
+
+/**
+ * One margin-preserving swap chain, in place, starting from whatever `m` already holds.
+ *
+ * Rows and columns are drawn distinct: a == b or c == d makes the four updates cancel, so it would
+ * burn a step doing nothing and quietly shorten the chain.
+ */
+export function swapChain(m: Float64Array, k: number, q: number, steps: number, rnd: () => number): void {
+  if (k < 2 || q < 2) return;
+  for (let s = 0; s < steps; s++) {
+    const a = Math.floor(rnd() * k);
+    let b = Math.floor(rnd() * (k - 1));
+    if (b >= a) b++;
+    const c = Math.floor(rnd() * q);
+    let dd = Math.floor(rnd() * (q - 1));
+    if (dd >= c) dd++;
+    const bc = m[b * q + c]!;
+    const ad = m[a * q + dd]!;
+    const lim = Math.min(bc, ad);
+    if (lim <= 0) continue;
+    // Uniform on the INTEGERS {0, …, lim}: p = 0 is a legal draw and a no-op, which is part of the
+    // chain's stationary behaviour rather than a rejection to retry.
+    const p = Math.floor(rnd() * (lim + 1));
+    if (p === 0) continue;
+    m[a * q + c]! += p;
+    m[b * q + c]! -= p;
+    m[b * q + dd]! += p;
+    m[a * q + dd]! -= p;
+  }
 }
 
 export interface QuadratCorrelationResult {
@@ -296,16 +384,25 @@ export function quadratCorrelation(cells: LabelledCells, p: QuadratCorrelationPa
     }
   };
 
+  const model = p.nullModel ?? "label";
+  const steps = p.swapSteps ?? wellMixedSwapSteps(K, q);
   for (let s = 0; s < sims; s++) {
-    shuffled.set(labels);
-    for (let i = n - 1; i > 0; i--) {
-      const j = Math.floor(rnd() * (i + 1));
-      const t = shuffled[i]!;
-      shuffled[i] = shuffled[j]!;
-      shuffled[j] = t;
+    if (model === "swap") {
+      // Every draw restarts from the OBSERVED table, so the chain length is the whole distance the
+      // null is allowed to travel — it does not accumulate across simulations.
+      m.set(counts.counts);
+      swapChain(m, K, q, steps, rnd);
+    } else {
+      shuffled.set(labels);
+      for (let i = n - 1; i > 0; i--) {
+        const j = Math.floor(rnd() * (i + 1));
+        const t = shuffled[i]!;
+        shuffled[i] = shuffled[j]!;
+        shuffled[j] = t;
+      }
+      m.fill(0);
+      for (let i = 0; i < n; i++) m[shuffled[i]! * q + cellQuadrat[i]!]! += 1;
     }
-    m.fill(0);
-    for (let i = 0; i < n; i++) m[shuffled[i]! * q + cellQuadrat[i]!]! += 1;
     const rs = rowCorrelation(m, K, q);
     tally(accR, rs, r);
     tally(accPc, partialCorrelation(rs, K), pc);

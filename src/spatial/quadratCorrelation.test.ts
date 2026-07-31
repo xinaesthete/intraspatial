@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { mulberry32 } from "./kernelAnalysis";
 import type { LabelledCells } from "./pcf";
-import { benjaminiHochberg, partialCorrelation, quadratCorrelation, quadratCounts, rowCorrelation } from "./quadratCorrelation";
+import { benjaminiHochberg, partialCorrelation, quadratCorrelation, quadratCounts, rowCorrelation, swapChain } from "./quadratCorrelation";
 
 const BBOX = [0, 0, 400, 400] as const;
 
@@ -251,6 +251,111 @@ describe("quadratCorrelation", () => {
     expect(res.ses.length).toBe(0);
     expect(res.q.length).toBe(0);
   });
+});
+
+describe("swapChain", () => {
+  const table = () => Float64Array.from([12, 3, 7, 0, 1, 9, 2, 14, 5, 5, 11, 0, 8, 2, 0, 6]);
+  const K = 4;
+  const Q = 4;
+  const margins = (m: Float64Array) => {
+    const rows = Array.from({ length: K }, (_, a) => {
+      let s = 0;
+      for (let j = 0; j < Q; j++) s += m[a * Q + j]!;
+      return s;
+    });
+    const cols = Array.from({ length: Q }, (_, j) => {
+      let s = 0;
+      for (let a = 0; a < K; a++) s += m[a * Q + j]!;
+      return s;
+    });
+    return { rows, cols };
+  };
+
+  it("holds both margins exactly fixed", () => {
+    // The defining property: the null must preserve every type's abundance AND every quadrat's
+    // total, which is what makes it comparable to the label shuffle at all.
+    const m = table();
+    const before = margins(m);
+    swapChain(m, K, Q, 5000, mulberry32(3));
+    const after = margins(m);
+    expect(after.rows).toEqual(before.rows);
+    expect(after.cols).toEqual(before.cols);
+  });
+
+  it("never produces a negative count", () => {
+    // What the [0, min(N_bc, N_ad)] bound is FOR. A wider interval would make counts go negative and
+    // the correlation would still come out looking like a number.
+    const m = table();
+    swapChain(m, K, Q, 20_000, mulberry32(5));
+    for (const v of m) expect(v).toBeGreaterThanOrEqual(0);
+  });
+
+  it("actually moves — and moves further the longer it runs", () => {
+    const start = table();
+    const near = table();
+    swapChain(near, K, Q, 20, mulberry32(7));
+    const far = table();
+    swapChain(far, K, Q, 20_000, mulberry32(7));
+    const dist = (m: Float64Array) => m.reduce((a, v, i) => a + Math.abs(v - start[i]!), 0);
+    expect(dist(near)).toBeGreaterThan(0);
+    expect(dist(far)).toBeGreaterThan(dist(near));
+  });
+
+  it("collapses the effect size when under-mixed — the mechanism behind the MH_SES gap", () => {
+    // The measured finding, pinned by its mechanism rather than by a distance (distance saturates at
+    // equilibrium, so it cannot separate "barely mixed" from "well mixed" on a small table).
+    //
+    // A chain that has barely moved leaves the null mean sitting almost ON the observed value, so
+    // the SES numerator (obs − μ) collapses and every effect size is pulled toward zero. The paper
+    // specifies 10,000 steps, but a covid ROI's table is 49 × 400 = 19,600 entries — half a move per
+    // entry. Measured against the published MH_SES on COVID_SAMPLE_16_ROI_3, that gives our SES only
+    // 0.36× the spread of theirs and a median |Δ| of 0.494, WORSE than a label shuffle's 0.168; at
+    // 600,000 steps (~30 per entry) it is the best of anything tried, 0.115. So the published column
+    // was not produced by the step count the paper states.
+    const cells = buildTypes(31);
+    const p = { bbox: BBOX, quadratSize: 100, nTypes: 3, simulations: 99, seed: 8 } as const;
+    const starved = quadratCorrelation(cells, { ...p, nullModel: "swap", swapSteps: 3 });
+    const mixed = quadratCorrelation(cells, { ...p, nullModel: "swap", swapSteps: 100_000 });
+    expect(Math.abs(starved.ses[1]!)).toBeLessThan(Math.abs(mixed.ses[1]!) / 2);
+  });
+
+  it("converges toward the label null as it mixes", () => {
+    // Both nulls fix the same margins. They are different measures on that set — the swap chain is
+    // uniform over tables, the label shuffle weights them by how many labellings produce each — so
+    // they do not coincide, but a well-mixed chain must land in the same neighbourhood. If a long
+    // chain did NOT approach the label result, one of the two would be wrong.
+    const cells = buildTypes(23);
+    const p = { bbox: BBOX, quadratSize: 100, nTypes: 3, simulations: 149, seed: 4 } as const;
+    const label = quadratCorrelation(cells, p);
+    const short = quadratCorrelation(cells, { ...p, nullModel: "swap", swapSteps: 200 });
+    const long = quadratCorrelation(cells, { ...p, nullModel: "swap", swapSteps: 200_000 });
+    const gap = (a: Float64Array) => Math.abs(a[1]! - label.ses[1]!);
+    expect(gap(long.ses)).toBeLessThan(gap(short.ses));
+  });
+
+  /** Three types over a varying density, with enough spread for the null to have variance. */
+  function buildTypes(seed: number): LabelledCells {
+    const rnd = mulberry32(seed);
+    const xs: number[] = [];
+    const ys: number[] = [];
+    const typeId: number[] = [];
+    for (let qy = 0; qy < 4; qy++) {
+      for (let qx = 0; qx < 4; qx++) {
+        const hot = (qx + qy) % 2 === 0;
+        const push = (t: number, c: number) => {
+          for (let i = 0; i < c; i++) {
+            xs.push(qx * 100 + rnd() * 100);
+            ys.push(qy * 100 + rnd() * 100);
+            typeId.push(t);
+          }
+        };
+        push(0, hot ? 40 : 8);
+        push(1, hot ? 30 : 12);
+        push(2, 6 + Math.floor(rnd() * 24));
+      }
+    }
+    return { xs, ys, typeId };
+  }
 });
 
 describe("benjaminiHochberg", () => {

@@ -65,12 +65,22 @@ import {
   type QuadratCorrelationResult,
   quadratCounts,
   rowCorrelation,
+  wellMixedSwapSteps,
 } from "../../spatial/quadratCorrelation";
 import { getDevice } from "../device";
 
 /** Shuffles resident on the device at once. Bounds the count buffer (B·K·Q u32) and every dispatch,
  *  so no single command approaches the ~2 s the OS watchdog kills silently. */
 const BATCH = 64;
+/** The swap null uses a much bigger batch, because its parallelism has nowhere else to come from: a
+ *  chain is sequential by construction (each move reads what the last wrote), so the only thing to
+ *  run in parallel is other chains. One thread per chain at BATCH=64 would leave the device almost
+ *  entirely idle. 256 × 49 × 400 × 4 B is 20 MB of counts, which is the price. */
+const SWAP_BATCH = 256;
+/** Swap moves per dispatch. A chain of millions in ONE command is exactly the shape the OS GPU
+ *  watchdog kills at ~2 s, silently — see docs and `gpu-watchdog-silent-zeroes`. Chunking bounds each
+ *  command; the chain state lives in the buffer, so splitting it costs nothing but a submit. */
+const SWAP_CHUNK = 100_000;
 const SCATTER_WG = 256;
 const MOMENT_WG = 128;
 const PAIR_WG = 64;
@@ -87,7 +97,7 @@ const UNDEFINED = 1e30;
 const SHADER = /* wgsl */ `
 struct Uni {
   n: u32, K: u32, Q: u32, batch: u32,
-  seedBase: u32, halfBits: u32, halfMask: u32, simsTotal: u32,
+  seedBase: u32, halfBits: u32, halfMask: u32, swapSteps: u32,
 };
 @group(0) @binding(0) var<uniform> U: Uni;
 @group(0) @binding(1) var<storage, read> cellQuadrat: array<u32>;
@@ -158,6 +168,64 @@ fn scatter(@builtin(global_invocation_id) gid: vec3u) {
   // read from the other end.
   let lab = cellLabel[permute(i, keyFor(s))];
   atomicAdd(&counts[(s * U.K + lab) * U.Q + cellQuadrat[i]], 1u);
+}
+
+// ---- 1b. the swap null: seed each slot from the observed table, then walk a chain ------------------
+
+@compute @workgroup_size(${SCATTER_WG})
+fn seedChains(@builtin(global_invocation_id) gid: vec3u) {
+  let per = U.K * U.Q;
+  let total = U.batch * per;
+  if (gid.x >= total) { return; }
+  // The observed table rides in the tail of 'obs' rather than a binding of its own: WebGPU
+  // guarantees only 8 storage buffers per stage and bindings 1-8 already use all of them, so a
+  // ninth makes the LAYOUT invalid — every dispatch then silently does nothing and the only
+  // results that survive are the ones the CPU computed. Counts are small integers, so f32 holds
+  // them exactly.
+  atomicStore(&counts[gid.x], u32(obs[2u * U.K * U.K + (gid.x % per)]));
+}
+
+fn nextRand(state: ptr<function, u32>) -> u32 {
+  *state = *state * 1664525u + 1013904223u;
+  return mix32(*state);
+}
+
+// One thread per chain. The chain is sequential by nature — each move reads what the last one wrote
+// — so the parallelism has to come from running many INDEPENDENT chains at once, which is why the
+// swap path uses a much larger batch than the label path. Each thread owns its own K*Q slice
+// outright, so the atomics here are only the buffer's type, never contention.
+@compute @workgroup_size(${PAIR_WG})
+fn swapChain(@builtin(global_invocation_id) gid: vec3u) {
+  let s = gid.x;
+  if (s >= U.batch) { return; }
+  if (U.K < 2u || U.Q < 2u) { return; }
+  let base = s * U.K * U.Q;
+  var rng = mix32(U.seedBase ^ (s * 0x9e3779b9u) ^ 0x5bf03635u);
+  for (var step = 0u; step < U.swapSteps; step = step + 1u) {
+    // Rows and columns drawn DISTINCT: a == b or c == d makes the four updates cancel, which would
+    // spend a step doing nothing and silently shorten the chain.
+    let a = nextRand(&rng) % U.K;
+    var b = nextRand(&rng) % (U.K - 1u);
+    if (b >= a) { b = b + 1u; }
+    let c = nextRand(&rng) % U.Q;
+    var dd = nextRand(&rng) % (U.Q - 1u);
+    if (dd >= c) { dd = dd + 1u; }
+    let iac = base + a * U.Q + c;
+    let ibc = base + b * U.Q + c;
+    let ibd = base + b * U.Q + dd;
+    let iad = base + a * U.Q + dd;
+    let bc = atomicLoad(&counts[ibc]);
+    let ad = atomicLoad(&counts[iad]);
+    let lim = min(bc, ad);
+    if (lim == 0u) { continue; }
+    // p uniform on the integers {0, …, lim} — the paper's interval, closed at both ends.
+    let p = nextRand(&rng) % (lim + 1u);
+    if (p == 0u) { continue; }
+    atomicStore(&counts[iac], atomicLoad(&counts[iac]) + p);
+    atomicStore(&counts[ibc], bc - p);
+    atomicStore(&counts[ibd], atomicLoad(&counts[ibd]) + p);
+    atomicStore(&counts[iad], ad - p);
+  }
 }
 
 // ---- 2. per-row mean and centred norm --------------------------------------------------------------
@@ -346,6 +414,8 @@ interface Ctx {
   layout: GPUBindGroupLayout;
   clearCounts: GPUComputePipeline;
   scatter: GPUComputePipeline;
+  seedChains: GPUComputePipeline;
+  swapChain: GPUComputePipeline;
   rowMoments: GPUComputePipeline;
   correlate: GPUComputePipeline;
   partialCorr: GPUComputePipeline;
@@ -387,6 +457,8 @@ function getCtx(): Promise<Ctx> {
       layout,
       clearCounts: mk("clearCounts"),
       scatter: mk("scatter"),
+      seedChains: mk("seedChains"),
+      swapChain: mk("swapChain"),
       rowMoments: mk("rowMoments"),
       correlate: mk("correlate"),
       partialCorr: mk("partialCorr"),
@@ -469,26 +541,35 @@ export async function quadratCorrelationGpu(cells: LabelledCells, p: QuadratCorr
   const halfBits = Math.ceil(bits / 2);
   const halfMask = (1 << halfBits) - 1;
 
+  const swap = (p.nullModel ?? "label") === "swap";
+  const steps = p.swapSteps ?? wellMixedSwapSteps(K, Q);
+  const batchCap = swap ? SWAP_BATCH : BATCH;
+
   const quadBuf = ensureBuf(device, "cellQuadrat", n * 4, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST);
   const labBuf = ensureBuf(device, "cellLabel", n * 4, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST);
-  const countBuf = ensureBuf(device, "counts", BATCH * K * Q * 4, GPUBufferUsage.STORAGE);
-  const momBuf = ensureBuf(device, "moments", BATCH * K * 2 * 4, GPUBufferUsage.STORAGE);
-  const corrBuf = ensureBuf(device, "corr", BATCH * K * K * 4, GPUBufferUsage.STORAGE);
-  const partBuf = ensureBuf(device, "part", BATCH * K * K * 4, GPUBufferUsage.STORAGE);
-  const obsBuf = ensureBuf(device, "obs", 2 * K * K * 4, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST);
+  const countBuf = ensureBuf(device, "counts", batchCap * K * Q * 4, GPUBufferUsage.STORAGE);
+  const momBuf = ensureBuf(device, "moments", batchCap * K * 2 * 4, GPUBufferUsage.STORAGE);
+  const corrBuf = ensureBuf(device, "corr", batchCap * K * K * 4, GPUBufferUsage.STORAGE);
+  const partBuf = ensureBuf(device, "part", batchCap * K * K * 4, GPUBufferUsage.STORAGE);
+  // [ r | pc | observed counts ] in one buffer — see `seedChains` for why the counts are not their
+  // own binding.
+  const obsBuf = ensureBuf(device, "obs", (2 * K * K + K * Q) * 4, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST);
   const uniBuf = ensureBuf(device, "uni", 32, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST);
   const accRb = ensureReadback(device, root, "acc", K * K * 6);
+
+  // The swap chain starts from the observed table, so it needs it on the device as integers.
 
   device.queue.writeBuffer(quadBuf, 0, cellQuadrat);
   device.queue.writeBuffer(labBuf, 0, cellLabel);
   // The observed matrices go up as f32 only to be compared for extremity; the returned values stay
   // f64. A pair whose observed statistic is undefined is sent as the sentinel, so the kernel counts
   // no exceedances for it and the host reports NaN.
-  const obsF32 = new Float32Array(2 * K * K);
+  const obsF32 = new Float32Array(2 * K * K + K * Q);
   for (let i = 0; i < K * K; i++) {
     obsF32[i] = Number.isFinite(r[i]!) ? r[i]! : UNDEFINED;
     obsF32[K * K + i] = Number.isFinite(pc[i]!) ? pc[i]! : UNDEFINED;
   }
+  for (let i = 0; i < K * Q; i++) obsF32[2 * K * K + i] = countsObs.counts[i]!;
   device.queue.writeBuffer(obsBuf, 0, obsF32);
   device.queue.writeBuffer(accRb.raw, 0, new Float32Array(K * K * 6));
 
@@ -508,18 +589,52 @@ export async function quadratCorrelationGpu(cells: LabelledCells, p: QuadratCorr
   });
 
   const seed = (p.seed ?? 0x9ced) >>> 0;
-  for (let done = 0; done < sims; done += BATCH) {
-    const batch = Math.min(BATCH, sims - done);
+  for (let done = 0; done < sims; done += batchCap) {
+    const batch = Math.min(batchCap, sims - done);
     // Uniforms are rewritten per batch and the batch is submitted before the next write — the
     // writeBuffer-before-submit ordering that a single fused command buffer would get wrong.
-    device.queue.writeBuffer(uniBuf, 0, new Uint32Array([n, K, Q, batch, (seed + done) >>> 0, halfBits, halfMask, sims]));
-    const enc = device.createCommandEncoder();
-    const pass = enc.beginComputePass();
+    device.queue.writeBuffer(uniBuf, 0, new Uint32Array([n, K, Q, batch, (seed + done) >>> 0, halfBits, halfMask, steps]));
+    let enc = device.createCommandEncoder();
+    let pass = enc.beginComputePass();
     pass.setBindGroup(0, bind);
-    pass.setPipeline(pipes.clearCounts);
-    pass.dispatchWorkgroups(Math.ceil((batch * K * Q) / SCATTER_WG));
-    pass.setPipeline(pipes.scatter);
-    pass.dispatchWorkgroups(Math.ceil(n / SCATTER_WG), batch);
+    if (swap) {
+      pass.setPipeline(pipes.seedChains);
+      pass.dispatchWorkgroups(Math.ceil((batch * K * Q) / SCATTER_WG));
+    } else {
+      pass.setPipeline(pipes.clearCounts);
+      pass.dispatchWorkgroups(Math.ceil((batch * K * Q) / SCATTER_WG));
+      pass.setPipeline(pipes.scatter);
+      pass.dispatchWorkgroups(Math.ceil(n / SCATTER_WG), batch);
+    }
+    // The chain is walked in CHUNKS, each its own dispatch, because a long chain is the one thing
+    // here that can run past the ~2 s OS GPU watchdog — which kills the dispatch with no error and
+    // leaves the buffer holding a partially-mixed table that still looks like a valid null. Each
+    // chunk continues from what the last wrote (the state is the buffer, not the thread), so the
+    // only thing that must not repeat is the randomness: `seedBase` is advanced per chunk, or every
+    // chunk would replay the same moves and the chain would go nowhere.
+    if (swap) {
+      for (let step = 0; step < steps; step += SWAP_CHUNK) {
+        const chunk = Math.min(SWAP_CHUNK, steps - step);
+        pass.end();
+        device.queue.submit([enc.finish()]);
+        device.queue.writeBuffer(
+          uniBuf,
+          0,
+          new Uint32Array([n, K, Q, batch, (seed + done + 0x9e3779b9 * (1 + step / SWAP_CHUNK)) >>> 0, halfBits, halfMask, chunk]),
+        );
+        const cenc = device.createCommandEncoder();
+        const cpass = cenc.beginComputePass();
+        cpass.setBindGroup(0, bind);
+        cpass.setPipeline(pipes.swapChain);
+        cpass.dispatchWorkgroups(Math.ceil(batch / PAIR_WG));
+        cpass.end();
+        device.queue.submit([cenc.finish()]);
+        await device.queue.onSubmittedWorkDone();
+        enc = device.createCommandEncoder();
+        pass = enc.beginComputePass();
+        pass.setBindGroup(0, bind);
+      }
+    }
     pass.setPipeline(pipes.rowMoments);
     pass.dispatchWorkgroups(K, batch);
     pass.setPipeline(pipes.correlate);
