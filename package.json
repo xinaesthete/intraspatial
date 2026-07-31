@@ -30,6 +30,7 @@
     "build:wasm:dev": "wasm-pack build rust/htj2k-core --dev --target web --out-dir pkg --out-name htj2k_core",
     "mdv:zarr": "tsx scripts/mdv-h5-to-zarr.ts",
     "mdv:parity": "tsx scripts/mdv-pcf-parity.ts",
+    "mdv:quadrat": "tsx scripts/mdv-quadrat-parity.ts",
     "umap:obsm": "tsx scripts/umap-obsm.ts",
     "umap:bench": "tsx scripts/umap-bench.ts"
   },
