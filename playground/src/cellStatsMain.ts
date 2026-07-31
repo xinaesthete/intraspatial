@@ -38,6 +38,7 @@ import { paintFieldTexture } from "../../src/gpu/spatial/paintField";
 import { computeTcmRender, renderTcm, type TcmRenderParams } from "../../src/gpu/spatial/tcmRender";
 import { equivalentRadius, KERNELS, type KernelSpec, kernelLabel } from "../../src/spatial/kernels";
 import { crossPCF, crossPCFMatrix, type LabelledCells } from "../../src/spatial/pcf";
+import { crossPCFEnvelope } from "../../src/spatial/pcfEnvelope";
 import { tcmKernelField } from "../../src/spatial/tcmKernel";
 import { csvToCellTable, inspectCsv, parseCsv } from "./datasource/cellCsv";
 import {
@@ -95,6 +96,9 @@ const scaleInput = $<HTMLInputElement>("scale");
 const unitsEl = $<HTMLSpanElement>("units");
 const tcmBtn = $<HTMLButtonElement>("tcmBtn");
 const oracleBtn = $<HTMLButtonElement>("oracleBtn");
+const envToggle = $<HTMLInputElement>("envToggle");
+const envSimsInput = $<HTMLInputElement>("envSims");
+const envAlphaInput = $<HTMLInputElement>("envAlpha");
 const statusEl = $<HTMLDivElement>("status");
 const readoutEl = $<HTMLDivElement>("readout");
 const scatterCanvas = $<HTMLCanvasElement>("scatter");
@@ -311,7 +315,7 @@ function drawScatterPair(t: CellTable, bbox: [number, number, number, number], i
 }
 
 /** Line plot of g(r) vs r with a dashed g=1 (CSR) reference. */
-function drawPcfCurve(c: HTMLCanvasElement, r: number[], g: number[]): void {
+function drawPcfCurve(c: HTMLCanvasElement, r: number[], g: number[], band?: { lo: Float64Array; hi: Float64Array }): void {
   const W = 760;
   const H = 260;
   const padL = 46;
@@ -326,9 +330,34 @@ function drawPcfCurve(c: HTMLCanvasElement, r: number[], g: number[]): void {
   const rMax = r[r.length - 1] ?? 1;
   let gMax = 1.2;
   for (const v of g) if (v > gMax) gMax = v;
+  // The band has to fit too, or a curve that exits upward would be clipped out of the picture —
+  // exactly the case the envelope exists to show.
+  if (band) for (const v of band.hi) if (Number.isFinite(v) && v > gMax) gMax = v;
   gMax = Math.ceil(gMax * 1.1);
   const px = (rv: number) => padL + (rv / rMax) * (W - padL - padR);
   const py = (gv: number) => H - padB - (gv / gMax) * (H - padB - padT);
+
+  // Band first, so the observed curve is drawn over it and stays legible where it crosses.
+  if (band) {
+    ctx.fillStyle = "rgba(148,163,184,0.22)";
+    ctx.beginPath();
+    for (let i = 0; i < r.length; i++) ctx[i === 0 ? "moveTo" : "lineTo"](px(r[i]!), py(band.hi[i]!));
+    for (let i = r.length - 1; i >= 0; i--) ctx.lineTo(px(r[i]!), py(band.lo[i]!));
+    ctx.closePath();
+    ctx.fill();
+    // Points where the observed curve is outside get a marker: the test is "does it leave the band
+    // anywhere", so where it leaves is the finding and should not need squinting.
+    ctx.fillStyle = "#f87171";
+    for (let i = 0; i < r.length; i++) {
+      const v = g[i]!;
+      if (v < band.lo[i]! || v > band.hi[i]!) {
+        ctx.beginPath();
+        ctx.arc(px(r[i]!), py(v), 3, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+  }
+
   ctx.strokeStyle = "#475569";
   ctx.setLineDash([4, 4]);
   ctx.beginPath();
@@ -576,8 +605,18 @@ function checkAgainstOracle(): void {
   })();
 }
 
-/** Compute + render the cross-PCF g_ab(r) curve for the selected pair (CPU, Mode 1). */
-function computePcf(): void {
+/** Newest envelope request. A pair hovered past while a simulation is running must not have its
+ *  band painted onto the pair that replaced it, and there is no cancelling a synchronous loop — so
+ *  the token is checked after it returns and a stale result is dropped. */
+let envelopeToken = 0;
+
+/** Compute + render the cross-PCF g_ab(r) curve for the selected pair (CPU, Mode 1).
+ *
+ *  `withEnvelope` is gated the same way Γ is, and for the same reason: the curve is a few
+ *  milliseconds and the envelope is hundreds (199 relabellings of ~800k pairs at the panel's default
+ *  270 µm range), so simulating on every mousemove would make the coordinated view stop feeling
+ *  coordinated. The curve is drawn immediately either way and the band arrives after a yield. */
+function computePcf(withEnvelope: boolean): void {
   const t = current;
   if (!t) return;
   const idA = Number(typeSelect.value);
@@ -589,9 +628,45 @@ function computePcf(): void {
   const rMax = spanOf(bbox) / 8;
   const res = crossPCF({ xs: A.xs, ys: A.ys }, { xs: B.xs, ys: B.ys }, { bbox, rMax, nBins: PCF_BINS });
   drawPcfCurve(pcfCanvas, res.r, res.g);
-  pcfReadoutEl.innerHTML =
+  const head =
     `<b>g<sub>AB</sub>(r)</b> — A = ${labelOfId(idA)} (${A.n} cells), B = ${labelOfId(idB)} (${B.n} cells)<br>` +
     `rMax ${rMax.toPrecision(3)} (world units), ${PCF_BINS} bins · g(r→0) = ${(res.g[0] ?? 0).toFixed(2)} · g&gt;1 clustering, g&lt;1 exclusion`;
+  pcfReadoutEl.innerHTML = head;
+
+  const token = ++envelopeToken;
+  if (!withEnvelope || !envToggle.checked) return;
+  if (idA === idB) {
+    pcfReadoutEl.innerHTML = `${head}<br><span class="warn">no envelope for a self-pair — random labelling within A∪B has no content when A and B are the same population.</span>`;
+    return;
+  }
+
+  pcfReadoutEl.innerHTML = `${head}<br>simulating the random-labelling null …`;
+  // Yield once so the curve paints before the simulation blocks the thread.
+  setTimeout(() => {
+    if (token !== envelopeToken) return;
+    const sims = Math.max(19, Math.min(999, Math.round(Number(envSimsInput.value) || 199)));
+    const alpha = Math.min(0.5, Math.max(0.001, Number(envAlphaInput.value) || 0.05));
+    try {
+      const env = crossPCFEnvelope(
+        { xs: A.xs, ys: A.ys },
+        { xs: B.xs, ys: B.ys },
+        { bbox, rMax, nBins: PCF_BINS, simulations: sims, alpha, seed: 0x5eed },
+      );
+      if (token !== envelopeToken) return; // a newer pair won while this ran
+      drawPcfCurve(pcfCanvas, res.r, res.g, env.envelope);
+      const e = env.envelope;
+      const floor = 1 / (sims + 1);
+      const pStr = e.p <= floor + 1e-12 ? `≤ ${floor.toFixed(3)} (the floor at ${sims} simulations)` : e.p.toFixed(3);
+      pcfReadoutEl.innerHTML =
+        `${head}<br><b>global rank envelope</b> — p = ${pStr}, ${e.exits ? "<b>curve exits the band</b>" : "curve stays inside"} ` +
+        `at α=${e.alpha} · ${sims} relabellings of ${env.pairs.toLocaleString()} pairs in ${env.simulateMs.toFixed(0)} ms<br>` +
+        `<span class="note">Null: random labelling within A∪B — positions fixed, A/B shuffled between them with n<sub>A</sub>, n<sub>B</sub> held. ` +
+        `The band is a whole-curve test, so leaving it <i>anywhere</i> is significant at α; a pointwise band drawn over the same simulations would not be.</span>`;
+    } catch (err) {
+      if (token !== envelopeToken) return;
+      pcfReadoutEl.innerHTML = `${head}<br><span class="warn">envelope failed: ${(err as Error).message}</span>`;
+    }
+  }, 0);
 }
 
 /** Compute + render the N-way cross-PCF association matrix for all cell types (one batched pass). */
@@ -617,7 +692,8 @@ function setPair(idA: number, idB: number, doTcm: boolean): void {
   const t = current;
   if (!t) return;
   drawScatterPair(t, tableBounds(t), idA, idB);
-  computePcf();
+  // `doTcm` also gates the envelope: both are the "settled on this pair" work.
+  computePcf(doTcm);
   if (doTcm) requestGpuViews(idA, idB);
 }
 
@@ -933,6 +1009,12 @@ csvInput.addEventListener("change", () => {
   const f = csvInput.files?.[0];
   if (f) void loadCsv(f);
 });
+// Changing any envelope control re-runs it for the pair already on screen — otherwise the band
+// shown and the settings displayed would disagree, which is the one thing a significance readout
+// must never do.
+for (const el of [envToggle, envSimsInput, envAlphaInput]) {
+  el.addEventListener("change", () => computePcf(true));
+}
 mdvInspectBtn.addEventListener("click", () => void inspectMdv());
 mdvRunBtn.addEventListener("click", () => void loadMdvRegion());
 // An ROI is one click, and re-reading is cheap (the columns are already fetched), so changing the

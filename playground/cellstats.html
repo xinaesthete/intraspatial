@@ -24,6 +24,7 @@
     button { background: #1e293b; color: #e2e8f0; border: 1px solid #334155; border-radius: 6px; padding: 5px 12px; font-size: 12px; cursor: pointer; }
     button:hover { background: #334155; }
     .note { color: #fcd34d; font-size: 11px; line-height: 1.5; }
+    .warn { color: #fca5a5; }
     .note code { background: #0f172a; border: 1px solid #334155; border-radius: 3px; padding: 0 3px; }
     #status { margin-top: 6px; font-size: 12px; white-space: pre-wrap; color: #94a3b8; }
 
@@ -98,6 +99,15 @@
         <button id="tcmBtn">render Γ<sub>AB</sub></button>
         <button id="oracleBtn">check vs CPU oracle</button>
       </div>
+      <div class="row">
+        <label for="envToggle">g(r) envelope</label>
+        <input id="envToggle" type="checkbox" checked style="flex:0 0 auto" />
+        <label for="envSims">simulations</label>
+        <input id="envSims" type="text" value="199" style="flex:0 1 70px" />
+        <label for="envAlpha">α</label>
+        <input id="envAlpha" type="text" value="0.05" style="flex:0 1 60px" />
+        <span class="note" style="flex:1 1 auto">Computed on <b>settle or click</b>, like Γ — not on every hover.</span>
+      </div>
       <p class="note" id="units">—</p>
       <p class="note">Radius is <b>top-hat-equivalent</b>: switching kernel rescales it to hold the probed
         scale (μ₂) fixed, so "smoother" never quietly becomes "more local". α=5, world units.
@@ -144,7 +154,9 @@
       <div class="tile">
         <h2>cross-PCF g<sub>AB</sub>(r)</h2>
         <canvas id="pcf" style="image-rendering:auto"></canvas>
-        <div class="legend">g(r) vs radius; dashed = g=1 (CSR). g&gt;1 clustering at range r, g&lt;1 exclusion</div>
+        <div class="legend">g(r) vs radius; dashed = g=1 (CSR). g&gt;1 clustering at range r, g&lt;1 exclusion ·
+          shaded band = <b>global rank envelope</b> under random labelling within A∪B — a curve leaving it
+          anywhere is significant at α, which a pointwise band cannot claim</div>
       </div>
     </div>
 
