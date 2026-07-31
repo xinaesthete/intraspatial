@@ -21,10 +21,10 @@
 // the host where it belongs; only the finished 256 entries cross.
 import { getDevice } from "../device";
 
-const UNI_FLOATS = 4; // w, h, n, mode — padded to 16 bytes
+const UNI_FLOATS = 8; // w, h, n, mode, flipY — padded to 32 bytes
 
 const TEX_REDUCE = /* wgsl */ `
-struct Uni { w: f32, h: f32, n: f32, mode: f32 };
+struct Uni { w: f32, h: f32, n: f32, mode: f32, flipY: f32 };
 @group(0) @binding(0) var<uniform> U: Uni;
 @group(0) @binding(1) var src: texture_2d<f32>;
 @group(0) @binding(2) var<storage, read_write> scaleRW: atomic<u32>;
@@ -38,7 +38,7 @@ fn reduceTex(@builtin(global_invocation_id) gid: vec3u) {
 `;
 
 const PAINT_TEX = /* wgsl */ `
-struct Uni { w: f32, h: f32, n: f32, mode: f32 };
+struct Uni { w: f32, h: f32, n: f32, mode: f32, flipY: f32 };
 @group(0) @binding(0) var<uniform> U: Uni;
 @group(0) @binding(3) var<storage, read> scaleRO: array<u32>;
 @group(0) @binding(4) var lut: texture_2d<f32>;
@@ -61,8 +61,14 @@ fn ramp(v: f32) -> vec4f {
 @fragment
 fn fsTex(@builtin(position) pos: vec4f) -> @location(0) vec4f {
   let x = i32(pos.x);
-  let y = i32(pos.y);
-  if (x >= i32(U.w) || y >= i32(U.h)) { return vec4f(0.0, 0.0, 0.0, 1.0); }
+  let py = i32(pos.y);
+  if (x >= i32(U.w) || py >= i32(U.h)) { return vec4f(0.0, 0.0, 0.0, 1.0); }
+  // pos.y is 0 at the TOP of the target and the raster's row 0 is at maxY, so the default maps maxY
+  // to the top: a y-UP plot. flipY maps row 0 to the bottom instead, which is what data in image
+  // coordinates needs -- there y is a row index growing downward, and drawing it y-up shows the
+  // tissue upside down relative to its own source image. (No backticks in here: this is inside a
+  // template literal.)
+  let y = select(py, i32(U.h) - 1 - py, U.flipY > 0.5);
   return ramp(textureLoad(srcTex, vec2i(x, y), 0).r);
 }
 `;
@@ -160,6 +166,13 @@ export interface PaintOptions {
   /** `true` for a signed field (Γ): the ramp is centred, and |v| sets the scale symmetrically.
    *  `false` for a density: the ramp runs 0 → max with a sqrt gamma. */
   signed?: boolean;
+  /** Draw raster row 0 at the BOTTOM of the canvas instead of the top.
+   *
+   *  The raster convention here is row 0 = maxY (see `splatDensity.ts`), and `@builtin(position).y`
+   *  is 0 at the top, so the default puts maxY at the top: correct for a plot read y-up. Pass `true`
+   *  when the world y axis points DOWN — imaging data, where y indexes a row — so that a field panel
+   *  and a scatter of the same points agree, and both match the source image. */
+  flipY?: boolean;
 }
 
 const ZERO = new Uint32Array(1);
@@ -178,7 +191,7 @@ function encodePaint(
 ): void {
   const { device } = c;
   const surface = ensureSurface(device, c.format, canvas, width, height);
-  device.queue.writeBuffer(c.uni, 0, new Float32Array([width, height, width * height, opts.signed ? 1 : 0]));
+  device.queue.writeBuffer(c.uni, 0, new Float32Array([width, height, width * height, opts.signed ? 1 : 0, opts.flipY ? 1 : 0, 0, 0, 0]));
   device.queue.writeBuffer(c.scale, 0, ZERO); // atomicMax needs a clean floor each frame
 
   const enc = device.createCommandEncoder();

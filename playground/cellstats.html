@@ -102,12 +102,25 @@
       <div class="row">
         <label for="envToggle">g(r) envelope</label>
         <input id="envToggle" type="checkbox" checked style="flex:0 0 auto" />
+        <label for="envNull">null</label>
+        <select id="envNull" style="flex:0 1 240px">
+          <option value="shift" selected>random shift of B — tests association</option>
+          <option value="label">random labelling in A∪B — tests exchangeability</option>
+        </select>
         <label for="envSims">simulations</label>
         <input id="envSims" type="text" value="199" style="flex:0 1 70px" />
         <label for="envAlpha">α</label>
         <input id="envAlpha" type="text" value="0.05" style="flex:0 1 60px" />
-        <span class="note" style="flex:1 1 auto">Computed on <b>settle or click</b>, like Γ — not on every hover.</span>
+        <span class="note" style="flex:1 1 auto">Computed on <b>settle or click</b>, like Γ.</span>
       </div>
+      <p class="note">Which null decides what is being tested, and the difference is not cosmetic.
+        <b>Random shift</b> (Lotwick &amp; Silverman 1982) translates B by a random vector, wrapping around
+        the ROI: each type keeps its own clustering exactly and only the two patterns' relative position is
+        destroyed, so what is tested is <b>association</b>. <b>Random labelling</b> shuffles the A/B labels
+        between the same cells — right when A and B are nested or exchangeable subsets of one population
+        (<code>Fibroblast</code> vs <code>Prolif fibroblast</code>), but for two distinct self-clustered types
+        it asks "are these one interleaved population?", to which the answer is trivially no: on independent
+        synthetic patterns that are each clustered it rejects 20 times out of 20, where the shift null rejects 3.</p>
       <p class="note" id="units">—</p>
       <p class="note">Radius is <b>top-hat-equivalent</b>: switching kernel rescales it to hold the probed
         scale (μ₂) fixed, so "smoother" never quietly becomes "more local". α=5, world units.
@@ -155,8 +168,8 @@
         <h2>cross-PCF g<sub>AB</sub>(r)</h2>
         <canvas id="pcf" style="image-rendering:auto"></canvas>
         <div class="legend">g(r) vs radius; dashed = g=1 (CSR). g&gt;1 clustering at range r, g&lt;1 exclusion ·
-          shaded band = <b>global rank envelope</b> under random labelling within A∪B — a curve leaving it
-          anywhere is significant at α, which a pointwise band cannot claim</div>
+          shaded band = <b>global rank envelope</b> under the selected null — a curve leaving it
+          <i>anywhere</i> is significant at α, which a pointwise band cannot claim</div>
       </div>
     </div>
 

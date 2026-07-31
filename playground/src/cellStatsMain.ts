@@ -25,6 +25,15 @@
 // kernel holds the SPATIAL SCALE fixed via `equivalentRadius`, because μ₂ = r²/(n+2) shrinks with
 // order — comparing at equal r would silently confound "smoother" with "more local".
 //
+// ORIENTATION. Every panel here draws world y DOWNWARD, because these are imaging coordinates: a
+// cell's y is a row index in the section image, so minY belongs at the top and anything else shows
+// the tissue upside down relative to its own source. The scatter does that naturally (canvas y grows
+// down); the GPU field panels need `flipY`, because the raster convention is row 0 = maxY and
+// `paintFieldTexture` would otherwise put row 0 at the top and render a y-UP plot. Without it the
+// scatter and the KDE/Γ panels are mirror images of each other — measured on
+// COVID_SAMPLE_16_ROI_3, the Fibroblast centre of mass sat at 0.536 down the scatter and 0.461 down
+// the KDE, which is the same number reflected.
+//
 // COLOUR. Ramps are built in OKLCh (src/color/ramps.ts). Γ is signed and is read by comparing its
 // arms, so the diverging ramp derives lightness from |Γ| alone and lets only the hue carry the sign:
 // equal clustering and exclusion are then equally prominent by construction. An sRGB blue→white→red
@@ -38,7 +47,7 @@ import { paintFieldTexture } from "../../src/gpu/spatial/paintField";
 import { computeTcmRender, renderTcm, type TcmRenderParams } from "../../src/gpu/spatial/tcmRender";
 import { equivalentRadius, KERNELS, type KernelSpec, kernelLabel } from "../../src/spatial/kernels";
 import { crossPCF, crossPCFMatrix, type LabelledCells } from "../../src/spatial/pcf";
-import { crossPCFEnvelope } from "../../src/spatial/pcfEnvelope";
+import { crossPCFEnvelope, type PcfNullModel } from "../../src/spatial/pcfEnvelope";
 import { tcmKernelField } from "../../src/spatial/tcmKernel";
 import { csvToCellTable, inspectCsv, parseCsv } from "./datasource/cellCsv";
 import {
@@ -97,6 +106,7 @@ const unitsEl = $<HTMLSpanElement>("units");
 const tcmBtn = $<HTMLButtonElement>("tcmBtn");
 const oracleBtn = $<HTMLButtonElement>("oracleBtn");
 const envToggle = $<HTMLInputElement>("envToggle");
+const envNullSelect = $<HTMLSelectElement>("envNull");
 const envSimsInput = $<HTMLInputElement>("envSims");
 const envAlphaInput = $<HTMLInputElement>("envAlpha");
 const statusEl = $<HTMLDivElement>("status");
@@ -483,7 +493,7 @@ async function splatOne(
   // so the op-graph feeds the display path with no copy, no readback and no adapter in between.
   const v = await pullResident(g, density, { ctx: { backend: browserBackend } });
   if (!v.texture) throw new Error("splatDensity did not return a texture-resident value");
-  await paintFieldTexture(canvas, v.texture.texture, v.texture.width, v.texture.height, { lut });
+  await paintFieldTexture(canvas, v.texture.texture, v.texture.width, v.texture.height, { lut, flipY: true });
   // The lease is the caller's (ADR-0017). Returning it AFTER submitting the paint is safe: queue
   // order means the paint reads the texture before anything the pool hands it to next writes it.
   browserBackend.releaseTexture(v.texture);
@@ -541,7 +551,7 @@ async function computeTcmMap(idA = Number(typeSelect.value), idB = Number(typeSe
     // Two render passes, then a paint straight from the target texture — Γ never crosses to the
     // host on the interactive path. The oracle button downloads on demand.
     const tex = await renderTcm({ xs: A.xs, ys: A.ys }, { xs: B.xs, ys: B.ys }, params);
-    await paintFieldTexture(tcmCanvas, tex.tex, dims.width, dims.height, { lut: DIVERGING_LUT, signed: true });
+    await paintFieldTexture(tcmCanvas, tex.tex, dims.width, dims.height, { lut: DIVERGING_LUT, signed: true, flipY: true });
     const ms = performance.now() - t0;
     lastGamma = { idA, idB, ms, dims, params };
     const u = unitSuffix();
@@ -605,6 +615,14 @@ function checkAgainstOracle(): void {
   })();
 }
 
+/** What each null holds fixed, for the readout — so the number on screen always says what it tested. */
+const NULL_BLURB: Record<PcfNullModel, string> = {
+  shift:
+    "random toroidal shift of B — each pattern keeps its own clustering, only their relative position is destroyed, so this tests ASSOCIATION.",
+  label:
+    "random labelling within A∪B — positions fixed, A/B shuffled between them with n<sub>A</sub>, n<sub>B</sub> held. Tests whether the split is arranged; right for nested subsets, but two distinct self-clustered types fail it trivially.",
+};
+
 /** Newest envelope request. A pair hovered past while a simulation is running must not have its
  *  band painted onto the pair that replaced it, and there is no cancelling a synchronous loop — so
  *  the token is checked after it returns and a stale result is dropped. */
@@ -636,7 +654,7 @@ function computePcf(withEnvelope: boolean): void {
   const token = ++envelopeToken;
   if (!withEnvelope || !envToggle.checked) return;
   if (idA === idB) {
-    pcfReadoutEl.innerHTML = `${head}<br><span class="warn">no envelope for a self-pair — random labelling within A∪B has no content when A and B are the same population.</span>`;
+    pcfReadoutEl.innerHTML = `${head}<br><span class="warn">no envelope for a self-pair — neither null has content when A and B are the same population.</span>`;
     return;
   }
 
@@ -646,11 +664,12 @@ function computePcf(withEnvelope: boolean): void {
     if (token !== envelopeToken) return;
     const sims = Math.max(19, Math.min(999, Math.round(Number(envSimsInput.value) || 199)));
     const alpha = Math.min(0.5, Math.max(0.001, Number(envAlphaInput.value) || 0.05));
+    const nullModel = envNullSelect.value as PcfNullModel;
     try {
       const env = crossPCFEnvelope(
         { xs: A.xs, ys: A.ys },
         { xs: B.xs, ys: B.ys },
-        { bbox, rMax, nBins: PCF_BINS, simulations: sims, alpha, seed: 0x5eed },
+        { bbox, rMax, nBins: PCF_BINS, nullModel, simulations: sims, alpha, seed: 0x5eed },
       );
       if (token !== envelopeToken) return; // a newer pair won while this ran
       drawPcfCurve(pcfCanvas, res.r, res.g, env.envelope);
@@ -660,7 +679,7 @@ function computePcf(withEnvelope: boolean): void {
       pcfReadoutEl.innerHTML =
         `${head}<br><b>global rank envelope</b> — p = ${pStr}, ${e.exits ? "<b>curve exits the band</b>" : "curve stays inside"} ` +
         `at α=${e.alpha} · ${sims} relabellings of ${env.pairs.toLocaleString()} pairs in ${env.simulateMs.toFixed(0)} ms<br>` +
-        `<span class="note">Null: random labelling within A∪B — positions fixed, A/B shuffled between them with n<sub>A</sub>, n<sub>B</sub> held. ` +
+        `<span class="note">Null: ${NULL_BLURB[nullModel]} ` +
         `The band is a whole-curve test, so leaving it <i>anywhere</i> is significant at α; a pointwise band drawn over the same simulations would not be.</span>`;
     } catch (err) {
       if (token !== envelopeToken) return;
@@ -1012,7 +1031,7 @@ csvInput.addEventListener("change", () => {
 // Changing any envelope control re-runs it for the pair already on screen — otherwise the band
 // shown and the settings displayed would disagree, which is the one thing a significance readout
 // must never do.
-for (const el of [envToggle, envSimsInput, envAlphaInput]) {
+for (const el of [envToggle, envNullSelect, envSimsInput, envAlphaInput]) {
   el.addEventListener("change", () => computePcf(true));
 }
 mdvInspectBtn.addEventListener("click", () => void inspectMdv());
