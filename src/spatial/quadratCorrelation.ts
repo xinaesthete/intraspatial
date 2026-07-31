@@ -6,14 +6,31 @@
 // occupy the same regions", not "how close do they get" — and at one fixed scale, set by the quadrat
 // size.
 //
-// ## This one is reproduced exactly
+// ## Both published columns are reproduced exactly
 //
-// The covid project's `quadratCounts` column (the name is the config's, not the statistic's) is
-// **the Pearson correlation of per-type counts in 100 µm quadrats**, recovered by scanning quadrat
-// sizes against the stored values: at 100 µm all 2,401 pairs of an ROI agree to within 1e-3, with a
-// median absolute difference of 0.0000. Its sibling `MH_PC` is a different, related quantity — it
-// correlates 0.93 with the 25 µm QCM but equals no plain form of it tried (Pearson at any size,
-// Spearman, presence/absence, sqrt counts, Morisita-Horn), so it is NOT claimed here.
+// The covid project stores two of these per (ROI, A, B), and they are different statistics:
+//
+//   * `quadratCounts` (the name is the config's, not the statistic's) is the **Pearson correlation**
+//     of per-type counts in 100 µm quadrats. Recovered by scanning quadrat sizes against the stored
+//     values; at 100 µm, 70,742 rows agree with a median |Δ| of 1.0e-9.
+//   * `MH_PC` ("Quadrat Correlation Pair Correlation") is the **partial correlation** of the same
+//     counts — see `partialCorrelation`. `MH` is **Morueta-Holme**, not Morisita-Horn: the paper's
+//     methods cite Morueta-Holme et al. and SpOOx runs this as `--function morueta-holme`. 4,802
+//     rows agree with a median |Δ| of 6.6e-10.
+//
+// Quadrat size 100 µm is the paper's own ("square quadrats with edge length 100μm, resulting in
+// between 100 and 400 quadrats per ROI"), which is what the empirical scan recovered independently.
+//
+// ## What is NOT matched, measured rather than glossed
+//
+// The third column, `MH_SES`, standardises the PARTIAL correlation (SES computed on `pc` here
+// correlates 0.978 with it, against 0.663 for the plain `r` — so the choice of statistic is
+// settled). The residual is the NULL SAMPLER, not noise: both the paper's and this module's nulls
+// hold the same margins fixed — each type's abundance and each quadrat's total — but the paper walks
+// a Markov chain of 2×2 swaps that is uniform over fixed-margin matrices, while a label shuffle
+// weights them by how many labellings produce each one. Raising the shuffles from 199 to 999 moved
+// the median |Δ| from 0.154 to 0.146, i.e. essentially not at all, which is how we know it is the
+// sampler. Implementing the swap chain is the outstanding piece for exact `MH_SES` parity.
 //
 // ## Inference
 //
@@ -110,6 +127,83 @@ export function rowCorrelation(m: Float64Array, k: number, q: number): Float64Ar
   return out;
 }
 
+/**
+ * Partial correlation between every pair of rows — the paper's actual QCM statistic.
+ *
+ * `MH` in the published columns is **Morueta-Holme**, not Morisita-Horn: the methods cite ref. 38
+ * (Morueta-Holme et al., "A network approach for inferring species associations from co-occurrence
+ * data") and SpOOx runs it as `--function morueta-holme`. Its defining move is that the association
+ * between two types is measured **after conditioning on every other type**, which is what a partial
+ * correlation is:
+ *
+ *     P = R⁻¹                    (the precision matrix)
+ *     ρ_ab·rest = −P_ab / √(P_aa P_bb)
+ *
+ * The distinction is not academic. A plain correlation is transitive by construction — if a
+ * macrophage type and a T-cell type both crowd into the same inflamed quadrats, they correlate with
+ * each other AND with everything else that crowds in there, so the matrix fills with a single
+ * dominant "this is where the cells are" factor and nearly every pair reads positive. The partial
+ * correlation asks the narrower question the biology actually wants: does A predict B *beyond* what
+ * the other 47 types already say about that quadrat? Direct associations survive it; associations
+ * induced by a shared third type do not.
+ *
+ * Types with no variance across quadrats (absent, or present at a constant count) cannot enter the
+ * inverse at all — they would make R singular — so they are dropped, the surviving submatrix is
+ * inverted, and their rows come back NaN.
+ */
+export function partialCorrelation(r: Float64Array, k: number): Float64Array {
+  const out = new Float64Array(k * k).fill(Number.NaN);
+  // Drop the variance-free types, which would make R singular. The DIAGONAL is the test: a type
+  // correlated with itself is 1 unless its own sd is 0. Scanning the whole row instead would be
+  // wrong — a NaN off the diagonal says the OTHER type is degenerate, and would take this one down
+  // with it.
+  const keep: number[] = [];
+  for (let a = 0; a < k; a++) if (Number.isFinite(r[a * k + a]!)) keep.push(a);
+  const m = keep.length;
+  if (m < 2) return out;
+
+  // Gauss-Jordan with partial pivoting on [R | I]. m ≤ ~50 here, so an O(m³) dense inverse is
+  // microseconds and there is nothing to gain from a factorisation that preserves symmetry.
+  const a = new Float64Array(m * 2 * m);
+  const w = 2 * m;
+  for (let i = 0; i < m; i++) {
+    for (let j = 0; j < m; j++) a[i * w + j] = r[keep[i]! * k + keep[j]!]!;
+    a[i * w + m + i] = 1;
+  }
+  for (let col = 0; col < m; col++) {
+    let piv = col;
+    for (let i = col + 1; i < m; i++) if (Math.abs(a[i * w + col]!) > Math.abs(a[piv * w + col]!)) piv = i;
+    // Singular to working precision — collinear types, or fewer quadrats than types. Conditioning on
+    // a set that already determines the row has no answer, and a ridge would invent one.
+    if (Math.abs(a[piv * w + col]!) < 1e-12) return out;
+    if (piv !== col) {
+      for (let j = 0; j < w; j++) {
+        const t = a[col * w + j]!;
+        a[col * w + j] = a[piv * w + j]!;
+        a[piv * w + j] = t;
+      }
+    }
+    const d = a[col * w + col]!;
+    for (let j = 0; j < w; j++) a[col * w + j]! /= d;
+    for (let i = 0; i < m; i++) {
+      if (i === col) continue;
+      const f = a[i * w + col]!;
+      if (f === 0) continue;
+      for (let j = 0; j < w; j++) a[i * w + j]! -= f * a[col * w + j]!;
+    }
+  }
+
+  for (let i = 0; i < m; i++) {
+    for (let j = 0; j < m; j++) {
+      const pii = a[i * w + m + i]!;
+      const pjj = a[j * w + m + j]!;
+      const den = Math.sqrt(pii * pjj);
+      out[keep[i]! * k + keep[j]!] = i === j ? 1 : den > 0 ? -a[i * w + m + j]! / den : Number.NaN;
+    }
+  }
+  return out;
+}
+
 export interface QuadratCorrelationParams extends QuadratParams {
   /** Label shuffles for the null. 0 skips inference and returns correlations only. */
   readonly simulations?: number;
@@ -120,14 +214,23 @@ export interface QuadratCorrelationResult {
   readonly nTypes: number;
   /** Number of quadrats the correlation was computed over. */
   readonly quadrats: number;
-  /** `r[a*K + b]`, symmetric, 1 on the diagonal. NaN where a type has no variance across quadrats. */
+  /** `r[a*K + b]`, symmetric, 1 on the diagonal. NaN where a type has no variance across quadrats.
+   *  The project's `quadratCounts` column. */
   readonly r: Float64Array;
+  /** Partial correlation — the project's `MH_PC`, and the statistic the paper actually reports. */
+  readonly pc: Float64Array;
   /** `(r_obs − mean_null) / sd_null`. Empty when `simulations` is 0. */
   readonly ses: Float64Array;
   /** Two-sided permutation p-value per pair. Empty when `simulations` is 0. */
   readonly p: Float64Array;
   /** Benjamini–Hochberg q-values over the K(K−1)/2 off-diagonal pairs. Empty when `simulations` is 0. */
   readonly q: Float64Array;
+  /** The same three for the PARTIAL correlation — the project's `MH_SES` / `MH_FDR` line. Empty when
+   *  `simulations` is 0. These are the ones to read: `ses` says "do A and B share quadrats more than
+   *  chance", `pcSes` says "…beyond what every other type already explains". */
+  readonly pcSes: Float64Array;
+  readonly pcP: Float64Array;
+  readonly pcQ: Float64Array;
   readonly simulations: number;
 }
 
@@ -144,9 +247,23 @@ export function quadratCorrelation(cells: LabelledCells, p: QuadratCorrelationPa
   const K = counts.nTypes;
   const q = counts.cols * counts.rows;
   const r = rowCorrelation(counts.counts, K, q);
+  const pc = partialCorrelation(r, K);
   const sims = p.simulations ?? 0;
+  const empty = () => new Float64Array(0);
   if (sims <= 0) {
-    return { nTypes: K, quadrats: q, r, ses: new Float64Array(0), p: new Float64Array(0), q: new Float64Array(0), simulations: 0 };
+    return {
+      nTypes: K,
+      quadrats: q,
+      r,
+      pc,
+      ses: empty(),
+      p: empty(),
+      q: empty(),
+      pcSes: empty(),
+      pcP: empty(),
+      pcQ: empty(),
+      simulations: 0,
+    };
   }
 
   const n = cells.xs.length;
@@ -164,9 +281,20 @@ export function quadratCorrelation(cells: LabelledCells, p: QuadratCorrelationPa
   const rnd = mulberry32(p.seed ?? 0x9ced);
   const shuffled = new Int32Array(n);
   const m = new Float64Array(K * q);
-  const sum = new Float64Array(K * K);
-  const sumSq = new Float64Array(K * K);
-  const moreExtreme = new Float64Array(K * K);
+  /** Running Σ, Σ², and two-sided extremity count for one statistic across the shuffles. */
+  const acc = () => ({ sum: new Float64Array(K * K), sumSq: new Float64Array(K * K), moreExtreme: new Float64Array(K * K) });
+  const accR = acc();
+  const accPc = acc();
+  const tally = (a: ReturnType<typeof acc>, sim: Float64Array, obs: Float64Array) => {
+    for (let i = 0; i < K * K; i++) {
+      const v = sim[i]!;
+      if (!Number.isFinite(v)) continue;
+      a.sum[i]! += v;
+      a.sumSq[i]! += v * v;
+      // Two-sided: |simulated| at least as large as |observed|.
+      if (Number.isFinite(obs[i]!) && Math.abs(v) >= Math.abs(obs[i]!)) a.moreExtreme[i]! += 1;
+    }
+  };
 
   for (let s = 0; s < sims; s++) {
     shuffled.set(labels);
@@ -179,26 +307,37 @@ export function quadratCorrelation(cells: LabelledCells, p: QuadratCorrelationPa
     m.fill(0);
     for (let i = 0; i < n; i++) m[shuffled[i]! * q + cellQuadrat[i]!]! += 1;
     const rs = rowCorrelation(m, K, q);
-    for (let i = 0; i < K * K; i++) {
-      const v = rs[i]!;
-      if (!Number.isFinite(v)) continue;
-      sum[i]! += v;
-      sumSq[i]! += v * v;
-      // Two-sided: |simulated| at least as large as |observed|.
-      if (Number.isFinite(r[i]!) && Math.abs(v) >= Math.abs(r[i]!)) moreExtreme[i]! += 1;
-    }
+    tally(accR, rs, r);
+    tally(accPc, partialCorrelation(rs, K), pc);
   }
 
-  const ses = new Float64Array(K * K);
-  const pv = new Float64Array(K * K);
-  for (let i = 0; i < K * K; i++) {
-    const mu = sum[i]! / sims;
-    const varr = Math.max(0, sumSq[i]! / sims - mu * mu);
-    const sd = Math.sqrt(varr);
-    ses[i] = Number.isFinite(r[i]!) && sd > 0 ? (r[i]! - mu) / sd : Number.NaN;
-    pv[i] = Number.isFinite(r[i]!) ? (moreExtreme[i]! + 1) / (sims + 1) : Number.NaN;
-  }
-  return { nTypes: K, quadrats: q, r, ses, p: pv, q: benjaminiHochbergMatrix(pv, K), simulations: sims };
+  const finish = (a: ReturnType<typeof acc>, obs: Float64Array) => {
+    const ses = new Float64Array(K * K);
+    const pv = new Float64Array(K * K);
+    for (let i = 0; i < K * K; i++) {
+      const mu = a.sum[i]! / sims;
+      const varr = Math.max(0, a.sumSq[i]! / sims - mu * mu);
+      const sd = Math.sqrt(varr);
+      ses[i] = Number.isFinite(obs[i]!) && sd > 0 ? (obs[i]! - mu) / sd : Number.NaN;
+      pv[i] = Number.isFinite(obs[i]!) ? (a.moreExtreme[i]! + 1) / (sims + 1) : Number.NaN;
+    }
+    return { ses, p: pv, q: benjaminiHochbergMatrix(pv, K) };
+  };
+  const plain = finish(accR, r);
+  const partial = finish(accPc, pc);
+  return {
+    nTypes: K,
+    quadrats: q,
+    r,
+    pc,
+    ses: plain.ses,
+    p: plain.p,
+    q: plain.q,
+    pcSes: partial.ses,
+    pcP: partial.p,
+    pcQ: partial.q,
+    simulations: sims,
+  };
 }
 
 /**

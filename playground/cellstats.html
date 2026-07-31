@@ -123,6 +123,38 @@
         <input id="envAlpha" type="text" value="0.05" style="flex:0 1 60px" />
         <span class="note" style="flex:1 1 auto">Computed on <b>settle or click</b>, like Γ.</span>
       </div>
+      <div class="row">
+        <label for="matrixLayer">matrix shows</label>
+        <select id="matrixLayer" style="flex:1 1 250px">
+          <option value="pcf" selected>cross-PCF g(r) at the contact radius</option>
+          <option value="qcmPc">QCM partial correlation — MH_PC (Morueta-Holme)</option>
+          <option value="qcmR">QCM Pearson correlation — quadratCounts</option>
+          <option value="qcmSes">QCM effect size vs the shuffle null — MH_SES</option>
+          <option value="phi">φ — % of A touching a B (eq 15)</option>
+          <option value="bigPhi">Φ — mean B neighbours per A (eq 16)</option>
+        </select>
+        <label for="quadratUm">quadrat µm</label>
+        <input id="quadratUm" type="text" value="100" style="flex:0 1 70px" />
+        <label for="contactUm">contact µm</label>
+        <input id="contactUm" type="text" value="20" style="flex:0 1 70px" />
+        <label for="qcmSims">QCM sims</label>
+        <input id="qcmSims" type="text" value="999" style="flex:0 1 70px" />
+        <label for="qcmGate">gate q&lt;α</label>
+        <input id="qcmGate" type="checkbox" checked style="flex:0 0 auto" />
+      </div>
+      <p class="note"><b>One matrix, several statistics — they disagree, and that is the point.</b>
+        <code>MH_PC</code> is the paper's headline: a <b>partial</b> correlation, measuring A against B
+        <i>after conditioning on all 47 other types</i>. Plain correlation is transitive, so everything that
+        crowds into the same inflamed quadrats correlates with everything else and the matrix fills with one
+        "this is where the cells are" factor; the partial version keeps only what survives that. Switch
+        between <code>QCM partial</code> and <code>QCM Pearson</code> to watch the induced associations drop out:
+        on COVID_SAMPLE_16_ROI_3, 68 of 1,128 pairs exceed |r| = 0.3 but only 8 exceed |partial| = 0.3, and after
+        Benjamini–Hochberg 226 pairs survive on the plain correlation against 23 on the partial.
+        <b>gate q&lt;α</b> dims the pairs that fail BH — 1,128 simultaneous tests on one ROI, so the correction is
+        not optional. <b>1000 shuffles is the paper's number, and the default here for a reason</b>: a permutation
+        p cannot fall below 1/(S+1), so BH can declare nothing at all until enough pairs pile up at that floor.
+        At 199 shuffles that bar is 113 pairs and the partial correlation returns <i>zero</i> discoveries — which
+        looks exactly like "no associations" and is not. The panel says so when it applies.</p>
       <p class="note"><b>The g(r) chart carries two bands, and they answer different questions.</b>
         The <span class="chipA">cyan</span> one hugging the curve is a <b>bootstrap confidence interval</b>
         — how well g(r) itself is known, from resampling the anchor cells; it says nothing about whether
@@ -156,9 +188,11 @@
 
     <div class="grid">
       <div class="tile">
-        <h2>N-way cross-PCF matrix</h2>
+        <h2>N-way matrix — <span id="nameMatrixLayer">cross-PCF g(r)</span></h2>
         <canvas id="matrix"></canvas>
-        <div class="legend"><b>Hover to link · click to pin.</b> rows = A (the anchor type), cols = B (axes labelled when the store names its types) · diverging log₂(g): red = clustering, blue = exclusion, white = CSR · white box = hover, dashed = pinned</div>
+        <div class="legend fixed"><b>Hover to link · click to pin.</b> rows = A (the anchor type), cols = B ·
+          <span id="matrixScale">diverging log₂(g): red = clustering, blue = exclusion, white = CSR</span> ·
+          white box = hover, dashed = pinned</div>
       </div>
       <div class="tile">
         <h2>centroids — pair highlighted</h2>
@@ -192,6 +226,8 @@
     <div class="panel">
       <div class="readouts">
         <div id="matrixReadout">—</div>
+        <div id="qcmReadout">—</div>
+        <div id="netReadout">—</div>
         <div id="tcmReadout">—</div>
         <div id="pcfReadout">—</div>
         <div id="readout">—</div>

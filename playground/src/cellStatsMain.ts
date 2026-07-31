@@ -45,10 +45,12 @@ import { browserBackend } from "../../src/gpu/graph/backend.browser";
 import type { FieldValue, GpuField } from "../../src/gpu/graph/handle";
 import { paintFieldTexture } from "../../src/gpu/spatial/paintField";
 import { computeTcmRender, renderTcm, type TcmRenderParams } from "../../src/gpu/spatial/tcmRender";
+import { CONTACT_RADIUS_UM, type ContactNetworkResult, contactNetwork } from "../../src/spatial/contactNetwork";
 import { equivalentRadius, KERNELS, type KernelSpec, kernelLabel } from "../../src/spatial/kernels";
 import { crossPCFMatrix, type LabelledCells } from "../../src/spatial/pcf";
 import { crossPCFBootstrap } from "../../src/spatial/pcfBootstrap";
 import { crossPCFEnvelopeRunner, type PcfEnvelopeRunner, type PcfNullModel } from "../../src/spatial/pcfEnvelope";
+import { type QuadratCorrelationResult, quadratCorrelation } from "../../src/spatial/quadratCorrelation";
 import { tcmKernelField } from "../../src/spatial/tcmKernel";
 import { csvToCellTable, inspectCsv, parseCsv } from "./datasource/cellCsv";
 import {
@@ -113,6 +115,15 @@ const envToggle = $<HTMLInputElement>("envToggle");
 const envNullSelect = $<HTMLSelectElement>("envNull");
 const envSimsInput = $<HTMLInputElement>("envSims");
 const envAlphaInput = $<HTMLInputElement>("envAlpha");
+const matrixLayerSelect = $<HTMLSelectElement>("matrixLayer");
+const quadratUmInput = $<HTMLInputElement>("quadratUm");
+const contactUmInput = $<HTMLInputElement>("contactUm");
+const qcmSimsInput = $<HTMLInputElement>("qcmSims");
+const qcmGateInput = $<HTMLInputElement>("qcmGate");
+const nameMatrixLayerEl = $<HTMLSpanElement>("nameMatrixLayer");
+const matrixScaleEl = $<HTMLSpanElement>("matrixScale");
+const qcmReadoutEl = $<HTMLDivElement>("qcmReadout");
+const netReadoutEl = $<HTMLDivElement>("netReadout");
 const statusEl = $<HTMLDivElement>("status");
 const readoutEl = $<HTMLDivElement>("readout");
 const scatterCanvas = $<HTMLCanvasElement>("scatter");
@@ -519,13 +530,200 @@ function drawPcfCurve(c: HTMLCanvasElement, view: PcfView | null, hoverBin: numb
   ctx.fillText(axis, W - padR - ctx.measureText(axis).width, H - 8);
 }
 
-/** N×N diverging heatmap of the cross-PCF matrix: log₂(g) through the OKLCh ramp, with hover/pin
- *  markers and — when the store gave us names — labelled axes. */
+// ---- matrix layers -------------------------------------------------------------------------------
+
+/**
+ * The N×N panel shows ONE of several statistics over the same axes, chosen by the layer select.
+ *
+ * They are deliberately in one panel rather than several. Every one of them is a K×K table over the
+ * same ordered type pairs, driving the same hover/pin link, so laying them side by side would spend
+ * six tiles saying the same thing about the axes and none of them would fit on screen. Switching
+ * layers in place also makes the comparison that matters legible: the plain and partial correlations
+ * differ in exactly the pairs whose association is induced by a third type, and you can only see
+ * that if the two are registered to the same grid.
+ */
+type LayerId = "pcf" | "qcmPc" | "qcmR" | "qcmSes" | "phi" | "bigPhi";
+
+interface MatrixLayer {
+  readonly title: string;
+  readonly scaleNote: string;
+  /** Value for the pair at dense matrix indices (a, b), or NaN when undefined for that pair. */
+  value(a: number, b: number): number;
+  /** Map a value onto the LUT's [0, 1]. */
+  unit(v: number): number;
+  readonly lut: Uint8Array;
+  /** True when the pair fails the significance gate and should be shown muted. Absent = no gate. */
+  gated?: (a: number, b: number) => boolean;
+  fmt(v: number): string;
+}
+
+const layerId = (): LayerId => matrixLayerSelect.value as LayerId;
+const quadratUm = () => Math.max(1, Number(quadratUmInput.value) || 100);
+const contactUm = () => Math.max(0.1, Number(contactUmInput.value) || CONTACT_RADIUS_UM);
+const qcmSims = () => Math.max(0, Math.floor(Number(qcmSimsInput.value) || 0));
+const envAlpha = () => {
+  const v = Number(envAlphaInput.value);
+  return Number.isFinite(v) && v > 0 && v < 1 ? v : 0.05;
+};
+
+/** QCM and contact-network results for the loaded ROI, cached against the parameters that produced
+ *  them — both are whole-ROI passes, far too slow to redo on hover.
+ *
+ *  The QCM's shuffles dominate: 999 of them over 48 types and 400 quadrats is ~4.2 s here, against
+ *  1.2 s for the identical work under node — so this is the one statistic on the page still worth
+ *  moving to the GPU. Each shuffle is an independent count-and-correlate over the same quadrat
+ *  assignment, which is as parallel as work gets. Until then it is lazy, deferred a tick, and
+ *  announced in the status line rather than pretending to be instant. */
+let lastQcm: { key: string; res: QuadratCorrelationResult } | null = null;
+let lastNet: { key: string; res: ContactNetworkResult } | null = null;
+
+/** Dense matrix index → the type id the statistic modules index by. They key on the raw type id
+ *  (`nTypes` = max id + 1), the matrix on position in the sorted present-types list; conflating the
+ *  two silently transposes the answer whenever a type is absent from the ROI. */
+const typeIdAt = (i: number): number => lastMatrix?.types[i] ?? i;
+
+function ensureQcm(): QuadratCorrelationResult | null {
+  const t = current;
+  if (!t) return null;
+  const bbox = tableRoi(t);
+  const sizeWorld = toWorld(quadratUm());
+  const sims = qcmSims();
+  const key = `${t.tableName}/${t.typeColumn}/${bbox.join(",")}/${sizeWorld}/${sims}`;
+  if (lastQcm?.key === key) return lastQcm.res;
+  const cells = allCells(t);
+  const nTypes = Math.max(...cells.typeId) + 1;
+  const res = quadratCorrelation(cells, { bbox, quadratSize: sizeWorld, nTypes, simulations: sims, seed: 0x5eed });
+  lastQcm = { key, res };
+  return res;
+}
+
+function ensureNet(): ContactNetworkResult | null {
+  const t = current;
+  if (!t) return null;
+  const radius = toWorld(contactUm());
+  const key = `${t.tableName}/${t.typeColumn}/${radius}`;
+  if (lastNet?.key === key) return lastNet.res;
+  const cells = allCells(t);
+  const res = contactNetwork(cells, { radius, nTypes: Math.max(...cells.typeId) + 1 });
+  lastNet = { key, res };
+  return res;
+}
+
+/** Build the layer the select is asking for, computing its backing statistic if needed. */
+function buildLayer(): MatrixLayer {
+  const id = layerId();
+  const at = (m: Float64Array, K: number, a: number, b: number) => m[typeIdAt(a) * K + typeIdAt(b)] ?? Number.NaN;
+
+  if (id === "phi" || id === "bigPhi") {
+    const net = ensureNet();
+    const K = net?.nTypes ?? 0;
+    const src = id === "phi" ? net?.pctContacts : net?.meanDegree;
+    // Φ has no natural ceiling, so it is scaled to the largest OFF-DIAGONAL value: the diagonal is
+    // each type's own crowding and is routinely several times any cross-type figure, so including it
+    // would flatten every pair the panel is actually about into the bottom of the ramp.
+    let hi = 0;
+    if (src && lastMatrix) {
+      const N = lastMatrix.types.length;
+      for (let a = 0; a < N; a++) for (let b = 0; b < N; b++) if (a !== b) hi = Math.max(hi, at(src, K, a, b));
+    }
+    const top = id === "phi" ? 100 : Math.max(hi, 1e-6);
+    return {
+      title: id === "phi" ? `φ — % of A touching a B (r = ${contactUm().toPrecision(3)}${unitSuffix()})` : `Φ — mean B neighbours per A`,
+      scaleNote:
+        id === "phi"
+          ? "sequential 0–100%: the paper's eq 15, the share of A cells with at least one B neighbour"
+          : `sequential 0–${top.toPrecision(3)}: the paper's eq 16 · scaled to the largest off-diagonal, so the diagonal saturates`,
+      value: (a, b) => (src ? at(src, K, a, b) : Number.NaN),
+      unit: (v) => Math.max(0, Math.min(1, v / top)),
+      lut: SEQ_A_LUT,
+      fmt: (v) => (id === "phi" ? `${v.toFixed(1)}%` : v.toFixed(2)),
+    };
+  }
+
+  if (id === "qcmPc" || id === "qcmR" || id === "qcmSes") {
+    const qcm = ensureQcm();
+    const K = qcm?.nTypes ?? 0;
+    const src = id === "qcmR" ? qcm?.r : id === "qcmPc" ? qcm?.pc : qcm?.pcSes;
+    // Gate on the q-value of the statistic being SHOWN: the partial correlation has its own null, so
+    // gating it by the plain correlation's significance would mark the wrong cells.
+    const qv = id === "qcmR" ? qcm?.q : qcm?.pcQ;
+    const alpha = envAlpha();
+    // `!(q < alpha)` rather than `q >= alpha`, so a NaN q — a pair with no test — gates OUT. An
+    // untested pair is not a passing one.
+    const gate = qcmGateInput.checked && qv?.length ? (a: number, b: number) => !(at(qv, K, a, b) < alpha) : undefined;
+    // A partial correlation conditioned on ~50 types is small in absolute terms — ±1 would render the
+    // whole panel white. Scale to the 98th percentile of |value| so the ramp spans the data actually
+    // present, and say so in the legend rather than letting an unstated rescale flatter the result.
+    let span = 1;
+    if (src && lastMatrix) {
+      const N = lastMatrix.types.length;
+      const mags: number[] = [];
+      for (let a = 0; a < N; a++) {
+        for (let b = 0; b < N; b++) {
+          if (a === b) continue;
+          const v = at(src, K, a, b);
+          if (Number.isFinite(v)) mags.push(Math.abs(v));
+        }
+      }
+      mags.sort((x, y) => x - y);
+      span = mags.length ? Math.max(mags[Math.floor(0.98 * (mags.length - 1))]!, 1e-6) : 1;
+    }
+    // THE resolution trap, and it is not obvious. A permutation p-value cannot go below 1/(S+1), so
+    // after Benjamini–Hochberg over m tests NOTHING can be declared unless at least
+    // m / ((S+1)·α) pairs sit at that floor together. On one covid ROI m = 1128, so at S = 199 that
+    // needs 113 pairs and the partial correlation returns ZERO discoveries — which reads as "no
+    // associations" when the truth is "this many shuffles cannot see any". At S = 999 the bar drops
+    // to 23 and 23 pairs clear it. So the shortfall is stated rather than left as an empty panel.
+    const K2 = lastMatrix?.types.length ?? 0;
+    const m = (K2 * (K2 - 1)) / 2;
+    const sims = qcm?.simulations ?? 0;
+    const needed = sims > 0 ? m / ((sims + 1) * alpha) : Infinity;
+    const floorWarn =
+      gate && sims > 0 && needed > 1
+        ? ` · ⚠ ${sims} shuffles bound p ≥ ${(1 / (sims + 1)).toPrecision(2)}, so BH needs ${Math.ceil(needed)} pairs at that floor before ANY can pass — raise QCM sims if the panel is all dim`
+        : "";
+    const title =
+      id === "qcmR"
+        ? `QCM Pearson r — ${quadratUm().toPrecision(3)}${unitSuffix()} quadrats`
+        : id === "qcmPc"
+          ? `QCM partial correlation (MH_PC) — ${quadratUm().toPrecision(3)}${unitSuffix()} quadrats`
+          : `QCM effect size (MH_SES) — ${qcm?.simulations ?? 0} shuffles`;
+    return {
+      title,
+      scaleNote:
+        `diverging ±${span.toPrecision(2)} (98th pct of |value|) · red = co-located, blue = segregated` +
+        (gate ? ` · dimmed = q ≥ ${alpha}` : "") +
+        (qcm && qcm.simulations === 0 && id === "qcmSes" ? " · ⚠ set QCM sims > 0" : "") +
+        floorWarn,
+      value: (a, b) => (src ? at(src, K, a, b) : Number.NaN),
+      unit: (v) => (Math.max(-span, Math.min(span, v)) / span + 1) / 2,
+      lut: DIVERGING_LUT,
+      gated: gate,
+      fmt: (v) => (id === "qcmSes" ? v.toFixed(2) : v.toFixed(3)),
+    };
+  }
+
+  const res = lastMatrix;
+  const N = res?.types.length ?? 0;
+  return {
+    title: "cross-PCF g(r) at the contact radius",
+    scaleNote: "diverging log₂(g) clipped to ±2: red = clustering, blue = exclusion, white = CSR",
+    value: (a, b) => (res ? (res.g[a * N + b] ?? Number.NaN) : Number.NaN),
+    // log₂(g) clipped to ±2, i.e. a 4-fold enrichment or depletion saturates the ramp.
+    unit: (v) => (v > 0 ? (Math.max(-2, Math.min(2, Math.log2(v))) / 2 + 1) / 2 : 0),
+    lut: DIVERGING_LUT,
+    fmt: (v) => v.toFixed(3),
+  };
+}
+
+/** N×N heatmap of whichever layer is selected, with hover/pin markers and — when the store gave us
+ *  names — labelled axes. */
 function drawMatrix(
   c: HTMLCanvasElement,
   res: { types: number[]; g: Float64Array },
   hover: { a: number; b: number } | null,
   pinned: { a: number; b: number } | null,
+  layer: MatrixLayer = buildLayer(),
 ): void {
   const N = res.types.length;
   const cell = MATRIX_CELL;
@@ -537,14 +735,28 @@ function drawMatrix(
   const ctx = c.getContext("2d")!;
   ctx.fillStyle = "#0f172a";
   ctx.fillRect(0, 0, c.width, c.height);
+  nameMatrixLayerEl.textContent = layer.title;
+  nameMatrixLayerEl.closest("h2")?.setAttribute("title", layer.title);
+  matrixScaleEl.textContent = layer.scaleNote;
   for (let a = 0; a < N; a++) {
     for (let b = 0; b < N; b++) {
-      const g = res.g[a * N + b]!;
-      // log₂(g) clipped to ±2, i.e. a 4-fold enrichment or depletion saturates the ramp.
-      const l = g > 0 ? Math.max(-2, Math.min(2, Math.log2(g))) / 2 : -1;
-      const k = Math.max(0, Math.min(255, Math.round(((l + 1) / 2) * 255))) * 3;
-      ctx.fillStyle = `rgb(${DIVERGING_LUT[k]},${DIVERGING_LUT[k + 1]},${DIVERGING_LUT[k + 2]})`;
+      const v = layer.value(a, b);
+      if (!Number.isFinite(v)) {
+        // Undefined for this pair (a type absent from the ROI, or a singular conditioning set). Left
+        // as the panel background, which is not a value on the ramp — "no answer" must not read as
+        // "no association", the neutral colour in the middle of it.
+        continue;
+      }
+      const k = Math.max(0, Math.min(255, Math.round(layer.unit(v) * 255))) * 3;
+      ctx.fillStyle = `rgb(${layer.lut[k]},${layer.lut[k + 1]},${layer.lut[k + 2]})`;
       ctx.fillRect(gut + b * cell, gut + a * cell, cell, cell);
+      if (layer.gated?.(a, b)) {
+        // Not significant after Benjamini–Hochberg. Veiled toward the background rather than blanked:
+        // the value is still real and still worth seeing as a trend, it just has not cleared the bar,
+        // and blanking it would hide how much of the panel the correction actually removes.
+        ctx.fillStyle = "rgba(15,23,42,0.74)";
+        ctx.fillRect(gut + b * cell, gut + a * cell, cell, cell);
+      }
     }
   }
   if (names) {
@@ -879,10 +1091,57 @@ function computeMatrix(): void {
   const res = crossPCFMatrix(allCells(t), { bbox, radius });
   const ms = performance.now() - t0;
   lastMatrix = res;
+  // Warm the contact network here rather than on demand: it is ~100 ms against the 900 ms the QCM's
+  // shuffles cost, so it can simply always be available and φ/Φ can appear in every hover readout
+  // instead of the panel asking to be switched to before it will say anything.
+  ensureNet();
   drawMatrix(matrixCanvas, res, hoverCell, pinnedCell);
   matrixReadoutEl.innerHTML =
     `<b>N-way cross-PCF</b> — ${res.types.length}×${res.types.length} (all ordered pairs), contact radius ${radius.toPrecision(3)} (world units) · ${ms.toFixed(0)} ms (one batched pass) · ` +
     `<b>hover a cell</b> to link the scatter · cross-PCF · Γ below (Γ on settle/click).`;
+}
+
+/**
+ * Fill the QCM and contact-network readouts for one pair.
+ *
+ * These are reported for EVERY hover regardless of which layer is on screen, because the layers are
+ * different answers to the same question and the disagreements are the interesting part — a pair
+ * with a strong Pearson r, a partial correlation near zero and a q of 0.4 is telling you something
+ * that no single panel does.
+ */
+function describePairStats(a: number, b: number): void {
+  const idA = typeIdAt(a);
+  const idB = typeIdAt(b);
+  const qcm = lastQcm?.res;
+  if (!qcm) {
+    qcmReadoutEl.innerHTML = "<b>QCM</b> — select a QCM layer to compute";
+  } else {
+    const K = qcm.nTypes;
+    const i = idA * K + idB;
+    const num = (m: Float64Array, d = 3) => (m.length && Number.isFinite(m[i]!) ? m[i]!.toFixed(d) : "—");
+    const q = qcm.pcQ.length && Number.isFinite(qcm.pcQ[i]!) ? qcm.pcQ[i]! : Number.NaN;
+    const verdict = Number.isFinite(q)
+      ? q < envAlpha()
+        ? `<span style="color:#86efac">q = ${q.toFixed(3)} — significant</span>`
+        : `<span style="color:#fcd34d">q = ${q.toFixed(3)} — not after BH</span>`
+      : "q — (no simulations)";
+    qcmReadoutEl.innerHTML =
+      `<b>QCM</b> (${qcm.quadrats} quadrats of ${quadratUm().toPrecision(3)}${unitSuffix()}) · ` +
+      `Pearson r = ${num(qcm.r)} · <b>partial (MH_PC) = ${num(qcm.pc)}</b> · SES = ${num(qcm.pcSes, 2)} · ${verdict}`;
+  }
+
+  const net = lastNet?.res;
+  if (!net) {
+    netReadoutEl.innerHTML = "<b>contact network</b> — select a φ/Φ layer to compute";
+  } else {
+    const K = net.nTypes;
+    const i = idA * K + idB;
+    const share = Number.isFinite(net.networkPct[i]!) ? `${net.networkPct[i]!.toFixed(1)}%` : "—";
+    netReadoutEl.innerHTML =
+      `<b>contact network</b> (r = ${contactUm().toPrecision(3)}${unitSuffix()}, ${net.totalEdges.toLocaleString()} edges, ` +
+      `mean degree ${net.graphMeanDegree.toFixed(2)}) · φ = ${net.pctContacts[i]!.toFixed(1)}% of A touch a B · ` +
+      `Φ = ${net.meanDegree[i]!.toFixed(2)} B per A · ${share} of A's contacts`;
+  }
 }
 
 /** Point the linked views at a pair. `doTcm` gates the expensive ones. */
@@ -994,6 +1253,10 @@ function present(t: CellTable): void {
   current = t;
   lastGamma = null;
   sourceCache.clear(); // type ids are only unique within a table
+  // Both are whole-ROI statistics keyed partly on the world box, but two ROIs can share one; drop
+  // them outright rather than trusting the key to notice.
+  lastQcm = null;
+  lastNet = null;
   const { idA, idB } = fillTypeSelects(t);
   applyUnits(t);
   const bbox = tableBounds(t);
@@ -1293,6 +1556,51 @@ scaleInput.addEventListener("change", () => {
   void computeTcmMap();
 });
 
+/**
+ * Redraw the matrix under a (possibly new) layer, computing its statistic if this is the first ask.
+ *
+ * The QCM's simulations are the expensive part — hundreds of milliseconds, enough to look like a
+ * hang — so the status line is set BEFORE the work and the work is deferred one tick, otherwise the
+ * message and the result paint in the same frame and the user sees only the freeze.
+ */
+function refreshMatrixLayer(): void {
+  const res = lastMatrix;
+  if (!res) return;
+  const id = layerId();
+  const heavy = (id.startsWith("qcm") && !lastQcm && qcmSims() > 0) || ((id === "phi" || id === "bigPhi") && !lastNet);
+  const run = () => {
+    const t0 = performance.now();
+    const layer = buildLayer();
+    const ms = performance.now() - t0;
+    drawMatrix(matrixCanvas, res, hoverCell, pinnedCell, layer);
+    const cell = hoverCell ?? pinnedCell;
+    if (cell) describePairStats(cell.a, cell.b);
+    setStatus(`${layer.title} — ${ms.toFixed(0)} ms.`);
+  };
+  if (heavy) {
+    setStatus(`computing ${id.startsWith("qcm") ? `the QCM (${qcmSims()} shuffles)` : "the contact network"} …`);
+    setTimeout(run, 0);
+  } else run();
+}
+
+matrixLayerSelect.addEventListener("change", refreshMatrixLayer);
+qcmGateInput.addEventListener("change", refreshMatrixLayer);
+for (const [input, drop] of [
+  [quadratUmInput, () => (lastQcm = null)],
+  [qcmSimsInput, () => (lastQcm = null)],
+  [contactUmInput, () => (lastNet = null)],
+] as const) {
+  input.addEventListener("change", () => {
+    drop();
+    refreshMatrixLayer();
+  });
+}
+// α is shared with the g(r) envelope, and it also sets the significance gate — so changing it has to
+// repaint the matrix, not just the chart.
+envAlphaInput.addEventListener("change", () => {
+  if (layerId().startsWith("qcm")) refreshMatrixLayer();
+});
+
 // --- coordinated view: hover the N-way matrix to link the scatter, cross-PCF, and (on settle) Γ ---
 matrixCanvas.addEventListener("mousemove", (e) => {
   const res = lastMatrix;
@@ -1305,12 +1613,18 @@ matrixCanvas.addEventListener("mousemove", (e) => {
   const idA = res.types[cell.a]!;
   const idB = res.types[cell.b]!;
   const g = res.g[cell.a * N + cell.b]!;
-  drawMatrix(matrixCanvas, res, hoverCell, pinnedCell);
+  const layer = buildLayer();
+  drawMatrix(matrixCanvas, res, hoverCell, pinnedCell, layer);
+  const v = layer.value(cell.a, cell.b);
+  const shown = Number.isFinite(v)
+    ? `${layer.title.split(" —")[0]} = <b>${layer.fmt(v)}</b>`
+    : `${layer.title.split(" —")[0]} — undefined for this pair`;
   const rel = g > 1 ? `clustering (${g.toFixed(2)}×)` : g < 1 && g > 0 ? `exclusion (${g.toFixed(2)}×)` : "no co-location";
   matrixReadoutEl.innerHTML =
     `<span class="chipA"><b>A = ${labelOfId(idA)}</b></span> (${res.counts[cell.a]} cells) → ` +
     `<span class="chipB"><b>B = ${labelOfId(idB)}</b></span> (${res.counts[cell.b]} cells) · ` +
-    `g = ${g.toFixed(3)} — ${rel} · scatter + cross-PCF live · Γ on settle · click to pin`;
+    `${shown} · g = ${g.toFixed(3)} — ${rel} · click to pin`;
+  describePairStats(cell.a, cell.b);
   setPair(idA, idB, true);
 });
 matrixCanvas.addEventListener("mouseleave", () => {
@@ -1328,6 +1642,7 @@ matrixCanvas.addEventListener("mouseleave", () => {
   matrixReadoutEl.innerHTML =
     `<b>pinned</b> — <span class="chipA">A = ${labelOfId(idA)}</span> (${res.counts[pinnedCell.a]} cells) → ` +
     `<span class="chipB">B = ${labelOfId(idB)}</span> (${res.counts[pinnedCell.b]} cells) · g = ${g.toFixed(3)} · hover to explore, click to re-pin`;
+  describePairStats(pinnedCell.a, pinnedCell.b);
   setPair(idA, idB, true);
 });
 matrixCanvas.addEventListener("click", (e) => {

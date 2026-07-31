@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { mulberry32 } from "./kernelAnalysis";
 import type { LabelledCells } from "./pcf";
-import { benjaminiHochberg, quadratCorrelation, quadratCounts, rowCorrelation } from "./quadratCorrelation";
+import { benjaminiHochberg, partialCorrelation, quadratCorrelation, quadratCounts, rowCorrelation } from "./quadratCorrelation";
 
 const BBOX = [0, 0, 400, 400] as const;
 
@@ -39,6 +39,102 @@ describe("rowCorrelation", () => {
     const m = Float64Array.from([1, 2, 3, 5, 5, 5]);
     const c = rowCorrelation(m, 2, 3);
     expect(Number.isNaN(c[1]!)).toBe(true);
+  });
+});
+
+describe("partialCorrelation", () => {
+  // Build a correlation matrix from data, so the fixtures are honest matrices rather than
+  // hand-written ones that might not be positive-definite.
+  function corrOf(rows: number[][]): { r: Float64Array; k: number } {
+    const k = rows.length;
+    const q = rows[0]!.length;
+    const m = new Float64Array(k * q);
+    for (let a = 0; a < k; a++) for (let j = 0; j < q; j++) m[a * q + j] = rows[a]![j]!;
+    return { r: rowCorrelation(m, k, q), k };
+  }
+
+  it("kills an association that a shared driver fully explains", () => {
+    // THE reason the paper uses this statistic. X drives both Y and Z; Y and Z are conditionally
+    // independent given X. Their plain correlation is large and entirely induced — the partial
+    // correlation is what says so.
+    const rnd = mulberry32(3);
+    const x: number[] = [];
+    const y: number[] = [];
+    const z: number[] = [];
+    for (let i = 0; i < 400; i++) {
+      const xi = rnd() * 10;
+      x.push(xi);
+      y.push(xi + (rnd() - 0.5) * 0.6);
+      z.push(xi + (rnd() - 0.5) * 0.6);
+    }
+    const { r, k } = corrOf([x, y, z]);
+    const pc = partialCorrelation(r, k);
+    expect(r[1 * 3 + 2]!).toBeGreaterThan(0.9); // Y–Z look strongly associated…
+    expect(Math.abs(pc[1 * 3 + 2]!)).toBeLessThan(0.2); // …but not once X is accounted for.
+    expect(pc[0 * 3 + 1]!).toBeGreaterThan(0.5); // the real X–Y link survives
+  });
+
+  it("leaves a genuinely direct association standing", () => {
+    const rnd = mulberry32(5);
+    const x: number[] = [];
+    const y: number[] = [];
+    const z: number[] = [];
+    for (let i = 0; i < 400; i++) {
+      x.push(rnd() * 10);
+      y.push(rnd() * 10);
+      z.push(rnd() * 10);
+    }
+    // Y tied to X directly; Z independent of both.
+    for (let i = 0; i < y.length; i++) y[i] = x[i]! + (rnd() - 0.5) * 2;
+    const { r, k } = corrOf([x, y, z]);
+    const pc = partialCorrelation(r, k);
+    expect(pc[0 * 3 + 1]!).toBeGreaterThan(0.8);
+    expect(Math.abs(pc[0 * 3 + 2]!)).toBeLessThan(0.2);
+  });
+
+  it("is symmetric with a unit diagonal", () => {
+    const rnd = mulberry32(9);
+    const rows = Array.from({ length: 5 }, () => Array.from({ length: 200 }, () => rnd()));
+    const { r, k } = corrOf(rows);
+    const pc = partialCorrelation(r, k);
+    for (let a = 0; a < k; a++) {
+      expect(pc[a * k + a]!).toBeCloseTo(1, 12);
+      for (let b = 0; b < k; b++) expect(pc[a * k + b]!).toBeCloseTo(pc[b * k + a]!, 12);
+    }
+  });
+
+  it("equals the plain correlation when there is nothing to condition on", () => {
+    // With exactly two variables the conditioning set is empty, so the two statistics must coincide.
+    const rnd = mulberry32(13);
+    const x = Array.from({ length: 200 }, () => rnd());
+    const y = x.map((v) => v * 0.7 + rnd() * 0.5);
+    const { r, k } = corrOf([x, y]);
+    const pc = partialCorrelation(r, k);
+    expect(pc[1]!).toBeCloseTo(r[1]!, 10);
+  });
+
+  it("drops a variance-free type instead of poisoning the whole matrix", () => {
+    // A type absent from the ROI makes its correlations NaN. Feeding that row to the inverse would
+    // return NaN for every pair, not just its own — so it is excluded and only its row comes back NaN.
+    const rnd = mulberry32(29);
+    const x = Array.from({ length: 200 }, () => rnd());
+    const y = x.map((v) => v + rnd() * 0.3);
+    const dead = new Array(200).fill(0);
+    const { r, k } = corrOf([x, y, dead]);
+    const pc = partialCorrelation(r, k);
+    expect(Number.isNaN(pc[2 * 3 + 0]!)).toBe(true);
+    expect(Number.isFinite(pc[0 * 3 + 1]!)).toBe(true);
+  });
+
+  it("returns all-NaN rather than a fabricated answer when the matrix is singular", () => {
+    // Z is an exact copy of X: conditioning on a set that already determines the row has no answer,
+    // and a ridge term would invent one that looks like a measurement.
+    const rnd = mulberry32(37);
+    const x = Array.from({ length: 100 }, () => rnd());
+    const y = Array.from({ length: 100 }, () => rnd());
+    const { r, k } = corrOf([x, y, [...x]]);
+    const pc = partialCorrelation(r, k);
+    expect(pc.every((v) => Number.isNaN(v))).toBe(true);
   });
 });
 

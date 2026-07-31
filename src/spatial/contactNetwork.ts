@@ -11,6 +11,11 @@
 //     mean degree = Network / n_A                           (checked: 100%)
 //     Network(%)  = 100 · Network / Σ_B Network(A,B)        (checked: 100%)
 //
+// The first two are the paper's own eqs 15 and 16 — φ_AB, "the proportion of cells of type A which
+// are in contact with at least one cell of type B", and Φ_AB, "the average number of cells of type B
+// that are in contact with a cell of type A". They were recovered from the stored values before the
+// methods were consulted, and the methods agree.
+//
 // and the two primitives they are built from, identified by their algebra: `Network(A,B)` is an
 // integer and SYMMETRIC — the count of A–B edges — while `contacts(A,B)` is an integer, asymmetric,
 // and never exceeds n_A, which fixes it as *the number of A cells having at least one B neighbour*.
@@ -19,22 +24,36 @@
 //
 // ## What is NOT reproduced, and why it is stated rather than fudged
 //
-// The graph itself. Across the 32 covid ROIs the stored network's mean degree runs 4.13 to 7.34
-// (median 5.75), bracketing the ~6.0 that any planar triangulation of the same points must give — so
-// it is Delaunay-SHAPED without being reproducible from the centroids: on COVID_SAMPLE_16_ROI_3 a
-// Delaunay of those points gives 97,679 edges against 108,364 stored, and no distance-capped
-// Delaunay or fixed-radius graph tried came within 36% of the stored per-pair counts. The likely
-// source is adjacency taken from SEGMENTATION MASKS — two cells are in contact when their labelled
-// regions touch — which is not a function of the centroids at all, and the project ships its masks
-// only as RGB PNGs. So the counts below are computed from an explicit, stated graph rather than from
-// theirs, and they are comparable in kind, not in value.
+// The graph itself — and here the paper is explicit, so this is settled rather than suspected. The
+// "adjacency cell network" is built from the DeepCell SEGMENTATION MASKS: "Nodes are connected by an
+// edge if the corresponding cells in the segmentation mask share a border", after each cell's border
+// is DILATED BY 5 PIXELS so that near-misses still connect. That is not a function of the centroids
+// at all, and the project ships its masks only as RGB PNGs.
+//
+// The measurements agree with that account. Across the 32 covid ROIs the stored network's mean
+// degree runs 4.13 to 7.34 (median 5.75), bracketing the ~6.0 that any planar triangulation of the
+// same points must give — Delaunay-SHAPED, as a shared-border graph on a tessellating mask should
+// be, and the 5-pixel dilation is what pushes some ROIs above 6. But it is not recoverable: on
+// COVID_SAMPLE_16_ROI_3 a Delaunay of those points gives 97,679 edges against 108,364 stored, and no
+// distance-capped Delaunay or fixed-radius graph tried came within 36% of the stored per-pair
+// counts. So the counts below are computed from an explicit, stated graph rather than from theirs,
+// and they are comparable in kind, not in value.
 //
 // The construction here is the fixed-radius contact graph: an edge when two centroids lie within
 // `radius`. It is the honest centroid-only definition — "contact" becomes a distance you choose and
 // can see — and it makes the radius a parameter of the answer instead of a hidden property of a
-// segmentation.
+// segmentation. `CONTACT_RADIUS_UM` is the paper's own answer to what that distance is.
 
 import type { LabelledCells } from "./pcf";
+
+/**
+ * 20 µm — the paper's own stand-in for physical contact, and so the default worth offering.
+ *
+ * It is not a number invented here: the cross-PCF results are reported at r_k = 20 because that bin
+ * "approximates the distance between the centroids of cells which are in physical contact". Using it
+ * as the radius makes the contact graph and the headline g(r = 20) speak about the same neighbours.
+ */
+export const CONTACT_RADIUS_UM = 20;
 
 export interface ContactNetworkParams {
   /** Two cells are in contact when their centroids are within this distance (world units). */

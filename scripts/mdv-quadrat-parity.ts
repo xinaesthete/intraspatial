@@ -3,16 +3,21 @@
 // network. Companion to `mdv-pcf-parity.ts`, and the answer it gives is deliberately split, because
 // one of the two reproduces exactly and the other cannot.
 //
-// ## Quadrat correlation — exact
+// ## Quadrat correlation — both published columns exact
 //
-// The stored `quadratCounts` column (the name is the config's; the statistic is a correlation) is
-// the Pearson correlation of per-type counts in **100 µm quadrats**. That was recovered by scanning
-// quadrat sizes against the stored values rather than assumed, and at 100 µm it agrees to
-// floating-point. This script re-checks it on every ROI.
+// `quadratCounts` (the name is the config's; the statistic is a correlation) is the Pearson
+// correlation of per-type counts in **100 µm quadrats**, and `MH_PC` ("Quadrat Correlation Pair
+// Correlation") is the PARTIAL correlation of the same counts — `MH` is Morueta-Holme, whose method
+// the paper cites and SpOOx runs as `--function morueta-holme`. Both were recovered by scanning the
+// stored values rather than assumed, and both agree to floating-point. This script re-checks them on
+// every ROI.
 //
-// The sibling `MH_PC` is a different quantity. It correlates 0.93 with the 25 µm QCM but equals no
-// plain form tried — Pearson at any size, Spearman, presence/absence, sqrt counts, Morisita-Horn —
-// so it is reported for reference and NOT claimed.
+// `MH_SES` is the standard effect size of the PARTIAL correlation — an SES computed here on `pc`
+// correlates 0.978 with it against 0.663 for the plain `r`, which settles which statistic it
+// standardises. It is not matched exactly, and the reason is the null SAMPLER rather than noise:
+// both nulls fix the same margins, but the paper walks a chain of 2×2 swaps (uniform over
+// fixed-margin matrices) where this walks a label shuffle. Going from 199 to 999 shuffles moved the
+// median |Δ| from 0.154 to 0.146 — i.e. not at all. So it is reported, not claimed.
 //
 // ## Contact network — the derived columns are exact, the graph is not
 //
@@ -31,7 +36,7 @@
 //   pnpm mdv:quadrat <store.zarr> [--quadrat 100] [--sims 0] [--limit n] [--quiet]
 
 import { MdvStore, readRegionCells } from "../src/datasource/mdvStore";
-import { contactNetwork } from "../src/spatial/contactNetwork";
+import { CONTACT_RADIUS_UM, contactNetwork } from "../src/spatial/contactNetwork";
 import { quadratCorrelation } from "../src/spatial/quadratCorrelation";
 
 interface Args {
@@ -76,6 +81,7 @@ async function main() {
   const stored = {
     qcm: await store.readF64("spatial_stats", "quadratCounts"),
     mhpc: await store.readF64("spatial_stats", "MH_PC"),
+    mhses: await store.readF64("spatial_stats", "MH_SES"),
     network: await store.readF64("spatial_stats", "Network"),
     contacts: await store.readF64("spatial_stats", "contacts"),
   };
@@ -103,6 +109,7 @@ async function main() {
   const RADII = [10, 12, 15, 18, 20, 25];
   const qcmAbs: number[] = [];
   const mhpcAbs: number[] = [];
+  const mhsesAbs: number[] = [];
   const netRatioByRadius = new Map<number, number[]>(RADII.map((r) => [r, []]));
   const storedDegrees: number[] = [];
   let ourDegreeAt15 = 0;
@@ -143,8 +150,15 @@ async function main() {
         regionQcm.push(Math.abs(ours - obs));
         qcmAbs.push(Math.abs(ours - obs));
       }
+      // MH_PC is the PARTIAL correlation, so it is compared against `pc` — not against `r`.
       const mh = stored.mhpc[row]!;
-      if (Number.isFinite(mh) && Number.isFinite(ours)) mhpcAbs.push(Math.abs(ours - mh));
+      const oursPc = qc.pc[a * K + b]!;
+      if (Number.isFinite(mh) && Number.isFinite(oursPc)) mhpcAbs.push(Math.abs(oursPc - mh));
+      if (args.sims > 0) {
+        const ses = stored.mhses[row]!;
+        const oursSes = qc.pcSes[a * K + b]!;
+        if (Number.isFinite(ses) && Number.isFinite(oursSes)) mhsesAbs.push(Math.abs(oursSes - ses));
+      }
       if (a <= b && Number.isFinite(stored.network[row]!)) storedEdges += stored.network[row]!;
     }
     for (const r of RADII) {
@@ -168,22 +182,33 @@ async function main() {
     `  vs stored 'quadratCounts' : n=${qcmAbs.length}  median |Δ| = ${median(qcmAbs).toExponential(3)}  max = ${Math.max(...qcmAbs).toExponential(3)}`,
   );
   console.log(
-    `  vs stored 'MH_PC'         : n=${mhpcAbs.length}  median |Δ| = ${median(mhpcAbs).toFixed(4)}   (a different statistic — not claimed)`,
+    `  vs stored 'MH_PC'         : n=${mhpcAbs.length}  median |Δ| = ${median(mhpcAbs).toExponential(3)}  max = ${Math.max(...mhpcAbs).toExponential(3)}   (partial correlation)`,
   );
+  if (mhsesAbs.length) {
+    console.log(
+      `  vs stored 'MH_SES'        : n=${mhsesAbs.length}  median |Δ| = ${median(mhsesAbs).toFixed(3)}   (right statistic, different null sampler — see the header)`,
+    );
+  } else {
+    console.log("  vs stored 'MH_SES'        : skipped — pass --sims to compare the effect size");
+  }
 
   console.log(`\n=== contact network (${regionsDone} ROIs) ===`);
   const sd = [...storedDegrees].sort((a, b) => a - b);
   console.log(
     `  stored mean degree: min ${sd[0]!.toFixed(2)}  median ${median(storedDegrees).toFixed(2)}  max ${sd[sd.length - 1]!.toFixed(2)}` +
-      "  — a planar triangulation gives ~6.0, so the stored graph brackets it: Delaunay-style adjacency",
+      "  — a planar triangulation gives ~6.0, and the",
   );
-  console.log("  is the likely construction, and this radius graph is a different, stated choice.");
+  console.log("  stored graph brackets it, as a shared-border graph on a tessellating segmentation mask should.");
+  console.log("  The paper builds it exactly that way (DeepCell masks, borders dilated 5 px), so it is not a");
+  console.log("  function of the centroids and this radius graph is a different, stated choice.");
   console.log("  Our edges / stored edges, by radius:");
   for (const r of RADII) {
     const v = netRatioByRadius.get(r)!;
     console.log(`    radius ${String(r).padStart(2)} µm : ${median(v).toFixed(3)}×`);
   }
   console.log(`  (radius 15 µm gives mean degree ${(ourDegreeAt15 / regionsDone).toFixed(2)})`);
+  console.log(`  ${CONTACT_RADIUS_UM} µm — the paper's own proxy for physical contact, and the default — lands closest on edge`);
+  console.log("  COUNT, but matching a total is not matching a graph: the per-pair counts still differ.");
   console.log("\n  The derived columns are exact by construction — %contacts = 100·contacts/n_A,");
   console.log("  mean degree = Network/n_A, Network(%) = 100·Network/Σ_B Network — so these are the");
   console.log("  published quantities computed on a stated graph, not the published graph.");
