@@ -172,10 +172,71 @@ and for the two ROIs that will never have a good mask. The options are all compr
   and not declared, which a generic consumer cannot discover but ours can. Cheapest, and probably
   right.
 
-Worth raising upstream rather than only working around: the underlying want — several geometric
-representations of the same feature — is not exotic (segmentation mask, centroid, nucleus vs.
-membrane boundary), and the model has room for it in principle since `instance_key` is already the
-shared identity.
+### This is not our edge case — Xenium's own export already has it
+
+The strongest argument for raising it upstream is that the flagship commercial export already trips
+over it. `~/data/mdv_xenium_tiny_test/spatialdata.zarr` carries **five geometric representations of
+the same cells**:
+
+```
+shapes/cell_circles         geometry, radius, cell_id      ← the ONLY one the table annotates
+shapes/cell_boundaries      geometry, __index_level_0__
+shapes/nucleus_boundaries   geometry, __index_level_0__
+labels/cell_labels          image-label 0.4-dev-spatialdata
+labels/nucleus_labels       image-label 0.4-dev-spatialdata
+```
+
+The table's `region` is `"cell_circles"`. The other four hold the same instances — `cell_boundaries`
+and `nucleus_boundaries` carry them as the parquet *index* rather than a named column — but nothing
+in the store says so. The correspondence is recoverable only by knowing that Xenium writes them that
+way.
+
+So the gap is not "we have an unusual dataset". It is that a standard 10x export cannot express
+what it plainly contains, and every consumer re-implements the same convention privately. That is
+the form of argument that gets a spec change accepted.
+
+Note also that the identity is expressed **two different ways in the same store** — a `cell_id`
+column in one element, an unnamed index in two others. So the assertion has to be about *values*,
+not about storage.
+
+### Sketch of the metadata (draft, for discussion — not implemented)
+
+The minimal thing worth standardising is narrower than "describe the relationship": it is **an
+assertion that several elements index the same instance space**. Semantics of *how* they differ can
+stay a free-text hint; trying to enumerate biological roles is what would sink the proposal.
+
+Placed in the store's root attributes, beside `spatialdata_attrs` rather than inside it — the
+relation is between elements, so it does not belong to any one table:
+
+```json
+"instance_views": {
+  "version": "0.1-draft",
+  "groups": [{
+    "instance_key": "cell_id",
+    "primary": "shapes/cell_circles",
+    "members": [
+      { "element": "shapes/cell_circles",       "role": "centroid" },
+      { "element": "shapes/cell_boundaries",    "role": "cell_boundary" },
+      { "element": "labels/cell_labels",        "role": "cell_mask" }
+    ]
+  }]
+}
+```
+
+Three properties it has to have, and they are the whole design:
+
+1. **Ignorable.** A reader that has never heard of the key must open the store and behave exactly as
+   it does today. That is why `primary` exists and must equal what the table's `region` already
+   names: the extension only *adds* aliases, it never redirects anything.
+2. **Checkable.** An assertion of shared identity that is false is worse than no assertion, so a
+   validator should sample actual values — label values against the table's instance column — rather
+   than trusting the declaration. Ours would be checked by the same count-per-ROI oracle the
+   watershed already needs.
+3. **Namespaced while it is a draft.** There is precedent in the store for namespaced values
+   (`spatialdata-encoding-type: "ngff:regions_table"`), so a prefixed key is idiomatic here and
+   leaves room for whatever scverse eventually settles on.
+
+`groups` is a list because our case needs 32 of them — one per ROI — where Xenium's needs one.
 
 ## The gotchas, in the order they will bite
 
