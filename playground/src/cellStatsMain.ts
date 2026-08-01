@@ -48,10 +48,11 @@ import { quadratCorrelationGpu, quadratCorrelationGpuSupported } from "../../src
 import { computeTcmRender, renderTcm, type TcmRenderParams } from "../../src/gpu/spatial/tcmRender";
 import { CONTACT_RADIUS_UM, type ContactNetworkResult, contactNetwork } from "../../src/spatial/contactNetwork";
 import { equivalentRadius, KERNELS, type KernelSpec, kernelLabel } from "../../src/spatial/kernels";
-import { crossPCFMatrix, type LabelledCells } from "../../src/spatial/pcf";
+import { crossPCFBinMembership, crossPCFMatrix, type LabelledCells, type PcfBinMembership, type PcfParams } from "../../src/spatial/pcf";
 import { crossPCFBootstrap, LOH_BLOCK_UM } from "../../src/spatial/pcfBootstrap";
 import { crossPCFEnvelopeRunner, type PcfEnvelopeRunner, type PcfNullModel } from "../../src/spatial/pcfEnvelope";
 import { type QcmNullModel, type QuadratCorrelationResult, quadratCorrelation } from "../../src/spatial/quadratCorrelation";
+import type { CellCloud } from "../../src/spatial/tcm";
 import { tcmKernelField } from "../../src/spatial/tcmKernel";
 import { csvToCellTable, inspectCsv, parseCsv } from "./datasource/cellCsv";
 import {
@@ -141,6 +142,7 @@ const matrixCanvas = $<HTMLCanvasElement>("matrix");
 // Tile headings and legends that name the selected pair rather than saying "type A".
 const nameScatterAEl = $<HTMLSpanElement>("nameScatterA");
 const nameScatterBEl = $<HTMLSpanElement>("nameScatterB");
+const scatterHlEl = $<HTMLSpanElement>("scatterHl");
 const nameKdeAEl = $<HTMLSpanElement>("nameKdeA");
 const nameKdeALegEl = $<HTMLSpanElement>("nameKdeALeg");
 const nameKdeBEl = $<HTMLSpanElement>("nameKdeB");
@@ -157,6 +159,11 @@ const B_HUE = deg(70);
 const A_CSS = cssRgb(oklchToSrgbMapped([0.74, 0.13, A_HUE]));
 const B_CSS = cssRgb(oklchToSrgbMapped([0.74, 0.13, B_HUE]));
 const CONTEXT_CSS = "rgba(148,163,184,0.16)";
+// Same hues at lower lightness and chroma, for cells of the pair that take no part in the hovered
+// radius band. Dimming rather than hiding, and dimming along L/C rather than toward grey: a cell that
+// is not participating is still that type, and losing the hue would say it had stopped being one.
+const A_DIM_CSS = cssRgb(oklchToSrgbMapped([0.44, 0.04, A_HUE]));
+const B_DIM_CSS = cssRgb(oklchToSrgbMapped([0.44, 0.04, B_HUE]));
 
 /** Bake a ramp into a 256-entry byte LUT. Per-pixel OKLCh (cube roots, and a gamut bisection when
  *  the request is out of range) is far too slow for a 256² field every hover; the ramp is 1-D, so
@@ -338,8 +345,52 @@ const sigmaUm = (bbox: [number, number, number, number]) => Number(sigmaInput.va
 
 // ---- views -------------------------------------------------------------------------------------
 
-/** Scatter of every centroid, highlighting the current pair; all other cells faint. */
-function drawScatterPair(t: CellTable, bbox: [number, number, number, number], idA: number, idB: number): void {
+/** The cells that produced the hovered radius band, as bin masks plus the bit to test. */
+interface ScatterHighlight {
+  readonly maskA: Uint32Array;
+  readonly maskB: Uint32Array;
+  readonly bit: number;
+  /** The hovered bin's inner and outer radius, world units. Drawn as an annulus around each lit
+   *  anchor, which is what turns "r = 40 µm" from a number on an axis into a distance on the map. */
+  readonly r0: number;
+  readonly r1: number;
+}
+
+/** Most rings to draw.
+ *
+ *  Deliberately small. The two marks answer different questions: the lit DOTS say which cells
+ *  produced the value (all of them, always), and the rings say how far away that is on this map.
+ *  A ring per anchor answers neither once the anchors are dense — 200 of them at the alpha needed to
+ *  stop the panel going solid is a grey haze you cannot trace a single circle in. A few dozen at an
+ *  alpha you can actually see reads as "this is the distance", which is the job. */
+const RING_CAP = 44;
+
+/** The last scatter's inputs, so a g(r) hover can redraw it without the caller threading them
+ *  through. The scatter is a pure function of these, so replaying them is exact. */
+let lastScatter: { t: CellTable; bbox: [number, number, number, number]; idA: number; idB: number } | null = null;
+
+/** How many rings a highlighted draw actually put down. Returned rather than stashed in a module
+ *  variable so the legend cannot describe a draw that did not happen — and so the count is a value,
+ *  not shared state two code paths have to agree about. */
+interface RingsDrawn {
+  readonly drawn: number;
+  readonly lit: number;
+}
+
+/** Scatter of every centroid, highlighting the current pair; all other cells faint.
+ *
+ *  With `hl`, the pair splits again: the cells that contribute a pair at the hovered radius keep
+ *  their colour and grow, the rest of the same two types recede. Drawn in that order so the
+ *  participants land on top — at ROI density the lit cells are often a minority sitting inside a
+ *  crowd of their own type, and painting them first would bury them. */
+function drawScatterPair(
+  t: CellTable,
+  bbox: [number, number, number, number],
+  idA: number,
+  idB: number,
+  hl?: ScatterHighlight,
+): RingsDrawn | null {
+  lastScatter = { t, bbox, idA, idB };
   const { width: W, height: H } = viewDims(bbox, SCATTER_TARGET);
   scatterCanvas.width = W;
   scatterCanvas.height = H;
@@ -349,9 +400,10 @@ function drawScatterPair(t: CellTable, bbox: [number, number, number, number], i
   const [minX, minY, maxX, maxY] = bbox;
   const sx = W / (maxX - minX || 1);
   const sy = H / (maxY - minY || 1);
-  const draw = (xs: readonly number[], ys: readonly number[], style: string, rad: number) => {
+  const draw = (xs: readonly number[], ys: readonly number[], style: string, rad: number, keep?: (i: number) => boolean) => {
     ctx.fillStyle = style;
     for (let i = 0; i < xs.length; i++) {
+      if (keep && !keep(i)) continue;
       const px = (xs[i]! - minX) * sx;
       const py = (ys[i]! - minY) * sy;
       ctx.fillRect(px - rad, py - rad, rad * 2, rad * 2);
@@ -363,8 +415,54 @@ function drawScatterPair(t: CellTable, bbox: [number, number, number, number], i
   }
   const A = t.types.find((x) => x.id === idA);
   const B = t.types.find((x) => x.id === idB);
-  if (B && idB !== idA) draw(B.xs, B.ys, B_CSS, 1.6);
-  if (A) draw(A.xs, A.ys, A_CSS, 1.8);
+  if (!hl) {
+    if (B && idB !== idA) draw(B.xs, B.ys, B_CSS, 1.6);
+    if (A) draw(A.xs, A.ys, A_CSS, 1.8);
+    return null;
+  }
+  let rings: RingsDrawn | null = null;
+  const inA = (i: number) => (hl.maskA[i]! & hl.bit) !== 0;
+  const inB = (j: number) => (hl.maskB[j]! & hl.bit) !== 0;
+  if (B && idB !== idA) draw(B.xs, B.ys, B_DIM_CSS, 1.2, (j) => !inB(j));
+  if (A) draw(A.xs, A.ys, A_DIM_CSS, 1.2, (i) => !inA(i));
+
+  // The annulus itself, around the lit ANCHORS — g(r) is anchored on A, so an A-centred ring is the
+  // region the bin actually integrates over, and the lit B cells are the ones falling inside it.
+  //
+  // One stroked arc at the bin's mid-radius with `lineWidth` = the bin's width IS the annulus, so
+  // this costs one path per cell rather than two. `viewDims` keeps the panel at the ROI's aspect, so
+  // sx and sy agree to rounding and a circle stays a circle; the mean is used rather than picking
+  // one, which would tilt the ring if that ever stopped holding.
+  if (A && hl.r1 > hl.r0) {
+    let lit = 0;
+    for (let i = 0; i < A.xs.length; i++) if (inA(i)) lit++;
+    if (lit > 0) {
+      const rs = (sx + sy) / 2;
+      const mid = ((hl.r0 + hl.r1) / 2) * rs;
+      const step = Math.max(1, Math.ceil(lit / RING_CAP));
+      const drawn = Math.ceil(lit / step);
+      ctx.save();
+      ctx.strokeStyle = A_CSS;
+      ctx.lineWidth = Math.max(0.7, (hl.r1 - hl.r0) * rs);
+      // Overlapping rings accumulate, so the alpha falls as the count rises — but with a floor high
+      // enough that an individual circle stays traceable, which is the whole point of drawing it.
+      ctx.globalAlpha = Math.min(0.75, Math.max(0.2, 6 / drawn));
+      let seen = 0;
+      for (let i = 0; i < A.xs.length; i++) {
+        if (!inA(i)) continue;
+        if (seen++ % step !== 0) continue;
+        ctx.beginPath();
+        ctx.arc((A.xs[i]! - minX) * sx, (A.ys[i]! - minY) * sy, mid, 0, 2 * Math.PI);
+        ctx.stroke();
+      }
+      ctx.restore();
+      rings = { drawn, lit };
+    }
+  }
+
+  if (B && idB !== idA) draw(B.xs, B.ys, B_CSS, 2.1, inB);
+  if (A) draw(A.xs, A.ys, A_CSS, 2.3, inA);
+  return rings;
 }
 
 /** Line plot of g(r) vs r with a dashed g=1 (CSR) reference. */
@@ -379,10 +477,48 @@ interface PcfView {
   ci?: { lo: Float64Array; hi: Float64Array; alpha: number };
   /** Global rank envelope under a null — sits where the null lives, not on the curve. */
   env?: { lo: Float64Array; hi: Float64Array; alpha: number; nullModel: PcfNullModel };
+  /** What a hovered bin needs to name the cells behind it. `mem` is built on the FIRST hover of the
+   *  chart, not with the curve: it costs a second pair pass over the whole ROI, and the common
+   *  interaction here is sweeping the matrix, where nobody is looking at the g(r) panel's cells. */
+  readonly hl: { a: CellCloud; b: CellCloud; params: PcfParams; idA: number; idB: number; mem?: PcfBinMembership };
 }
 
 let lastPcf: PcfView | null = null;
 let pcfHoverBin: number | null = null;
+
+/** Redraw the centroid panel for whatever the g(r) chart is currently hovering.
+ *
+ *  The pair check is not paranoia: the curve and the scatter are refreshed by different paths, and a
+ *  mask built for a previous pair would index a different cloud and light cells at random — which
+ *  would look like a result rather than like a bug. */
+function refreshScatterHighlight(): void {
+  const s = lastScatter;
+  if (!s) return;
+  const view = lastPcf;
+  const bin = pcfHoverBin;
+  let hl: ScatterHighlight | undefined;
+  let caption = "";
+  if (view && bin !== null && view.hl.idA === s.idA && view.hl.idB === s.idB) {
+    if (!view.hl.mem) view.hl.mem = crossPCFBinMembership(view.hl.a, view.hl.b, view.hl.params);
+    const mem = view.hl.mem;
+    if (bin < mem.nBins) {
+      const dr = view.hl.params.rMax / mem.nBins;
+      hl = { maskA: mem.maskA, maskB: mem.maskB, bit: 1 << bin, r0: bin * dr, r1: (bin + 1) * dr };
+      caption =
+        ` · <b>r ∈ [${toUm(bin * dr).toPrecision(3)}, ${toUm((bin + 1) * dr).toPrecision(3)})${unitSuffix()}</b>: ` +
+        `${mem.countA[bin]!.toLocaleString()} A and ${mem.countB[bin]!.toLocaleString()} B cells lit — the ones that produced g(r) there`;
+    }
+  }
+  // Composed AFTER the draw, because only the draw knows how many rings survived the cap.
+  const rings = drawScatterPair(s.t, s.bbox, s.idA, s.idB, hl);
+  if (rings) {
+    caption +=
+      rings.drawn < rings.lit
+        ? ` · rings show that distance on ${rings.drawn} of the ${rings.lit.toLocaleString()} lit A cells — a sample, for scale; the dots are the full set`
+        : ` · rings show that distance around each lit A cell`;
+  }
+  scatterHlEl.innerHTML = caption;
+}
 /** Width the chart was last drawn at, in CSS px — the hover has to invert the same mapping. */
 let pcfPlotW = 760;
 
@@ -1078,8 +1214,10 @@ function computePcf(withEnvelope: boolean): void {
     labelB: labelOfId(idB),
     unit: unitSuffix(),
     ci: { lo: boot.lo, hi: boot.hi, alpha: boot.alpha },
+    hl: { a: { xs: A.xs, ys: A.ys }, b: { xs: B.xs, ys: B.ys }, params: pcfParams, idA, idB },
   };
   pcfHoverBin = null;
+  scatterHlEl.textContent = "";
   drawPcfCurve(pcfCanvas, lastPcf, null);
   namePcfEl.textContent = `${labelOfId(idA)} → ${labelOfId(idB)}`;
   const binUm = toUm(rMax / PCF_BINS);
@@ -1591,11 +1729,15 @@ pcfCanvas.addEventListener("mousemove", (ev) => {
   if (clamped === pcfHoverBin) return;
   pcfHoverBin = clamped;
   drawPcfCurve(pcfCanvas, lastPcf, pcfHoverBin);
+  // Both panels move together — the curve says how much, the map says who. Gated on a bin CHANGE
+  // above, so this is ~30 scatter redraws across the full sweep, not one per mousemove.
+  refreshScatterHighlight();
 });
 pcfCanvas.addEventListener("mouseleave", () => {
   if (pcfHoverBin === null) return;
   pcfHoverBin = null;
   drawPcfCurve(pcfCanvas, lastPcf, null);
+  refreshScatterHighlight();
 });
 // The chart is sized to its tile, so a viewport change has to redraw it or the text goes back to
 // being the wrong size. Coalesced to one redraw per frame — resize fires far faster than that.

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { crossPCF, crossPCFMatrix, type LabelledCells } from "./pcf";
+import { crossPCF, crossPCFBinMembership, crossPCFMatrix, type LabelledCells } from "./pcf";
 import type { CellCloud } from "./tcm";
 
 describe("crossPCF (eq 8, Mode 1)", () => {
@@ -108,5 +108,84 @@ describe("crossPCFMatrix (N-way, all ordered pairs)", () => {
     const iA = m.types.indexOf(1);
     const iB = m.types.indexOf(2);
     expect(m.g[iA * N + iB]!).toBeCloseTo(single.g[0]!, 9);
+  });
+});
+
+describe("crossPCFBinMembership", () => {
+  const P = { bbox: [0, 0, 200, 200], rMax: 20, nBins: 10 } as const; // dr = 2
+
+  it("marks exactly the bin a pair falls in", () => {
+    // One A at the centre, one B at distance 11 → bin 5 = [10, 12) and nothing else, on both sides.
+    const A: CellCloud = { xs: [100], ys: [100] };
+    const B: CellCloud = { xs: [111], ys: [100] };
+    const m = crossPCFBinMembership(A, B, P);
+    expect(m.maskA[0]).toBe(1 << 5);
+    expect(m.maskB[0]).toBe(1 << 5);
+    expect([...m.countA]).toEqual([0, 0, 0, 0, 0, 1, 0, 0, 0, 0]);
+    expect([...m.countB]).toEqual([0, 0, 0, 0, 0, 1, 0, 0, 0, 0]);
+  });
+
+  it("agrees with crossPCF about which bins are occupied — the property the highlight rests on", () => {
+    // THE test. The highlight's whole claim is "these are the cells that produced that value", so a
+    // bin the curve counted must never come up empty here, and vice versa. Random clouds, so the
+    // agreement is not an artefact of a contrived arrangement.
+    let seed = 12345;
+    const rnd = () => {
+      seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+      return seed / 0x7fffffff;
+    };
+    const cloud = (n: number): CellCloud => {
+      const xs: number[] = [];
+      const ys: number[] = [];
+      for (let i = 0; i < n; i++) {
+        xs.push(rnd() * 200);
+        ys.push(rnd() * 200);
+      }
+      return { xs, ys };
+    };
+    const A = cloud(250);
+    const B = cloud(300);
+    const res = crossPCF(A, B, P);
+    const m = crossPCFBinMembership(A, B, P);
+    for (let k = 0; k < P.nBins; k++) {
+      expect(m.countA[k]! > 0).toBe(res.counts[k]! > 0);
+      // A cell cannot be in more pairs than there are pairs, nor fewer than one per occupied bin.
+      expect(m.countA[k]!).toBeLessThanOrEqual(res.counts[k]!);
+      expect(m.countB[k]!).toBeLessThanOrEqual(res.counts[k]!);
+    }
+    // Every A cell with any neighbour at all must carry a bit, and no bit may exceed the bin count.
+    for (let i = 0; i < A.xs.length; i++) expect(m.maskA[i]! >>> P.nBins).toBe(0);
+  });
+
+  it("sets one bit per distinct bin, not one per pair", () => {
+    // Three B cells all at radius 11 from the same A: three PAIRS, but one BIN, so one bit — and the
+    // A cell must be counted once, not three times. Counting pairs here would make a dense
+    // neighbourhood look like many highlighted cells.
+    const A: CellCloud = { xs: [100], ys: [100] };
+    const B: CellCloud = { xs: [111, 100, 89], ys: [100, 111, 100] };
+    const m = crossPCFBinMembership(A, B, P);
+    expect(m.maskA[0]).toBe(1 << 5);
+    expect(m.countA[5]).toBe(1);
+    expect(m.countB[5]).toBe(3); // all three B cells DO participate
+  });
+
+  it("excludes pairs at or beyond rMax, exactly as crossPCF does", () => {
+    const A: CellCloud = { xs: [100], ys: [100] };
+    const B: CellCloud = { xs: [120, 119.5], ys: [100, 100] }; // 20 is out (>= rMax), 19.5 is in
+    const m = crossPCFBinMembership(A, B, P);
+    expect(m.maskB[0]).toBe(0);
+    expect(m.maskB[1]).toBe(1 << 9);
+    expect(m.maskA[0]).toBe(1 << 9);
+  });
+
+  it("refuses more than 32 bins rather than wrapping the mask", () => {
+    // A silently shifted-off bit would light the wrong cells while looking entirely plausible.
+    expect(() => crossPCFBinMembership({ xs: [1], ys: [1] }, { xs: [2], ys: [2] }, { ...P, nBins: 33 })).toThrow(/32/);
+  });
+
+  it("survives an empty cloud", () => {
+    const m = crossPCFBinMembership({ xs: [], ys: [] }, { xs: [1], ys: [1] }, P);
+    expect(m.maskA.length).toBe(0);
+    expect([...m.countB]).toEqual(new Array(10).fill(0));
   });
 });

@@ -309,7 +309,7 @@
       <div class="tile">
         <h2>centroids — pair highlighted</h2>
         <canvas id="scatter"></canvas>
-        <div class="legend fixed"><span class="chipA">■</span> <span id="nameScatterA">type A</span> · <span class="chipB">■</span> <span id="nameScatterB">type B</span> · other cells faint</div>
+        <div class="legend fixed"><span class="chipA">■</span> <span id="nameScatterA">type A</span> · <span class="chipB">■</span> <span id="nameScatterB">type B</span> · other cells faint<span id="scatterHl"></span></div>
         <details class="help">
           <summary>how to read this</summary>
           <p>One dot per cell, placed where that cell actually sits in the tissue. Cyan is the A type,
@@ -318,6 +318,17 @@
           <p>This is the raw material that every other panel summarises into colours and curves, which
             makes it the one to glance at first. A striking result computed from eleven cells is still a
             result computed from eleven cells — here you can see that, and nowhere else on the page.</p>
+          <p><b>Hover the g(r) chart</b> and this panel answers "which cells?". The A and B cells that
+            actually have a partner at the hovered distance stay bright and grow; the rest of the same two
+            types fade but keep their colour. The <b>circles</b> draw that distance on the map, on a
+            sample of the lit A cells — so you can see how far the radius reaches relative to the tissue,
+            and which B cells fall on the ring. The dots are the complete set; only the rings are
+            sampled.</p>
+          <p class="trap">The lit count climbs with radius no matter what the biology is doing — a bigger
+            ring is more likely to catch something. On one COVID ROI the same pair goes from 245 lit A
+            cells at 0–10&nbsp;µm to 2,115 of 2,168 at 280–290&nbsp;µm. So "nearly everything is lit" at a
+            large radius means the ring is large, <i>not</i> that the association is strong. Strength is
+            the curve's job; this panel only says who is involved.</p>
         </details>
       </div>
       <div class="tile">
@@ -375,6 +386,8 @@
           <span class="chipA">■</span> cyan = bootstrap CI · grey dashed = null envelope</div>
         <details class="help">
           <summary>how to read this</summary>
+          <p><b>Hovering also lights up the centroid panel</b> with the cells that produced the value at
+            that radius, and draws the radius itself as circles on the map.</p>
           <p>Left to right is <b>distance away from an A cell</b>. The curve says how many B cells are
             found at that distance, compared with how many an even scattering would put there. The flat
             dashed line at 1 is "nothing going on": <b>above it</b>, B cells crowd towards A at that

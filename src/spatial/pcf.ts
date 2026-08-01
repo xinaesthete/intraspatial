@@ -134,6 +134,104 @@ export function crossPCF(a: CellCloud, b: CellCloud, p: PcfParams): PcfResult {
   return { r, g, counts: out };
 }
 
+export interface PcfBinMembership {
+  /** Bit `k` of `maskA[i]` is set iff A cell `i` has at least one B cell in radial bin `k`. */
+  readonly maskA: Uint32Array;
+  /** Bit `k` of `maskB[j]` is set iff B cell `j` has at least one A cell in radial bin `k`. */
+  readonly maskB: Uint32Array;
+  /** Number of A cells contributing to each bin — `popcount` over `maskA`, precomputed. */
+  readonly countA: Uint32Array;
+  readonly countB: Uint32Array;
+  readonly nBins: number;
+}
+
+/**
+ * Which radial bins each cell participates in, as one bitmask per cell.
+ *
+ * `g(r_k)` is a sum over A–B pairs whose separation falls in bin `k`. This records, for every cell,
+ * whether it appears in ANY such pair — which is what turns a hover on the curve into a selection on
+ * the map: the cells lit at bin `k` are exactly the ones the value at that radius was computed from.
+ *
+ * The pair test is deliberately IDENTICAL to `crossPCF`'s, including the `d2 >= rMax²` rejection and
+ * the `min(nBins-1, ...)` clamp, so the highlight cannot show a set of cells the curve did not use.
+ * That includes self-pairs when the same cloud is passed twice: `crossPCF` counts a cell against
+ * itself at distance 0, so bin 0 lights every cell. Matching a known quirk beats quietly disagreeing
+ * with the curve the highlight is annotating.
+ *
+ * One `Uint32` per cell caps this at 32 bins. Checked rather than left to wrap — a shifted-off bit
+ * lights the WRONG cells, and a highlight that is confidently wrong is worse than no highlight.
+ */
+export function crossPCFBinMembership(a: CellCloud, b: CellCloud, p: PcfParams): PcfBinMembership {
+  if (p.nBins > 32) throw new Error(`crossPCFBinMembership: ${p.nBins} bins exceeds the 32 a Uint32 mask holds`);
+  const dr = p.rMax / p.nBins;
+  const rMax2 = p.rMax * p.rMax;
+  const nA = a.xs.length;
+  const nB = b.xs.length;
+  const maskA = new Uint32Array(nA);
+  const maskB = new Uint32Array(nB);
+  const countA = new Uint32Array(p.nBins);
+  const countB = new Uint32Array(p.nBins);
+  if (nA === 0 || nB === 0) return { maskA, maskB, countA, countB, nBins: p.nBins };
+
+  // Same bucket grid as `crossPCF` — cell size rMax, so every in-range B is in the anchor's 3×3.
+  let bMinX = Infinity;
+  let bMinY = Infinity;
+  let bMaxX = -Infinity;
+  let bMaxY = -Infinity;
+  for (let j = 0; j < nB; j++) {
+    const x = b.xs[j]!;
+    const y = b.ys[j]!;
+    if (x < bMinX) bMinX = x;
+    if (x > bMaxX) bMaxX = x;
+    if (y < bMinY) bMinY = y;
+    if (y > bMaxY) bMaxY = y;
+  }
+  const cell = Math.max(p.rMax, 1e-9);
+  const cols = Math.max(1, Math.ceil((bMaxX - bMinX) / cell) + 1);
+  const rows = Math.max(1, Math.ceil((bMaxY - bMinY) / cell) + 1);
+  const buckets: number[][] = Array.from({ length: cols * rows }, () => []);
+  const colOf = (x: number) => Math.min(cols - 1, Math.max(0, Math.floor((x - bMinX) / cell)));
+  const rowOf = (y: number) => Math.min(rows - 1, Math.max(0, Math.floor((y - bMinY) / cell)));
+  for (let j = 0; j < nB; j++) buckets[rowOf(b.ys[j]!) * cols + colOf(b.xs[j]!)]!.push(j);
+
+  for (let i = 0; i < nA; i++) {
+    const ax = a.xs[i]!;
+    const ay = a.ys[i]!;
+    const c0 = colOf(ax);
+    const r0 = rowOf(ay);
+    let mi = 0;
+    for (let dRow = -1; dRow <= 1; dRow++) {
+      const rr = r0 + dRow;
+      if (rr < 0 || rr >= rows) continue;
+      for (let dCol = -1; dCol <= 1; dCol++) {
+        const cc = c0 + dCol;
+        if (cc < 0 || cc >= cols) continue;
+        for (const j of buckets[rr * cols + cc]!) {
+          const dx = b.xs[j]! - ax;
+          const dy = b.ys[j]! - ay;
+          const d2 = dx * dx + dy * dy;
+          if (d2 >= rMax2) continue;
+          const bit = 1 << Math.min(p.nBins - 1, Math.floor(Math.sqrt(d2) / dr));
+          mi |= bit;
+          maskB[j]! |= bit;
+        }
+      }
+    }
+    maskA[i] = mi;
+  }
+
+  for (let k = 0; k < p.nBins; k++) {
+    const bit = 1 << k;
+    let ca = 0;
+    let cb = 0;
+    for (let i = 0; i < nA; i++) if (maskA[i]! & bit) ca++;
+    for (let j = 0; j < nB; j++) if (maskB[j]! & bit) cb++;
+    countA[k] = ca;
+    countB[k] = cb;
+  }
+  return { maskA, maskB, countA, countB, nBins: p.nBins };
+}
+
 export interface LabelledCells {
   readonly xs: readonly number[];
   readonly ys: readonly number[];
