@@ -45,7 +45,8 @@ Each of the 32 entries under `regions.all_regions.<ROI>` carries:
 
 - `ome_tiff` / `viv_image.file` → the 49-channel stack above (both keys, same file)
 - `images.he` → **H&E, tissue morphology.** RGB 8-bit, ~2000 × 2000
-- `images.cellmask` → **cell segmentation**
+- `images.cellmask` → **a BINARY foreground mask**, 8-bit, exactly two values (0/255). Not a label
+  image — see `docs/mdv-zarr-to-spatialdata-tables.md` finding B
 - `images.DNA1_Ir191` → 8-bit *grayscale* — **not migrating, decided 2026-08-01** (see below)
 - `images.MagentaaSMA_LimeCD68_WhiteCollagen1_BlueDNA`, `images.MagentaaSMA_WhiteEpCAM_LimeCD31_BlueDNA`
   → pre-rendered RGB composites — **not migrating, decided 2026-08-01** (see below)
@@ -56,8 +57,8 @@ Three inconsistencies to handle rather than discover:
    `_2_ROI_1`, `_2_ROI_2`). Same role, different key.
 2. **Not every ROI has every image, and this still bites after the drops below.** Counted over the
    two keys actually being kept: `cellmask` is present on all 32, but **`he`/`un` is missing on 2** —
-   `COVID_SAMPLE_4_ROI_3` and `COVID_SAMPLE_6_ROI_1`. So those two ROIs get a `labels` element and no
-   morphology image at all. Treat each key as optional; do not assume a fixed set.
+   `COVID_SAMPLE_4_ROI_3` and `COVID_SAMPLE_6_ROI_1`. So those two ROIs get a mask and no morphology
+   image at all. Treat each key as optional; do not assume a fixed set.
 3. Names are opaque 5–6 character IDs (`uDFaO.ome.png`, `q9Qtix.png`) with no ROI in them, so the
    only route from ROI to file is `datasources.json`. It is 129 KB and already copied alongside the
    zarr.
@@ -67,11 +68,13 @@ Three inconsistencies to handle rather than discover:
 The interesting part is that these are three genuinely different SpatialData element kinds, and
 flattening them into one would be the main thing to get wrong:
 
-- **`cellmask` is a `labels` element, not an `images` one.** It is a label image whose pixel values
-  are cell IDs, so it (a) must be lossless, (b) must be resampled with nearest-neighbour at every
-  pyramid level, and (c) is the natural join to the existing cell table via `instance_key` — which
-  is the thing that would make the segmentation *interactive* rather than a picture. Averaging two
-  neighbouring label values invents a cell that does not exist.
+- **`cellmask` wants to be a `labels` element and cannot be one yet.** A labels element's pixel
+  values are instance IDs, joinable to the cell table via `instance_key` — the thing that would make
+  the segmentation *interactive* rather than a picture. But the stored mask is **binary** (0/255,
+  8-bit), so it carries no instance identity at all; every cell would point at the same blob. It is
+  still lossless-and-nearest-neighbour either way — averaging neighbouring label values invents a
+  cell that does not exist — but the join has to come from somewhere else first. See
+  `docs/mdv-zarr-to-spatialdata-tables.md` finding B for the three options.
 - **`he` is an `images` element** — 8-bit RGB, perceptual, and the natural fit for this repo's own
   lossy HTJ2K path. This is the same shape as the Xenium `he_image` slice already landed under the
   spatialdata.js Loader work. It is the only flat PNG that survives as an image at all, the rest
@@ -97,7 +100,7 @@ Measured, by `images` key across the 32 ROIs:
 | `MagentaaSMA_WhiteEpCAM_LimeCD31_BlueDNA` | 32 | 158.2 MB | **no** — derived |
 | `DNA1_Ir191` | 26 | 19.9 MB | **no** — derived (`DNA1` is channel 42 of the 49) |
 | `he` / `un` | 26 / 4 | 568.8 / 80.9 MB | **yes** — a separate stain, not in the IMC stack |
-| `cellmask` | 32 | 7.0 MB | **yes** — segmentation output, not derivable |
+| `cellmask` | 32 | 7.0 MB | **yes** — segmentation output, not derivable (but binary — see above) |
 | total | 152 | 1008.6 MB | **62 files / 656.7 MB kept** |
 
 So the flat-PNG payload falls from 1008.6 MB / 152 files to **656.7 MB / 62**, and what remains is

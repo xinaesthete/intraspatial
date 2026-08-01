@@ -1,6 +1,7 @@
 # Generic zarr, and remodelling our MDV-shaped store into SpatialData tables
 
-**Status: analysis, nothing started (2026-08-01).** Companion to
+**Status: analysis, nothing started (2026-08-01). Four decisions taken, and two findings that
+change the plan — see "Decisions" and "What the probing turned up" below.** Companion to
 `docs/covid-imagery-to-spatialdata-plan.md`, which covers the imagery; this is the table half.
 Everything below was measured against two stores actually on disk — `~/data/covid.mdv.zarr` (ours,
 what `pnpm mdv:zarr` produces) and `~/data/mdv_xenium_tiny_test/spatialdata.zarr` (a real
@@ -65,15 +66,88 @@ which are *measurements* — but intersecting with the OME-TIFF panel resolves i
 from every tool that looks in `obsm`. Same for `x`/`y` → **`obsm/spatial` as an `[N,2]` array**, which
 is a reshape and interleave, not a rename.
 
+## Decisions (2026-08-01)
+
+1. **The store is zarr v3.** Not a question to reopen — there is strong precedent in this repo and
+   v3 is where the ecosystem has been for some time. The consequence is a dependency, not a risk:
+   **spatialdata.js / zarrextra need updating** to read v3 before they can consume what we write. That
+   is a known piece of work, not a reason to emit v2.
+2. **Tables annotate `cellmask` as `labels` elements**, one per ROI, with shapes possibly derived
+   alongside. *See finding B below — the current `cellmask` PNGs cannot support this, and that has to
+   be solved first.*
+3. **`X` stays dense.** `[545400, 37]` float32 = 78 MB. IMC is not sparse the way transcript counts
+   are, and the Xenium example's `csr_matrix` should not be copied just because it is the example.
+4. **Where sparse is used at all, prefer CSC over CSR.** This is right for the access pattern and
+   there is a caveat worth writing down — see below.
+
+### The CSC caveat, from our own reader
+
+`readVarColumns` fetches *an arbitrary set of var columns*, which is exactly what CSC is for: with
+CSC, `indptr` bounds each var's slice directly. But `varMatrix.ts` already notes the catch —
+
+> For CSC only the wanted slices are needed in principle, but the arrays are chunked along their own
+> length rather than by var, so a partial read would still fetch whole chunks.
+
+So **CSC only pays off if `indices`/`data` are chunked to make a per-var slice cheap.** Choosing CSC
+and then chunking those arrays in a few huge chunks gives all of CSR's I/O with none of CSC's
+benefit, and it will look like it is working. If we ever write sparse, the chunk size is part of the
+decision, not a detail left to a default.
+
+## What the probing turned up
+
+Two things found while checking whether the decisions above are actually implementable. Both are
+about data we already have and neither is a blocker to the plan's shape, but both are blockers to a
+naive execution of it.
+
+### A. `cellID` is empty in our converted store — a converter bug, and it is the `instance_key`
+
+Every one of the 9 chunks of `cells/cellID` is **zero bytes throughout** (0 nonzero of 19,464,192).
+The source is fine: `h5dump` shows `/cells/cellID` as 545,400 × `H5T_STRING` STRSIZE 33, and the
+first value is `"COVID_SAMPLE_4_ROI_2_CELL_0"`.
+
+The cause is in `scripts/mdv-h5-to-zarr.ts`: it reads columns via `h5dump -b LE`, which **emits
+nothing at all for `H5T_STRING` datasets**. The numeric branch catches this — it asserts
+`data.length !== rows` and throws — but the fixed-width-string branch has no equivalent check, so it
+wrote 18 MB of zeros and reported success. `cellID` is the only affected column in the whole store,
+which is why nothing downstream noticed.
+
+It matters here because **`cellID` is the natural `instance_key`**, and its format is informative:
+`<SAMPLE>_<ROI>_CELL_<n>` — per-ROI, with an index that restarts for each ROI. A labels element's
+pixel values are integers, so `instance_key` would have to be the parsed `<n>` suffix rather than the
+composite string, and whether it is 0- or 1-based against the mask needs checking (label 0 is
+conventionally background).
+
+### B. `cellmask` is a BINARY mask, not a label image — decision 2 cannot be executed as stated
+
+Decoded `q9Qtix.png` (COVID_SAMPLE_16_ROI_3's cellmask): 2000 × 2000, 8-bit grayscale, and **exactly
+two distinct values** — 0 (2,341,199 px) and 255 (1,658,801 px).
+
+It is a foreground/background rendering of the segmentation, not the segmentation. Eight bits could
+not carry instance IDs anyway for an ROI with up to 32,569 cells. **So there is nothing for a table to
+annotate**: every cell would point at the same undifferentiated blob, and the join that makes a
+labels element worth having does not exist.
+
+Three ways forward, in increasing cost:
+
+- **Derive shapes from `obsm/spatial`** — circles at the centroids, which is what the Xenium store's
+  `cell_circles` is. Works today, needs no new data, and gives a valid annotating store immediately.
+  Loses cell morphology, which we partly have anyway as `area` / `perimeter` / axis lengths in `obs`.
+- **Reconstruct labels** by seeded watershed of the binary mask from the 545,400 centroids. Plain
+  connected components will not do — the mask is 41% foreground, so touching cells merge. This is the
+  only route to a true labels element from what exists, and it is real work with real failure modes.
+- **Re-segment from the IMC stack.** Out of scope, and it would not reproduce the published cells.
+
+The honest reading is that decision 2's *intent* — the table joined to per-cell geometry rather than
+flattened into a picture — is right, and shapes-from-centroids delivers most of it now while
+reconstruction stays open.
+
 ## The gotchas, in the order they will bite
 
 1. **A table alone is not a valid SpatialData store.** A regions table's `region` must name an element
-   that *exists*. In the Xenium example it is `"cell_circles"` — a **shapes** element derived from the
-   centroids, not an image. We have centroids and no shapes or labels element at all, so either
-   synthesise circles from `obsm/spatial` (cheap, standard, and what the example does) or wait for
-   `cellmask` to land as `labels` from the imagery migration. A table with `region: None` is legal but
-   annotates nothing. **This is the one that turns a mechanical conversion into a design decision**,
-   and it is the join between this plan and the imagery one.
+   that *exists*, and today we have neither shapes nor labels — see finding B for why `cellmask`
+   cannot currently be the answer. A table with `region: None` is legal but annotates nothing.
+   Note the dependency on the imagery plan is *small*: `cellmask` is 7.0 MB of the 656.7 MB being
+   migrated, so it can be pulled forward well ahead of the H&E and the 6 GB stack.
 
 2. **`uint8` categorical codes cannot express AnnData's `-1` for missing.** Ours stores `NA` as
    category 0 of 50; AnnData reserves code `-1` and would not round-trip that. Pick the convention
@@ -115,11 +189,11 @@ is a reshape and interleave, not a rename.
 
 ## Suggested order, if and when this starts
 
-1. Decide the v2/v3 question by testing what the intended consumer actually accepts. Everything else
-   is downstream of it.
-2. Emit `shapes` circles from `obsm/spatial`, one element per ROI — that makes a valid annotating
-   store possible without waiting on the imagery.
+1. Fix the `cellID` converter bug (finding A) — without it there is no `instance_key` to write.
+2. Emit `shapes` circles from `obsm/spatial`, one element per ROI — a valid annotating store now,
+   with labels to follow if the watershed reconstruction (finding B) is judged worth it.
 3. Convert `cells` only: `X`/`var` by panel intersection, `obsm/spatial`, the four `obsm` embeddings,
    the rest to `obs`.
-4. Validate with zarr-python + `spatialdata.read_zarr`, not by reading it back with zarrita.
+4. Validate with zarr-python + `spatialdata.read_zarr` (v3-capable versions), not by reading it back
+   with zarrita.
 5. Leave the three stats tables alone until there is a reason to move them.
