@@ -72,9 +72,11 @@ is a reshape and interleave, not a rename.
    v3 is where the ecosystem has been for some time. The consequence is a dependency, not a risk:
    **spatialdata.js / zarrextra need updating** to read v3 before they can consume what we write. That
    is a known piece of work, not a reason to emit v2.
-2. **Tables annotate `cellmask` as `labels` elements**, one per ROI, with shapes possibly derived
-   alongside. *See finding B below — the current `cellmask` PNGs cannot support this, and that has to
-   be solved first.*
+2. **Tables annotate `labels` elements**, one per ROI — and since the stored `cellmask` is binary
+   (finding B), those labels are to be **reconstructed by seeded watershed** from the mask and the
+   centroids. Decided 2026-08-01 in preference to settling for shapes-from-centroids: the morphology
+   is real information and circles throw it away. Shapes may still be derived alongside, with the
+   caveat in "One annotating element per row" below.
 3. **`X` stays dense.** `[545400, 37]` float32 = 78 MB. IMC is not sparse the way transcript counts
    are, and the Xenium example's `csr_matrix` should not be copied just because it is the example.
 4. **Where sparse is used at all, prefer CSC over CSR.** This is right for the access pattern and
@@ -117,7 +119,7 @@ pixel values are integers, so `instance_key` would have to be the parsed `<n>` s
 composite string, and whether it is 0- or 1-based against the mask needs checking (label 0 is
 conventionally background).
 
-### B. `cellmask` is a BINARY mask, not a label image — decision 2 cannot be executed as stated
+### B. `cellmask` is a BINARY mask, not a label image — so the labels have to be reconstructed
 
 Decoded `q9Qtix.png` (COVID_SAMPLE_16_ROI_3's cellmask): 2000 × 2000, 8-bit grayscale, and **exactly
 two distinct values** — 0 (2,341,199 px) and 255 (1,658,801 px).
@@ -127,19 +129,53 @@ not carry instance IDs anyway for an ROI with up to 32,569 cells. **So there is 
 annotate**: every cell would point at the same undifferentiated blob, and the join that makes a
 labels element worth having does not exist.
 
-Three ways forward, in increasing cost:
+Three ways forward, in increasing cost — **the middle one is the decision**:
 
 - **Derive shapes from `obsm/spatial`** — circles at the centroids, which is what the Xenium store's
-  `cell_circles` is. Works today, needs no new data, and gives a valid annotating store immediately.
-  Loses cell morphology, which we partly have anyway as `area` / `perimeter` / axis lengths in `obs`.
-- **Reconstruct labels** by seeded watershed of the binary mask from the 545,400 centroids. Plain
-  connected components will not do — the mask is 41% foreground, so touching cells merge. This is the
-  only route to a true labels element from what exists, and it is real work with real failure modes.
+  `cell_circles` is. Works today, needs no new data. Throws away the morphology, which is the part
+  worth having.
+- **Reconstruct labels by seeded watershed** ← *chosen, 2026-08-01.* The binary mask supplies the
+  foreground and the 545,400 centroids supply the seeds. Plain connected components will not do: the
+  mask is 41% foreground, so touching cells merge into one blob.
 - **Re-segment from the IMC stack.** Out of scope, and it would not reproduce the published cells.
 
-The honest reading is that decision 2's *intent* — the table joined to per-cell geometry rather than
-flattened into a picture — is right, and shapes-from-centroids delivers most of it now while
-reconstruction stays open.
+### What the watershed needs to get right
+
+- **Output dtype is `uint16` at least.** Up to 32,569 cells in one ROI; 8-bit is what got us here.
+- **Label values must match `cellID`'s `_CELL_<n>` suffix**, since that is the `instance_key` — so
+  finding A has to be fixed first, and the 0-vs-1 base checked against the convention that label 0 is
+  background.
+- **It comes with its own oracle, which is the good part.** The table already says how many cells each
+  ROI has (545,400 across 32; min 3,318, median 17,602, max 32,569). Count distinct labels per
+  reconstructed mask and compare — a watershed that over- or under-segments says so immediately, per
+  ROI, without anyone having to eyeball a picture.
+- **Three failure modes to count rather than assume away**: centroids landing outside the foreground
+  (segmentation and centroid table disagreeing), foreground blobs containing no centroid (debris, or
+  cells filtered out of the table), and the boundary assignment where two seeds share a blob. Each is
+  a number that should be reported, not a warning that gets silenced.
+
+### One annotating element per row — a real gap in the SpatialData model
+
+Verified against the store rather than the spec text: `obs/region` is a **categorical** column
+(`codes` + `categories`), while `region_key` and `instance_key` are single strings. So a table can
+annotate *many* elements across its rows, but **each row carries exactly one `(region, instance)`
+pair**. There is no way to say "this cell is both label 47 in the watershed mask and circle 47 in the
+centroid shapes".
+
+That bites us directly, because both are wanted: labels for morphology, circles for cheap rendering
+and for the two ROIs that will never have a good mask. The options are all compromises:
+
+- **Two tables**, one per element kind. Correct by the spec and duplicates 545,400 rows of `obs`
+  (plus `X`, unless one table is left without it) — two copies that can drift.
+- **One annotated, one bare.** The table annotates the labels; the shapes element exists with the same
+  instance IDs in its index but no table pointing at it. The join is then recoverable *by convention*
+  and not declared, which a generic consumer cannot discover but ours can. Cheapest, and probably
+  right.
+
+Worth raising upstream rather than only working around: the underlying want — several geometric
+representations of the same feature — is not exotic (segmentation mask, centroid, nucleus vs.
+membrane boundary), and the model has room for it in principle since `instance_key` is already the
+shared identity.
 
 ## The gotchas, in the order they will bite
 
@@ -190,10 +226,12 @@ reconstruction stays open.
 ## Suggested order, if and when this starts
 
 1. Fix the `cellID` converter bug (finding A) — without it there is no `instance_key` to write.
-2. Emit `shapes` circles from `obsm/spatial`, one element per ROI — a valid annotating store now,
-   with labels to follow if the watershed reconstruction (finding B) is judged worth it.
-3. Convert `cells` only: `X`/`var` by panel intersection, `obsm/spatial`, the four `obsm` embeddings,
+2. Reconstruct the labels by seeded watershed, one element per ROI, and check the distinct-label
+   count against the table's per-ROI cell count before writing anything.
+3. Emit `shapes` circles from `obsm/spatial` alongside — bare, sharing the instance IDs (see "One
+   annotating element per row"), and the fallback for the ROIs whose watershed does not come out.
+4. Convert `cells` only: `X`/`var` by panel intersection, `obsm/spatial`, the four `obsm` embeddings,
    the rest to `obs`.
-4. Validate with zarr-python + `spatialdata.read_zarr` (v3-capable versions), not by reading it back
+5. Validate with zarr-python + `spatialdata.read_zarr` (v3-capable versions), not by reading it back
    with zarrita.
-5. Leave the three stats tables alone until there is a reason to move them.
+6. Leave the three stats tables alone until there is a reason to move them.

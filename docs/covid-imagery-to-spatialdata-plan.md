@@ -73,8 +73,10 @@ flattening them into one would be the main thing to get wrong:
   the segmentation *interactive* rather than a picture. But the stored mask is **binary** (0/255,
   8-bit), so it carries no instance identity at all; every cell would point at the same blob. It is
   still lossless-and-nearest-neighbour either way — averaging neighbouring label values invents a
-  cell that does not exist — but the join has to come from somewhere else first. See
-  `docs/mdv-zarr-to-spatialdata-tables.md` finding B for the three options.
+  cell that does not exist — but the instance identity has to be reconstructed first. **Decided
+  2026-08-01: seeded watershed** from the binary mask plus the 545,400 centroids, producing `uint16`
+  labels keyed to `cellID`. See `docs/mdv-zarr-to-spatialdata-tables.md` finding B. Note the mask
+  therefore migrates as an *input* to that reconstruction, not as the labels element itself.
 - **`he` is an `images` element** — 8-bit RGB, perceptual, and the natural fit for this repo's own
   lossy HTJ2K path. This is the same shape as the Xenium `he_image` slice already landed under the
   spatialdata.js Loader work. It is the only flat PNG that survives as an image at all, the rest
