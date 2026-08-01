@@ -550,7 +550,16 @@ export async function readCellTable(
   const space = resolveTableSpace(tree as Record<string, unknown>, region, system);
   const placement: ResolvedPlacement = { system, worldFromArray: affine3From(space.affine) };
 
-  // Group by cell_type_id into separate clouds (ADR-0018 — never one merged cloud).
+  // Group by cell_type_id into separate clouds.
+  //
+  // This used to cite "ADR-0018 — never one merged cloud", which overstates it: 0018 says a points
+  // field is per-`(table, region)` because *placement* belongs to the extracted cloud, so clouds
+  // with different affines must not be merged. That is about coordinate systems, not cell types —
+  // splitting by `cell_type_id` is this function's own choice and nothing requires it.
+  //
+  // It is also the eager-materialisation opposite of ADR-0005's `support` facet: N host-side copies
+  // made at load time, so re-grouping by another column redoes the split and selections cannot
+  // compose. See `docs/mdv-dimension-vs-support-facet.md` §7.
   const byId = new Map<number, { xs: number[]; ys: number[] }>();
   for (let i = 0; i < rows; i++) {
     const id = ids[i]!;

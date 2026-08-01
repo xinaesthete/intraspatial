@@ -1,6 +1,22 @@
 # ADR-0005 — Columnar filters as a `support` facet (mask ⇄ index duality) and sparse columns
 
-Status: **proposed** (2026-06-29)
+Status: **proposed** (2026-06-29) — **reality-checked against MDV 2026-08-01**, see
+[`mdv-dimension-vs-support-facet.md`](../mdv-dimension-vs-support-facet.md). Two corrections from
+that check, both recorded inline below:
+
+> ⚠️ **The operator set in this ADR is wrong.** `AND = a·b` with `OR = max(a,b)` mixes a product
+> t-norm with a Gödel t-conorm, so De Morgan fails (`1−(1−a)(1−b) = 0.92` vs `max = 0.8` at
+> `a=0.8, b=0.6`) and product `AND` is **not idempotent** (`a·a ≠ a`). The second matters most:
+> a diamond in a filter DAG multiplies a shared ancestor in twice, silently, making the result
+> depend on graph topology. Use **`min` / `max` / `1−a`**. Both defects are invisible for hard 0/1
+> masks, which is why they survived — but soft membership is the whole point of the facet. Full
+> derivation in §6 of the design note.
+>
+> ℹ️ **The compact-index encoding is not future work — MDV already ships it.** `getFilteredIndices`
+> → `filteredIndexWorker.ts` turns the byte-per-row mask into a promise-cached `Uint32Array` shared
+> across charts, and it is load-bearing for MDV's deck.gl path. `materializeSupport` should be
+> written as *adopting a proven design*, not as a new invention; the "Deferred" list below overstates
+> what remains.
 
 ## Decision
 
@@ -28,7 +44,8 @@ support // which rows are ACTIVE — the filter / selection            (NEW)
      boxcar special case (weight ∈ {0,1}); **soft membership is the general thing.**
      This is the *windowing, not quadrats* philosophy the spatial front already
      adopted — a brush is a window with a falloff, not a crisp box. Masks compose
-     **algebraically and elementwise**: `AND = a·b`, `OR = max(a,b)`, `NOT = 1−a`.
+     **algebraically and elementwise**: ~~`AND = a·b`~~ → **`AND = min(a,b)`**,
+     `OR = max(a,b)`, `NOT = 1−a` (corrected 2026-08-01 — see the status block above).
      Recomputed every frame as the user brushes; plugs straight into the
      weighted-permutation Monte-Carlo null already planned for the spatial front
      (a soft mask *is* the weight vector). This is the **interactive / small-N**

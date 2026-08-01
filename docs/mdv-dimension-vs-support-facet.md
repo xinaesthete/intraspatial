@@ -191,6 +191,53 @@ and they have never been written down next to MDV's model.
 - **The background filter stops being special** — it is an upstream node.
 - **Set operations between selections**: "cells in gate A but not gate B" is a diff, not a re-brush.
 
+### The operators, written down — and a defect in ADR-0005's
+
+This is the gap identified above, and writing it out immediately found a problem, which is the
+argument for writing it out.
+
+ADR-0005 specifies **`AND = a·b`, `OR = max(a,b)`, `NOT = 1−a`**. Those three do not belong together.
+In fuzzy-set terms a conjunction (t-norm) and a disjunction (t-conorm) are *De Morgan dual* under
+`n(a) = 1−a` only when `S(a,b) = 1 − T(1−a, 1−b)`. The matched pairs are:
+
+| conjunction | matched disjunction | idempotent? |
+|---|---|---|
+| `min(a,b)` (Gödel) | `max(a,b)` | **yes** |
+| `a·b` (product) | `a + b − ab` (probabilistic sum) | no |
+| `max(0, a+b−1)` (Łukasiewicz) | `min(1, a+b)` | no |
+
+ADR-0005 took the conjunction from row 2 and the disjunction from row 1. Two consequences, both
+verified numerically rather than argued:
+
+1. **De Morgan fails.** For `a = 0.8, b = 0.6`: `1 − (1−a)(1−b) = 0.92`, but `max(a,b) = 0.8`. So
+   `NOT(NOT a AND NOT b)` and `a OR b` are different selections. A user who builds one and a
+   simplifier that rewrites it to the other get different answers.
+2. **Product `AND` is not idempotent** — `a·a ≠ a` (0.8 → 0.64). **This is the one that matters for a
+   DAG.** A diamond — two branches derived from the same upstream gate, recombined downstream — is
+   the *normal* shape in a gating tree, and under product the shared ancestor gets multiplied in
+   twice. The result then depends on the graph's topology rather than on the set being described,
+   and it does so silently: the mask just gets dimmer.
+
+MDV never had to face this because a flat conjunction cannot contain a diamond — every dimension
+appears exactly once. **Idempotence is a requirement that only appears when you go from a list to a
+graph**, which is a decent sign the DAG is a real change of model and not just nicer syntax.
+
+Note also that **for hard 0/1 masks every pair above coincides** (verified: `a·b == min(a,b)` on
+0/1). So this is invisible until masks are soft — and soft membership is the entire reason ADR-0005
+widened the byte to a weight.
+
+**Recommended: `min` / `max` / `1−a`.** Idempotent, De Morgan-consistent, associative, and the
+cheapest of the three on the GPU. Product is the right choice only when the two masks are
+*independent probabilities*; in a gating DAG they are usually nested or correlated, which is exactly
+when product is wrong. Set difference is then `A ∧ ¬B = min(a, 1−b)`.
+
+A caveat worth carrying rather than resolving here: `min`/`max` are not *strict* — they ignore the
+non-extremal operand, so a soft brush ANDed with a soft window keeps only the tighter one and loses
+the gradient of the other. If the weighted-permutation null wants that gradient, product may be
+right *for that consumer* even though min is right for the graph. That would be an argument for the
+operator being a property of the edge rather than a global constant, and it should be settled with a
+real null in hand, not on paper.
+
 ### The domain already has this shape
 
 The clinching argument is not architectural. **Flow and mass cytometry gating is a tree**, and IMC

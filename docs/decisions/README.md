@@ -47,7 +47,7 @@ Numbers 0019–0021 are **retired, not reused**, so commit history keeps pointin
 | [0002](0002-runtime-node-not-bun.md) | Node toolchain, not Bun | accepted | **landed** | vitest configs, CLAUDE.md override |
 | [0003](0003-use-gpu-tgsl-kernels.md) | `"use gpu"` TGSL kernels | accepted | **landed** | used throughout `src/gpu` |
 | [0004](0004-field-type-model-and-volumetric-splat.md) | Field type model + volumetric splat | proposed | **partial** | element algebra + `axes` (via 0015) landed; `splatDensity.ts` exists |
-| [0005](0005-columnar-filters-and-sparse-support.md) | `support` facet, sparse columns | proposed | **open** | no `support` in the value lattice |
+| [0005](0005-columnar-filters-and-sparse-support.md) | `support` facet, sparse columns | proposed | **open** | no `support` in the value lattice; operator set **corrected** 2026-08-01 (see [`mdv-dimension-vs-support-facet.md`](../mdv-dimension-vs-support-facet.md)) |
 | [0006](0006-spectral-and-wavelet-domain-representation.md) | `basis` facet | exploratory | **partial** | `Basis` type in `handle.ts`; no consumer |
 | [0007](0007-expression-ir-dsl-graph-duality.md) | Expression IR ⇄ DSL ⇄ graph | proposed | **partial** | `src/geometry/expr.ts` has its *own* `Expr`, not unified with the graph |
 | [0008](0008-view-driven-multiscale-datasource.md) | View-driven multiscale datasource | proposed | **landed** | `src/datasource` (its `index.ts` says "so it can graduate") |
