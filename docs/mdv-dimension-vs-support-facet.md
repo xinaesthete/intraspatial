@@ -163,6 +163,50 @@ node-level lifecycle expressed as a boolean on a flat list.
 **A filter graph is not a generalisation MDV doesn't need. It is the thing MDV built a special case
 of.**
 
+### The background filter, looked at properly — and a correction to the above
+
+"Background vs local is just two nodes" is what this note said first, and it is wrong in an
+instructive way. Read against the source (2026-08-01), the mechanism is both *more divided* and
+*more subtle* than a conjunction.
+
+**There are three of it.** Same user-facing idea — "restrict this chart to a subset" — at three
+layers that do not compose:
+
+| | where | visible to | notes |
+|---|---|---|---|
+| `Dimension.setBackgroundFilter(col, cats)` | `Dimension.js`, states 2/3 | workers, global filter (conditionally — below) | **categorical only**: opens `if (!col?.values) return`, so a numeric column silently does nothing |
+| `config.background_filter` | chart config `{column, categories}` | only **DotPlot** and **WGLScatterPlot** | each implements its own `async setBackgroundFilter()`; `BaseChart.ts:527` declares `setBackgroundFilter?(column: FieldName): void`, which matches neither (both take no args, both async) |
+| `config.category_filters` | React, `useChartScopeFilterPredicate` | **nothing else** — invisible to Dimensions and all worker aggregations | evaluated synchronously on the main thread; a divergent second copy lives in `scatter_state.ts` |
+
+`SpatialLayer.ts:122` carries a `// it might want to know about background_filter...` where a
+grey-out layer would go — a fourth consumer that would need a fourth path to it.
+
+**And the semantics are not `background AND local`.** Tracing `_applyStateTransition`: only states
+**1** and **3** increment the DataStore's exclusion count — state 2, background-hidden-but-not-brushed,
+contributes **nothing** to the global filter. Then `filterPredicate` opens with: if a row is at 2,
+promote it to 3 and `continue`, *without consulting the predicate*. `removeFilter` reverses it, 3 → 2.
+
+So: **a background filter has no global effect until a local filter is applied, and acquires one the
+moment it is.** Brushing chart A changes the global row count by an amount that depends on A's
+background filter, and until you brush, nothing reveals that.
+
+That is defensible once you see the intent — the background filter is the chart's **scope**, and a
+brush inside a scoped chart must not select outside the scope, so scope-excluded rows have to leave
+the global set while the brush is live. But it means the honest reading is not conjunction:
+
+> The brush is evaluated **within** the scope, not **alongside** it.
+
+Which changes the graph shape, and is the actual argument. As a conjunction, `scope ∧ brush` with an
+all-pass brush yields `scope` — the background would always bite, which is precisely the behaviour
+MDV avoids. As a **composition**, the scope is the brush node's *input domain*: the brush is defined
+over the scoped set, so an all-pass brush over a scope is a no-op globally, and a real brush is
+confined to it.
+
+A flat AND-list cannot express "evaluated within" at all — every dimension is a sibling conjunct over
+the full domain. A DAG expresses it by construction, because an edge *is* "this node's input". The
+4-state byte, the conditional promotion, and `noClear` are what "evaluated within" costs when the only
+available structure is a list.
+
 ## 6. The filter graph
 
 **Both notes intend the same thing here — a DAG whose nodes are selections and whose edges are set
@@ -293,9 +337,18 @@ and its cost is now measurable.
 
 A DAG gives each of them a slot: a chart-scope filter is a node with one consumer, a sub-selection is
 a node over an upstream compact index list (hence O(selected), which is exactly the bypass's
-justification), and background-vs-local is two nodes. Whether that is *faster* is an open question
+justification), and background-vs-local is a brush node whose *input* is the scope node — not two
+sibling conjuncts, for the reason set out in §5. Whether that is *faster* is an open question
 answerable only by building it — but it is at least a place to put the work, which is what is missing
 now.
+
+The background filter is also the best available **first target**, ahead of anything general. It is
+one concept currently spelled three ways (§5), only two chart types honour the config form, the
+React form is invisible to every worker, and its global semantics are conditional in a way nothing
+surfaces. Expressing exactly that one behaviour as scope-feeding-brush would collapse three
+mechanisms into one, and it is small enough to be falsifiable — if the composition cannot reproduce
+the conditional-global behaviour that DotPlot and WGLScatterPlot rely on, the whole model is wrong
+and we find out cheaply.
 
 ## 7. What this would mean for `cellTable`
 
