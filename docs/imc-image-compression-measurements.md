@@ -244,15 +244,52 @@ else is below 0.62.
 
 Flat to three digits, including after reordering channels so the correlated ones are adjacent, and
 HTJ2K encoding eight channels as one multi-component codestream matches eight separate ones to the
-same precision. So **keep one channel per chunk** — it costs nothing and it is what preserves
-single-channel random access in a browser. If a future panel *does* have correlated channels the
-measurement is cheap to redo, but on this one there is nothing to collect.
+same precision.
+
+That table alone was not proof, though: **Blosc splits its input into independent blocks**, so
+cross-channel redundancy could have been invisible by construction rather than absent. Repeating it
+with plain (unblocked) zstd, which sees one window over the whole buffer:
+
+| channels per chunk | plain zstd-9 | plain zstd-19 |
+|---|---|---|
+| 1 | 157.9 MB | 131.1 MB |
+| 4 | 158.0 MB | 131.1 MB |
+| 49 | 158.0 MB | 131.1 MB |
+
+Flat there too, so the absence is real. **Keep one channel per chunk** — it costs nothing and it is
+what preserves single-channel random access in a browser. If a future panel *does* have correlated
+channels the measurement is cheap to redo; on this one there is nothing to collect.
+
+## Finding 9 — plain zstd at a high level beats Blosc-zstd, which the confound check turned up
+
+Incidental to finding 8, and it changes the recommended codec. Blosc's `clevel` is not a zstd level —
+it maps onto one internally, and for zstd it lands around 16–18. So `clevel=9` is *not* the top of the
+range, and going past it needs the plain zstd codec rather than Blosc:
+
+| whole stack, per ROI | size | vs Blosc-9 | encode (extrapolated, 49 ch) |
+|---|---|---|---|
+| Blosc zstd `clevel=9` | 140.0 MB | 1.00× | ~30 s |
+| plain zstd level 12 | — | 0.945× | ~23 s |
+| plain zstd level 15 | — | 0.962× | ~83 s |
+| **plain zstd level 19** | **131.1 MB** | **1.068×** | ~280 s |
+| plain zstd level 22 | — | 1.058× | ~285 s |
+
+Level 19 is the knee — 22 costs the same time for 0.2% less. Note levels 12 and 15 are *worse* than
+Blosc's `clevel=9`, which is what gives away where Blosc's mapping sits. ~5 min/ROI puts a full
+conversion at ~2.5 h, one-time, which is fine.
+
+Plain zstd is also the more standard choice: it is a **core codec in the zarr v3 spec**, where Blosc
+is an extension.
 
 ## Recommendation
 
-**Decided 2026-08-01 (user's call): one array, float32 + zstd-9 with shuffle off, one channel per
-chunk.** 140 MB/ROI, **~4.0 GB against 6.0 GB today**, lossless, no codec extension, and the stack
-stays a single 49-channel element that a viewer can treat normally.
+**Decided 2026-08-01 (user's call): one array, float32, plain zstd level 19, one channel per chunk.**
+131 MB/ROI, **~3.7 GB against 6.0 GB today** (1.6×), lossless, no codec extension, a core zarr v3
+codec, and the stack stays a single 49-channel element that a viewer can treat normally.
+
+*(The decision was taken against Blosc-zstd at 140 MB/ROI; finding 9 then found plain zstd-19 is 6.8%
+better and more standard. Same shape of answer, better constant — no re-decision needed. **Do not use
+byte-shuffle**, whichever codec: finding 1.)*
 
 This deliberately declines the smaller option below — taking the hit on size rather than splitting
 the `c` axis by which codec suits each channel.
