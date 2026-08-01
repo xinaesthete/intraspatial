@@ -51,6 +51,7 @@ import { equivalentRadius, KERNELS, type KernelSpec, kernelLabel } from "../../s
 import { crossPCFBinMembership, crossPCFMatrix, type LabelledCells, type PcfBinMembership, type PcfParams } from "../../src/spatial/pcf";
 import { crossPCFBootstrap, LOH_BLOCK_UM } from "../../src/spatial/pcfBootstrap";
 import { crossPCFEnvelopeRunner, type PcfEnvelopeRunner, type PcfNullModel } from "../../src/spatial/pcfEnvelope";
+import { makePointPattern, POINT_PATTERNS } from "../../src/spatial/pointPatterns";
 import { type QcmNullModel, type QuadratCorrelationResult, quadratCorrelation } from "../../src/spatial/quadratCorrelation";
 import type { CellCloud } from "../../src/spatial/tcm";
 import { tcmKernelField } from "../../src/spatial/tcmKernel";
@@ -99,6 +100,10 @@ const tableSelect = $<HTMLSelectElement>("tableSel");
 const typeColSelect = $<HTMLSelectElement>("typeCol");
 const runBtn = $<HTMLButtonElement>("run");
 const fixtureBtn = $<HTMLButtonElement>("fixture");
+const patternKindSelect = $<HTMLSelectElement>("patternKind");
+const patternNInput = $<HTMLInputElement>("patternN");
+const patternSeedInput = $<HTMLInputElement>("patternSeed");
+const patternTruthEl = $<HTMLParagraphElement>("patternTruth");
 const csvInput = $<HTMLInputElement>("csvFile");
 const mdvStoreInput = $<HTMLInputElement>("mdvStore");
 const mdvInspectBtn = $<HTMLButtonElement>("mdvInspect");
@@ -304,6 +309,9 @@ function applyUnits(t: CellTable): void {
  *  boundary away from every cell, so the edge correction finds no anchor to correct and quietly does
  *  nothing. The published numbers this is checked against use the ROI, so this does too. */
 function tableRoi(t: CellTable): [number, number, number, number] {
+  // A source that KNOWS its observation window wins over the extent of what landed in it. Only the
+  // synthetic patterns know; every real store here leaves it undeclared and falls through.
+  if (t.roi) return [...t.roi] as [number, number, number, number];
   return boundsOf(t, 0);
 }
 
@@ -1697,10 +1705,35 @@ kernelSelect.value = "0";
 
 inspectBtn.addEventListener("click", () => void inspectStore(false));
 runBtn.addEventListener("click", () => void loadSelected());
-fixtureBtn.addEventListener("click", () => {
-  setStatus("building the synthetic 2-type fixture …");
-  present(syntheticCellTable());
-});
+// The pattern list comes from the registry, so adding a process there adds it here with no edit.
+for (const spec of POINT_PATTERNS) {
+  const opt = document.createElement("option");
+  opt.value = spec.key;
+  opt.textContent = spec.label;
+  opt.title = spec.describe;
+  patternKindSelect.appendChild(opt);
+}
+patternKindSelect.value = "colocalised";
+
+function loadPattern(): void {
+  const key = patternKindSelect.value;
+  const n = Math.max(20, Math.min(20000, Math.round(Number(patternNInput.value) || 1200)));
+  const seed = Math.max(1, Math.round(Number(patternSeedInput.value) || 1));
+  setStatus(`building ${key} …`);
+  const t = syntheticCellTable({ pattern: key, n, seed });
+  // Say what the process guarantees. This is the only source on the page that can, and it is the
+  // difference between a demo you look at and a demo you can check: the note names the value the
+  // panels ought to be reporting, so a wrong one is visible rather than merely unfamiliar.
+  //
+  // It goes in its own line rather than the status, which `present` and the GPU views overwrite
+  // within the second — a guarantee that scrolls away after a frame is not a guarantee.
+  const p = makePointPattern(key, { n, seed });
+  patternTruthEl.hidden = false;
+  patternTruthEl.textContent = `known answer — ${p.truth.note}`;
+  present(t);
+}
+fixtureBtn.addEventListener("click", loadPattern);
+patternKindSelect.addEventListener("change", loadPattern);
 csvInput.addEventListener("change", () => {
   const f = csvInput.files?.[0];
   if (f) void loadCsv(f);
@@ -1893,6 +1926,9 @@ function applySourceKind(): void {
   for (const el of document.querySelectorAll<HTMLElement>(".srcgroup")) {
     el.classList.toggle("on", el.dataset.src === kind);
   }
+  // The known-answer line belongs to the pattern source. Leaving it up while a real store is
+  // selected would attach a guarantee to data that has none.
+  if (kind !== "fixture") patternTruthEl.hidden = true;
 }
 sourceKindSelect.addEventListener("change", applySourceKind);
 applySourceKind();

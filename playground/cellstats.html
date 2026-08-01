@@ -32,6 +32,7 @@
        the colour is for. */
     .note { color: #94a3b8; font-size: 11px; line-height: 1.5; }
     .caution { color: #fcd34d; }
+    .truth { color: #6ee7b7; }
     .warn { color: #fca5a5; }
     .note code, .caution code { background: #0f172a; border: 1px solid #334155; border-radius: 3px; padding: 0 3px; }
 
@@ -100,8 +101,10 @@
   <div id="wrap">
     <h1>Cell-type spatial statistics — TCM · cross-PCF · N-way matrix (Stream B2)</h1>
     <p class="sub"><b>Hover the N-way matrix</b> to point every panel at that cell-type pair; <b>click to
-      pin</b> it. Four sources — a SpatialData store, a converted MDV project, a CSV, or an offline fixture —
-      all take the identical path to per-type clouds (ADR-0018: never merged). MuSpAn eqs 8–14, Mode 1;
+      pin</b> it. Four sources — a SpatialData store, a converted MDV project, a CSV, or a
+      <b>synthetic point process</b> — all take the identical path to per-type clouds (ADR-0018: never
+      merged). The last of those is the only one whose answer is <i>known</i>: each is a named process with
+      a closed-form g(r), so the panels can be checked and not just admired. MuSpAn eqs 8–14, Mode 1;
       derivation in <code>docs/cell-stats.md</code>, and the reasoning behind each number is under the
       panel.</p>
 
@@ -115,7 +118,7 @@
           <option value="spatialdata" selected>SpatialData store</option>
           <option value="mdv">MDV project (zarr)</option>
           <option value="csv">CSV file</option>
-          <option value="fixture">synthetic fixture</option>
+          <option value="fixture">synthetic pattern</option>
         </select>
 
         <span class="srcgroup" data-src="spatialdata">
@@ -137,8 +140,16 @@
           <input id="csvFile" type="file" accept=".csv,text/csv" style="flex:0 1 260px" />
         </span>
 
+        <!-- Offline, and the only source whose true answer is known: these are named point
+             processes with a closed-form g(r), so the panels can be checked rather than admired. -->
         <span class="srcgroup" data-src="fixture">
-          <button id="fixture">load fixture (offline)</button>
+          <span class="ctl"><label for="patternKind">process</label>
+            <select id="patternKind" style="flex:1 1 260px"></select></span>
+          <span class="ctl"><label for="patternN">cells/type</label>
+            <input id="patternN" type="text" value="1200" style="flex:0 1 70px" /></span>
+          <span class="ctl"><label for="patternSeed">seed</label>
+            <input id="patternSeed" type="text" value="1" style="flex:0 1 56px" /></span>
+          <button id="fixture">load pattern</button>
         </span>
       </div>
       <hr />
@@ -185,6 +196,10 @@
         </select></span>
       </div>
       <p class="note caution" id="units">—</p>
+      <!-- Green is already "confirmed" on this page (the units line turns green when the store
+           states a real scale), so it carries the one thing no real store can offer: the answer the
+           panels below are supposed to be producing. -->
+      <p class="note truth" id="patternTruth" hidden></p>
 
       <div class="notes">
         <!-- Orientation first. The disclosures below it justify the numbers, which is a different job
@@ -280,8 +295,15 @@
             for covid that is exactly 1&nbsp;µm/unit, so r=100&nbsp;µm and σ=50&nbsp;µm are literal. The g(r)
             this path produces is validated against the project's published <code>gr10</code>/<code>gr20</code>
             — 74,567 comparisons, median 0.26% (<code>pnpm mdv:parity</code>).</p>
+          <p class="note">The <b>synthetic pattern</b> source is a registry of standard 2-D point processes
+            (<code>src/spatial/pointPatterns.ts</code>), shared with the test suite. Each states the g(r) it
+            should produce, in green above the panels, so the page doubles as a check: <b>CSR</b> must read
+            1 everywhere, <b>segregated</b> and <b>hard-core</b> exactly 0 below their gap, <b>co-located</b>
+            a specific elevation. Two are traps worth playing with — <b>independently clustered</b> is two
+            clumped types with no association at all, and <b>shared gradient</b> is two independent types
+            that a homogeneous-ρ estimator (this one) reports at g&nbsp;&gt;&nbsp;1 regardless.</p>
           <p class="note caution">⚠ A remote store must be CORS-enabled. If it is unreachable, switch the
-            source to <b>synthetic fixture</b> or open a <b>CSV</b>.</p>
+            source to a <b>synthetic pattern</b> or open a <b>CSV</b>.</p>
         </details>
       </div>
       <div id="status">idle</div>

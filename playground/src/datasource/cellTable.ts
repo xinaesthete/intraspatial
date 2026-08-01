@@ -24,6 +24,7 @@ import { centroidsToField } from "../../../src/datasource";
 import type { Graph } from "../../../src/gpu/graph/graph";
 import type { FieldProvenance, GpuField, ResolvedPlacement } from "../../../src/gpu/graph/handle";
 import { type Affine2, IDENTITY2, type NgffAxis, resolveNgffXY } from "../../../src/spatial/ngffTransform";
+import { makePointPattern, patternClouds } from "../../../src/spatial/pointPatterns";
 import { openSpatialData, storeTree } from "./spatialDataStore";
 
 /** Default target table on the Leap034 store. */
@@ -101,6 +102,15 @@ export interface CellTable {
   readonly label: string;
   /** What the store says about physical scale. See `resolveTableSpace`. */
   readonly units: TableUnits;
+  /** The observation window, when the source actually knows it — as a synthetic pattern does, and a
+   *  real store generally does not.
+   *
+   *  Absent, consumers fall back to the extent of the points, which is right for a store that never
+   *  told us where the section ended and subtly wrong when the window IS known: the extent shrinks
+   *  as `n` falls (no point lands exactly on the corner), so ρ = N/|W| creeps up and every density
+   *  normalised statistic reads high. At 1500 points over a 1000² window that is about 5% on g(r) —
+   *  small, and precisely the size of discrepancy that makes an analytic fixture look wrong. */
+  readonly roi?: readonly [number, number, number, number];
   /** Centroids in **table row order**, ungrouped — the join key for any other column of the same
    *  table (`obs/*`, `X`, `layers/*`), all of which are indexed by row and know nothing about the
    *  cell-type grouping. `types[].xs` cannot serve: grouping permutes the rows.
@@ -584,51 +594,45 @@ export async function readCellTable(
   };
 }
 
-/** A dep-free synthetic 2-type cloud that flows through the identical path, so the demo works with
- *  no store reachable. Two gaussian blobs, distinct `cell_type_id`s, placed in a fixture system. */
-export function syntheticCellTable(opts: { perType?: number; system?: string } = {}): CellTable {
-  const perType = opts.perType ?? 800;
+/**
+ * A dep-free synthetic table that flows through the identical path, so every page works with no
+ * store reachable.
+ *
+ * The cloud comes from `src/spatial/pointPatterns` — a named process whose true g(r) is known —
+ * rather than being generated here. The previous fixture was two Gaussian blobs 62 units apart with
+ * spread ~3.5, which is a poor demonstration of anything the cell-stats pages measure: at the g(r)
+ * panel's default range the two types have NO pairs in common, so the cross-PCF is flat zero, the
+ * linked highlight lights nothing, and the matrix is two solid colours. A CSR or co-located pattern
+ * shows the machinery working AND has an answer to check it against.
+ */
+export function syntheticCellTable(opts: { pattern?: string; n?: number; seed?: number; system?: string } = {}): CellTable {
   const system = opts.system ?? "fixture";
   const placement: ResolvedPlacement = { system, worldFromArray: IDENTITY_AFFINE };
-  // Deterministic PRNG so the fixture is stable.
-  let seed = 12345;
-  const rnd = () => {
-    seed = (seed * 1103515245 + 12345) & 0x7fffffff;
-    return seed / 0x7fffffff;
-  };
-  const gauss = () => (rnd() + rnd() + rnd() + rnd() - 2) / 2; // ~N(0, ~0.29)
-  const blob = (cx: number, cy: number, spread: number) => {
-    const xs: number[] = [];
-    const ys: number[] = [];
-    for (let i = 0; i < perType; i++) {
-      xs.push(cx + gauss() * spread);
-      ys.push(cy + gauss() * spread);
-    }
-    return { xs, ys };
-  };
-  const clouds: Array<{ id: number; blob: { xs: number[]; ys: number[] } }> = [
-    { id: 1, blob: blob(30, 30, 12) },
-    { id: 2, blob: blob(75, 70, 10) },
-  ];
-  const types: CellTypeCloud[] = clouds.map(({ id, blob: cloud }) => {
-    const provenance: FieldProvenance = { region: "synthetic", instanceKey: "cell_id", cellTypeId: id };
+  const key = opts.pattern ?? "colocalised";
+  const pattern = makePointPattern(key, { n: opts.n ?? 1200, seed: opts.seed ?? 1 });
+  const clouds = patternClouds(pattern);
+  const types: CellTypeCloud[] = clouds.map((c) => {
+    const provenance: FieldProvenance = { region: "synthetic", instanceKey: "cell_id", cellTypeId: c.id };
     return {
-      id,
-      n: cloud.xs.length,
-      xs: cloud.xs,
-      ys: cloud.ys,
-      source: (g: Graph) => g.source(centroidsToField(cloud.xs, cloud.ys, { placement, provenance }), `cellType:${id}`),
+      id: c.id,
+      label: c.label,
+      n: c.xs.length,
+      xs: c.xs,
+      ys: c.ys,
+      source: (g: Graph) => g.source(centroidsToField(c.xs, c.ys, { placement, provenance }), `cellType:${c.id}`),
     };
   });
   return {
     types,
     placement,
     provenance: { region: "synthetic", instanceKey: "cell_id" },
-    totalCells: perType * clouds.length,
+    totalCells: pattern.xs.length,
     system,
-    tableName: "synthetic",
+    tableName: `pattern:${key}`,
     typeColumn: "cell_type_id",
     units: {},
-    label: `synthetic · ${perType * clouds.length} cells · 2 types`,
+    // The window the process was observed through, not the extent of what landed in it.
+    roi: pattern.bbox,
+    label: `${key} · ${pattern.xs.length} cells · ${types.length} type${types.length === 1 ? "" : "s"}`,
   };
 }
