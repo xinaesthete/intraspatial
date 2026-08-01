@@ -36,15 +36,20 @@ Each one is, measured from `uDFaO.ome.png` (COVID_SAMPLE_16_ROI_3):
   `138Ba`, `aSMA`, `CD56`, `HLADR`, `EpCAM`, `CD107a`, `CD16`, … — i.e. calibration/background
   channels mixed in with the antibody panel, which a naive "channel 0 is the first marker" mapping
   would get wrong.
-- 49 × 2000² × 4 B = **784 MB raw per ROI**, ~250 MB after LZW. So ~25 GB raw across 32 ROIs against
-  6.0 GB stored.
+- 49 × 2000² × 4 B = **784 MB raw per ROI**, 197.5 MB after LZW (measured, this file). **Not every
+  stack is 2000²** — eight of the 32 have other extents, from 930 × 2750 to 1250 × 3500, though all
+  32 do have 49 channels. So the true raw total is **22.3 GB** across 32 ROIs against 6.0 GB stored.
 
 ## Per-ROI structure, from `datasources.json`
 
 Each of the 32 entries under `regions.all_regions.<ROI>` carries:
 
 - `ome_tiff` / `viv_image.file` → the 49-channel stack above (both keys, same file)
-- `images.he` → **H&E, tissue morphology.** RGB 8-bit, ~2000 × 2000
+- `images.he` → **H&E, tissue morphology.** 8-bit **RGBA** (alpha is constant 255 — drop it), and
+  **not 2000², nor a fixed size**: the 30 images have 30 different extents and each carries its own
+  offset. This ROI's is 3630 × 3630 px over 1857.2 µm at offset (26.5, 79.5), i.e. ~0.51 µm/px
+  against the IMC grid's 1.0. Every one needs its own affine — which SpatialData handles natively
+  and MDV's `position`/`width` pair only approximates
 - `images.cellmask` → **a BINARY foreground mask**, 8-bit, exactly two values (0/255). Not a label
   image — see `docs/mdv-zarr-to-spatialdata-tables.md` finding B
 - `images.DNA1_Ir191` → 8-bit *grayscale* — **not migrating, decided 2026-08-01** (see below)
@@ -83,9 +88,12 @@ flattening them into one would be the main thing to get wrong:
   being either derived (dropped) or a label mask.
 - **The 49-channel float32 stack is `images` too, but a different problem.** High bit depth,
   many channels, quantitative values that downstream statistics read — so the compression question is
-  real rather than cosmetic, and it lands squarely on `docs/dwt-gpu-and-high-bit-depth.md`. Worth
-  measuring lossless HTJ2K against the current LZW before assuming lossy is needed at all; LZW on
-  float32 is close to the worst case, so the headroom may be large.
+  real rather than cosmetic, and it lands squarely on `docs/dwt-gpu-and-high-bit-depth.md`.
+  **Measured 2026-08-01 — see `docs/imc-image-compression-measurements.md`.** The guess that once
+  stood here (LZW near worst case, large headroom) is wrong: LZW suits this data well, and lossless
+  HTJ2K on the quantised stack is *53% larger* than doing nothing. The answer is to split the stack
+  into a lossless float32 source (zstd-9, shuffle **off**, 1.4× better than today) and a separate
+  8-bit arcsinh viewing layer.
 
 ## Decided: nothing derived from the IMC stack gets migrated (2026-08-01)
 
@@ -119,10 +127,14 @@ three is replaced.
 
 ## Open questions, in the order they need answering
 
-1. **Lossless or lossy for the IMC stack?** Measure first. It carries the quantitative signal, and
-   `cellmask` is non-negotiable, but H&E is not.
+1. ~~**Lossless or lossy for the IMC stack?**~~ **Answered 2026-08-01, measured** —
+   `docs/imc-image-compression-measurements.md`. Both: a lossless float32 source array and a
+   separate lossy 8-bit viewing layer, because no single browser-decodable configuration is both
+   small and quantitatively faithful on this data.
 2. **Where does the pyramid come from?** Nothing here is pyramidal today; 2000² is small enough that
-   it may not need to be, which would keep the conversion simple.
+   it may not need to be, which would keep the conversion simple. `spatialdata-js-util`'s
+   `add-pyramid` is the ready-made answer if it is needed — it generates levels through
+   SpatialData's own parsers, which get the half-pixel translation right.
 3. **One SpatialData zarr, or one per ROI?** The 32 ROIs are separate tissue sections and every
    statistic in this stream is per-ROI (see `docs/cell-stats.md`), so the pressure is toward
    separate — but the cell table is already one store covering all 32.
