@@ -98,8 +98,12 @@ the content-addressed memo (`op | params | inputKeys`) invalidates exactly its d
 | two-level filter | built in (background vs local) | absent |
 | implemented? | **yes, in production, on 35M rows** | **no** |
 
-**The last row is the one to keep in view.** One of these models is running on real data at scale and
-the other is a paper design. Where they disagree, MDV's version has evidence behind it.
+**The last row needs a qualifier, added 2026-08-01 after the MDV side pointed it out.** One of these
+is running on real data and the other is a paper design, so MDV is the evidence — but *for the data
+structures, not for the access path*. The `useFilteredIndices` hook that most call sites go through
+is **currently slower than the mechanisms it replaced**, and is something MDV is actively trying to
+improve rather than a settled reference. §4 separates the part that is proven from the part that is
+not; §6 explains why the regression is an argument *for* the DAG rather than against it.
 
 ## 4. Where they already agree
 
@@ -107,11 +111,19 @@ More than ADR-0005 assumed, and this is the encouraging part.
 
 - **The representation is the same shape.** A byte-per-row mask in a flat shared buffer *is* the dense
   encoding; ADR-0005's contribution there is only to widen the byte to a weight.
-- **MDV already built `materializeSupport`.** `getFilteredIndices` runs a worker
-  (`filteredIndexWorker.ts`) that turns the byte array into a compact `Uint32Array`, promise-cached
-  and shared across charts — and it is load-bearing for the deck.gl path, which draws only passing
-  points. The mask⇄index duality is not a proposal in MDV; it is production code. ADR-0005 should
-  cite it as precedent rather than as future work.
+- **MDV already built `materializeSupport` — but cite the worker, not the hook.** `getFilteredIndices`
+  runs `filteredIndexWorker.ts`, turning the byte array into a compact `Uint32Array`, promise-cached
+  and shared across charts; `useSimplerFilteredIndices` is the React face of that, and it is
+  load-bearing for the deck.gl path, which draws only passing points. **That** is the proven
+  precedent, and ADR-0005 should cite it rather than treating the index encoding as future work.
+
+  What is **not** proven is the layer above it. `useFilteredIndices` wraps the shared list and applies
+  the chart-scope predicate *synchronously* (`useScopedFilteredIndices`), then `useOwnedFilteredIndices`
+  adds ownership math over the arrays — per chart, per render, on the main thread, over a list that
+  can be ~1M elements. The MDV side reports the hook is now **slower than the mechanisms it replaced**,
+  and it was not always so. So the split is: the off-thread compact-list *production* is the design to
+  borrow; the on-thread per-chart *consumption* built on top is a regression under active repair and
+  must not be quoted back as validation of anything.
 - **Both dependency-track.** `filterColumns` and `inputKeys` are the same idea at different fidelities.
 - **MDV independently arrived at our kernels.** Its §A1 proposes a per-row GPU predicate modelled on
   `nnDistance.ts`, and §B1 proposes `splatDensityGpu(xs, ys, {weights: passingMask})` for a live
@@ -257,6 +269,34 @@ a full-N elementwise pass is trivial there and the memo bounds it to the affecte
 is a real regression if evaluated on the host, and it is the reason the GPU kernel is a prerequisite
 rather than an optimisation.
 
+### The regression in `useFilteredIndices` is an argument *for* the graph
+
+Tempting to read "MDV's current filtering got slower" as a caution against changing anything. It is
+closer to the opposite, because of *where* the cost accumulated.
+
+MDV's own note lists nine responsibilities accreted onto one hook across four files plus a divergent
+copy in `scatter_state.ts`. Two of them are the tell:
+
+- **§C item 3** — chart-scope filtering is *"an entirely separate, in-memory, main-thread filter
+  layered on top of the Dimension system, with its own async column loading + readiness state
+  machine."* A second filter that could not be a Dimension, so it was built beside the Dimensions.
+- **§C item 6** — `useCategoryFilterIndices` *deliberately bypasses Dimensions for speed*, with a
+  comment explaining that a Dimension *"always passes through all rows, which this doesn't."* Someone
+  measured the model and routed around it.
+
+Both are the same phenomenon as the 4-state byte in §5, seen from the performance side rather than
+the expressiveness side: **when the model has nowhere to put a thing, the thing gets built next to the
+model.** A flat list of AND-ed dimensions has no slot for "a filter scoped to one chart", no slot for
+"a cheap sub-selection that skips the full scan", and no slot for "background vs local" — so those
+became a React layer, a bypass, and an enum respectively. The accretion *is* the missing structure,
+and its cost is now measurable.
+
+A DAG gives each of them a slot: a chart-scope filter is a node with one consumer, a sub-selection is
+a node over an upstream compact index list (hence O(selected), which is exactly the bypass's
+justification), and background-vs-local is two nodes. Whether that is *faster* is an open question
+answerable only by building it — but it is at least a place to put the work, which is what is missing
+now.
+
 ## 7. What this would mean for `cellTable`
 
 The per-type split in `playground/src/datasource/cellTable.ts` is the concrete case that raised this.
@@ -308,5 +348,8 @@ Open questions, in the order they change the design:
   `splatDensityGpu`, and intending the same DAG (§6). Read both before starting either. The two notes
   between them cover the representation, the kernels, the async story and the cleanup — and neither
   writes down the composition algebra, which is the one thing a filter DAG cannot be built without.
+  **Read it as a repair plan, not a description of a working system**: its §C cleanup is aimed at the
+  `useFilteredIndices` cluster that is currently a performance regression, so anything in this note
+  that cites MDV as evidence should be checked against §4's split of proven from unproven.
 - [`fuzzy-tda-and-windowing.md`](fuzzy-tda-and-windowing.md) — the windows-not-quadrats argument,
   which is the same argument as soft masks one front over.
