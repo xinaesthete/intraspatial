@@ -30,7 +30,7 @@ import { defineConfig } from "vitest/config";
 // interacted worse with Dawn's atexit — which was indeed this same lifetime bug from
 // another angle. Full `pnpm test` and `pnpm bench:readback` pass on 24.18.0 and 26.5.0,
 // 9/9 clean exits, so `volta.node` is now 24.18.0. The three Dawn limits recorded in
-// ADR-0003 went the same way; probes in `test/adr3-limits.gpu.test.ts`.
+// ADR-0003 went the same way; probes in `test/dawn-limits-sweep.gpu.test.ts`.
 //
 // If flakiness reappears, suspect a native object we are failing to keep alive before
 // concluding that Dawn is unreliable.

@@ -83,6 +83,36 @@ describe("ADR-0003: multiple guarded compute pipelines in one process", () => {
   });
 });
 
+// ADR-0017 is the one claim in this sweep that does NOT get retired. Wrapping a
+// pooled buffer as a TypeGPU buffer makes the root a second owner of the same
+// Dawn handle, so exit double-frees it — a genuine ownership bug that merely
+// produces the same symptom as the lifetime one. The fix (one cached wrapper per
+// raw buffer, `backend.node.ts`) is what this pins.
+describe("ADR-0017: pooled-buffer wrapper ownership", () => {
+  it("one cached wrapper per raw buffer reads correctly across reuse", async () => {
+    const device = await getDevice();
+    const root = tgpu.initFromDevice({ device });
+    const N = 256;
+    const raw = device.createBuffer({
+      size: N * 4,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
+    });
+    // the fix: ONE wrapper, reused — exactly what backend.node.ts's WeakMap gives
+    const wrapper = root.createBuffer(d.arrayOf(d.f32, N), raw);
+    for (let cycle = 0; cycle < 8; cycle++) {
+      const data = new Float32Array(N);
+      for (let i = 0; i < N; i++) data[i] = i + cycle;
+      device.queue.writeBuffer(raw, 0, data);
+      const got = (await wrapper.read()) as ArrayLike<number>;
+      expect(got[0]).toBeCloseTo(cycle, 5);
+      expect(got[N - 1]).toBeCloseTo(N - 1 + cycle, 5);
+    }
+    // `raw` belongs to the pool, so the pool frees it — the wrapper must not have
+    // taken ownership, or this is the double free ADR-0017 describes
+    raw.destroy();
+  });
+});
+
 // ADR-0003: "a raw `mapAsync` on a pooled `MAP_READ` buffer **segfaulted the
 // vitest worker on teardown**, even though the same render+readback exits
 // cleanly outside vitest". Pooled = reused across calls, then grown.

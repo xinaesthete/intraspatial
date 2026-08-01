@@ -6,7 +6,7 @@ Status: **accepted** (2026-06-28) — **three Dawn limits below superseded 2026-
 > and it is fixed.** They were recorded 2026-06-28; `src/gpu/device.ts` was letting
 > Dawn's Instance be GC'd out from under a live device, fixed 2026-07-29 (`4e326b0`).
 > Re-tested 2026-08-01 on Node 24.18.0, 5 runs of 5 clean, probes in
-> [`test/adr3-limits.gpu.test.ts`](../../test/adr3-limits.gpu.test.ts):
+> [`test/dawn-limits-sweep.gpu.test.ts`](../../test/dawn-limits-sweep.gpu.test.ts):
 >
 > | claimed limit | re-tested | result |
 > |---|---|---|

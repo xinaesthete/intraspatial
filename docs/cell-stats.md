@@ -685,13 +685,19 @@ playground/src/datasource/cellCsv.ts     CSV → CellTable
 
 ## 11. Known limits
 
-- **`src/gpu/spatial/tcmRender.ts` segfaults Dawn-on-Node's `atexit`** after a couple of
-  render-plus-readback cycles in one test file. The assertions pass first — measured relMax 1.8e-4
-  against the oracle in-process — but the fork dies before vitest flushes, so the run reports
-  nothing. Caching texture views and bind groups reduced the live object count without fixing it.
-  CI therefore keeps two smoke tests with teeth (mass conservation pins pass 1's normalisation and
-  world mapping; sign structure pins pass 2), and the full parity sweep runs in the browser via the
-  demo's oracle button. Not root-caused.
+- ~~**`src/gpu/spatial/tcmRender.ts` segfaults Dawn-on-Node's `atexit`**~~ — **fixed and retired
+  2026-08-01.** It was the Dawn Instance-lifetime bug in `src/gpu/device.ts` (fixed 2026-07-29,
+  `4e326b0`), not anything in this module; "not root-caused" is now root-caused. Twelve
+  render-plus-readback cycles run clean, 5 runs of 5, so **the parity sweep has come back from the
+  browser** into `tcmRender.gpu.test.ts`. What it asserts is convergence rather than a single error
+  number, because that is the claim worth guarding: relMax against the continuous oracle falls
+  3.3e-2 → 5.6e-3 → 2.3e-3 across 32²/64²/128² for a quartic mark, which is discretisation error
+  shrinking as the grid refines — a formulation error would hold roughly constant instead.
+  `TOPHAT` is asserted separately and by RMS: it is a hard disk, so the field has a step, and a
+  max-norm error at a discontinuity plateaus rather than converging (5.3e-2 → 2.1e-2 → 2.6e-2).
+  Note the old note's "relMax 1.8e-4 for a quartic mark at 48²" is not reproduced here — 1.5e-2 at
+  48² under the parameters above — but the configuration behind that figure was not recorded, so
+  this is a different measurement rather than a contradiction of it.
 - **A declared scale is not a measured one.** Where a store states its unit, lengths are real µm;
   where it does not (Leap034), the µm/unit box is an assumption and everything is marked `µm*`.
   Nothing in the pipeline can tell the two apart for you.

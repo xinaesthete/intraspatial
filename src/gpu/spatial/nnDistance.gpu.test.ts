@@ -46,7 +46,7 @@ describe("nearestNeighborDistancesGpu", () => {
     // has done enough GPU work (~>=256 points here)". That ceiling was the Dawn
     // Instance-lifetime bug in src/gpu/device.ts, fixed 2026-07-29; re-tested
     // 2026-08-01 to 8192 points, 5 runs of 5 clean. See ADR-0003 and
-    // test/adr3-limits.gpu.test.ts. 2048 keeps the CPU golden (O(n²)) quick.
+    // test/dawn-limits-sweep.gpu.test.ts. 2048 keeps the CPU golden (O(n²)) quick.
     const n = 2048;
     const xs = Array.from({ length: n }, () => rnd() * 100);
     const ys = Array.from({ length: n }, () => rnd() * 100);

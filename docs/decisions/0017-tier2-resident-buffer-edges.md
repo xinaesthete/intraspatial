@@ -220,8 +220,13 @@ op you convert is not always the op that is transferring.
   owners free it at teardown. That was harmless while readback targets were module-scoped
   singletons — one wrapper each, created once — but a pool *recycles* buffers, so an uncached
   wrap mints a fresh owner for the same Dawn handle on every download, and process exit then
-  double-frees it. This is a new way to reach the ADR-0002/0003 atexit segfault, created by the
-  pool itself. `backend.node.readbackF32` now caches one wrapper per buffer, and resident ops
+  double-frees it. This reaches the same *symptom* as the ADR-0002/0003 atexit segfault, created by
+  the pool itself. **Re-checked 2026-08-01 and it stands** — when the 2026-06/07 "Dawn is
+  unreliable" constraints were swept (they were all one GC bug in `device.ts`, fixed `4e326b0`),
+  this one did **not** go with them: two owners freeing one handle is a genuine double free
+  regardless of Instance lifetime, so the fix is load-bearing, not a workaround for something else.
+  Pinned by `test/dawn-limits-sweep.gpu.test.ts`. `backend.node.readbackF32` caches one wrapper per
+  buffer, and resident ops
   build **raw** bind groups ([`residentBind.ts`](../../src/gpu/graph/residentBind.ts)) rather than
   wrapping at all, so ownership stays with the pool.
 - **`hashSource`'s fallthrough was a correctness bug, not just a perf one.** A value with neither
