@@ -1,6 +1,25 @@
 # ADR-0003 — Author compute kernels in `"use gpu"` (TGSL), run via resolved WGSL
 
-Status: **accepted** (2026-06-28)
+Status: **accepted** (2026-06-28) — **three Dawn limits below superseded 2026-08-01**
+
+> ⚠️ **The three "Dawn instability" constraints in this ADR were all one bug of ours,
+> and it is fixed.** They were recorded 2026-06-28; `src/gpu/device.ts` was letting
+> Dawn's Instance be GC'd out from under a live device, fixed 2026-07-29 (`4e326b0`).
+> Re-tested 2026-08-01 on Node 24.18.0, 5 runs of 5 clean, probes in
+> [`test/adr3-limits.gpu.test.ts`](../../test/adr3-limits.gpu.test.ts):
+>
+> | claimed limit | re-tested | result |
+> |---|---|---|
+> | 2nd guarded pipeline segfaults teardown | 4 pipelines, each dispatched + read | **gone** |
+> | nnDistance segfaults past ~256 points | 256 → 8192 points, checked vs CPU golden | **gone** |
+> | raw `mapAsync` on a pooled MAP_READ buffer kills the vitest worker | pooled, reused 3×, then grown | **gone** |
+>
+> **The decision itself still stands** — resolved WGSL + a layout-bound pipeline is
+> still the right pattern, because it builds once and survives buffer growth. What
+> changes is that it is now a design preference rather than a crash workaround, and
+> the *test-size* caps taken on its account can be lifted (`nnDistance.gpu.test.ts`
+> went 160 → 2048). The Node ≥ 20.11 requirement below is unrelated and still real;
+> the Volta pin moved 22.23.1 → 24.18.0.
 
 ## Decision
 

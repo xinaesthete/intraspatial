@@ -23,12 +23,14 @@ import { defineConfig } from "vitest/config";
 //   • 93 tests pass deterministically. The only failing files are the ones that import
 //     `rust/htj2k-core/pkg` and need `pnpm build:wasm` first — not a GPU issue.
 //
-// The historical notes are kept because they remain the reason for two choices:
+// One historical note is kept, because it remains the reason for a choice:
 //   • **Forks, not worker threads.** Keeps the native GPU handle out of a shared thread.
-//   • **Node pinned at 22 (volta).** Measured during the 2026-07 toolchain bump: newer
-//     V8/Node shutdown interacted worse with Dawn's atexit. That was probably the same
-//     lifetime bug seen from another angle, so it is worth re-testing on Node 24/26 now
-//     — but it has NOT been re-tested, so the pin stands.
+//
+// **The Node-22 pin is gone (2026-08-01).** It existed because newer V8/Node shutdown
+// interacted worse with Dawn's atexit — which was indeed this same lifetime bug from
+// another angle. Full `pnpm test` and `pnpm bench:readback` pass on 24.18.0 and 26.5.0,
+// 9/9 clean exits, so `volta.node` is now 24.18.0. The three Dawn limits recorded in
+// ADR-0003 went the same way; probes in `test/adr3-limits.gpu.test.ts`.
 //
 // If flakiness reappears, suspect a native object we are failing to keep alive before
 // concluding that Dawn is unreliable.

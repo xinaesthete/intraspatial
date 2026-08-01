@@ -42,12 +42,12 @@ describe("nearestNeighborDistancesGpu", () => {
 
   it("matches the CPU golden on a random cloud (grows the pool)", async () => {
     const rnd = mulberry32(0xc0ffee);
-    // Kept small on purpose: under Node+Dawn the process-exit teardown segfaults
-    // once a process has done "enough" GPU work (~>=256 points here; same Dawn
-    // instability the gpu vitest config isolates per-file). Correctness is
-    // N-independent, so 160 points validates the kernel + tail guard + pool
-    // growth; large-N validation belongs in the browser harness.
-    const n = 160;
+    // Was 160, capped because "the process-exit teardown segfaults once a process
+    // has done enough GPU work (~>=256 points here)". That ceiling was the Dawn
+    // Instance-lifetime bug in src/gpu/device.ts, fixed 2026-07-29; re-tested
+    // 2026-08-01 to 8192 points, 5 runs of 5 clean. See ADR-0003 and
+    // test/adr3-limits.gpu.test.ts. 2048 keeps the CPU golden (O(n²)) quick.
+    const n = 2048;
     const xs = Array.from({ length: n }, () => rnd() * 100);
     const ys = Array.from({ length: n }, () => rnd() * 100);
     const gpu = await nearestNeighborDistancesGpu(xs, ys);
