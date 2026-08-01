@@ -605,11 +605,11 @@ export async function readCellTable(
  * linked highlight lights nothing, and the matrix is two solid colours. A CSR or co-located pattern
  * shows the machinery working AND has an answer to check it against.
  */
-export function syntheticCellTable(opts: { pattern?: string; n?: number; seed?: number; system?: string } = {}): CellTable {
+export function syntheticCellTable(opts: { pattern?: string; n?: number; seed?: number; types?: number; system?: string } = {}): CellTable {
   const system = opts.system ?? "fixture";
   const placement: ResolvedPlacement = { system, worldFromArray: IDENTITY_AFFINE };
   const key = opts.pattern ?? "colocalised";
-  const pattern = makePointPattern(key, { n: opts.n ?? 1200, seed: opts.seed ?? 1 });
+  const pattern = makePointPattern(key, { n: opts.n ?? 1200, seed: opts.seed ?? 1, types: opts.types });
   const clouds = patternClouds(pattern);
   const types: CellTypeCloud[] = clouds.map((c) => {
     const provenance: FieldProvenance = { region: "synthetic", instanceKey: "cell_id", cellTypeId: c.id };

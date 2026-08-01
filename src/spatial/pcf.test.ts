@@ -189,3 +189,61 @@ describe("crossPCFBinMembership", () => {
     expect([...m.countB]).toEqual(new Array(10).fill(0));
   });
 });
+
+describe("crossPCFBinMembership — the per-cell invariant the highlight rests on", () => {
+  // The bin-level agreement test above says the right BINS are occupied. It does not say the right
+  // CELLS are lit, and that is the claim the panel actually makes: "these are the cells that
+  // produced g(r) there". A mask built from the wrong cloud, or shifted by one type, would still
+  // occupy the right bins. So this checks every cell against a brute-force O(N²) pass.
+  const P = { bbox: [0, 0, 300, 300], rMax: 60, nBins: 12 } as const; // dr = 5
+
+  function cloud(n: number, seed: number) {
+    let s = seed;
+    const rnd = () => {
+      s = (s * 1103515245 + 12345) & 0x7fffffff;
+      return s / 0x7fffffff;
+    };
+    const xs: number[] = [];
+    const ys: number[] = [];
+    for (let i = 0; i < n; i++) {
+      xs.push(rnd() * 300);
+      ys.push(rnd() * 300);
+    }
+    return { xs, ys };
+  }
+
+  it("lights a cell in bin k exactly when it has a partner at that separation", () => {
+    const a = cloud(400, 17);
+    const b = cloud(350, 91);
+    const m = crossPCFBinMembership(a, b, P);
+    const dr = P.rMax / P.nBins;
+
+    // Brute force, both directions.
+    const wantA = new Uint32Array(a.xs.length);
+    const wantB = new Uint32Array(b.xs.length);
+    for (let i = 0; i < a.xs.length; i++) {
+      for (let j = 0; j < b.xs.length; j++) {
+        const d = Math.hypot(a.xs[i]! - b.xs[j]!, a.ys[i]! - b.ys[j]!);
+        if (d >= P.rMax) continue;
+        const bit = 1 << Math.min(P.nBins - 1, Math.floor(d / dr));
+        wantA[i]! |= bit;
+        wantB[j]! |= bit;
+      }
+    }
+    for (let i = 0; i < a.xs.length; i++) expect(m.maskA[i], `A cell ${i}`).toBe(wantA[i]);
+    for (let j = 0; j < b.xs.length; j++) expect(m.maskB[j], `B cell ${j}`).toBe(wantB[j]);
+  });
+
+  it("holds when the clouds are far apart in index order — the bucket grid is not index-sensitive", () => {
+    // Two well-separated blobs, so most candidate pairs are rejected by the grid rather than the
+    // distance test. If the 3×3 neighbourhood were ever too small, this is where it shows.
+    const a = { xs: [10, 12, 14, 280, 282], ys: [10, 12, 14, 280, 282] };
+    const b = { xs: [40, 250], ys: [40, 250] };
+    const m = crossPCFBinMembership(a, b, { ...P, rMax: 60, nBins: 12 });
+    // A[0] at (10,10) is 42.4 from B[0] at (40,40) → bin 8 = [40,45)
+    expect(m.maskA[0]).toBe(1 << 8);
+    // A[3] at (280,280) is 42.4 from B[1] at (250,250) → the same bin
+    expect(m.maskA[3]).toBe(1 << 8);
+    expect(m.maskB[0]! & (1 << 8)).toBeTruthy();
+  });
+});

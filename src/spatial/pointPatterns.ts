@@ -79,6 +79,12 @@ export interface PatternOptions {
   /** Observation window. Defaults to a 1000-unit square, which at the default σ leaves room for the
    *  clustered patterns to show several cluster diameters. */
   readonly bbox?: Bbox;
+  /** Number of cell types. Every pattern here takes it, because a pair is a special case and not the
+   *  interesting one: the Gram-matrix / eigen-mode work on `cellmodes.html` reads a K×K matrix, and
+   *  the questions it answers — which types form a guild, how many independent modes there are —
+   *  have no two-type version at all. Defaults to 2 where a pair is the natural reading of the
+   *  process, more where it is not. */
+  readonly types?: number;
 }
 
 // --- primitives ----------------------------------------------------------------------
@@ -158,17 +164,27 @@ const CONST_ONE: PatternTruth["crossG"] = () => 1;
 
 const DEFAULT_BBOX: Bbox = [0, 0, 1000, 1000];
 
-function opts(o: PatternOptions): { n: number; bbox: Bbox; rnd: () => number } {
-  return { n: o.n ?? 1500, bbox: o.bbox ?? DEFAULT_BBOX, rnd: mulberry32((o.seed ?? 1) >>> 0) };
+function opts(o: PatternOptions, defaultTypes: number): { n: number; bbox: Bbox; rnd: () => number; K: number } {
+  return {
+    n: o.n ?? 1500,
+    bbox: o.bbox ?? DEFAULT_BBOX,
+    rnd: mulberry32((o.seed ?? 1) >>> 0),
+    K: Math.max(1, Math.floor(o.types ?? defaultTypes)),
+  };
 }
 
-/** Complete spatial randomness: two independent homogeneous Poisson processes. */
+/** `A, B, C …` past the alphabet, then `T27`. Short enough for a matrix axis label. */
+function names(K: number, stem: string): string[] {
+  return Array.from({ length: K }, (_, i) => (K <= 26 ? `${stem} ${String.fromCharCode(65 + i)}` : `${stem} ${i + 1}`));
+}
+
+/** Complete spatial randomness: K mutually independent homogeneous Poisson processes. */
 export function csr(o: PatternOptions = {}): PointPattern {
-  const { n, bbox, rnd } = opts(o);
+  const { n, bbox, rnd, K } = opts(o, 2);
   const xs: number[] = [];
   const ys: number[] = [];
   const typeId: number[] = [];
-  for (let t = 0; t < 2; t++) {
+  for (let t = 0; t < K; t++) {
     const p = poissonPoints(n, bbox, rnd);
     for (let i = 0; i < p.xs.length; i++) {
       xs.push(p.xs[i]!);
@@ -180,11 +196,11 @@ export function csr(o: PatternOptions = {}): PointPattern {
     xs,
     ys,
     typeId,
-    typeNames: ["csr A", "csr B"],
+    typeNames: names(K, "csr"),
     bbox,
     truth: {
       crossG: CONST_ONE,
-      note: "g ≡ 1 everywhere, for every pair. The null yardstick: anything an estimator reports here that is not 1 is its own error.",
+      note: `g ≡ 1 everywhere, for all ${(K * (K + 1)) / 2} pairs. The null yardstick: anything an estimator reports here that is not 1 is its own error, and the K×K matrix should have exactly one mode — none.`,
     },
   };
 }
@@ -205,15 +221,15 @@ export function csr(o: PatternOptions = {}): PointPattern {
  * labelling and random shift respectively answer.
  */
 export function thomas(o: PatternOptions & { sigma?: number; parents?: number } = {}): PointPattern {
-  const { n, bbox, rnd } = opts(o);
+  const { n, bbox, rnd, K } = opts(o, 2);
   const sigma = o.sigma ?? 30;
   const nParents = o.parents ?? 40;
   const outer = expand(bbox, PARENT_MARGIN * sigma);
   // κ is defined over the EXPANDED window, because that is the window the parents actually live in
   // and the pcf formula wants the true parent intensity.
   const kappa = nParents / areaOf(outer);
-  // 2n, because `n` is per type and the coin flip halves each.
-  const perParent = offspringPerParent(2 * n, nParents, bbox, outer);
+  // K·n, because `n` is per type and the label draw splits the population K ways.
+  const perParent = offspringPerParent(K * n, nParents, bbox, outer);
   const parents = poissonPoints(nParents, outer, rnd);
   const xs: number[] = [];
   const ys: number[] = [];
@@ -226,7 +242,7 @@ export function thomas(o: PatternOptions & { sigma?: number; parents?: number } 
       if (inside(bbox, x, y)) {
         xs.push(x);
         ys.push(y);
-        typeId.push(rnd() < 0.5 ? 0 : 1);
+        typeId.push(Math.min(K - 1, Math.floor(rnd() * K)));
       }
     }
   }
@@ -234,13 +250,13 @@ export function thomas(o: PatternOptions & { sigma?: number; parents?: number } 
     xs,
     ys,
     typeId,
-    typeNames: ["cluster half A", "cluster half B"],
+    typeNames: names(K, "clump"),
     bbox,
     truth: {
       // Auto and cross alike: thinning does not change the pcf, so both labels and the pair between
       // them all follow the same closed form.
       crossG: (_a, _b, r) => thomasG(r, sigma, kappa),
-      note: `One clustered population under a coin flip, so g(r) = 1 + exp(−r²/4σ²)/(4πκσ²) for EVERY pair (σ=${sigma}, κ=${kappa.toExponential(3)}); g(0⁺) ≈ ${thomasG(0, sigma, kappa).toFixed(2)}. The two types are strongly cross-clustered and yet have no association — they are one population.`,
+      note: `One clustered population split ${K} ways at random, so g(r) = 1 + exp(−r²/4σ²)/(4πκσ²) for EVERY pair (σ=${sigma}, κ=${kappa.toExponential(3)}); g(0⁺) ≈ ${thomasG(0, sigma, kappa).toFixed(2)}. Every type is strongly cross-clustered with every other and yet none is associated with any — it is one population wearing ${K} labels, so the K×K matrix should show ONE mode.`,
     },
   };
 }
@@ -260,7 +276,7 @@ export function thomas(o: PatternOptions & { sigma?: number; parents?: number } 
  *  fixed bias. Anything calibrating a false-positive rate on this pattern is calibrating against
  *  0.92, not against 1. */
 export function independentClustered(o: PatternOptions & { sigma?: number; parents?: number } = {}): PointPattern {
-  const { n, bbox, rnd } = opts(o);
+  const { n, bbox, rnd, K } = opts(o, 2);
   const sigma = o.sigma ?? 30;
   const nParents = o.parents ?? 40;
   const outer = expand(bbox, PARENT_MARGIN * sigma);
@@ -269,7 +285,7 @@ export function independentClustered(o: PatternOptions & { sigma?: number; paren
   const ys: number[] = [];
   const typeId: number[] = [];
   const perParent = offspringPerParent(n, nParents, bbox, outer);
-  for (let t = 0; t < 2; t++) {
+  for (let t = 0; t < K; t++) {
     const parents = poissonPoints(nParents, outer, rnd);
     for (let p = 0; p < parents.xs.length; p++) {
       const m = poisson(perParent, rnd);
@@ -288,20 +304,25 @@ export function independentClustered(o: PatternOptions & { sigma?: number; paren
     xs,
     ys,
     typeId,
-    typeNames: ["clustered A", "clustered B"],
+    typeNames: names(K, "clustered"),
     bbox,
     truth: {
       // Each type clusters on its own parents; the two parent sets are independent, so the CROSS
       // pcf is flat 1 while both auto-pcfs are well above it.
       crossG: (a, b, r) => (a === b ? thomasG(r, sigma, kappa) : 1),
-      note: "Each type clustered, the two independent of each other: auto-g ≫ 1 but cross-g ≡ 1. Association is absent; exchangeability is too.",
+      note: `Each of the ${K} types clustered on its own centres, all mutually independent: auto-g ≫ 1 but every cross-g ≡ 1. Association is absent; exchangeability is too. The K×K matrix should be diagonal — ${K} modes, not one.`,
     },
   };
 }
 
-/** Type B scattered around the cells of type A — genuine co-location. */
+/** Types 1…K−1 scattered around the cells of type 0 — genuine co-location, on a shared anchor.
+ *
+ *  With more than two types this says something a pair cannot: the recruited types are co-located
+ *  with the anchor AND with each other, without any of them influencing another. Their mutual
+ *  association is entirely inherited from the anchor they share — which is the multi-type form of
+ *  the confound the partial correlation exists to remove, and it has a closed form on both legs. */
 export function colocalised(o: PatternOptions & { sigma?: number; perAnchor?: number } = {}): PointPattern {
-  const { n, bbox, rnd } = opts(o);
+  const { n, bbox, rnd, K } = opts(o, 2);
   const sigma = o.sigma ?? 25;
   // Mean B recruited per A. λ_B = λ_A · perAnchor, so 1 gives the two types the same intensity and
   // `n` means the same thing for both — which is what every other pattern here promises.
@@ -322,15 +343,17 @@ export function colocalised(o: PatternOptions & { sigma?: number; perAnchor?: nu
       typeId.push(0);
     }
   }
-  for (let i = 0; i < allA.xs.length; i++) {
-    const m = poisson(perParent, rnd);
-    for (let k = 0; k < m; k++) {
-      const x = allA.xs[i]! + gauss(rnd) * sigma;
-      const y = allA.ys[i]! + gauss(rnd) * sigma;
-      if (inside(bbox, x, y)) {
-        xs.push(x);
-        ys.push(y);
-        typeId.push(1);
+  for (let t = 1; t < K; t++) {
+    for (let i = 0; i < allA.xs.length; i++) {
+      const m = poisson(perParent, rnd);
+      for (let k = 0; k < m; k++) {
+        const x = allA.xs[i]! + gauss(rnd) * sigma;
+        const y = allA.ys[i]! + gauss(rnd) * sigma;
+        if (inside(bbox, x, y)) {
+          xs.push(x);
+          ys.push(y);
+          typeId.push(t);
+        }
       }
     }
   }
@@ -338,45 +361,63 @@ export function colocalised(o: PatternOptions & { sigma?: number; perAnchor?: nu
     xs,
     ys,
     typeId,
-    typeNames: ["anchor A", "recruited B"],
+    typeNames: ["anchor", ...names(K - 1, "recruited")],
     bbox,
     truth: {
-      crossG: (a, b, r) => (a === b ? undefined : parentOffspringG(r, sigma, lambdaA)),
-      note: `B sits around A: cross-g(r) = 1 + exp(−r²/2σ²)/(2πσ²λ_A) exactly (σ=${sigma}). The auto-pcfs have no closed form here.`,
+      crossG: (a, b, r) => {
+        if (a === b) return undefined; // an offspring type against itself has no closed form here
+        // Anchor against a recruited type: ONE displacement, so 2σ². Two recruited types: the
+        // difference of two independent displacements, so 4σ² — the same distinction that separates
+        // `parentOffspringG` from `thomasG`, and getting it the wrong way round would inflate the
+        // claimed correlation length by √2.
+        if (a === 0 || b === 0) return parentOffspringG(r, sigma, lambdaA);
+        return thomasG(r, sigma, lambdaA);
+      },
+      note: `${K - 1} recruited type(s) sit around one anchor: anchor↔recruited g(r) = 1 + exp(−r²/2σ²)/(2πσ²λ_A), and recruited↔recruited g(r) = 1 + exp(−r²/4σ²)/(4πσ²λ_A) — co-located purely by sharing the anchor, with no influence between them (σ=${sigma}).`,
     },
   };
 }
 
-/** Two types in disjoint regions with a clear gap — mutual exclusion. */
+/** K types in disjoint vertical strips separated by `gap` — mutual exclusion, ordered.
+ *
+ *  Beyond two types this gains a property a pair has no room for: the exclusion is GRADED by how far
+ *  apart the strips are, so the true K×K matrix has a band structure and the type ordering is
+ *  recoverable from it. That is a much sharper test of an ordination than a two-block split. */
 export function segregated(o: PatternOptions & { gap?: number } = {}): PointPattern {
-  const { n, bbox, rnd } = opts(o);
+  const { n, bbox, rnd, K } = opts(o, 2);
   const gap = o.gap ?? 120;
-  const midX = (bbox[0] + bbox[2]) / 2;
-  const left: Bbox = [bbox[0], bbox[1], midX - gap / 2, bbox[3]];
-  const right: Bbox = [midX + gap / 2, bbox[1], bbox[2], bbox[3]];
+  const span = bbox[2] - bbox[0];
+  // K strips of equal width with K−1 gaps between them.
+  const width = Math.max(1e-6, (span - (K - 1) * gap) / K);
   const xs: number[] = [];
   const ys: number[] = [];
   const typeId: number[] = [];
-  for (const [t, win] of [left, right].entries()) {
-    const p = poissonPoints(n, win, rnd);
+  for (let t = 0; t < K; t++) {
+    const x0 = bbox[0] + t * (width + gap);
+    const p = poissonPoints(n, [x0, bbox[1], x0 + width, bbox[3]], rnd);
     for (let i = 0; i < p.xs.length; i++) {
       xs.push(p.xs[i]!);
       ys.push(p.ys[i]!);
       typeId.push(t);
     }
   }
+  /** Closest any point of strip `a` can be to any point of strip `b`. Exact, from the geometry. */
+  const minSep = (a: number, b: number) => {
+    const d = Math.abs(a - b);
+    return d === 0 ? 0 : (d - 1) * width + d * gap;
+  };
   return {
     xs,
     ys,
     typeId,
-    typeNames: ["left only", "right only"],
+    typeNames: names(K, "strip"),
     bbox,
     truth: {
-      // Exact and edge-effect-free: no A-B pair can be closer than the gap, whatever the estimator
-      // does about boundaries. Above the gap the geometry of the two half-windows decides it, and
-      // that has no useful closed form.
-      crossG: (a, b, r) => (a !== b && r < gap ? 0 : undefined),
-      note: `Types occupy disjoint halves ${gap} apart: cross-g ≡ 0 below ${gap}, exactly. An estimator reporting anything non-zero there is wrong, not noisy.`,
+      // Exact and edge-effect-free: no pair can exist below the strips' separation, whatever the
+      // estimator does about boundaries. Above it the geometry of two rectangles decides the value,
+      // and that has no useful closed form.
+      crossG: (a, b, r) => (a !== b && r < minSep(a, b) ? 0 : undefined),
+      note: `${K} disjoint strips ${width.toFixed(0)} wide, ${gap} apart: cross-g ≡ 0 below ${minSep(0, 1).toFixed(0)} for neighbours and ${K > 2 ? `${minSep(0, K - 1).toFixed(0)} for the two ends` : "further for any wider separation"}, exactly. Non-zero there is wrong, not noisy.`,
     },
   };
 }
@@ -387,7 +428,7 @@ export function segregated(o: PatternOptions & { gap?: number } = {}): PointPatt
  *  regardless of label, so the cross-pcf is 0 below the core exactly as the auto-pcf is, and the page
  *  gets a real A ≠ B pair instead of a bin 0 full of self-pairs. */
 export function hardcore(o: PatternOptions & { core?: number } = {}): PointPattern {
-  const { n, bbox, rnd } = opts(o);
+  const { n, bbox, rnd, K } = opts(o, 2);
   const core = o.core ?? 25;
   const core2 = core * core;
   const xs: number[] = [];
@@ -395,7 +436,7 @@ export function hardcore(o: PatternOptions & { core?: number } = {}): PointPatte
   // Rejection with a hard attempt budget: SSI has no guarantee of reaching `n`, and at high
   // intensity it jams. Stopping on the budget is honest — the pattern is thinner than asked for and
   // still exactly hard-core, which is the property the truth claims.
-  const target = 2 * n; // `n` is per type, and the coin flip below halves it
+  const target = K * n; // `n` is per type, and the label draw below splits it K ways
   const maxAttempts = target * 60;
   for (let a = 0; a < maxAttempts && xs.length < target; a++) {
     const x = bbox[0] + rnd() * (bbox[2] - bbox[0]);
@@ -417,8 +458,8 @@ export function hardcore(o: PatternOptions & { core?: number } = {}): PointPatte
   return {
     xs,
     ys,
-    typeId: xs.map(() => (rnd() < 0.5 ? 0 : 1)),
-    typeNames: ["inhibited A", "inhibited B"],
+    typeId: xs.map(() => Math.min(K - 1, Math.floor(rnd() * K))),
+    typeNames: names(K, "inhibited"),
     bbox,
     truth: {
       crossG: (_a, _b, r) => (r < core ? 0 : undefined),
@@ -435,7 +476,7 @@ export function hardcore(o: PatternOptions & { core?: number } = {}): PointPatte
  *  association. Any claim that a statistic separates "clustered together" from "both common in the
  *  same place" has to be demonstrated on this. */
 export function gradient(o: PatternOptions & { contrast?: number } = {}): PointPattern {
-  const { n, bbox, rnd } = opts(o);
+  const { n, bbox, rnd, K } = opts(o, 2);
   const contrast = o.contrast ?? 8;
   const xs: number[] = [];
   const ys: number[] = [];
@@ -449,7 +490,7 @@ export function gradient(o: PatternOptions & { contrast?: number } = {}): PointP
   // invisible in g — thinning does not change the pcf — and shows up only as the wrong number of
   // cells: at contrast 8 an earlier version returned 3,097 for 1,200 asked.
   const preThin = (n * 2 * contrast) / (contrast + 1);
-  for (let t = 0; t < 2; t++) {
+  for (let t = 0; t < K; t++) {
     const target = poisson(preThin, rnd);
     for (let i = 0; i < target; i++) {
       const x = bbox[0] + rnd() * w;
@@ -466,11 +507,76 @@ export function gradient(o: PatternOptions & { contrast?: number } = {}): PointP
     xs,
     ys,
     typeId,
-    typeNames: ["ramped A", "ramped B"],
+    typeNames: names(K, "ramped"),
     bbox,
     truth: {
       crossG: CONST_ONE,
-      note: `Both types ${contrast}× denser on the right, and independent: the TRUE g ≡ 1. A homogeneous-ρ estimator will not say so, and that gap is the point of the fixture.`,
+      note: `All ${K} types ${contrast}× denser on the right, and mutually independent: the TRUE g ≡ 1 for every pair. A homogeneous-ρ estimator will not say so — and on the K×K matrix it manufactures a single strong mode out of nothing, which is the multi-type form of the trap.`,
+    },
+  };
+}
+
+/**
+ * K types in G guilds: co-located within a guild, independent between guilds.
+ *
+ * The pattern that has no two-type version, and the one the Gram-matrix / eigen-mode page exists to
+ * find. Each guild gets its own set of cluster centres and every type in that guild is an
+ * independent thinning of that guild's process. So the true K×K pcf matrix is BLOCK DIAGONAL —
+ * `thomasG` inside a block, exactly 1 outside it — and a correct ordination should recover G modes
+ * and the membership, not K and not 1.
+ *
+ * Both halves are exact. Within a guild the types are thinnings of one process, and thinning
+ * preserves the pcf; between guilds the parent sets are independent. Nothing is approximated, which
+ * makes this usable as a scoring target and not just a picture: the recovered blocks either match
+ * `guildOf` or they do not.
+ */
+export function guilds(o: PatternOptions & { sigma?: number; parents?: number; guilds?: number } = {}): PointPattern {
+  const { n, bbox, rnd, K } = opts(o, 6);
+  const sigma = o.sigma ?? 40;
+  const nParents = o.parents ?? 25;
+  const G = Math.max(1, Math.min(K, Math.floor(o.guilds ?? 2)));
+  const outer = expand(bbox, PARENT_MARGIN * sigma);
+  const kappa = nParents / areaOf(outer);
+  /** Contiguous blocks, remainder spread over the first guilds so none is empty. */
+  const guildOf = (t: number) => Math.min(G - 1, Math.floor((t * G) / K));
+  const sizeOf = (g: number) => {
+    let c = 0;
+    for (let t = 0; t < K; t++) if (guildOf(t) === g) c++;
+    return c;
+  };
+  const xs: number[] = [];
+  const ys: number[] = [];
+  const typeId: number[] = [];
+  for (let g = 0; g < G; g++) {
+    const members: number[] = [];
+    for (let t = 0; t < K; t++) if (guildOf(t) === g) members.push(t);
+    // The guild's whole population is `members.length · n`, then split among its members — so `n` is
+    // per TYPE regardless of how the guilds are sized.
+    const perParent = offspringPerParent(members.length * n, nParents, bbox, outer);
+    const parents = poissonPoints(nParents, outer, rnd);
+    for (let p = 0; p < parents.xs.length; p++) {
+      const m = poisson(perParent, rnd);
+      for (let k = 0; k < m; k++) {
+        const x = parents.xs[p]! + gauss(rnd) * sigma;
+        const y = parents.ys[p]! + gauss(rnd) * sigma;
+        if (inside(bbox, x, y)) {
+          xs.push(x);
+          ys.push(y);
+          typeId.push(members[Math.min(members.length - 1, Math.floor(rnd() * members.length))]!);
+        }
+      }
+    }
+  }
+  const blocks = Array.from({ length: G }, (_, g) => sizeOf(g)).join("+");
+  return {
+    xs,
+    ys,
+    typeId,
+    typeNames: Array.from({ length: K }, (_, t) => `G${guildOf(t) + 1}·${String.fromCharCode(97 + t)}`),
+    bbox,
+    truth: {
+      crossG: (a, b, r) => (guildOf(a) === guildOf(b) ? thomasG(r, sigma, kappa) : 1),
+      note: `${K} types in ${G} guilds (${blocks}), co-located within a guild and independent between: the true K×K matrix is block diagonal, g(0⁺) ≈ ${thomasG(0, sigma, kappa).toFixed(2)} inside a block and exactly 1 outside. An ordination should find ${G} modes and this membership.`,
     },
   };
 }
@@ -506,6 +612,12 @@ export const POINT_PATTERNS: PointPatternSpec[] = [
     label: "Independently clustered",
     describe: "Both types clumped, neither aware of the other. Cross-g ≡ 1.",
     make: independentClustered,
+  },
+  {
+    key: "guilds",
+    label: "Guilds (block structure)",
+    describe: "K types in G co-locating groups — the true matrix is block diagonal.",
+    make: guilds,
   },
   { key: "hardcore", label: "Hard-core inhibition", describe: "A minimum spacing: g ≡ 0 below the core.", make: hardcore },
   {

@@ -5,6 +5,7 @@ import {
   colocalised,
   csr,
   gradient,
+  guilds,
   hardcore,
   independentClustered,
   makePointPattern,
@@ -218,5 +219,100 @@ describe("patternClouds", () => {
     expect(clouds.length).toBe(p.typeNames.length);
     expect(clouds.reduce((a, c) => a + c.xs.length, 0)).toBe(p.xs.length);
     for (const c of clouds) expect(c.xs.length).toBe(c.ys.length);
+  });
+});
+
+describe("pointPatterns — beyond a pair of types", () => {
+  it("every pattern honours `types`, with dense ids and a truth for every pair", () => {
+    for (const spec of POINT_PATTERNS) {
+      const K = 5;
+      const p = makePointPattern(spec.key, { n: 300, seed: 4, types: K });
+      expect(p.typeNames.length, spec.key).toBe(K);
+      expect(new Set(p.typeId).size, spec.key).toBe(K);
+      // The truth has to answer for the whole matrix, not just (0,1) — a pair-shaped closure that
+      // ignored its arguments would pass every test written against two types.
+      for (let a = 0; a < K; a++) {
+        for (let b = 0; b < K; b++) {
+          const v = p.truth.crossG(a, b, 30);
+          expect(v === undefined || (Number.isFinite(v) && v >= 0), `${spec.key} (${a},${b}) → ${v}`).toBe(true);
+        }
+      }
+    }
+  });
+
+  it("guilds: the true matrix is block diagonal, and the estimate recovers the blocks", () => {
+    const K = 6;
+    const G = 2;
+    const make = (s: number) => guilds({ n: 900, seed: s, types: K, guilds: G, sigma: 40, parents: 150 });
+    const p = make(1);
+    // The truth itself must be blocked — same guild elevated, different guild exactly 1.
+    expect(p.truth.crossG(0, 1, 20)!).toBeGreaterThan(1.2); // 0 and 1 share guild 1
+    expect(p.truth.crossG(0, 5, 20)!).toBe(1); // 0 and 5 do not
+    expect(p.truth.crossG(4, 5, 20)!).toBeGreaterThan(1.2);
+
+    // And the ESTIMATE must reproduce that split. Averaged over seeds because a clustered pattern is
+    // noisy; the claim is the separation between within- and between-guild, not either value.
+    const within: number[] = [];
+    const between: number[] = [];
+    for (let s = 1; s <= 4; s++) {
+      const q = make(s);
+      const clouds = patternClouds(q);
+      for (let a = 0; a < K; a++) {
+        for (let b = a + 1; b < K; b++) {
+          const g = crossPCF(clouds[a]!, clouds[b]!, { bbox: q.bbox, rMax: 120, nBins: 4, edgeCorrected: true }).g[0]!;
+          (q.truth.crossG(a, b, 15)! > 1 ? within : between).push(g);
+        }
+      }
+    }
+    const mean = (v: number[]) => v.reduce((x, y) => x + y, 0) / v.length;
+    // Every within-guild pair must beat every between-guild pair — a clean separation, not just a
+    // difference of means, since the point of the fixture is that the blocks are RECOVERABLE.
+    expect(Math.min(...within), `within ${mean(within).toFixed(2)} vs between ${mean(between).toFixed(2)}`).toBeGreaterThan(
+      Math.max(...between),
+    );
+    expect(mean(between)).toBeCloseTo(1, 0.7);
+  });
+
+  it("colocalised: recruited↔recruited uses 4σ², anchor↔recruited uses 2σ²", () => {
+    // The two legs have DIFFERENT widths and it is easy to use one formula for both: an
+    // anchor-offspring pair is one Gaussian displacement, a pair of offspring sharing an anchor is
+    // the difference of two. Getting it wrong inflates the correlation length by √2 and still looks
+    // like a decaying curve, so it is checked against the estimate on both legs.
+    const make = (s: number) => colocalised({ n: 1200, seed: s, types: 3, sigma: 25 });
+    const anchorLeg = meanG(make, 0, 1, 10);
+    const sharedLeg = meanG(make, 1, 2, 10);
+    const t = make(1).truth;
+    for (let k = 0; k < 8; k++) {
+      const r = (k + 0.5) * dr;
+      expect(Math.abs(anchorLeg[k]! / t.crossG(0, 1, r)! - 1), `anchor leg bin ${k}`).toBeLessThan(0.08);
+      expect(Math.abs(sharedLeg[k]! / t.crossG(1, 2, r)! - 1), `shared leg bin ${k}`).toBeLessThan(0.08);
+    }
+    // And they are genuinely different curves, so the test above is not vacuous.
+    expect(t.crossG(0, 1, 25)!).toBeGreaterThan(t.crossG(1, 2, 25)!);
+  });
+
+  it("segregated: the exclusion is graded by strip distance, so the ordering is recoverable", () => {
+    const K = 4;
+    const p = segregated({ n: 500, seed: 6, types: K, gap: 60 });
+    const clouds = patternClouds(p);
+    // Neighbouring strips can be 60 apart; the two ends cannot be closer than 3 gaps + 2 widths.
+    const near = p.truth.crossG(0, 1, 59)!;
+    expect(near).toBe(0);
+    expect(p.truth.crossG(0, 3, 59)).toBe(0);
+    // Brute-force the real minimum separation and check the truth never over-claims.
+    for (let a = 0; a < K; a++) {
+      for (let b = a + 1; b < K; b++) {
+        let closest = Infinity;
+        for (let i = 0; i < clouds[a]!.xs.length; i++) {
+          for (let j = 0; j < clouds[b]!.xs.length; j++) {
+            closest = Math.min(closest, Math.hypot(clouds[a]!.xs[i]! - clouds[b]!.xs[j]!, clouds[a]!.ys[i]! - clouds[b]!.ys[j]!));
+          }
+        }
+        // Whatever radius the truth claims is empty must really be empty.
+        let claimed = 0;
+        for (let r = 1; r < 600; r++) if (p.truth.crossG(a, b, r) === 0) claimed = r;
+        expect(closest, `strips ${a},${b}: closest ${closest.toFixed(1)}, claimed empty below ${claimed}`).toBeGreaterThanOrEqual(claimed);
+      }
+    }
   });
 });

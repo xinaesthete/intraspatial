@@ -104,6 +104,7 @@ const patternKindSelect = $<HTMLSelectElement>("patternKind");
 const patternNInput = $<HTMLInputElement>("patternN");
 const patternSeedInput = $<HTMLInputElement>("patternSeed");
 const patternTruthEl = $<HTMLParagraphElement>("patternTruth");
+const patternTypesInput = $<HTMLInputElement>("patternTypes");
 const csvInput = $<HTMLInputElement>("csvFile");
 const mdvStoreInput = $<HTMLInputElement>("mdvStore");
 const mdvInspectBtn = $<HTMLButtonElement>("mdvInspect");
@@ -447,8 +448,12 @@ function drawScatterPair(
     if (lit > 0) {
       const rs = (sx + sy) / 2;
       const mid = ((hl.r0 + hl.r1) / 2) * rs;
-      const step = Math.max(1, Math.ceil(lit / RING_CAP));
-      const drawn = Math.ceil(lit / step);
+      // Fractional stride, not `every k-th`. An integer stride collapses from "all of them" to
+      // "half of them" the instant the count passes the cap: at 47 lit against a cap of 44 it drew
+      // 24, so the rings landed on an arbitrary-looking half of the highlighted cells and read as a
+      // second, unexplained selection on top of the first. This emits exactly `drawn`, spread
+      // evenly, so just under the cap means just under the cap.
+      const drawn = Math.min(lit, RING_CAP);
       ctx.save();
       ctx.strokeStyle = A_CSS;
       ctx.lineWidth = Math.max(0.7, (hl.r1 - hl.r0) * rs);
@@ -456,12 +461,18 @@ function drawScatterPair(
       // enough that an individual circle stays traceable, which is the whole point of drawing it.
       ctx.globalAlpha = Math.min(0.75, Math.max(0.2, 6 / drawn));
       let seen = 0;
+      let emitted = 0;
       for (let i = 0; i < A.xs.length; i++) {
         if (!inA(i)) continue;
-        if (seen++ % step !== 0) continue;
-        ctx.beginPath();
-        ctx.arc((A.xs[i]! - minX) * sx, (A.ys[i]! - minY) * sy, mid, 0, 2 * Math.PI);
-        ctx.stroke();
+        // Emit when this cell's position crosses the next sample boundary — Bresenham over the lit
+        // set, which yields exactly `drawn` rings however the two numbers relate.
+        if (Math.floor((seen * drawn) / lit) === emitted) {
+          ctx.beginPath();
+          ctx.arc((A.xs[i]! - minX) * sx, (A.ys[i]! - minY) * sy, mid, 0, 2 * Math.PI);
+          ctx.stroke();
+          emitted++;
+        }
+        seen++;
       }
       ctx.restore();
       rings = { drawn, lit };
@@ -512,9 +523,10 @@ function refreshScatterHighlight(): void {
     if (bin < mem.nBins) {
       const dr = view.hl.params.rMax / mem.nBins;
       hl = { maskA: mem.maskA, maskB: mem.maskB, bit: 1 << bin, r0: bin * dr, r1: (bin + 1) * dr };
+      // Terse, because the line is height-capped: the long form was the thing being truncated.
       caption =
-        ` · <b>r ∈ [${toUm(bin * dr).toPrecision(3)}, ${toUm((bin + 1) * dr).toPrecision(3)})${unitSuffix()}</b>: ` +
-        `${mem.countA[bin]!.toLocaleString()} A and ${mem.countB[bin]!.toLocaleString()} B cells lit — the ones that produced g(r) there`;
+        `<b>r ∈ [${toUm(bin * dr).toPrecision(3)}, ${toUm((bin + 1) * dr).toPrecision(3)})${unitSuffix()}</b> — ` +
+        `lit: <span class="chipA">${mem.countA[bin]!.toLocaleString()} A</span>, <span class="chipB">${mem.countB[bin]!.toLocaleString()} B</span>`;
     }
   }
   // Composed AFTER the draw, because only the draw knows how many rings survived the cap.
@@ -522,10 +534,12 @@ function refreshScatterHighlight(): void {
   if (rings) {
     caption +=
       rings.drawn < rings.lit
-        ? ` · rings show that distance on ${rings.drawn} of the ${rings.lit.toLocaleString()} lit A cells — a sample, for scale; the dots are the full set`
-        : ` · rings show that distance around each lit A cell`;
+        ? ` · rings = that distance, on ${rings.drawn} of the ${rings.lit.toLocaleString()} lit A (sampled; dots are all of them)`
+        : ` · rings = that distance, around every lit A`;
   }
   scatterHlEl.innerHTML = caption;
+  // The line is clipped to one row, so the full text has to live somewhere reachable.
+  scatterHlEl.title = scatterHlEl.textContent ?? "";
 }
 /** Width the chart was last drawn at, in CSS px — the hover has to invert the same mapping. */
 let pcfPlotW = 760;
@@ -1719,21 +1733,25 @@ function loadPattern(): void {
   const key = patternKindSelect.value;
   const n = Math.max(20, Math.min(20000, Math.round(Number(patternNInput.value) || 1200)));
   const seed = Math.max(1, Math.round(Number(patternSeedInput.value) || 1));
+  // 26 is where the `A…Z` naming runs out and the matrix axis labels stop being readable anyway.
+  const types = Math.max(1, Math.min(26, Math.round(Number(patternTypesInput.value) || 2)));
   setStatus(`building ${key} …`);
-  const t = syntheticCellTable({ pattern: key, n, seed });
+  const t = syntheticCellTable({ pattern: key, n, seed, types });
   // Say what the process guarantees. This is the only source on the page that can, and it is the
   // difference between a demo you look at and a demo you can check: the note names the value the
   // panels ought to be reporting, so a wrong one is visible rather than merely unfamiliar.
   //
   // It goes in its own line rather than the status, which `present` and the GPU views overwrite
   // within the second — a guarantee that scrolls away after a frame is not a guarantee.
-  const p = makePointPattern(key, { n, seed });
+  const p = makePointPattern(key, { n, seed, types });
   patternTruthEl.hidden = false;
   patternTruthEl.textContent = `known answer — ${p.truth.note}`;
   present(t);
 }
 fixtureBtn.addEventListener("click", loadPattern);
-patternKindSelect.addEventListener("change", loadPattern);
+// The process and the type count both change the SHAPE of what is loaded, so they reload; `n` and
+// `seed` only redraw the same experiment and wait for the button.
+for (const el of [patternKindSelect, patternTypesInput]) el.addEventListener("change", loadPattern);
 csvInput.addEventListener("change", () => {
   const f = csvInput.files?.[0];
   if (f) void loadCsv(f);

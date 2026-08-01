@@ -67,6 +67,12 @@
     /* Same reasoning one level down: the legends that name a type are clamped to two lines so a long
        label cannot change the tile's height. Legends with no variable text are left alone. */
     .legend.fixed { height: 30px; overflow: hidden; }
+    /* ONE line, always — the same treatment as the tile headings, and for the same reason. The
+       caption's length changes with the type names and the counts, so any wrapping box either
+       truncates it mid-sentence or resizes the tile on every bin the pointer crosses. Reserved
+       whether or not it is showing, ellipsised when long, full text in `title`. */
+    .legend.hlline { height: 16px; line-height: 16px; overflow: hidden; white-space: nowrap;
+      text-overflow: ellipsis; color: #cbd5e1; }
     /* `height:auto` keeps the canvas's own aspect (the rasters now match the ROI's), and
        `object-fit:contain` under `max-height` letterboxes a tall-thin ROI instead of squashing it
        back — the bug this whole change was about. */
@@ -145,6 +151,8 @@
         <span class="srcgroup" data-src="fixture">
           <span class="ctl"><label for="patternKind">process</label>
             <select id="patternKind" style="flex:1 1 260px"></select></span>
+          <span class="ctl"><label for="patternTypes" title="A pair is a special case, and not the interesting one — the K×K matrix is where guild structure lives.">types</label>
+            <input id="patternTypes" type="text" value="2" style="flex:0 1 52px" /></span>
           <span class="ctl"><label for="patternN">cells/type</label>
             <input id="patternN" type="text" value="1200" style="flex:0 1 70px" /></span>
           <span class="ctl"><label for="patternSeed">seed</label>
@@ -331,7 +339,11 @@
       <div class="tile">
         <h2>centroids — pair highlighted</h2>
         <canvas id="scatter"></canvas>
-        <div class="legend fixed"><span class="chipA">■</span> <span id="nameScatterA">type A</span> · <span class="chipB">■</span> <span id="nameScatterB">type B</span> · other cells faint<span id="scatterHl"></span></div>
+        <div class="legend fixed"><span class="chipA">■</span> <span id="nameScatterA">type A</span> · <span class="chipB">■</span> <span id="nameScatterB">type B</span> · other cells faint</div>
+        <!-- Its own line, with the height RESERVED whether or not anything is hovering. Sharing the
+             legend's clamped box above truncated it mid-sentence ("… · rings show"), and letting it
+             size itself would bounce the tile every time the pointer crossed a bin boundary. -->
+        <div class="legend hlline" id="scatterHl"></div>
         <details class="help">
           <summary>how to read this</summary>
           <p>One dot per cell, placed where that cell actually sits in the tissue. Cyan is the A type,
