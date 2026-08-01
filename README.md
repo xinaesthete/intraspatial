@@ -49,6 +49,10 @@ The remaining gap is an explicit data/usage licence (the last piece of *Reusable
 
 - **Node 22** — pinned via [Volta](https://volta.sh) (`"volta": { "node": "22.23.1" }`).
   Volta switches automatically inside the repo; otherwise use Node 22 yourself.
+  The pin existed because Dawn crashed at exit on Node 24/26. That cause is gone —
+  it was our own Instance-lifetime bug, fixed 2026-07-29 — and **24.18.0 and 26.5.0
+  both pass the full suite and the GPU benches** (re-tested 2026-08-01, see
+  `docs/umap-on-anndata.md` §5). The pin is now conservatism, not a requirement.
 - **pnpm 11** (`packageManager` is pinned). This is a pnpm **workspace** — one
   `pnpm install` at the root installs the root package, `playground`, and `docs-site`.
 - **Rust + `wasm-pack`** — only needed to rebuild the wasm codec core.

@@ -248,7 +248,19 @@ test would not catch it, because without heap pressure the Instance is never col
 Removing the references makes it kill the fork, 3 runs of 3.
 
 The Node-22 volta pin was justified by Dawn atexit crashes on Node 24/26, which was
-plausibly this same bug from another angle. Worth re-testing; not yet re-tested.
+plausibly this same bug from another angle. **Re-tested 2026-08-01: it was.** Full
+`pnpm test` (78 CPU files / 732 tests, 48 GPU files / 131 tests) passes on **24.18.0 and
+26.5.0**, and `pnpm bench:readback` — the heaviest GPU work in the repo, ending in
+`releaseDevice()`, i.e. exactly the atexit path — exits 0 on **9 of 9** runs across 22/24/26.
+Nothing now justifies the pin.
+
+One caveat found while testing, and it is *not* about Node: `umapLayoutGpu.gpu.test.ts`
+fails about **3 runs in 12 on every version including the pinned 22**. The edge-parallel
+SGD races by design, so `gpuTrust` is nondeterministic, and the `hostTrust - 0.05`
+threshold sits inside the spread (observed failures 0.872–0.911 against a 0.912 bar).
+A 5-run sample showed 0/5 on Node 22 and 1/5 on 26, which reads as a Node 26 regression
+and is not one — worth remembering before attributing a marginal statistical test to a
+toolchain change.
 
 ## 6. The layout on the GPU
 
