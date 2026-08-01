@@ -16,7 +16,7 @@ pages need. What is still MDV-shaped, and still only on the external volume, is 
 |---|---|---|---|
 | `spatial_stats_roi/`, `spatial_stats_disease/` | 141,484 | 15.5 GB | **precomputed stats plots** — the PNG library this whole stream exists to replace |
 | `*.ome.png` | 32 | 6.0 GB | the IMC stacks, one per ROI |
-| flat `*.png` | 152 | 1.0 GB | per-ROI morphology, segmentation and composites |
+| flat `*.png` | 152 | 1.0 GB | per-ROI morphology, segmentation and composites — a third of it derived, see below |
 
 **Only the bottom two rows are in scope.** The 15.5 GB of stats plots are outputs, not inputs; they
 are the thing being computed live instead (and per the dataset analysis, 95.4% of them depict
@@ -48,7 +48,7 @@ Each of the 32 entries under `regions.all_regions.<ROI>` carries:
 - `images.cellmask` → **cell segmentation**
 - `images.DNA1_Ir191` → 8-bit *grayscale*
 - `images.MagentaaSMA_LimeCD68_WhiteCollagen1_BlueDNA`, `images.MagentaaSMA_WhiteEpCAM_LimeCD31_BlueDNA`
-  → pre-rendered RGB composites
+  → pre-rendered RGB composites — **not migrating, decided 2026-08-01** (see below)
 
 Three inconsistencies to handle rather than discover:
 
@@ -80,16 +80,44 @@ flattening them into one would be the main thing to get wrong:
   measuring lossless HTJ2K against the current LZW before assuming lossy is needed at all; LZW on
   float32 is close to the worst case, so the headroom may be large.
 
+## Decided: the pre-rendered composites are not migrating (2026-08-01)
+
+They are renderings of channels the stack already contains, and it is checkable rather than assumed:
+every marker named in the two filenames — `aSMA`, `CD68`, `Collagen1`, `DNA1`, `EpCAM`, `CD31` — is
+present in the 49-channel list above. So nothing is lost that live channel mixing cannot put back.
+
+Measured, by `images` key across the 32 ROIs:
+
+| key | files | size | keep? |
+|---|---|---|---|
+| `MagentaaSMA_LimeCD68_WhiteCollagen1_BlueDNA` | 32 | 173.8 MB | **no** — derived |
+| `MagentaaSMA_WhiteEpCAM_LimeCD31_BlueDNA` | 32 | 158.2 MB | **no** — derived |
+| `DNA1_Ir191` | 26 | 19.9 MB | **probably not** — see below |
+| `he` / `un` | 26 / 4 | 568.8 / 80.9 MB | **yes** — a separate stain, not in the IMC stack |
+| `cellmask` | 32 | 7.0 MB | **yes** — segmentation output, not derivable |
+| total | 152 | 1008.6 MB | |
+
+Dropping the two composites takes the flat-PNG payload from 1008.6 MB to **676.6 MB**, and 152 files
+to 88.
+
+**This makes live channel mixing a prerequisite, not a nice-to-have.** It is the intended direction
+anyway, but the consequence should be stated: until the viewer can composite from the stack, the
+migrated store shows strictly less than the MDV project does today. That is a sequencing constraint
+on when the old project can be retired, not a reason to keep the PNGs.
+
+**`DNA1_Ir191` follows by exactly the same argument and is worth confirming.** `DNA1` is channel 42
+of the 49, so this is a single-channel greyscale rendering of data already present — the composite
+case with one channel instead of four. Dropping it too leaves 62 files / 656.7 MB, all of it
+genuinely irreducible: H&E is a different stain and `cellmask` is an analysis output. Left as a
+question only because it was not the one asked.
+
 ## Open questions, in the order they need answering
 
-1. **Do the composites need migrating at all?** They are renderings of channels that are already in
-   the stack. If the viewer can composite live — which is the point of the channel-mixing work — they
-   are 3 of the 5 per-ROI PNGs and can simply be dropped.
-2. **Lossless or lossy for the IMC stack?** Measure first. It carries the quantitative signal, and
+1. **Lossless or lossy for the IMC stack?** Measure first. It carries the quantitative signal, and
    `cellmask` is non-negotiable, but H&E is not.
-3. **Where does the pyramid come from?** Nothing here is pyramidal today; 2000² is small enough that
+2. **Where does the pyramid come from?** Nothing here is pyramidal today; 2000² is small enough that
    it may not need to be, which would keep the conversion simple.
-4. **One SpatialData zarr, or one per ROI?** The 32 ROIs are separate tissue sections and every
+3. **One SpatialData zarr, or one per ROI?** The 32 ROIs are separate tissue sections and every
    statistic in this stream is per-ROI (see `docs/cell-stats.md`), so the pressure is toward
    separate — but the cell table is already one store covering all 32.
 
