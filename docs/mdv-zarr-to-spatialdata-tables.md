@@ -1,7 +1,34 @@
 # Generic zarr, and remodelling our MDV-shaped store into SpatialData tables
 
+**Status: IMPLEMENTED (2026-08-01) — `docs/covid-spatialdata-migration.md`.** The table is now
+`tables/table` in `~/data/covid.spatialdata.zarr`: dense `X` [545400, 37] by panel intersection,
+`obsm/spatial` plus the four embeddings, 32 labels elements annotated via `region`/`instance_id`,
+validated at 100.00% on a 24,000-cell centroid-to-label join. Four corrections to what follows:
+
+- **Finding B's reasoning is wrong, and the outcome is better than it expected.** The mask is 41%
+  foreground, but that does *not* merge touching cells: exactly **2 blobs in the whole dataset**
+  contain two centroids. The watershed therefore recovers the original per-cell masks rather than
+  approximating them. 544,443 of 545,400 cells get a label (99.82%).
+- **The cell table's `y` is bottom-up.** `y_image = H_roi − y_mdv`; unflipped, centroids hit the
+  mask at 25.1%, which is exactly the foreground fraction and reads as a mask that disagrees with
+  its own centroids. This is the trap finding B was one step away from.
+- **Part 1 is moot for this store.** spatialdata 0.8 writes zarr v3 natively with plain zstd, and
+  builds the AnnData encoding itself, so the hand-written-v2 problem and gotchas 3, 4 and 5 do not
+  arise. `write_element(..., raster_compressor={"zstd": 19})` sets the level.
+- **Finding A is real but was routed around**: `cellID` is intact in `datafile.h5`, so the
+  conversion reads that and does not depend on `covid.mdv.zarr`. The converter bug is still there.
+
+`_CELL_<n>` suffixes are **not contiguous** and label values are suffix **+ 1** (label 0 is
+background, and some ROIs number their first cell 0). Global max 34,878, so uint16 holds.
+
+<details><summary>Original status</summary>
+
 **Status: analysis, nothing started (2026-08-01). Four decisions taken, and two findings that
-change the plan — see "Decisions" and "What the probing turned up" below.** Companion to
+change the plan — see "Decisions" and "What the probing turned up" below.**
+
+</details>
+
+Companion to
 `docs/covid-imagery-to-spatialdata-plan.md`, which covers the imagery; this is the table half.
 Everything below was measured against two stores actually on disk — `~/data/covid.mdv.zarr` (ours,
 what `pnpm mdv:zarr` produces) and `~/data/mdv_xenium_tiny_test/spatialdata.zarr` (a real
