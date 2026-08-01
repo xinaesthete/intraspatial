@@ -201,6 +201,10 @@ not about storage.
 
 ### Sketch of the metadata (draft, for discussion — not implemented)
 
+> **The shareable version of this is `docs/proposals/instance-views.md`** — written for a scverse
+> audience, self-contained, and leading with the Xenium case rather than ours. What follows is the
+> short form for readers already inside this repo.
+
 The minimal thing worth standardising is narrower than "describe the relationship": it is **an
 assertion that several elements index the same instance space**. Semantics of *how* they differ can
 stay a free-text hint; trying to enumerate biological roles is what would sink the proposal.
@@ -237,6 +241,13 @@ Three properties it has to have, and they are the whole design:
    leaves room for whatever scverse eventually settles on.
 
 `groups` is a list because our case needs 32 of them — one per ROI — where Xenium's needs one.
+
+**And coverage is not always complete**, which rules out the naive form of the assertion: in that
+same Xenium store `nucleus_boundaries` has **23** rows against the table's **36** — not every cell
+has a detected nucleus. So the relation is "these elements draw instances from the same space", not
+"these elements contain the same instances", and a member needs a `coverage` flag. Worth knowing
+before we write our own: our watershed will have exactly this shape wherever a centroid falls outside
+the mask.
 
 ## The gotchas, in the order they will bite
 
