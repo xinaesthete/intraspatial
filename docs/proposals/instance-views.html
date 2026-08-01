@@ -1,0 +1,598 @@
+<title>Declaring that several elements describe the same instances</title>
+
+<style>
+  /* ---- tokens -------------------------------------------------------------
+     Palette is taken from the subject's own materials rather than a generic
+     accent: haematoxylin indigo and eosin rose, the two stains every reader of
+     this document has looked at down a microscope. Neutrals carry a faint green
+     bias so the ground reads as lab paper rather than office white. */
+  :root {
+    --ground:      #F3F6F3;
+    --ground-sunk: #E9EEE9;
+    --card:        #FBFCFA;
+    --ink:         #141D1B;
+    --ink-soft:    #3C4A46;
+    --muted:       #5B6A63;
+    --rule:        #D5DED6;
+    --rule-strong: #B9C5BA;
+    --haem:        #3B4C8A;   /* accent: haematoxylin */
+    --haem-wash:   #E5E9F4;
+    --eosin:       #A2455D;   /* secondary: eosin, for caveats only */
+    --eosin-wash:  #F6E6EA;
+    --shadow:      0 1px 2px rgba(20, 29, 27, .06), 0 8px 24px rgba(20, 29, 27, .05);
+
+    --serif: ui-serif, "Iowan Old Style", "Palatino Linotype", Palatino, "Book Antiqua", Georgia, serif;
+    --mono:  ui-monospace, "SF Mono", SFMono-Regular, "Cascadia Mono", "Roboto Mono", Menlo, Consolas, monospace;
+
+    --measure: 66ch;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --ground:      #121614;
+      --ground-sunk: #0D100F;
+      --card:        #191F1D;
+      --ink:         #E4EAE5;
+      --ink-soft:    #BAC5BF;
+      --muted:       #8A9791;
+      --rule:        #2A332F;
+      --rule-strong: #3D4843;
+      --haem:        #93A5DC;
+      --haem-wash:   #1C2335;
+      --eosin:       #DE94A7;
+      --eosin-wash:  #2E1F24;
+      --shadow:      0 1px 2px rgba(0, 0, 0, .4), 0 8px 24px rgba(0, 0, 0, .3);
+    }
+  }
+  /* The viewer's own toggle must win over the OS preference, in both directions. */
+  :root[data-theme="dark"] {
+    --ground: #121614; --ground-sunk: #0D100F; --card: #191F1D;
+    --ink: #E4EAE5; --ink-soft: #BAC5BF; --muted: #8A9791;
+    --rule: #2A332F; --rule-strong: #3D4843;
+    --haem: #93A5DC; --haem-wash: #1C2335;
+    --eosin: #DE94A7; --eosin-wash: #2E1F24;
+    --shadow: 0 1px 2px rgba(0,0,0,.4), 0 8px 24px rgba(0,0,0,.3);
+  }
+  :root[data-theme="light"] {
+    --ground: #F3F6F3; --ground-sunk: #E9EEE9; --card: #FBFCFA;
+    --ink: #141D1B; --ink-soft: #3C4A46; --muted: #5B6A63;
+    --rule: #D5DED6; --rule-strong: #B9C5BA;
+    --haem: #3B4C8A; --haem-wash: #E5E9F4;
+    --eosin: #A2455D; --eosin-wash: #F6E6EA;
+    --shadow: 0 1px 2px rgba(20,29,27,.06), 0 8px 24px rgba(20,29,27,.05);
+  }
+
+  /* ---- base --------------------------------------------------------------- */
+  body {
+    background: var(--ground);
+    color: var(--ink);
+    font-family: var(--serif);
+    font-size: 17px;
+    line-height: 1.62;
+    -webkit-font-smoothing: antialiased;
+  }
+  .page { max-width: 78ch; margin: 0 auto; padding: 0 24px 96px; }
+
+  /* Every sibling block is spaced by the flow, never by per-element margins. */
+  .flow { display: flex; flex-direction: column; gap: 20px; }
+  /* `min-width: 0` is load-bearing, not defensive. A flex item defaults to `min-width: auto`, so a
+     child that sets `overflow-x: auto` around wide content (the table, the code blocks) still grows
+     to fit it and pushes the whole page sideways instead of scrolling inside itself. */
+  .flow > * { margin: 0; min-width: 0; }
+
+  p { max-width: var(--measure); }
+  strong { font-weight: 600; }
+  a { color: var(--haem); text-underline-offset: 2px; }
+  a:focus-visible, summary:focus-visible {
+    outline: 2px solid var(--haem); outline-offset: 3px; border-radius: 2px;
+  }
+
+  /* ---- masthead ----------------------------------------------------------- */
+  header.masthead {
+    display: flex; flex-direction: column; gap: 14px;
+    padding: 56px 0 28px;
+    border-bottom: 1px solid var(--rule-strong);
+  }
+  /* Flex gap AND the UA's default h1/p margins were both applying, so every gap in the
+     masthead was arriving at roughly three times its intended size. */
+  header.masthead > * { margin: 0; }
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: 11px; letter-spacing: .13em; text-transform: uppercase;
+    color: var(--muted);
+    display: flex; flex-wrap: wrap; align-items: center; gap: 10px;
+  }
+  .stamp {
+    color: var(--haem);
+    border: 1px solid currentColor;
+    border-radius: 2px;
+    padding: 2px 7px;
+  }
+  h1 {
+    font-size: clamp(30px, 5.2vw, 44px);
+    line-height: 1.12;
+    font-weight: 600;
+    letter-spacing: -.015em;
+    text-wrap: balance;
+    max-width: 22ch;
+  }
+  .standfirst {
+    font-size: 19px; color: var(--ink-soft); max-width: var(--measure);
+  }
+  .byline {
+    font-family: var(--mono); font-size: 12px; color: var(--muted);
+    display: flex; flex-wrap: wrap; gap: 6px 18px;
+  }
+
+  /* ---- sections ----------------------------------------------------------- */
+  section { padding-top: 44px; }
+  h2 {
+    font-size: 25px; font-weight: 600; line-height: 1.22;
+    letter-spacing: -.01em; text-wrap: balance; max-width: 30ch;
+  }
+  h3 {
+    font-size: 17.5px; font-weight: 600; letter-spacing: .005em;
+    text-wrap: balance; max-width: 40ch;
+  }
+
+  /* Mono is not decoration here: it marks a thing that literally exists in a
+     store — an element path, a field name, a count. */
+  code, .mono { font-family: var(--mono); font-size: .875em; }
+  p code, li code, td code, th code {
+    background: var(--ground-sunk);
+    border: 1px solid var(--rule);
+    border-radius: 3px;
+    padding: .05em .32em;
+    /* NOT `white-space: nowrap`. It keeps short identifiers intact, which is what it was for, but a
+       long one — `spatialdata-encoding-type: "ngff:regions_table"` is 432px — then cannot wrap and
+       widens the whole page on a narrow viewport. Short tokens fit on a line and never break;
+       `break-word` only engages when one genuinely cannot. */
+    overflow-wrap: break-word;
+  }
+
+  pre {
+    background: var(--card);
+    border: 1px solid var(--rule);
+    border-radius: 6px;
+    padding: 16px 18px;
+    overflow-x: auto;
+    font-family: var(--mono);
+    font-size: 13px;
+    line-height: 1.65;
+    box-shadow: var(--shadow);
+  }
+  pre code { background: none; border: 0; padding: 0; white-space: pre; font-size: inherit; }
+  .tok-key { color: var(--haem); }
+  .tok-str { color: var(--ink-soft); }
+  .tok-com { color: var(--muted); font-style: italic; }
+
+  ul, ol { max-width: var(--measure); padding-left: 1.15em; display: flex; flex-direction: column; gap: 10px; }
+  li { padding-left: .15em; }
+  li::marker { color: var(--muted); }
+
+  /* ---- the evidence table -------------------------------------------------
+     This table is the whole argument, so it gets the page's design investment:
+     the one annotated element is marked, and the four that are not read as
+     orphaned at a glance. */
+  .tablewrap { overflow-x: auto; border: 1px solid var(--rule); border-radius: 6px; background: var(--card); box-shadow: var(--shadow); }
+  table { border-collapse: collapse; width: 100%; font-size: 14px; min-width: 620px; }
+  caption {
+    caption-side: bottom; text-align: left; padding: 12px 16px 14px;
+    font-size: 13px; color: var(--muted); border-top: 1px solid var(--rule);
+  }
+  th, td { text-align: left; padding: 11px 16px; border-bottom: 1px solid var(--rule); vertical-align: baseline; }
+  thead th {
+    font-family: var(--mono); font-size: 11px; letter-spacing: .1em; text-transform: uppercase;
+    color: var(--muted); font-weight: 500; border-bottom: 1px solid var(--rule-strong);
+  }
+  tbody tr:last-child td { border-bottom: 0; }
+  td.num { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+  td.path { font-family: var(--mono); font-size: 12.5px; }
+  tr.annotated { background: var(--haem-wash); }
+  tr.annotated td { color: var(--ink); }
+  tr.annotated td.path { font-weight: 600; }
+  .flag {
+    font-family: var(--mono); font-size: 10.5px; letter-spacing: .08em; text-transform: uppercase;
+    color: var(--haem); border: 1px solid currentColor; border-radius: 2px; padding: 1px 6px; white-space: nowrap;
+  }
+  .flag.orphan { color: var(--muted); border-style: dashed; }
+  .flag.partial { color: var(--eosin); }
+
+  /* ---- asides ------------------------------------------------------------- */
+  .note {
+    border-left: 2px solid var(--rule-strong);
+    padding: 2px 0 2px 18px;
+    color: var(--ink-soft);
+    font-size: 15.5px;
+    max-width: var(--measure);
+    display: flex; flex-direction: column; gap: 10px;
+  }
+  .note.caveat { border-left-color: var(--eosin); background: var(--eosin-wash); padding: 14px 16px; border-radius: 0 4px 4px 0; }
+  .note .label {
+    font-family: var(--mono); font-size: 10.5px; letter-spacing: .12em;
+    text-transform: uppercase; color: var(--muted);
+  }
+  .note.caveat .label { color: var(--eosin); }
+
+  /* ---- definition list for the schema fields ------------------------------ */
+  dl.fields { display: grid; grid-template-columns: minmax(0, max-content) minmax(0, 1fr); gap: 10px 20px; max-width: var(--measure); align-items: baseline; }
+  dl.fields dt { font-family: var(--mono); font-size: 13px; color: var(--haem); }
+  dl.fields dd { margin: 0; color: var(--ink-soft); font-size: 15.5px; }
+  @media (max-width: 620px) {
+    dl.fields { grid-template-columns: 1fr; gap: 4px 0; }
+    dl.fields dd { padding-bottom: 10px; }
+  }
+
+  /* ---- numbered claims ----------------------------------------------------
+     Numbered because these three are load-bearing and referred to by number in
+     discussion — not because a list looked better with digits on it. */
+  ol.claims { counter-reset: claim; list-style: none; padding-left: 0; gap: 18px; }
+  ol.claims > li { display: grid; grid-template-columns: 30px 1fr; gap: 14px; padding-left: 0; }
+  ol.claims > li::before {
+    counter-increment: claim; content: counter(claim);
+    font-family: var(--mono); font-size: 12px; color: var(--haem);
+    border: 1px solid var(--rule-strong); border-radius: 50%;
+    width: 26px; height: 26px; display: grid; place-items: center;
+    align-self: start; margin-top: 2px;
+  }
+
+  footer.colophon {
+    margin-top: 64px; padding-top: 22px; border-top: 1px solid var(--rule);
+    font-family: var(--mono); font-size: 12px; color: var(--muted);
+    display: flex; flex-direction: column; gap: 8px;
+  }
+
+  @media (prefers-reduced-motion: no-preference) {
+    a { transition: color .15s ease; }
+  }
+</style>
+
+<div class="page">
+
+  <header class="masthead">
+    <div class="eyebrow">
+      <span class="stamp">Draft — request for comment</span>
+      <span>Not an official SpatialData document</span>
+    </div>
+    <h1>Declaring that several elements describe the same instances</h1>
+    <p class="standfirst">
+      A SpatialData table can name one element per row. Real datasets routinely carry four or five
+      geometric representations of the same cells. This proposes a small, ignorable piece of metadata
+      that says so.
+    </p>
+    <div class="byline">
+      <span>For discussion · SpatialData / scverse</span>
+      <span>Nothing implemented · no PR attached</span>
+    </div>
+  </header>
+
+  <section class="flow">
+    <h2>Summary</h2>
+    <p>
+      A table declares what it annotates through <code>region</code>, <code>region_key</code> and
+      <code>instance_key</code>. Each row therefore resolves to exactly one
+      <span class="mono">(element, instance)</span> pair.
+    </p>
+    <p>
+      But one set of biological instances is routinely represented by <strong>several elements at
+      once</strong> — a label mask, a boundary polygon, a centroid circle, a nucleus boundary. The
+      format has no way to record that those elements describe the same instances, so the
+      correspondence lives in consumer code as a private convention.
+    </p>
+  </section>
+
+  <section class="flow">
+    <h2>The problem is already in a standard <span class="mono">spatialdata-io</span> output</h2>
+    <p>
+      This is not an edge case from an unusual dataset. A Xenium run read through
+      <code>spatialdata-io</code> produces five elements over the same cells:
+    </p>
+
+    <div class="tablewrap">
+      <table>
+        <caption>
+          Observed in a store written by SpatialData 0.4.0, format version 0.1. Row counts read from
+          the parquet footers.
+        </caption>
+        <thead>
+          <tr>
+            <th scope="col">Element</th>
+            <th scope="col">Kind</th>
+            <th scope="col">Instance identity</th>
+            <th scope="col">Rows</th>
+            <th scope="col">Status</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr class="annotated">
+            <td class="path">shapes/cell_circles</td>
+            <td>shapes</td>
+            <td><code>cell_id</code> column</td>
+            <td class="num">36</td>
+            <td><span class="flag">annotated</span></td>
+          </tr>
+          <tr>
+            <td class="path">shapes/cell_boundaries</td>
+            <td>shapes</td>
+            <td>parquet index</td>
+            <td class="num">36</td>
+            <td><span class="flag orphan">orphaned</span></td>
+          </tr>
+          <tr>
+            <td class="path">shapes/nucleus_boundaries</td>
+            <td>shapes</td>
+            <td>parquet index</td>
+            <td class="num">23</td>
+            <td><span class="flag orphan">orphaned</span> <span class="flag partial">partial</span></td>
+          </tr>
+          <tr>
+            <td class="path">labels/cell_labels</td>
+            <td>labels</td>
+            <td>pixel value</td>
+            <td class="num">—</td>
+            <td><span class="flag orphan">orphaned</span></td>
+          </tr>
+          <tr>
+            <td class="path">labels/nucleus_labels</td>
+            <td>labels</td>
+            <td>pixel value</td>
+            <td class="num">—</td>
+            <td><span class="flag orphan">orphaned</span> <span class="flag partial">partial</span></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      The table's <code>region</code> is <code>"cell_circles"</code>. The other four hold the same
+      cells, and <strong>nothing in the store records that</strong>. A consumer wanting to shade
+      <code>cell_boundaries</code> by a column of the table has to already know that Xenium writes the
+      cell id into the parquet index of that element — knowledge that comes from the reader's source,
+      not from the data.
+    </p>
+
+    <h3>Two details that rule out the naive version of this proposal</h3>
+    <p>
+      Both came out of looking at the store rather than reasoning about the format, and both change
+      the design.
+    </p>
+    <ul>
+      <li>
+        <strong>The identity is expressed in more than one way within a single store</strong> — a
+        named <code>cell_id</code> column in one element, an unnamed index in two others. So an
+        assertion has to be about instance <em>values</em>, not about where they are stored.
+      </li>
+      <li>
+        <strong>Coverage is not always complete.</strong> <code>nucleus_boundaries</code> has 23 rows
+        against the table's 36: not every cell has a detected nucleus. The relation is
+        <em>“these elements draw their instances from the same space”</em>, not <em>“these elements
+        contain the same instances”</em>.
+      </li>
+    </ul>
+
+    <div class="note caveat">
+      <span class="label">Consequence for the schema</span>
+      <p style="max-width:none">
+        A spec that assumed a bijection would be wrong on the very first real dataset. That is why
+        <code>coverage</code> appears below, rather than being left as an implicit promise.
+      </p>
+    </div>
+  </section>
+
+  <section class="flow">
+    <h2>Why <span class="mono">region</span> / <span class="mono">region_key</span> does not already cover it</h2>
+    <p>
+      <code>region</code> may name several elements, and <code>region_key</code> names the
+      <code>obs</code> column saying which element each row belongs to. That mechanism
+      <strong>partitions rows across elements</strong> — row <em>i</em> belongs to element A, row
+      <em>j</em> to element B.
+    </p>
+    <p>
+      What is missing is the orthogonal case: <strong>one row, several elements</strong>.
+      <code>region_key</code> and <code>instance_key</code> are each a single <code>obs</code> column,
+      so a row yields one element name and one instance value. There is no position in the model where
+      a second representation of the same row could be declared.
+    </p>
+    <p>
+      Both are useful and they do not overlap. Partitioning says “these rows are about different
+      things”. This asks for “these elements are different views of the same thing”.
+    </p>
+  </section>
+
+  <section class="flow">
+    <h2>What happens today instead</h2>
+    <ul>
+      <li>
+        Every consumer re-implements the same convention privately, and the conventions differ. A
+        viewer that gets it wrong <strong>fails silently</strong> — the geometry renders, it is simply
+        joined to the wrong data, or to nothing.
+      </li>
+      <li>
+        Alternative geometries are effectively second-class: they can be drawn, but not coloured by
+        anything in the table unless the consumer hard-codes the relationship.
+      </li>
+      <li>
+        Round-tripping through a generic tool can drop the association entirely, because there was
+        never anything written down to preserve.
+      </li>
+      <li>
+        The workarounds are lossy. Duplicating the table per element is correct by the spec, and
+        duplicates <code>obs</code> — and <code>X</code>, unless one copy goes without — into two
+        structures that can drift apart.
+      </li>
+    </ul>
+  </section>
+
+  <section class="flow">
+    <h2>Proposal</h2>
+    <p>
+      Store-level metadata, alongside <code>spatialdata_attrs</code> in the root attributes, asserting
+      that a set of elements draws instances from one shared space.
+    </p>
+
+<pre><code><span class="tok-key">"instance_views"</span>: {
+  <span class="tok-key">"version"</span>: <span class="tok-str">"0.1-draft"</span>,
+  <span class="tok-key">"groups"</span>: [
+    {
+      <span class="tok-key">"instance_key"</span>: <span class="tok-str">"cell_id"</span>,
+      <span class="tok-key">"primary"</span>:      <span class="tok-str">"shapes/cell_circles"</span>,
+      <span class="tok-key">"members"</span>: [
+        { <span class="tok-key">"element"</span>: <span class="tok-str">"shapes/cell_circles"</span>,       <span class="tok-key">"role"</span>: <span class="tok-str">"centroid"</span> },
+        { <span class="tok-key">"element"</span>: <span class="tok-str">"shapes/cell_boundaries"</span>,    <span class="tok-key">"role"</span>: <span class="tok-str">"cell_boundary"</span> },
+        { <span class="tok-key">"element"</span>: <span class="tok-str">"shapes/nucleus_boundaries"</span>, <span class="tok-key">"role"</span>: <span class="tok-str">"nucleus_boundary"</span>,
+          <span class="tok-key">"coverage"</span>: <span class="tok-str">"partial"</span> },
+        { <span class="tok-key">"element"</span>: <span class="tok-str">"labels/cell_labels"</span>,        <span class="tok-key">"role"</span>: <span class="tok-str">"cell_mask"</span> },
+        { <span class="tok-key">"element"</span>: <span class="tok-str">"labels/nucleus_labels"</span>,     <span class="tok-key">"role"</span>: <span class="tok-str">"nucleus_mask"</span>,
+          <span class="tok-key">"coverage"</span>: <span class="tok-str">"partial"</span> }
+      ]
+    }
+  ]
+}</code></pre>
+
+    <dl class="fields">
+      <dt>instance_key</dt>
+      <dd>The name of the shared identity, matching the annotating table's <code>instance_key</code>.</dd>
+      <dt>primary</dt>
+      <dd>The element the table's <code>region</code> already names. Must be present, and must agree with the existing declaration.</dd>
+      <dt>members[].element</dt>
+      <dd>Path-qualified, so <code>shapes/x</code> and <code>labels/x</code> stay distinguishable.</dd>
+      <dt>members[].role</dt>
+      <dd>A free-text hint for labelling a layer. Deliberately not an enumeration — see non-goals.</dd>
+      <dt>members[].coverage</dt>
+      <dd><code>"full"</code> (default) or <code>"partial"</code>, for the nucleus case above.</dd>
+      <dt>groups</dt>
+      <dd>A list. A dataset with one region per tissue section needs one group per section; Xenium needs one.</dd>
+    </dl>
+
+    <p>
+      It lives at the root rather than in a table's <code>uns</code> because the relation holds between
+      elements, and may be referenced by more than one table.
+    </p>
+
+    <h3>Three properties that are the whole design</h3>
+    <ol class="claims">
+      <li>
+        <div>
+          <strong>Ignorable.</strong> A reader that has never seen the key must open the store and
+          behave exactly as it does today. That is what <code>primary</code> is for — the extension
+          only <em>adds</em> aliases and never redirects an existing declaration. The acceptance test
+          is that an unmodified <code>spatialdata.read_zarr</code> returns an identical object.
+        </div>
+      </li>
+      <li>
+        <div>
+          <strong>Checkable.</strong> An assertion of shared identity that is false is worse than no
+          assertion. A validator should sample real values — label values against the table's instance
+          column, parquet index against the same — rather than trusting the declaration. Under
+          <code>coverage: "partial"</code> the check is subset, not equality.
+        </div>
+      </li>
+      <li>
+        <div>
+          <strong>Additive only.</strong> No existing field changes meaning, and no element gains a
+          required attribute.
+        </div>
+      </li>
+    </ol>
+  </section>
+
+  <section class="flow">
+    <h2>Non-goals</h2>
+    <p>Kept deliberately narrow, because the wider versions are where a proposal like this stalls.</p>
+    <ul>
+      <li>
+        <strong>Not a role ontology.</strong> <code>role</code> is a hint for a UI to label a layer.
+        Standardising the vocabulary of biological relationships — nucleus versus membrane versus
+        expanded versus centroid — is a much larger discussion, and is not needed to fix the join.
+      </li>
+      <li>
+        <strong>Not a geometry conversion contract.</strong> Nothing here says a boundary can be
+        derived from a mask, or that they agree geometrically. Only that they are indexed by the same
+        instances.
+      </li>
+      <li>
+        <strong>No change to <code>region</code> / <code>region_key</code> semantics.</strong>
+        Partitioning and aliasing stay separate.
+      </li>
+      <li>
+        <strong>Not multi-table.</strong> Which table a consumer joins from is unchanged, and remains
+        the table's own business.
+      </li>
+    </ul>
+  </section>
+
+  <section class="flow">
+    <h2>Open questions</h2>
+    <ol>
+      <li>
+        <strong>Root attributes, or a per-element attribute?</strong> The reverse arrangement — each
+        element pointing at its primary — is more local and survives an element being copied between
+        stores, but makes it costly to enumerate a group and easy for two elements to disagree.
+      </li>
+      <li>
+        <strong>Should <code>primary</code> be required?</strong> Requiring it guarantees graceful
+        degradation, but forbids declaring a group with no annotating table at all, which is otherwise
+        a legal and useful state.
+      </li>
+      <li>
+        <strong>Is <code>coverage</code> enough</strong>, or does partial coverage need to name
+        <em>which</em> instances are present? Our reading is that the element already answers that, and
+        duplicating it would only create a second thing to keep in sync.
+      </li>
+      <li>
+        <strong>Naming.</strong> <code>instance_views</code> is a placeholder. While this is a draft it
+        should carry a namespace prefix; there is precedent for namespaced values in the store already
+        (<code>spatialdata-encoding-type: "ngff:regions_table"</code>).
+      </li>
+    </ol>
+  </section>
+
+  <section class="flow">
+    <h2>What we would contribute</h2>
+    <p>
+      We are building a browser-side reader for SpatialData zarr, and hit this while modelling a public
+      IMC dataset with the same shape — a segmentation mask and centroids over one cell table. We are
+      happy to implement the draft in our reader and report what breaks, write the validator described
+      above including the value-sampling check, and test against <code>spatialdata-io</code> Xenium
+      output since that is the case that motivated this.
+    </p>
+    <p>
+      Our own dataset is a secondary motivation. The argument we would make is the table at the top of
+      this document: <strong>a standard 10x export, read by the official reader, cannot express what it
+      plainly contains.</strong>
+    </p>
+
+    <div class="note">
+      <span class="label">On provenance</span>
+      <p style="max-width:none">
+        Everything above was established by inspecting a store on disk, not by reading the
+        specification. If any of it is already expressible and we have missed the mechanism, that is
+        the most useful correction we could receive.
+      </p>
+    </div>
+  </section>
+
+  <section class="flow">
+    <h2>Reproducing the observations</h2>
+    <p>Against any <code>spatialdata-io</code> Xenium output:</p>
+<pre><code><span class="tok-com"># The five elements, and which one the table annotates</span>
+ls spatialdata.zarr/shapes spatialdata.zarr/labels
+python -c <span class="tok-str">"import json; print(json.load(open('spatialdata.zarr/tables/table/.zattrs'))['region'])"</span>
+
+<span class="tok-com"># Row counts: cell_circles 36, cell_boundaries 36, nucleus_boundaries 23</span>
+python -c <span class="tok-str">"import pyarrow.parquet as pq; \
+  [print(e, pq.read_metadata(f'spatialdata.zarr/shapes/{e}/shapes.parquet').num_rows) \
+   for e in ('cell_circles','cell_boundaries','nucleus_boundaries')]"</span>
+
+<span class="tok-com"># Where the instance id lives, per element</span>
+python -c <span class="tok-str">"import pyarrow.parquet as pq; \
+  [print(e, pq.read_schema(f'spatialdata.zarr/shapes/{e}/shapes.parquet').names) \
+   for e in ('cell_circles','cell_boundaries','nucleus_boundaries')]"</span></code></pre>
+  </section>
+
+  <footer class="colophon">
+    <span>Draft for discussion — not an official SpatialData or scverse document.</span>
+    <span>Observations from SpatialData 0.4.0 · format version 0.1 · image-label 0.4-dev-spatialdata.</span>
+  </footer>
+
+</div>
