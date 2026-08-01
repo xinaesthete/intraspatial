@@ -15,6 +15,10 @@ Sources read: `~/code/www/MDV` — `src/datastore/Dimension.js`, `CategoryDimens
 agree on more than expected — down to both having already built the mask⇄index duality — and differ
 on exactly one thing that matters, which is the thing the filter-graph question is about.
 
+**And the two projects already want the same answer.** MDV's filtering note intends the same DAG this
+one argues for (§6), so the open question is not *whether* but *what the operators are* — which
+neither document has yet written down.
+
 ## 1. What MDV actually does
 
 Grounded in the source rather than in either project's docs.
@@ -149,14 +153,31 @@ of.**
 
 ## 6. The filter graph
 
-First, a terminology collision to clear up, because both projects use the phrase:
+**Both notes intend the same thing here — a DAG whose nodes are selections and whose edges are set
+operations.** Recording how that nearly got lost, because it is a drafting hazard rather than a
+disagreement, and because it is evidence for the gap this section is about.
 
-- **MDV's note means graphs *derived from* a filter** — §B, "filter-histogram / filter-density
-  graphs": histograms, densities and box plots computed over the current selection. Charts.
-- **What is wanted here is a graph *of* filters** — a DAG whose nodes are selections and whose edges
-  are set operations.
+MDV's note opens by promising *"building filter-graph primitives"* (line 4) — the DAG reading. Every
+subsequent use of the phrase is anchored to its §B and means **charts derived from a filter**:
+"filter-histogram / filter-density graphs" (128), *"a unified 'filter graph' reduction"* collapsing
+`binWorker`/`catWorker`/`boxPlotWorker` (138), *"making filtered graphs cheap"* (142), and decisively
+*"so filter graphs **(B)** automatically reflect them"* (158), which binds the phrase to the charts
+section by cross-reference. A reader who has not been told otherwise — this one — takes the six later
+uses over the one earlier one.
 
-They are complementary, not competing, and both want the same underlying mask.
+The DAG intent *is* in the substance, just never under that name:
+
+- **§A4, reify filter kinds as serializable data.** Filter definitions must be data before they can be
+  nodes. This is the prerequisite for a DAG as much as for WASM/GPU.
+- **§C1, a first-class "chart-local filter"** distinct from the global one — a second composition
+  level, which is the same realisation as §5's "the 4-state byte is an inlined two-node graph".
+- **§C4, reify chart-scope filters as Dimensions** — promoting an ad-hoc layer into a real node.
+
+So the two notes agree on direction. What neither states is **the composition algebra** — no operator
+set, no nesting, no set operations between selections. That is the actual gap, and it is why "filter
+graph" could be read as charts for six paragraphs without anything contradicting it. It is also the
+cheapest thing to fix: ADR-0005 already has the operators (`AND = a·b`, `OR = max(a,b)`, `NOT = 1−a`),
+and they have never been written down next to MDV's model.
 
 ### What a DAG buys that a flat conjunction cannot
 
@@ -237,6 +258,8 @@ Open questions, in the order they change the design:
   extends, and the source of the shared scan/compaction requirement.
 - MDV's `docs/design/spatial-tables/05-dimension-async-filtering.md` — the same problem from the other
   side, already proposing to reuse this repo's `getDevice()`, the `nnDistance.ts` pipeline idiom, and
-  `splatDensityGpu`. Read both before starting either.
+  `splatDensityGpu`, and intending the same DAG (§6). Read both before starting either. The two notes
+  between them cover the representation, the kernels, the async story and the cleanup — and neither
+  writes down the composition algebra, which is the one thing a filter DAG cannot be built without.
 - [`fuzzy-tda-and-windowing.md`](fuzzy-tda-and-windowing.md) — the windows-not-quadrats argument,
   which is the same argument as soft masks one front over.
