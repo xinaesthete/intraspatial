@@ -26,9 +26,19 @@ export function markToM(m: number, alpha: number): number {
   return (1 - 1 / m) / (alpha - 1); // 1/α < m < 1  (reciprocal form — NOT a linear mirror)
 }
 
+/** Coordinate storage: a plain array or a typed array, indifferently.
+ *
+ *  Every consumer of a `CellCloud` in this codebase only indexes and reads `.length` — measured,
+ *  73 uses of `.length` against 3 uses of anything else, and all three of those are in tests. So
+ *  `readonly number[]` was narrower than the real contract, and it cost something: centroids
+ *  arrive from zarr as `Float32Array`, so the loader had to widen 545k×2 values into JS numbers
+ *  purely to satisfy the type. Typed arrays are the natural representation here and are now
+ *  accepted directly. Kept iterable (rather than plain `ArrayLike`) because tests spread these. */
+export type Coords = readonly number[] | Float32Array | Float64Array;
+
 export interface CellCloud {
-  readonly xs: readonly number[];
-  readonly ys: readonly number[];
+  readonly xs: Coords;
+  readonly ys: Coords;
 }
 
 export interface TcmParams {
