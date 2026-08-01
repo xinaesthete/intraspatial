@@ -16,6 +16,16 @@ medians in ms; treat them as ratios, not absolutes.
 > An earlier draft of this doc quoted dev-build numbers (≈10× slower) and wrongly
 > concluded our DWT was ~20× off OpenJPH. The release numbers below correct that.
 
+> ⚠️ **Corrected 2026-08-01 — the readback ceiling was our own bug, not Dawn's.**
+> This doc originally reported that "the `mapAsync` full readback crashes the
+> worker beyond ~512²" and benchmarked with readback disabled for that reason.
+> It was written 2026-06-27, the same day `src/gpu/device.ts` was scaffolded and
+> a month before the **Dawn Instance-lifetime fix** (2026-07-29, commit
+> `4e326b0`): the Instance was being GC'd out from under a live device, and
+> *allocation* is what triggered collection — which a large staging buffer is.
+> Retested, readback is clean to at least **4096² / 67 MB**. §1 and §2 below carry
+> the corrected numbers. The conclusions did not change; they got stronger.
+
 ## 1. Benchmark findings
 
 CPU decode breakdown vs OpenJPH (its fully optimised C/SIMD decoder), release
@@ -55,12 +65,36 @@ Reading the numbers:
   512² and **~12×** at 1024². GPU compute barely scales with size (0.4 → 1.2 ms
   for 128² → 1024²) — it has become overhead/dispatch-bound, i.e. the actual DWT
   is nearly free; at 1024² it is ~1.2 ms vs ~13.5 ms on the CPU.
-- **Readback, not compute, is the Dawn-on-Node ceiling.** 1024²/2048² *compute*
-  runs fine; the `mapAsync` full readback crashes the worker beyond ~512². Since
-  the viz pipeline keeps the result on-GPU, this is not a real-use blocker — but
-  it caps how large we can rigorously benchmark *with readback* here (a browser
-  run lifts it). Dropping the global scratch buffer (shared-memory kernel) also
-  lowered GPU memory enough to run the no-readback path to 1024² in this harness.
+- ~~**Readback, not compute, is the Dawn-on-Node ceiling.**~~ **Wrong — see the
+  correction above.** Readback works at every size tested; the crash was the
+  Instance-lifetime bug. The measurement it was blocking is below.
+
+### Readback, measured (2026-08-01, `pnpm bench:readback`)
+
+Every row verified against `idwt53_cpu` element-by-element, so a fast number
+cannot be a silently empty buffer. 2048² is new — the old ceiling stopped at 1024².
+
+| size  | CPU DWT | GPU compute | GPU + readback | readback alone | keep-on-GPU | decode-to-CPU |
+|-------|--------:|------------:|---------------:|---------------:|------------:|--------------:|
+| 128²  |    0.21 |        0.47 |           0.74 |           0.27 |       0.44× |     **0.28×** |
+| 256²  |    0.84 |        0.54 |           1.32 |           0.78 |       1.55× |     **0.64×** |
+| 512²  |    3.38 |        0.86 |           3.64 |           2.78 |       3.93× |     **0.93×** |
+| 1024² |   15.33 |        1.49 |          31.86 |          30.37 |      10.27× |     **0.48×** |
+| 2048² |   72.72 |        4.67 |         136.10 |         131.42 |      15.57× |     **0.53×** |
+
+**The readback costs 6–28× the compute it enables**, and the decode-to-CPU column
+is below 1.00× at every size — i.e. running the DWT on the GPU *and bringing the
+result back* is slower than never leaving the CPU, everywhere we measured. That is
+the same conclusion the original doc reached, but from measurement rather than
+from a crash: the keep-on-GPU premise is not a convenience, it is the whole margin.
+
+> **Measurement trap, worth not re-learning.** Readback is timed in a plain
+> process (`pnpm bench:readback`), *not* in the vitest benchmark. Inside the
+> vitest fork, `mapAsync` completion is only observed on a coarse tick: every size
+> from 128² to 1024² reports a flat ~125 ms — a fixed wait, not bandwidth — and
+> the ordering against size inverts. The identical code as a standalone process
+> scales cleanly. `test/bench_idwt.gpu.test.ts` therefore *verifies* readback but
+> does not time it.
 
 **Conclusion for our layer:** the GPU DWT is correct, an architectural fit, and —
 with the shared-memory kernel — a clear win from ~256² up (≈12× at 1024²),
@@ -80,9 +114,10 @@ pipeline** — which is exactly the niche our separate TS/TypeGPU layer fills.
   streams line-by-line, fused with the rest of decode — its whole decode is on
   par with our DWT stage alone, so its DWT is a fast bar to clear on CPU.
 - A C library that decodes **to CPU memory** would have to add CPU→GPU→CPU
-  round-trips to use a GPU DWT; the readback alone (our Dawn-on-Node ceiling)
-  often costs more than the compute saved, so a decode-to-CPU library gains
-  little. The GPU win we measured is specifically the *keep-on-GPU* case.
+  round-trips to use a GPU DWT, and the readback costs more than the compute
+  saves — measured, §1: **decode-to-CPU is 0.28–0.93× the plain CPU path at every
+  size tested**, i.e. always a loss. So a decode-to-CPU library gains nothing
+  here, and this no longer rests on the Dawn crash that originally suggested it.
 - The bit-serial **HT entropy decode stays on the CPU** regardless (it is
   inherently sequential), so the GPU could only ever offload the back half.
 - The real opportunity is a pipeline that **renders on the GPU**: decode HT on
@@ -206,10 +241,12 @@ labels through the wavelet pipeline.
 **Recommendations**
 
 1. **GPU 5/3 kernel optimised — thesis proven.** The shared-memory kernel wins
-   from ~256² (≈3× at 512², ≈12× at 1024²), result kept on-GPU. Next: apply the
-   same shared-memory rewrite to the 9/7 kernel; coalesce the vertical pass; tile
-   lines beyond the 2048-sample shared-memory cap; and validate at >1024² in a
-   browser (where the readback ceiling does not apply).
+   from ~256² (≈4× at 512², ≈10× at 1024², ≈16× at 2048²), result kept on-GPU.
+   Next: apply the same shared-memory rewrite to the 9/7 kernel; coalesce the
+   vertical pass; and tile lines beyond the 2048-sample shared-memory cap. The
+   "validate at >1024² in a browser" item is **done on Node instead** — the
+   readback ceiling that motivated it was our own bug (see the correction at the
+   top), and 2048² now measures here directly.
 2. **Treat labels as a separate problem.** If SpatialData needs compressed
    `uint32` labels, evaluate a categorical/RLE codec rather than forcing them
    through a wavelet pipeline; reserve this codec for intensity data.
@@ -219,6 +256,6 @@ labels through the wavelet pipeline.
    OpenJPH-style HT decode on CPU + a GPU DWT/dequant/level-shift stage for
    GPU-resident visualisation.
 
-Source: benchmarks in `test/bench_idwt*.ts`; bit-depth ceilings in
+Source: benchmarks in `test/bench_idwt*.ts` and `scripts/bench-idwt-readback.ts`; bit-depth ceilings in
 `rust/htj2k-core/src/block_decoder.rs` and OpenJPH `ojph_codeblock.cpp` /
 `ojph_transform.cpp`; wrapper `Dtype` in `openjph-wasm`.
