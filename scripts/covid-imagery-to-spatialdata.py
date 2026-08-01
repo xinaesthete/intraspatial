@@ -9,7 +9,7 @@ decisions; it does not revisit them.
     uv run --with spatialdata --with tifffile --with imagecodecs --with scikit-image \
         --with ~/code/www/SpatialData.ts/python/spatialdata-js-util \
         python scripts/covid-imagery-to-spatialdata.py he
-    ... imc / labels / table / retransform / units
+    ... imc / labels / table / omero / refine / retransform / units
 
 `spatialdata-js-util` is needed from the H&E stage onwards even though only that
 stage calls it: once the H&E arrays are HTJ2K, opening the store at all needs the
@@ -39,10 +39,10 @@ import numpy as np
 SCRIPTS = Path(__file__).resolve().parent
 
 
-def _load_inventory():
-    """Import the sibling inventory module despite the hyphenated filename."""
-    path = SCRIPTS / "covid-imagery-inventory.py"
-    spec = importlib.util.spec_from_file_location("covid_imagery_inventory", path)
+def _load_module(filename: str):
+    """Import a sibling script despite the hyphenated filename."""
+    path = SCRIPTS / filename
+    spec = importlib.util.spec_from_file_location(path.stem.replace("-", "_"), path)
     module = importlib.util.module_from_spec(spec)
     # Register before exec: `dataclass` looks the class's module up in
     # sys.modules, and gets None (then AttributeError) if it is not there.
@@ -51,7 +51,7 @@ def _load_inventory():
     return module
 
 
-inventory = _load_inventory()
+inventory = _load_module("covid-imagery-inventory.py")
 Raster = inventory.Raster
 Roi = inventory.Roi
 
@@ -709,6 +709,157 @@ def cmd_retransform(args, rois: list[Roi]) -> None:
     print(f"\nrewrote transformations for {len(written)} elements (no pixels touched)")
 
 
+# --------------------------------------------------------------------------- refine
+
+
+def cmd_refine(args, rois: list[Roi]) -> None:
+    """Nudge each H&E onto its own IMC stack, where the evidence supports it.
+
+    MDV's stored `position` places 13 of the 30 H&E within 30 um of where their
+    own pixels say they belong. The rest are off — by 44-152 um for six of them,
+    and by hundreds for eleven that were evidently never registered
+    (`position (0,0)`, scale exactly 1.0, and a flat correlation surface).
+
+    So this corrects only what it can justify: an offset is applied when the
+    cross-correlation peak clears `--min-z` AND the residual exceeds
+    `--min-shift`. Everything else keeps MDV's placement, including the images
+    that are already good — moving those on a 4 um measurement would be noise.
+
+    The shift is recorded per element under a namespaced attribute, because a
+    coordinate that no longer matches the source file should say so.
+    """
+    from spatialdata import read_zarr
+    from spatialdata.transformations import Affine, set_transformation
+
+    check = _load_module("covid-he-registration-check.py")
+    sources = json.loads((args.covid_dir / "datasources.json").read_text())
+    regions = next(s for s in sources if s["name"] == "cells")["regions"]
+    images = args.covid_dir / regions["base_url"]
+    entries = regions["all_regions"]
+
+    sd = read_zarr(args.store)
+    applied, report = [], []
+    print(f"{'ROI':<24} {'dx':>7} {'dy':>7} {'z':>6}  action")
+    for roi in rois:
+        name = f"{roi.name}_he"
+        if roi.he is None or name not in sd.images:
+            continue
+        entry = entries[roi.name]
+        he_meta = entry["images"].get("he") or entry["images"]["un"]
+        placement = check.stored_placement(args.store, roi.name)
+        measured = check.measure(images, entry, he_meta, placement)
+        if measured is None:
+            continue
+        dx, dy, z = measured
+
+        if z < args.min_z or max(abs(dx), abs(dy)) <= args.min_shift:
+            reason = "keep — already aligned" if z >= args.min_z else "keep — peak too flat to trust"
+            print(f"{roi.name:<24} {dx:>7.0f} {dy:>7.0f} {z:>6.1f}  {reason}")
+            report.append({"roi": roi.name, "dx": dx, "dy": dy, "z": z, "applied": False})
+            continue
+
+        (sx, sy), (ox, oy) = placement
+        set_transformation(
+            sd.images[name],
+            Affine(
+                np.array([[sx, 0.0, ox + dx], [0.0, sy, oy + dy], [0.0, 0.0, 1.0]]),
+                input_axes=("x", "y"),
+                output_axes=("x", "y"),
+            ),
+            roi.name,
+        )
+        sd.write_transformations(name)
+        applied.append(name)
+        report.append({"roi": roi.name, "dx": dx, "dy": dy, "z": z, "applied": True})
+        print(f"{roi.name:<24} {dx:>7.0f} {dy:>7.0f} {z:>6.1f}  SHIFTED")
+
+    for name in applied:
+        path = args.store / "images" / name / "zarr.json"
+        meta = json.loads(path.read_text())
+        entry = next(r for r in report if f"{r['roi']}_he" == name)
+        meta["attributes"]["covid_migration"] = {
+            "he_offset_refined_um": [entry["dx"], entry["dy"]],
+            "peak_z": entry["z"],
+            "method": "FFT cross-correlation of H&E greyness against arcsinh(DNA1/5)",
+            "note": "translation no longer matches datasources.json `position`",
+        }
+        path.write_text(json.dumps(meta))
+
+    finalize(sd, args.store, [(n, "images") for n in applied])
+    (args.store.parent / f"{args.store.name}.he-registration.json").write_text(
+        json.dumps(report, indent=1)
+    )
+    print(f"\nshifted {len(applied)} of {len(report)} H&E; the rest keep MDV's placement")
+
+
+# --------------------------------------------------------------------------- omero
+
+
+#: MDV's own answer, from `regions.avivator.default_channels` in datasources.json.
+DEFAULT_ACTIVE = ("DNA1",)
+
+#: Not a colour scheme, just enough that two active channels are distinguishable.
+CHANNEL_COLOURS = {"DNA1": "0000FF", "DNA3": "6666FF", "aSMA": "FF00FF", "CD68": "00FF00"}
+
+
+def cmd_omero(args, rois: list[Roi]) -> None:
+    """Give each IMC stack per-channel display defaults.
+
+    Without this a viewer shows channel 0, which on this panel is `80ArAr` — a
+    calibration channel carrying a non-zero floor and no biology. The first six
+    channels are all of that kind, so "open the stack and look" produces noise
+    and reads as a broken decoder. The plan doc warned that channel index is not
+    marker index; this is the metadata that stops a viewer having to know.
+
+    Windows come from level 1 (a quarter of the pixels, same value distribution)
+    so the whole pass is a few seconds per ROI rather than a full decode.
+    """
+    import zarr
+
+    sd = attach(args.store)
+    for roi in rois:
+        name = f"{roi.name}_imc"
+        group = args.store / "images" / name
+        if not group.is_dir():
+            continue
+        meta = json.loads((group / "zarr.json").read_text())
+        omero = meta["attributes"]["ome"].setdefault("omero", {})
+        labels = [c["label"] for c in omero.get("channels", [])]
+        if not labels:
+            print(f"{name}: no omero channel labels — skipped")
+            continue
+
+        level = "s1" if (group / "s1").is_dir() else "s0"
+        data = zarr.open_array(group / level, mode="r")
+        channels = []
+        for i, label in enumerate(labels):
+            plane = np.asarray(data[i])
+            lo, hi = (float(v) for v in np.percentile(plane, (50.0, 99.9)))
+            channels.append(
+                {
+                    "label": label,
+                    "active": label in DEFAULT_ACTIVE,
+                    "color": CHANNEL_COLOURS.get(label, "FFFFFF"),
+                    # p99.9 rather than max: IMC is heavy-tailed enough that
+                    # `CD10` reaches 5800x its own p99.9, so a max-scaled window
+                    # renders every channel as black with a few hot pixels.
+                    "window": {
+                        "min": float(plane.min()),
+                        "max": float(plane.max()),
+                        "start": lo,
+                        "end": hi if hi > lo else lo + 1.0,
+                    },
+                }
+            )
+        omero["channels"] = channels
+        (group / "zarr.json").write_text(json.dumps(meta))
+        active = [c["label"] for c in channels if c["active"]]
+        print(f"{name}: {len(channels)} channels, active {active}")
+
+    sd.write_consolidated_metadata()
+    print(f"\nwrote omero display defaults; active by default: {list(DEFAULT_ACTIVE)}")
+
+
 # --------------------------------------------------------------------------- units
 
 
@@ -739,10 +890,17 @@ def cmd_units(args, rois: list[Roi]) -> None:
 
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("command", choices=("he", "imc", "labels", "table", "retransform", "units"))
+    p.add_argument("command", choices=("he", "imc", "labels", "table", "omero", "refine", "retransform", "units"))
     p.add_argument("--covid-dir", type=Path, default=Path("/Volumes/Crucial X8/covid"))
     p.add_argument("--store", type=Path, default=Path.home() / "data/covid.spatialdata.zarr")
     p.add_argument("--rois", help="comma-separated ROI names, or a count like '2' for the first N")
+    p.add_argument(
+        "--min-z", type=float, default=6.0, help="refine: least peak sharpness to trust (default 6)"
+    )
+    p.add_argument(
+        "--min-shift", type=float, default=30.0,
+        help="refine: leave placements already this close, in micrometres (default 30)",
+    )
     p.add_argument("--zstd", type=int, default=19, help="zstd level for raster arrays (default 19)")
     p.add_argument(
         "--imc-levels",
@@ -773,6 +931,8 @@ def main() -> None:
         "imc": cmd_imc,
         "labels": cmd_labels,
         "table": cmd_table,
+        "omero": cmd_omero,
+        "refine": cmd_refine,
         "retransform": cmd_retransform,
         "units": cmd_units,
     }[

@@ -58,6 +58,15 @@ def xcorr_peak(a: np.ndarray, b: np.ndarray) -> tuple[float, float, float]:
     return (dy - h if dy > h // 2 else dy), (dx - w if dx > w // 2 else dx), float(z)
 
 
+def he_shape(path: Path) -> tuple[int, int]:
+    """Height and width of an H&E PNG, from its IHDR — no decode needed."""
+    import struct
+
+    with open(path, "rb") as fh:
+        buf = fh.read(24)
+    return struct.unpack_from(">I", buf, 20)[0], struct.unpack_from(">I", buf, 16)[0]
+
+
 def he_grey(path: Path) -> np.ndarray:
     import imagecodecs
 
@@ -72,51 +81,115 @@ def dna1(path: Path) -> np.ndarray:
         return tf.pages[names.index("DNA1")].asarray()
 
 
-def main(covid_dir: Path) -> None:
+def stored_placement(store: Path, roi: str):
+    """The H&E's scale and top-left offset as the store actually holds them.
+
+    With `--store` the script stops being an A/B decider and becomes a quality
+    report: the residual it prints is then how far each H&E still is from where
+    its own pixels say it belongs.
+    """
+    from spatialdata import read_zarr
+    from spatialdata.transformations import get_transformation
+
+    sd = read_zarr(store)
+    element = sd.images[f"{roi}_he"]
+    m = get_transformation(element, roi).to_affine_matrix(
+        input_axes=("x", "y"), output_axes=("x", "y")
+    )
+    return (m[0, 0], m[1, 1]), (m[0, 2], m[1, 2])
+
+
+def measure(
+    images: Path,
+    entry: dict,
+    he: dict,
+    placement: tuple[tuple[float, float], tuple[float, float]],
+) -> tuple[float, float, float] | None:
+    """How far the H&E is from where its own pixels say it belongs, in micrometres.
+
+    `placement` is the ((sx, sy), (ox, oy)) the H&E is currently drawn with;
+    the returned `(dx, dy)` is what to add to `(ox, oy)` to line it up, and `z`
+    says whether the peak is sharp enough to believe. Shared with the refinement
+    pass so both measure the same way.
+    """
+    (sx, sy), (ox, oy) = placement
+    g = he_grey(images / he["file"])
+    hh, hw = g.shape
+    d_full = dna1(images / entry["ome_tiff"])
+    h_roi = float(entry["images"]["cellmask"]["height"])
+    w_roi = float(entry["images"]["cellmask"]["width"])
+
+    yy, xx = np.mgrid[0 : int(h_roi) : STRIDE, 0 : int(w_roi) : STRIDE]
+    d = np.arcsinh(d_full[yy, xx] / 5.0)
+    r = np.rint((yy + 0.5 - oy) / sy - 0.5).astype(int)
+    c = np.rint((xx + 0.5 - ox) / sx - 0.5).astype(int)
+    ok = (r >= 0) & (r < hh) & (c >= 0) & (c < hw)
+    if ok.sum() < MIN_SAMPLES:
+        return None
+    # Nuclei are dark in H&E and bright in DNA1, so negate to make it a maximum.
+    v = -g[np.clip(r, 0, hh - 1), np.clip(c, 0, hw - 1)]
+    v = np.where(ok, v, v[ok].mean())
+
+    dy, dx, z = xcorr_peak(d, v)
+    return float(dx * STRIDE), float(dy * STRIDE), z
+
+
+def main(covid_dir: Path, store: Path | None) -> None:
     ds = json.loads((covid_dir / "datasources.json").read_text())
     regions = next(s for s in ds if s["name"] == "cells")["regions"]["all_regions"]
     images = covid_dir / "images"
 
-    print(f"{'ROI':<24} {'sep':>6} {'peak dx':>8} {'peak dy':>8} {'z':>6} {'A err':>7} {'B err':>7}")
+    header = (
+        f"{'ROI':<24} {'residual dx':>12} {'residual dy':>12} {'z':>6}"
+        if store is not None
+        else f"{'ROI':<24} {'sep':>6} {'peak dx':>8} {'peak dy':>8} {'z':>6} {'A err':>7} {'B err':>7}"
+    )
+    print(header)
     rows = []
     for name, entry in sorted(regions.items()):
         im = entry["images"]
         he = im.get("he") or im.get("un")
         if he is None:
             continue
-        g = he_grey(images / he["file"])
-        hh, hw = g.shape
-        d_full = dna1(images / entry["ome_tiff"])
-
         h_roi = float(im["cellmask"]["height"])
-        w_roi = float(im["cellmask"]["width"])
-        sx, sy = he["width"] / hw, he["height"] / hh
-        ox, oy = (float(v) for v in he["position"])
-
-        # Resample both onto the ROI grid under hypothesis A, then let the
-        # cross-correlation say how far off A is. Nuclei are dark in H&E and
-        # bright in DNA1, so the H&E is negated to make the peak a maximum.
-        yy, xx = np.mgrid[0 : int(h_roi) : STRIDE, 0 : int(w_roi) : STRIDE]
-        d = np.arcsinh(d_full[yy, xx] / 5.0)
-        r = np.rint((yy + 0.5 - oy) / sy - 0.5).astype(int)
-        c = np.rint((xx + 0.5 - ox) / sx - 0.5).astype(int)
-        ok = (r >= 0) & (r < hh) & (c >= 0) & (c < hw)
-        if ok.sum() < MIN_SAMPLES:
+        if store is not None:
+            placement = stored_placement(store, name)
+        else:
+            # Hypothesis A, so the measured offset IS how far off A is.
+            hh, hw = he_shape(images / he["file"])
+            placement = (
+                (he["width"] / hw, he["height"] / hh),
+                (float(he["position"][0]), float(he["position"][1])),
+            )
+        measured = measure(images, entry, he, placement)
+        if measured is None:
             print(f"{name:<24} (no usable overlap)")
             continue
-        v = -g[np.clip(r, 0, hh - 1), np.clip(c, 0, hw - 1)]
-        v = np.where(ok, v, v[ok].mean())
-
-        dy, dx, z = xcorr_peak(d, v)
-        dy, dx = dy * STRIDE, dx * STRIDE
+        dx, dy, z = measured
 
         # A puts the top edge at position_y, so dy = 0; B shifts it by this much.
+        oy = placement[1][1]
         b_dy = (h_roi - oy - he["height"]) - oy
-        rows.append((abs(b_dy), abs(dy), abs(dy - b_dy), z, name))
+        rows.append((abs(b_dy), abs(dy), abs(dy - b_dy), z, name, max(abs(dx), abs(dy))))
+        if store is not None:
+            flag = "" if max(abs(dx), abs(dy)) <= 30 else ("   <-- offset" if z >= 6 else "   <-- flat, likely unregistered in the source")
+            print(f"{name:<24} {dx:>12.0f} {dy:>12.0f} {z:>6.1f}{flag}")
+        else:
+            print(
+                f"{name:<24} {abs(b_dy):>6.0f} {dx:>8.0f} {dy:>8.0f} {z:>6.1f} "
+                f"{abs(dy):>7.0f} {abs(dy - b_dy):>7.0f}"
+            )
+
+    if store is not None:
+        aligned = sum(1 for r in rows if r[5] <= 30)
+        refinable = sum(1 for r in rows if r[5] > 30 and r[3] >= 6)
+        flat = sum(1 for r in rows if r[5] > 30 and r[3] < 6)
         print(
-            f"{name:<24} {abs(b_dy):>6.0f} {dx:>8.0f} {dy:>8.0f} {z:>6.1f} "
-            f"{abs(dy):>7.0f} {abs(dy - b_dy):>7.0f}"
+            f"\n{aligned} of {len(rows)} H&E sit within 30 um of where their own pixels say "
+            f"they belong.\n{refinable} are offset but have a sharp enough peak to correct; "
+            f"{flat} have a flat correlation surface and look unregistered in the source."
         )
+        return
 
     # Only ROIs whose H&E is actually registered, AND where A and B predict
     # different things, can decide between them. Agreement elsewhere is not
@@ -125,7 +198,7 @@ def main(covid_dir: Path) -> None:
         decisive = [r for r in rows if r[0] >= 100 and r[3] >= zcut]
         if not decisive:
             continue
-        a_wins = sum(1 for _, ea, eb, _, _ in decisive if ea < eb)
+        a_wins = sum(1 for r in decisive if r[1] < r[2])
         print(
             f"\nseparation >= 100 um and z >= {zcut}: {len(decisive)} ROIs, "
             f"A closer on {a_wins}, B on {len(decisive) - a_wins}   "
@@ -137,4 +210,7 @@ def main(covid_dir: Path) -> None:
 
 
 if __name__ == "__main__":
-    main(Path(sys.argv[1] if len(sys.argv) > 1 else "/Volumes/Crucial X8/covid"))
+    main(
+        Path(sys.argv[1] if len(sys.argv) > 1 else "/Volumes/Crucial X8/covid"),
+        Path(sys.argv[2]) if len(sys.argv) > 2 else None,
+    )

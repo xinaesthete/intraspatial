@@ -35,7 +35,8 @@ uv run --with spatialdata --with tifffile --with imagecodecs --with h5py --with 
   python scripts/covid-imagery-to-spatialdata.py he
 ```
 
-then `imc`, `labels`, `table`, and `retransform` (metadata-only affine rewrite) — plus one
+then `imc`, `labels`, `table`, `omero` (display defaults), `refine` (H&E registration) and
+`retransform` (reset affines from the source) — plus one
 `spatialdata-js-util images recompress --codec experimental.openjph_htj2k --preset lossless
 --pyramid` between `he` and `imc`, while the store is still small enough to copy cheaply.
 `scripts/covid-imagery-inventory.py` is the survey, and `scripts/covid-spatialdata-validate.py`
@@ -75,18 +76,48 @@ not `position_y`. Established by `scripts/covid-he-registration-check.py`, which
 onto its ROI grid and FFT-cross-correlates it against `arcsinh(DNA1)` — nuclei are dark in H&E and
 bright in DNA1, so the true alignment is a correlation *minimum*.
 
-19 of 30 H&E images land within 30 µm of the flipped prediction against 8 of 30 for the unflipped
-one, and on the subset that can actually discriminate (the two predictions ≥ 100 µm apart, and a
-correlation peak sharp enough to be a measurement at all) it is 3–0 with median error 16 µm against
-256 µm. Every correction was in y; `dx` came out 0.0 for all 30, which is the control.
+Comparing *vertical* error only, since that is the axis the two hypotheses differ on: 19 of 30 land
+within 30 µm of the flipped prediction against 8 of 30 for the unflipped one. On the subset that can
+actually discriminate — the two predictions ≥ 100 µm apart, and a correlation peak sharp enough to be
+a measurement at all — it is 3–0 for the flip, median error 16 µm against 256 µm. Every correction
+was in y; `dx` came out 0.0 for all 30, which is the control. (Counting *both* axes, as the next
+section does, is a stricter test and gives 13 of 30.)
 
 Sizes of the correction: 920 µm on `COVID_SAMPLE_5_ROI_2`, 544 µm on `COVID_SAMPLE_8_ROI_1`, 414 µm
 on `COVID_SAMPLE_8_ROI_3` — against ROIs 2000 µm across.
 
-**Residual caveat, stated rather than smoothed over:** three H&E images (`COVID_SAMPLE_4_ROI_2`,
-`5_ROI_2`, `5_ROI_3`) carry `position (0,0)` and scale exactly 1.0 and have a flat correlation
-surface. They look unregistered in the source. They are converted under the same rule as the rest,
-which is the best available answer, but they are the three to distrust.
+### How well each H&E actually lands, and the six that were nudged
+
+Getting the convention right is not the same as the H&E being *registered*. Re-running the same
+cross-correlation against the store rather than against a hypothesis turns the script into a quality
+report (`covid-he-registration-check.py <covid-dir> <store>`), and on MDV's own placement it said:
+
+| residual against the ROI's own IMC | count |
+|---|---|
+| within 30 µm | 13 / 30 |
+| offset, but with a sharp enough peak (z ≥ 6) to correct | 6 |
+| flat correlation surface — never registered in the source | 11 |
+
+**Decided 2026-08-01 (user's call): correct the six, leave the rest.** `... refine` applies the
+measured offset only where `z ≥ 6` and the residual exceeds 30 µm, so nothing moves on evidence that
+does not support the move; the eleven flat ones — `4_ROI_2`, `5_ROI_2` and `5_ROI_3` among them,
+carrying `position (0,0)` and scale exactly 1.0 — keep MDV's placement, and the thirteen already-good
+ones are not jogged by a 4 µm measurement. That takes it to **19 of 30 within 30 µm, with nothing
+correctable left**; the six moved by 44–152 µm and their peaks got *sharper* afterwards, which is the
+result agreeing with itself.
+
+Each shifted element records what happened under a `covid_migration` attribute — the offset, the peak
+height, the method, and a note that its translation no longer matches `datasources.json`. A coordinate
+that has stopped matching its source should say so. There is also a full 30-row report beside the
+store as `covid.spatialdata.zarr.he-registration.json`.
+
+The pass is idempotent by construction: it measures the placement the store currently has, so a
+second run finds the residual gone and shifts nothing. `retransform` puts everything back on MDV's
+placement if the refinement is ever to be reconsidered.
+
+**Two caveats worth keeping.** The eleven flat ones cannot be rescued this way — correlation has
+nothing to lock onto. And even a perfectly placed H&E is an *adjacent section*, so cell outlines will
+never match H&E nuclei one for one; the realistic bar is tissue architecture lining up.
 
 ## Finding 2 — the IMC stacks are already pyramidal, and the level is a subsample
 
@@ -190,7 +221,27 @@ The pyramid costs 221 MB on top of the 520 MB, which is more than the textbook 3
 tiles compress worse. Worth it by the compression doc's own argument: nothing here was pyramidal and
 a zoomed-out view otherwise pulls full-resolution chunks.
 
-## Finding 6 — corrections to the survey
+## Finding 6 — channel 0 is a calibration channel, so "open it and look" shows noise
+
+Reported from the SpatialData.js demo viewer as "the IMC images look like noise, maybe the decoder is
+wrong". The decoder is fine. The panel's first six channels are `80ArAr`, `89Y`, `127I`, `131Xe`,
+`134Xe`, `138Ba` — all calibration, and `80ArAr` in particular carries a non-zero floor everywhere
+and no biology (finding 8 of the compression note found the same four channels have no zeros at all).
+A viewer defaulting to channel 0 therefore renders background, and it looks exactly like a broken
+codec.
+
+The plan doc warned that "a naive `channel 0 is the first marker` mapping would get it wrong". The
+fix is to stop making a viewer know that: `... omero` writes an OME `omero.channels` block per stack
+with `active` true only for `DNA1` — MDV's own default, from `regions.avivator.default_channels` —
+and a per-channel window.
+
+The window is p50–p99.9, not min–max, and that matters as much as the channel choice: IMC is
+heavy-tailed enough that `CD10` reaches 5,800× its own p99.9 (finding 4 of the compression note), so
+a max-scaled window renders essentially every channel as black plus a few hot pixels. Computed from
+level 1, which has the same value distribution at a quarter of the pixels, so the whole pass is under
+a minute for all 32.
+
+## Finding 7 — corrections to the survey
 
 - **10 of the 32 stacks are not 2000², not eight**, and the range is wider than recorded: from
   2000 × 324 to 4000 × 1000, 11 distinct extents. Raw total 22.30 GB, confirming the plan's revision.
@@ -245,6 +296,9 @@ test fails if the y flip, the affine, the `+1` label offset or the region wiring
 Also checked: IMC pixels bit-identical to the source at both levels; `X` columns identical to
 `datafile.h5`; every `region` names an element that exists; every spatial axis is `micrometer`; and
 the consolidated copy agrees with the elements it summarises.
+
+H&E placement is not part of that suite, because it has no pass/fail answer — it is a per-ROI
+quality report, above.
 
 ## What is not done
 
