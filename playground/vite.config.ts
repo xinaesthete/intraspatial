@@ -86,6 +86,7 @@ export default defineConfig({
         cellstats: fileURLToPath(new URL("./cellstats.html", import.meta.url)),
         cellmodes: fileURLToPath(new URL("./cellmodes.html", import.meta.url)),
         r3fspike: fileURLToPath(new URL("./r3fspike.html", import.meta.url)),
+        externaltexture: fileURLToPath(new URL("./externaltexture.html", import.meta.url)),
         umap: fileURLToPath(new URL("./umap.html", import.meta.url)),
       },
     },

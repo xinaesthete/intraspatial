@@ -293,11 +293,38 @@ worth of parallelism, and 5.2 MB of compressed bytes stand in for 16 MB of sampl
 - The device must come from the **host renderer**, never `navigator.gpu` — `adoptDevice`
   ([`src/gpu/interop/adoptDevice.ts`](../src/gpu/interop/adoptDevice.ts)) is that seam, and the
   playground already adopts three's device in `datasourceMain.ts`.
-- three.js side: `THREE.ExternalTexture(sourceTexture: GPUTexture)` exists and is typed in three 0.185
-  (which we are on), so a device-resident tile can become a material's map with no copy. **What is
-  unverified is behaviour, not existence** — that a texture we allocated on the adopted device samples
-  correctly in a `WebGPURenderer` material, with the filtering and format the channel material expects.
-  Spike this early; the whole render-side benefit rests on it.
+- three.js side: **verified** (`playground/externaltexture.html`, three 0.185, Chrome/Dawn). A
+  `GPUTexture` we allocate on `renderer.backend.device` and fill with the assembly pass samples
+  correctly through `THREE.ExternalTexture`, in both shapes that matter: 2-D `rgba16float` via
+  `texture(ext, uv())` and 3-D `r16float` via `texture3D()`. Max error 0.0015 against the pattern
+  written in, which is fp16 plus the rgba8 readback. Details in §8a.
+
+### 8a. What the ExternalTexture spike actually found
+
+`playground/externaltexture.html` is self-checking rather than eyeballed: it fills a texture through
+the real assembly pass, renders it, reads the pixels back, and compares against the pattern it wrote.
+Both cases pass. Two things are worth carrying forward, and neither was visible from reading three's
+source:
+
+- **`texture.image` is NOT required.** The obvious adaptation — telling three the extent, since an
+  `ExternalTexture` has no image — turns out to be unnecessary; `createTexture` returns early for
+  external textures, before anything needs it. (`?noimage=1` on the spike page still passes 3/3.)
+- **`isData3DTexture = true` IS required for a 3-D source, and omitting it fails silently-ish.**
+  Three picks the bind-group view dimension from that flag alone (`WebGPUTextureUtils._getDimension`),
+  so without it a 3-D texture is bound as `texture_2d`, the generated WGSL fails to compile
+  (`expected 'vec2<f32>', got 'vec3<f32>'`), and **the quad renders black with no exception thrown**.
+  Three does log the pipeline error, so it is diagnosable — but the visible symptom is "no data",
+  which is exactly what a loading bug looks like. (`?no3dflag=1` reproduces it.)
+
+Setting `wrapS`/`wrapT`/`wrapR` explicitly is also needed to avoid three warning
+`Unsupported texture wrap type "undefined"` — cosmetic, but it is noise in a console you will be
+reading for the errors above.
+
+The spike also caught a defect in its own first draft, which is the reason to write assertions rather
+than look at a picture: the 3-D case originally filled the single-lane texture with `fx`, which does
+not vary with z at all, so "sampling z slice 8" would have passed identically had three ignored the
+z coordinate entirely. Lane 0 now mixes all three axes (`0.15·fx + 0.25·fy + 0.6·fz`) and two slices
+are compared, so a collapsed z axis cannot pass.
 
 ## 9. Slices, and where we are
 
@@ -308,10 +335,12 @@ worth of parallelism, and 5.2 MB of compressed bytes stand in for 16 MB of sampl
 2. ✅ **The assembly pass** — `src/gpu/tiles/assemble.ts`, verified against the host loops it replaces
    in `assemble.gpu.test.ts` (8/16/32-bit unpack, half-pack with row padding, and the full chain into an
    `rgba16float` texture read back through `textureLoad`). Benched on real chunks: §1a.
-3. ⬜ **Wire it into a Loader** — `spatialDataVolume`/`spatialDataLoader` gain a `{ device }` form whose
-   `getChunk` returns a device-resident `Tile`; `TileRenderer`/`NaiveVolumeRenderer` consume it. This
-   needs step 4 first, because the renderers are three.js.
-4. ⬜ **`THREE.ExternalTexture` spike** against the adopted device — the one unverified integration point.
+3. ✅ **`THREE.ExternalTexture` spike** — `playground/externaltexture.html`, self-checking, 2-D and
+   3-D both correct on the adopted device (§8a). The last unverified link is closed: nothing now
+   stands between a device-resident `Tile` and a rendered pixel.
+4. ⬜ **Wire it into a Loader** — `spatialDataVolume`/`spatialDataLoader` gain a `{ device }` form
+   whose `getChunk` returns a device-resident `Tile`; `TileRenderer`/`NaiveVolumeRenderer` consume it
+   via `ExternalTexture` instead of `DataTexture`/`Data3DTexture`. No unknowns left in it, just work.
 5. ⬜ **`registerGpuChunkDecoder`**, the raw-bytes accessor (or the escape hatch), and the two-stage
    HTJ2K decoder. Deliberately last: it is the part that needs the codec to be good.
 

@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Spike — THREE.ExternalTexture over an adopted device</title>
+  <style>
+    :root { color-scheme: dark; }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; min-height: 100%; background: #0b1020; color: #e2e8f0; font: 13px/1.6 ui-sans-serif, system-ui, sans-serif; }
+    main { max-width: 1100px; margin: 0 auto; padding: 24px; }
+    h1 { font-size: 18px; margin: 0 0 4px; }
+    p.sub { margin: 0 0 20px; color: #94a3b8; }
+    .verdict { font-size: 15px; font-weight: 600; padding: 10px 14px; border-radius: 8px; margin: 0 0 18px; background: #1e293b; }
+    .verdict.pass { background: #14532d; color: #bbf7d0; }
+    .verdict.fail { background: #7f1d1d; color: #fecaca; }
+    .cases { display: grid; gap: 14px; }
+    .case { border: 1px solid #1e293b; border-radius: 8px; padding: 12px 14px; background: #0f172a; }
+    .case h2 { font-size: 14px; margin: 0 0 6px; display: flex; gap: 8px; align-items: center; }
+    .tag { font-size: 11px; padding: 1px 7px; border-radius: 999px; background: #334155; color: #cbd5e1; }
+    .tag.pass { background: #166534; color: #bbf7d0; }
+    .tag.fail { background: #991b1b; color: #fecaca; }
+    .case pre { margin: 6px 0 0; white-space: pre-wrap; color: #94a3b8; font: 12px/1.5 ui-monospace, monospace; }
+    canvas { display: block; margin: 18px 0 0; border: 1px solid #1e293b; border-radius: 8px; image-rendering: pixelated; }
+  </style>
+</head>
+
+<body>
+  <main>
+    <h1>Spike — <code>THREE.ExternalTexture</code> over an adopted device</h1>
+    <p class="sub">
+      Does a <code>GPUTexture</code> we allocated on three's own device, filled by
+      <code>src/gpu/tiles/assemble.ts</code>, sample correctly in a <code>WebGPURenderer</code> material?
+      Step 4 of <code>docs/gpu-resident-loader.md</code>.
+    </p>
+    <div id="verdict" class="verdict">running…</div>
+    <div id="cases" class="cases"></div>
+    <canvas id="canvas" width="512" height="256"></canvas>
+  </main>
+  <script type="module" src="/src/externalTextureMain.ts"></script>
+</body>
+
+</html>
