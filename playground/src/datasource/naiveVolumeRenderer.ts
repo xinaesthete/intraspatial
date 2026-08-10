@@ -27,6 +27,7 @@ import { MeshBasicNodeMaterial } from "three/webgpu";
 import {
   chunkArrayBox,
   chunkKey,
+  hostSamples,
   type Loader,
   type MemoryReporting,
   type Multiscale,
@@ -117,9 +118,10 @@ export class NaiveVolumeRenderer implements MemoryReporting {
   private async load(k: string, id: Tile["id"]): Promise<void> {
     try {
       const tile = await this.loader.getChunk(id);
+      const src = hostSamples(tile);
       const [ex, ey, ez] = tile.dims;
       const data = new Uint8Array(ex * ey * ez);
-      for (let i = 0; i < data.length; i++) data[i] = Math.round((tile.data[i] ?? 0) * 255);
+      for (let i = 0; i < data.length; i++) data[i] = Math.round((src[i] ?? 0) * 255);
       const tex = makeR8Texture(data, ex, ey, ez);
       const mesh = this.makeChunkMesh(id, tex);
       this.group.add(mesh);

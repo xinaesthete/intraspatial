@@ -26,7 +26,16 @@
 // tree of `LazyZarrArray`s whose `.get()` yields a real `zarr.Array` — and call `Array.getChunk()`
 // once per brick. One fetch, one decode, the store's native 3-D chunk. No new dependency, and the
 // same zarrita instance that has the HTJ2K codec registered.
-import { type Affine3, type ChunkId, chunkCounts, type Loader, type Multiscale, type Tile, type Vec3 } from "../../../src/datasource";
+import {
+  type Affine3,
+  type ChunkId,
+  chunkCounts,
+  hostSamples,
+  type Loader,
+  type Multiscale,
+  type Tile,
+  type Vec3,
+} from "../../../src/datasource";
 
 let decodeReady: Promise<void> | null = null;
 
@@ -341,9 +350,10 @@ async function buildVolume(
       const t = await loader.getChunk(id).catch(() => null);
       if (!t) continue;
       // Keep the sort cheap: at most ~40k samples per brick.
-      const stride = Math.max(1, Math.floor(t.data.length / 40000));
-      for (let i = 0; i < t.data.length; i += stride) {
-        const v = t.data[i] ?? 0;
+      const s = hostSamples(t);
+      const stride = Math.max(1, Math.floor(s.length / 40000));
+      for (let i = 0; i < s.length; i += stride) {
+        const v = s[i] ?? 0;
         vals.push(v);
         if (v < min) min = v;
         if (v > max) max = v;
