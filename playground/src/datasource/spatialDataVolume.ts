@@ -40,11 +40,21 @@ import {
 let decodeReady: Promise<void> | null = null;
 
 /** Register HTJ2K decode for this page against `openjph-wasm`, replacing zarrextra's default
- *  (cornerstone) decoder — see the multi-component note in the file header. Once, per page. */
+ *  (cornerstone) decoder — see the multi-component note in the file header. Once, per page.
+ *
+ *  The decode itself runs in OUR OWN worker pool (`htj2kWorkerPool`), not on the main thread and not
+ *  in zarrextra's worker (whose bundled cornerstone build cannot do multi-component). Measured, a
+ *  level-3 brick is ~45 ms of synchronous wasm; the viewer streams 19–27 per camera move, so on the
+ *  main thread that is about a second of blocking in 45 ms lumps. `?maindecode=1` puts it back on
+ *  the main thread, so the two are comparable on the same store. */
 function ensureVolumeDecode(zx: typeof import("zarrextra")): Promise<void> {
   if (!decodeReady) {
     decodeReady = (async () => {
-      const { decode } = await import("openjph-wasm");
+      const mainThreadDecode = new URLSearchParams(location.search).get("maindecode") === "1";
+      const pool = mainThreadDecode ? null : (await import("./htj2kWorkerPool")).decodePool();
+      const decodeOnMain = mainThreadDecode ? (await import("openjph-wasm")).decode : null;
+      const decode = async (bytes: Uint8Array) =>
+        pool ? pool.decode(bytes) : await (decodeOnMain as NonNullable<typeof decodeOnMain>)(bytes);
       /** `openjph-wasm` returns planar, component-major samples — `data[(c*height + y)*width + x]`
        *  — which is already the C order zarr wants for a `[…, z, y, x]` chunk (component == z), so
        *  the buffer passes straight through. We only assert the codestream matches the chunk. */

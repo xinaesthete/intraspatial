@@ -72,15 +72,49 @@ Three things worth reading off that:
 
 - **The conversion is ~25 % of per-brick wall-clock, and 100 % of the part we control.** Decode dominates
   at ~92 ms and the assembly pass does not touch it. End-to-end a brick goes ~120 ms → ~98 ms.
-- **On the volume page that 25 % is all main-thread.** `spatialDataVolume.ts` deliberately does *not*
-  call `enableWorkerChunkDecode()` — the shipped worker bundle has cornerstone baked in and would bypass
-  its openjph-wasm shim — so decode is on the main thread there already. The thread-affinity objection in
-  §7 therefore **does not apply to the volumetric path**: there is no off-main-thread win to lose, which
-  makes the volume the better first target for GPU decode, not the harder one.
+- **On the volume page that 25 % *was* all main-thread — and so was the decode.** `spatialDataVolume.ts`
+  cannot use `enableWorkerChunkDecode()` (the shipped worker bundle has cornerstone baked in, which
+  cannot decode multi-component chunks), so its openjph-wasm decode ran on the main thread. That is
+  now fixed with our own worker pool — see §1b — which **retracts** the claim this bullet used to make,
+  that the volume path had no off-main-thread win to lose. It has one now, so §7's thread-affinity
+  objection applies to the volume path exactly as it does to the image path.
 - **It buys precision back for free.** The volume path quantises 16-bit samples to R8 today
   (`naiveVolumeRenderer.ts:122`); the device path lands them in `r16float` at the same cost. That doubles
   the per-brick VRAM (8 → 16 MB), so it wants to be a knob rather than a silent change — but the choice
   currently costs a whole extra host pass, and after this it costs nothing.
+
+### 1b. The decode was the wall, and it is now off-thread
+
+With the conversion gone, what remained on the main thread was the codec itself, which is where the
+time actually was. Measured in the browser on a level-3 brick (388×297×32, 32 components, 1.9 MB
+compressed): **~45 ms of synchronous wasm per brick**, and the viewer streams 19–27 bricks per camera
+move. That is roughly a second of main-thread blocking, delivered in 45 ms lumps — three dropped
+frames each at 60 Hz.
+
+`playground/src/datasource/htj2kDecodeWorker.ts` + `htj2kWorkerPool.ts` move that decode into a pool
+of workers (`hardwareConcurrency − 1`, capped at 4), returning the samples as a **transferable**
+ArrayBuffer so the 7 MB result crosses threads without a copy. It is the same openjph-wasm decoder —
+what changes is only which thread runs it.
+
+Six bricks, HTTP cache warm, `?maindecode=1` for the comparison:
+
+| | one brick | six concurrent | per brick |
+| :--- | ---: | ---: | ---: |
+| main-thread decode | 66 ms | 309 ms | 51 ms |
+| worker pool (4) | 63 ms | 132 ms | **22 ms** |
+
+A single brick is unchanged, as it must be — one decode cannot be parallelised, and the worker only
+adds a transfer. The gain is entirely in concurrency, which is the case the viewer is actually in.
+And the wall-clock 2.3× understates it: in the main-thread row those 309 ms are 309 ms of *blocking*,
+while in the pool row the main thread is free the whole time.
+
+Correctness is unchanged — the same device-vs-host check as §9a still gives max error 1.5 × 10⁻⁵ and
+the same mean, so the transferred buffer is byte-identical to the main-thread decode's.
+
+**This is not the arrangement §7 describes**, and shouldn't be mistaken for it: the worker returns
+*pixels*, not wavelet coefficients, so the full-resolution samples still cross the thread boundary and
+the wasm still does the IDWT. The coefficient split is strictly better and strictly harder — it needs
+our own codec, whereas this needed a `postMessage`.
 
 ## 2. The constraint that decides everything: the codec seam cannot be the GPU seam
 
@@ -262,13 +296,14 @@ OpenJPH") becomes reachable without a second redesign: upload the compressed cod
 HT block decoder and the IDWT on the device (`idwt53.ts` / `idwt97.ts` exist), never materialise a
 full-resolution plane on the host at all.
 
-**The catch is thread affinity — but only on the 2-D path.** GPU decode must run on the device-owning
-thread, which is the main thread, so a naive "our decoder" would claw back the off-main-thread win that
-`enableWorkerChunkDecode()` bought the *image* viewer. The volume viewer never had that win (§1a), so
-there is nothing to lose there — and it is the volume where decode is 92 ms per brick and hurts most.
+**The catch is thread affinity, on both paths.** GPU decode must run on the device-owning thread,
+which is the main thread, so a naive "our decoder" would claw back the off-main-thread win that
+`enableWorkerChunkDecode()` bought the image viewer — and, since §1b, the win our own worker pool
+bought the volume viewer. An earlier draft of this note argued the volume path had nothing to lose
+here; that was true when it was written and is not true now.
 
 The entropy decode (the HT block coder, `block-decoder-port.md`) is the expensive CPU part, and it is
-expensive per code-block. The arrangement that keeps both wins on the 2-D path:
+expensive per code-block. The arrangement that keeps both wins:
 
 - **worker:** bitstream → *coefficients* (wasm block decode; the result is a transferable `ArrayBuffer`);
 - **main thread:** coefficients → upload (i16, half the bytes of f32 pixels) → dequant + IDWT + assemble
