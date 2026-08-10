@@ -4,7 +4,7 @@
 import { describe, expect, it } from "vitest";
 import { getDevice } from "../device";
 import { adoptDevice } from "../interop/adoptDevice";
-import { assembleTile, copyAssembledToTexture, type SampleBits, uploadPlane } from "./assemble";
+import { assembleTile, assembleTileTexture, copyAssembledToTexture, destroyTileTexture, type SampleBits, uploadPlane } from "./assemble";
 
 /** The host path being replaced: normalise each plane and interleave into lane-major f32
  *  (spatialDataLoader.getChunk / spatialDataVolume.getChunk). */
@@ -60,19 +60,31 @@ fn sample(@builtin(global_invocation_id) gid: vec3u) {
 }
 `;
 
+/** Read a 3-D texture back through textureLoad — the volume raymarch's access, minus the march. */
+const LOAD_3D = /* wgsl */ `
+@group(0) @binding(0) var tex: texture_3d<f32>;
+@group(0) @binding(1) var<storage, read_write> dst: array<f32>;
+@compute @workgroup_size(4, 4, 4)
+fn load3d(@builtin(global_invocation_id) gid: vec3u) {
+  let dims = textureDimensions(tex);
+  if (gid.x >= dims.x || gid.y >= dims.y || gid.z >= dims.z) { return; }
+  dst[(gid.z * dims.y + gid.y) * dims.x + gid.x] = textureLoad(tex, vec3u(gid.x, gid.y, gid.z), 0).r;
+}
+`;
+
 async function runKernel(
   device: GPUDevice,
   code: string,
   entryPoint: string,
   entries: GPUBindGroupEntry[],
-  groups: [number, number],
+  groups: [number, number] | [number, number, number],
 ): Promise<void> {
   const pipeline = device.createComputePipeline({ layout: "auto", compute: { module: device.createShaderModule({ code }), entryPoint } });
   const encoder = device.createCommandEncoder();
   const pass = encoder.beginComputePass();
   pass.setPipeline(pipeline);
   pass.setBindGroup(0, device.createBindGroup({ layout: pipeline.getBindGroupLayout(0), entries }));
-  pass.dispatchWorkgroups(groups[0], groups[1]);
+  pass.dispatchWorkgroups(groups[0], groups[1], groups[2] ?? 1);
   pass.end();
   device.queue.submit([encoder.finish()]);
   await device.queue.onSubmittedWorkDone();
@@ -177,6 +189,94 @@ describe("assembleTile", () => {
     const got = await backend.readbackF32(out, voxels * 4);
     const want = interleaveOnHost(host, voxels, scale);
     for (let i = 0; i < voxels * lanes; i++) expect(got[i]).toBeCloseTo(want[i] as number, 3);
+  });
+
+  it("reads a strided sub-box, as a fill-padded edge chunk needs", async () => {
+    // The real case this exists for: a zarr chunk is stored FULL-SIZE (32×512×512) even at the
+    // volume's border, and the tile is the sub-box that actually holds data. Plus a chunked `c`
+    // axis, which offsets the wanted channel inside the same buffer. Both were host loops.
+    const device = await getDevice();
+    const backend = adoptDevice(device, "assemble-test");
+    const [cw, ch, cd] = [8, 6, 4]; // stored chunk
+    const [w, h, d] = [5, 4, 3]; // real extent of the tile
+    const channels = 2;
+    const channel = 1;
+
+    // Stored layout: (c, z, y, x), x fastest — the C order zarr gives us.
+    const stored = new Uint16Array(channels * cd * ch * cw);
+    for (let c = 0; c < channels; c++) {
+      for (let z = 0; z < cd; z++) {
+        for (let y = 0; y < ch; y++) {
+          for (let x = 0; x < cw; x++) {
+            // Distinct per (c,z,y,x) so any mis-stride lands on a different value.
+            stored[((c * cd + z) * ch + y) * cw + x] = (c * 10000 + z * 700 + y * 37 + x) % 65536;
+          }
+        }
+      }
+    }
+
+    const tile = await assembleTile({
+      device,
+      planes: [uploadPlane(device, stored)],
+      width: w,
+      height: h,
+      depth: d,
+      bits: 16,
+      scale: 1 / 65535,
+      out: "f32",
+      layout: { offset: channel * cd * ch * cw, x: 1, y: cw, z: cw * ch },
+    });
+    const got = await backend.readbackF32(tile.payload.buffer, w * h * d);
+
+    let maxErr = 0;
+    for (let z = 0; z < d; z++) {
+      for (let y = 0; y < h; y++) {
+        for (let x = 0; x < w; x++) {
+          const want = ((channel * 10000 + z * 700 + y * 37 + x) % 65536) / 65535;
+          maxErr = Math.max(maxErr, Math.abs((got[(z * h + y) * w + x] ?? -1) - want));
+        }
+      }
+    }
+    expect(maxErr).toBeLessThan(1e-6);
+  });
+
+  it("assembleTileTexture builds a sampled 3-D texture in one call", async () => {
+    const device = await getDevice();
+    const backend = adoptDevice(device, "assemble-test");
+    const [w, h, d] = [6, 5, 3];
+    const voxels = w * h * d;
+    const src = new Uint16Array(voxels);
+    for (let i = 0; i < voxels; i++) src[i] = (i * 977) % 65536;
+
+    const res = await assembleTileTexture({
+      device,
+      planes: [uploadPlane(device, src)],
+      width: w,
+      height: h,
+      depth: d,
+      bits: 16,
+      scale: 1 / 65535,
+    });
+    expect(res.format).toBe("r16float");
+    expect(res.depth).toBe(d);
+    expect(res.texture.dimension).toBe("3d");
+
+    // Read the texture back through textureLoad, which is how the raymarch will reach it.
+    const out = device.createBuffer({ size: voxels * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC });
+    await runKernel(
+      device,
+      LOAD_3D,
+      "load3d",
+      [
+        { binding: 0, resource: res.texture.createView() },
+        { binding: 1, resource: { buffer: out } },
+      ],
+      [Math.ceil(w / 4), Math.ceil(h / 4), Math.ceil(d / 4)],
+    );
+    const got = await backend.readbackF32(out, voxels);
+    for (let i = 0; i < voxels; i++) expect(got[i]).toBeCloseTo(((i * 977) % 65536) / 65535, 3);
+
+    destroyTileTexture(res);
   });
 
   it("survives a dispatch past the 65535-workgroup cap", async () => {

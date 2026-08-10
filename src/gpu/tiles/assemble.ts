@@ -27,16 +27,35 @@
 // threads, which is over the cap and fails SILENTLY as a no-op), and `copyBufferToTexture`'s
 // 256-byte `bytesPerRow` alignment.
 
-import type { LeaseToken, ResidentBuffer } from "../graph/handle";
+import type { LeaseToken, ResidentBuffer, ResidentTexture } from "../graph/handle";
 
 /** Bit width of one stored sample in the source planes. Unsigned integers only — the dtypes
  *  OME-Zarr imagery actually uses. */
 export type SampleBits = 8 | 16 | 32;
 
+/** How to read the source, when it is not simply `width*height*depth` samples in x-fastest order.
+ *
+ *  A stored zarr chunk is not the tile: edge chunks are written FULL-SIZE and fill-padded, so the
+ *  real extent is a sub-box of them; and a chunked `c` axis puts the wanted channel at an offset
+ *  inside the same chunk. Both are strided reads, which is exactly what the host loop in
+ *  `spatialDataVolume.getChunk` was doing by hand. Expressing them here means the decoder's own
+ *  output can be uploaded verbatim — no host repacking before the upload, which would reintroduce
+ *  the pass this whole seam removes.
+ *
+ *  All values are in SAMPLES, not bytes. Absent ⇒ `{ offset: 0, x: 1, y: width, z: width*height }`. */
+export interface SourceLayout {
+  /** Sample index of the tile's (0,0,0) within the source buffer. */
+  readonly offset: number;
+  readonly x: number;
+  readonly y: number;
+  readonly z: number;
+}
+
 export interface AssembleOpts {
   device: GPUDevice;
-  /** One source buffer per output lane, each holding `width*height*depth` packed samples of
-   *  `bits` bits, in x-fastest order. Lane order is the output's interleave order. */
+  /** One source buffer per output lane, each holding packed samples of `bits` bits. Lane order is
+   *  the output's interleave order. Addressed by `layout`, which defaults to a tight
+   *  `width*height*depth` block in x-fastest order. */
   planes: readonly GPUBuffer[];
   width: number;
   height: number;
@@ -48,6 +67,8 @@ export interface AssembleOpts {
   /** `"f32"`: tight, lane-interleaved, a legal resident field payload.
    *  `"f16"`: half-float pairs packed 2-per-u32, rows padded to 256 B for `copyBufferToTexture`. */
   out: "f32" | "f16";
+  /** Per-plane source addressing. One entry for all planes, or one per plane. */
+  layout?: SourceLayout | readonly SourceLayout[];
 }
 
 export interface AssembledTile {
@@ -70,14 +91,18 @@ const align256 = (n: number): number => Math.ceil(n / 256) * 256;
  *  every dispatch a silent no-op when exceeded. */
 const SCATTER = /* wgsl */ `
 struct Uni {
-  count: u32,     // samples in this plane (w*h*d)
-  lanes: u32,     // interleave stride in the destination
-  lane: u32,      // which lane this plane writes
-  bits: u32,      // 8 | 16 | 32
-  scale: f32,     // dtype normalisation
-  strideX: u32,   // invocations per dispatch row, for the 2-D dispatch below
-  pad0: u32,
-  pad1: u32,
+  count: u32,          // voxels in the tile (w*h*d)
+  lanes: u32,          // interleave stride in the destination
+  lane: u32,           // which lane this plane writes
+  bits: u32,           // 8 | 16 | 32
+  scale: f32,          // dtype normalisation
+  dispatchStride: u32, // invocations per dispatch row, for the 2-D dispatch below
+  w: u32,
+  h: u32,
+  srcOffset: u32,      // source addressing, in SAMPLES (see SourceLayout)
+  sx: u32,
+  sy: u32,
+  sz: u32,
 };
 @group(0) @binding(0) var<uniform> U: Uni;
 @group(0) @binding(1) var<storage, read> src: array<u32>;
@@ -86,16 +111,26 @@ struct Uni {
 @compute @workgroup_size(${WG})
 fn scatter(@builtin(global_invocation_id) gid: vec3u) {
   // The dispatch is 2-D purely to clear the 65535-workgroup-per-dimension cap; this folds it
-  // back into one linear sample index.
-  let i = gid.y * U.strideX + gid.x;
+  // back into one linear DESTINATION voxel index.
+  let i = gid.y * U.dispatchStride + gid.x;
   if (i >= U.count) { return; }
+
+  // Destination is always tight and x-fastest; the source may be strided (edge chunks are stored
+  // full-size, a chunked c axis offsets the channel), so unfold i and re-index.
+  let plane = U.w * U.h;
+  let z = i / plane;
+  let rem = i - z * plane;
+  let y = rem / U.w;
+  let x = rem - y * U.w;
+  let s = U.srcOffset + x * U.sx + y * U.sy + z * U.sz;
+
   var v: u32;
   if (U.bits == 8u) {
-    v = (src[i >> 2u] >> ((i & 3u) * 8u)) & 0xffu;
+    v = (src[s >> 2u] >> ((s & 3u) * 8u)) & 0xffu;
   } else if (U.bits == 16u) {
-    v = (src[i >> 1u] >> ((i & 1u) * 16u)) & 0xffffu;
+    v = (src[s >> 1u] >> ((s & 1u) * 16u)) & 0xffffu;
   } else {
-    v = src[i];
+    v = src[s];
   }
   dst[i * U.lanes + U.lane] = f32(v) * U.scale;
 }
@@ -213,6 +248,12 @@ export async function assembleTile(opts: AssembleOpts): Promise<AssembledTile> {
   if (lanes < 1) throw new Error("assembleTile: no planes");
   if (width < 1 || height < 1 || depth < 1) throw new Error(`assembleTile: empty extent ${width}×${height}×${depth}`);
 
+  const tightLayout: SourceLayout = { offset: 0, x: 1, y: width, z: width * height };
+  const layoutFor = (lane: number): SourceLayout =>
+    Array.isArray(opts.layout)
+      ? ((opts.layout[lane] ?? opts.layout[0] ?? tightLayout) as SourceLayout)
+      : ((opts.layout as SourceLayout) ?? tightLayout);
+
   const ctx = getCtx(device);
   const voxels = width * height * depth;
   const samples = voxels * lanes;
@@ -230,12 +271,13 @@ export async function assembleTile(opts: AssembleOpts): Promise<AssembledTile> {
   const d = dispatch2D(voxels);
   const uniforms: GPUBuffer[] = [];
   for (let lane = 0; lane < lanes; lane++) {
-    const uni = device.createBuffer({ size: 32, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+    const uni = device.createBuffer({ size: 48, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
     uniforms.push(uni);
-    const words = new ArrayBuffer(32);
+    const L = layoutFor(lane);
+    const words = new ArrayBuffer(48);
     new Uint32Array(words, 0, 4).set([voxels, lanes, lane, bits]);
     new Float32Array(words, 16, 1)[0] = scale;
-    new Uint32Array(words, 20, 1)[0] = d.strideX;
+    new Uint32Array(words, 20, 7).set([d.strideX, width, height, L.offset, L.x, L.y, L.z]);
     device.queue.writeBuffer(uni, 0, words);
     pass.setBindGroup(
       0,
@@ -300,4 +342,65 @@ export function copyAssembledToTexture(device: GPUDevice, tile: AssembledTile, t
     size,
   );
   device.queue.submit([encoder.finish()]);
+}
+
+/** Half-float texture format for `lanes` channels. WebGPU has no 3-channel format, so 3 lanes ride
+ *  in RGBA with the 4th unused — the same packing `tileRenderer.texFormat` already does on the host
+ *  side, kept identical so the two paths are swappable. */
+export function tileTextureFormat(lanes: number): GPUTextureFormat {
+  if (lanes <= 1) return "r16float";
+  if (lanes === 2) return "rg16float";
+  return "rgba16float";
+}
+
+/** Lanes the chosen texture format physically stores (3 lanes occupy 4 channels). */
+const storedLanes = (lanes: number): number => (lanes <= 2 ? lanes : 4);
+
+/**
+ * The whole device-side tile path in one call: integer planes in, a sampled texture out.
+ *
+ * This is what a `Loader` calls to return a texture-resident `Tile` — 2-D (`depth === 1`) for the
+ * image path, 3-D for a volumetric brick, same code either way. The texture is **owned**, not
+ * pool-leased, because it lives in the `TileCache` for as long as the camera wants it; the caller
+ * frees it with `destroyTileTexture` on eviction.
+ *
+ * Note the padding subtlety: the interleave stride must match the texture's CHANNEL count, not the
+ * plane count, because the buffer→texture copy is a straight memcpy that knows nothing about unused
+ * channels. A 3-lane tile therefore assembles 4 lanes, with lane 3 repeating lane 0 — the channel is
+ * padding and consumers read `.rgb`, exactly as the host path's `texFormat` packing already assumed.
+ */
+export async function assembleTileTexture(opts: Omit<AssembleOpts, "out">): Promise<ResidentTexture> {
+  const { device, width, height, depth } = opts;
+  const lanes = storedLanes(opts.planes.length);
+  const format = tileTextureFormat(opts.planes.length);
+  const planes = [...opts.planes];
+  while (planes.length < lanes) planes.push(planes[0] as GPUBuffer);
+
+  const assembled = await assembleTile({ ...opts, planes, out: "f16" });
+  const texture = device.createTexture({
+    size: { width, height, depthOrArrayLayers: depth },
+    dimension: depth > 1 ? "3d" : "2d",
+    format,
+    usage: GPUTextureUsage.COPY_DST | GPUTextureUsage.TEXTURE_BINDING,
+  });
+  copyAssembledToTexture(device, assembled, texture, { width, height, depthOrArrayLayers: depth });
+
+  return {
+    texture,
+    width,
+    height,
+    depth,
+    format,
+    // Owned, not leased: a negative id can never collide with a pool's, so a tile payload can never
+    // be released into one by mistake.
+    lease: { id: -1, usage: GPUTextureUsage.COPY_DST | GPUTextureUsage.TEXTURE_BINDING, format, width, height },
+  };
+}
+
+/** Free a tile texture. Browser-only by intent: destroying a GPU resource mid-process segfaults
+ *  Dawn-on-Node (ADR-0002/0003), which is why the Tier-2 pools never destroy anything — but a tile
+ *  texture is owned and long-lived, and in a browser session leaking one per evicted chunk would
+ *  exhaust VRAM. three does NOT destroy an `ExternalTexture`'s source, so this is the only free. */
+export function destroyTileTexture(t: ResidentTexture): void {
+  t.texture.destroy();
 }

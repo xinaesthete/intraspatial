@@ -157,6 +157,11 @@ export interface SpatialDataVolumeHandle {
 export interface VolumeOpts {
   /** Which channel of the `c` axis to render (the volume path is scalar). Default 0. */
   channel?: number;
+  /** Assemble bricks ON THIS DEVICE (docs/gpu-resident-loader.md). Given one — it must be the
+   *  renderer's own, via `adoptDevice`, or the texture is unusable by the thing that draws it —
+   *  `getChunk` returns a texture-resident `Tile` and the two host passes over every sample
+   *  (normalise → f32, then quantise → R8) never happen. Absent ⇒ the host path, unchanged. */
+  device?: GPUDevice;
   /** World units the largest physical extent maps to. Default 256. */
   worldSpan?: number;
   /** Physical voxel size `[x, y, z]` for anisotropy. Default `[1,1,1]` (isotropic). */
@@ -260,6 +265,7 @@ async function buildVolume(
   // Brick == the store's native chunk, so one getChunk fills one brick exactly.
   const chunkShape: [number, number, number] = [base.chunks[xi] ?? 1, base.chunks[yi] ?? 1, base.chunks[zi] ?? 1];
   const norm = /16/.test(base.dtype) ? 65535 : /32/.test(base.dtype) ? 4294967295 : 255;
+  const bits = /16/.test(base.dtype) ? 16 : /32/.test(base.dtype) ? 32 : 8;
 
   // `Multiscale.chunkShape` is ONE shape for the whole pyramid, but a store may chunk each level
   // differently (commonly the coarse levels are a single chunk). That's fine only while every level's
@@ -291,45 +297,74 @@ async function buildVolume(
     dtype: "f32",
   };
 
-  const loader: Loader = {
-    async getChunk(id: ChunkId): Promise<Tile> {
-      const arr = levels[id.level];
-      const lvl = levelDims[id.level];
-      if (!arr || !lvl) throw new Error(`SpatialDataVolume: no level ${id.level}`);
+  /** One brick. `device` decides residency: given one, the samples are assembled into a texture on
+   *  it and never touch the host; without one, the host loop below runs and the Tile carries `data`.
+   *  Both callers are real — the renderer wants the device path, `autoRange` wants the host one
+   *  (it is a percentile over samples, so a readback would be the whole point of the seam undone). */
+  async function readChunk(id: ChunkId, device?: GPUDevice): Promise<Tile> {
+    const arr = levels[id.level];
+    const lvl = levelDims[id.level];
+    if (!arr || !lvl) throw new Error(`SpatialDataVolume: no level ${id.level}`);
 
-      // Chunk coordinates in the ARRAY's own dim order. `c` may itself be chunked, so split the
-      // requested channel into a chunk coordinate plus an offset inside the chunk.
-      const cChunk = ci === -1 ? 1 : (arr.chunks[ci] ?? 1);
-      const cOff = ci === -1 ? 0 : channel % cChunk;
-      const coords = arr.shape.map((_, d) =>
-        d === xi ? id.x : d === yi ? id.y : d === zi ? id.z : d === ci ? Math.floor(channel / cChunk) : 0,
-      );
+    // Chunk coordinates in the ARRAY's own dim order. `c` may itself be chunked, so split the
+    // requested channel into a chunk coordinate plus an offset inside the chunk.
+    const cChunk = ci === -1 ? 1 : (arr.chunks[ci] ?? 1);
+    const cOff = ci === -1 ? 0 : channel % cChunk;
+    const coords = arr.shape.map((_, d) =>
+      d === xi ? id.x : d === yi ? id.y : d === zi ? id.z : d === ci ? Math.floor(channel / cChunk) : 0,
+    );
 
-      const chunk = await arr.getChunk(coords);
-      const { data, stride } = chunk;
-      // Stored chunks are full-size (edge chunks are fill-padded), so clip to the real extent —
-      // `chunkArrayBox` places the brick by the same clipped box.
-      const ex = Math.max(0, Math.min(chunkShape[0], lvl[0] - id.x * chunkShape[0]));
-      const ey = Math.max(0, Math.min(chunkShape[1], lvl[1] - id.y * chunkShape[1]));
-      const ez = Math.max(0, Math.min(chunkShape[2], lvl[2] - id.z * chunkShape[2]));
-      if (ex === 0 || ey === 0 || ez === 0) throw new Error(`SpatialDataVolume: empty chunk at ${JSON.stringify(id)}`);
+    const chunk = await arr.getChunk(coords);
+    const { data, stride } = chunk;
+    // Stored chunks are full-size (edge chunks are fill-padded), so clip to the real extent —
+    // `chunkArrayBox` places the brick by the same clipped box.
+    const ex = Math.max(0, Math.min(chunkShape[0], lvl[0] - id.x * chunkShape[0]));
+    const ey = Math.max(0, Math.min(chunkShape[1], lvl[1] - id.y * chunkShape[1]));
+    const ez = Math.max(0, Math.min(chunkShape[2], lvl[2] - id.z * chunkShape[2]));
+    if (ex === 0 || ey === 0 || ez === 0) throw new Error(`SpatialDataVolume: empty chunk at ${JSON.stringify(id)}`);
 
-      const sx = stride[xi] ?? 1;
-      const sy = stride[yi] ?? 1;
-      const sz = stride[zi] ?? 1;
-      const cBase = ci === -1 ? 0 : (stride[ci] ?? 0) * cOff;
-      // Data3DTexture layout: x fastest, then y, then z.
-      const out = new Float32Array(ex * ey * ez);
-      for (let k = 0; k < ez; k++) {
-        for (let j = 0; j < ey; j++) {
-          const src = cBase + k * sz + j * sy;
-          const dst = (k * ey + j) * ex;
-          for (let i = 0; i < ex; i++) out[dst + i] = (data[src + i * sx] ?? 0) / norm;
-        }
+    const sx = stride[xi] ?? 1;
+    const sy = stride[yi] ?? 1;
+    const sz = stride[zi] ?? 1;
+    const cBase = ci === -1 ? 0 : (stride[ci] ?? 0) * cOff;
+
+    if (device) {
+      // The device path: upload the decoder's own output verbatim and let the GPU do the
+      // sub-box gather, the normalise and the half-conversion. The strides below are exactly
+      // the ones the host loop used — a stored chunk is full-size even at the border, and a
+      // chunked `c` axis offsets the channel — so nothing is repacked before the upload.
+      const { assembleTileTexture, uploadPlane } = await import("../../../src/gpu/tiles/assemble");
+      const plane = uploadPlane(device, data as unknown as ArrayBufferView);
+      const texture = await assembleTileTexture({
+        device,
+        planes: [plane],
+        width: ex,
+        height: ey,
+        depth: ez,
+        bits,
+        scale: 1 / norm,
+        layout: { offset: cBase, x: sx, y: sy, z: sz },
+      });
+      // Free the 16 MB staging upload; only the texture survives. Safe HERE because this module
+      // is browser-only — destroying a GPU resource mid-process is what segfaults Dawn-on-Node
+      // (ADR-0002/0003), which is why the Tier-2 pools never destroy anything.
+      plane.destroy();
+      return { id, dims: [ex, ey, ez], element: { kind: "scalar" }, dtype: "f32", texture };
+    }
+
+    // Data3DTexture layout: x fastest, then y, then z.
+    const out = new Float32Array(ex * ey * ez);
+    for (let k = 0; k < ez; k++) {
+      for (let j = 0; j < ey; j++) {
+        const src = cBase + k * sz + j * sy;
+        const dst = (k * ey + j) * ex;
+        for (let i = 0; i < ex; i++) out[dst + i] = (data[src + i * sx] ?? 0) / norm;
       }
-      return { id, dims: [ex, ey, ez], element: { kind: "scalar" }, dtype: "f32", data: out };
-    },
-  };
+    }
+    return { id, dims: [ex, ey, ez], element: { kind: "scalar" }, dtype: "f32", data: out };
+  }
+
+  const loader: Loader = { getChunk: (id) => readChunk(id, opts.device) };
 
   const iso = voxelSize.every((v) => v === 1);
   const vox = iso ? "voxel 1:1:1 (no scale metadata)" : `voxel ${voxelSize.map((v) => v.toPrecision(4)).join(" × ")}`;
@@ -347,7 +382,7 @@ async function buildVolume(
     let min = Number.POSITIVE_INFINITY;
     let max = Number.NEGATIVE_INFINITY;
     for (const id of picked) {
-      const t = await loader.getChunk(id).catch(() => null);
+      const t = await readChunk(id).catch(() => null); // host path: this reads samples on the CPU
       if (!t) continue;
       // Keep the sort cheap: at most ~40k samples per brick.
       const s = hostSamples(t);

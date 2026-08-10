@@ -338,9 +338,12 @@ are compared, so a collapsed z axis cannot pass.
 3. ✅ **`THREE.ExternalTexture` spike** — `playground/externaltexture.html`, self-checking, 2-D and
    3-D both correct on the adopted device (§8a). The last unverified link is closed: nothing now
    stands between a device-resident `Tile` and a rendered pixel.
-4. ⬜ **Wire it into a Loader** — `spatialDataVolume`/`spatialDataLoader` gain a `{ device }` form
-   whose `getChunk` returns a device-resident `Tile`; `TileRenderer`/`NaiveVolumeRenderer` consume it
-   via `ExternalTexture` instead of `DataTexture`/`Data3DTexture`. No unknowns left in it, just work.
+4. 🟡 **Wire it into a Loader** — the **volume half is done**: `spatialDataVolume` takes `{ device }`
+   and returns a texture-resident `Tile`, `NaiveVolumeRenderer` consumes it via `ExternalTexture`,
+   and the whole path is verified against the real 3DxN store (§9a). The **2-D half**
+   (`spatialDataLoader` + `TileRenderer`) is not started; it is the more involved one, because it is
+   multi-channel (so it exercises the 3-lane RGBA padding the volume never does) and it interacts
+   with the zarrextra worker decode the volume path does not use.
 5. ⬜ **`registerGpuChunkDecoder`**, the raw-bytes accessor (or the escape hatch), and the two-stage
    HTJ2K decoder. Deliberately last: it is the part that needs the codec to be good.
 
@@ -353,6 +356,28 @@ Two findings from building 1–2, both of the "silent failure" family this repo 
   `v * scale` in f64 and rounds once on the store to `Float32Array`; WGSL multiplies two f32s. For
   8-bit that lands on opposite sides of the last ulp (13/255). Agreement to f32 epsilon is the honest
   contract, and that is what the test asserts.
+
+### 9a. Verifying the volume path against the real store
+
+The pane in this environment renders at 0×0, so the canvas proves nothing — the verification is
+numeric instead, and is stronger for it. Two `SpatialDataVolume`s were opened on the same store, one
+with `{ device }` and one without, and the same chunk pulled through both:
+
+| | |
+| :--- | :--- |
+| chunk | level 5, `(0,0,3)` → dims `97×75×32`, 232 800 voxels |
+| device tile | `texture`, `r16float`, depth 32, no `data` |
+| host tile | `data`, 232 800 f32, no texture |
+| max \|device − host\| | **1.5 × 10⁻⁵** over every voxel |
+
+That error is exactly fp16 quantisation at these magnitudes (samples ≈ 0.03, fp16 relative precision
+≈ 4.9 × 10⁻⁴), and it exercises the parts most likely to be wrong: the strided sub-box gather, the
+channel offset, and the normalisation — all against the host loop that was already known good.
+
+Live, the page reports **118 MiB resident for 19 bricks** where the host path reports **59 MiB** for
+the same selection. The factor of two is not a bug: it is `r16float` against `R8`, i.e. the 16-bit
+precision the host path was throwing away, now kept for free. It also doubles as proof the device
+path is genuinely in use, since the host path cannot produce that number.
 
 ## Open questions
 
