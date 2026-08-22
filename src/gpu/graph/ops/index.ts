@@ -14,6 +14,7 @@ const reg = (op: OpType): void => {
 
 import { addGridsOp } from "./addGrids";
 import { convolveSeparableOp } from "./convolveSeparable";
+import { decimateOp } from "./decimate";
 import { feedbackOp } from "./feedback";
 import { fuzzyAdjacencyOp } from "./fuzzyAdjacency";
 import { fuzzyAdjacencyAdaptiveOp } from "./fuzzyAdjacencyAdaptive";
@@ -39,6 +40,7 @@ export function registerBuiltinOps(): void {
   reg(thresholdOp);
   reg(addGridsOp);
   reg(morphologyOp);
+  reg(decimateOp);
   // fuzzy TDA front
   reg(kthNeighborDistanceOp);
   reg(fuzzyAdjacencyOp);
@@ -126,6 +128,7 @@ export async function registerWaveletOps(): Promise<void> {
 export {
   addGridsOp,
   convolveSeparableOp,
+  decimateOp,
   feedbackOp,
   fuzzyAdjacencyAdaptiveOp,
   fuzzyAdjacencyOp,
