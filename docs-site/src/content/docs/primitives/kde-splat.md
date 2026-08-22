@@ -23,7 +23,7 @@ custom layer.
 ## Usage
 
 ```ts
-import { splatDensityGpu } from 'tgpu-htj2k/gpu/spatial/splatDensity';
+import { splatDensityGpu } from 'intraspatial/gpu/spatial/splatDensity';
 
 const field = await splatDensityGpu(xs, ys, {
   width: 256, height: 256, sigma: 8, // bandwidth in world units

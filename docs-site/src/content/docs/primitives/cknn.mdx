@@ -64,7 +64,7 @@ job ends at `d̃`.
 ```ts
 import {
   cknnRescaledDistanceGpu, cknnGraph, selfTuningWeights,
-} from 'tgpu-htj2k/gpu/spatial/cknn';
+} from 'intraspatial/gpu/spatial/cknn';
 
 const { rescaled, rho, n } = await cknnRescaledDistanceGpu(xs, ys, { k: 5 });
 const graph   = cknnGraph(rescaled, n, /* δ */ 1.2);   // unweighted adjacency (topology)

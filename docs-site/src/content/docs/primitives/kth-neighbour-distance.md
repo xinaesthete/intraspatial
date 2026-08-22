@@ -24,7 +24,7 @@ maximum; the actual `k` is a uniform).
 ## Usage
 
 ```ts
-import { kthNeighborDistanceGpu } from 'tgpu-htj2k/gpu/spatial/kthNeighborDistance';
+import { kthNeighborDistanceGpu } from 'intraspatial/gpu/spatial/kthNeighborDistance';
 
 const rho = await kthNeighborDistanceGpu(xs, ys, 5); // ρ_i for k = 5
 ```

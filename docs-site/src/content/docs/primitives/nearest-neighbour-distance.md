@@ -22,7 +22,7 @@ N; correctness is identical.
 ## Usage
 
 ```ts
-import { nearestNeighborDistancesGpu } from 'tgpu-htj2k/gpu/spatial/nnDistance';
+import { nearestNeighborDistancesGpu } from 'intraspatial/gpu/spatial/nnDistance';
 
 const d = await nearestNeighborDistancesGpu(xs, ys); // Float32Array, length N
 ```

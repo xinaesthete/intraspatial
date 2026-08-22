@@ -23,7 +23,7 @@ Authored in `"use gpu"`. Sampling is seeded, so results are reproducible.
 ## Usage
 
 ```ts
-import { emptySpaceGpu } from 'tgpu-htj2k/gpu/spatial/emptySpace';
+import { emptySpaceGpu } from 'intraspatial/gpu/spatial/emptySpace';
 
 const r = await emptySpaceGpu(xs, ys, { numSamples: 1024, bbox: [0, 0, 100, 100] });
 // r.distances: per-sample nearest-point distance; r.mean: typical void radius

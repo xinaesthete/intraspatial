@@ -28,7 +28,7 @@ future work for large N.
 ## Usage
 
 ```ts
-import { fuzzyAdjacencyGpu } from 'tgpu-htj2k/gpu/spatial/fuzzyAdjacency';
+import { fuzzyAdjacencyGpu } from 'intraspatial/gpu/spatial/fuzzyAdjacency';
 
 const { membership, n } = await fuzzyAdjacencyGpu(xs, ys, { sigma: 1.5 });
 // membership[i * n + j] = μ_ij  (symmetric, zero diagonal)
