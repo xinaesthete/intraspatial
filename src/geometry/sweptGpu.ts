@@ -18,7 +18,8 @@
 import tgpu from "typegpu";
 import * as d from "typegpu/data";
 import type { Root } from "../gpu/graph/backend";
-import { gridIndices, type Mesh, type Swept } from "./swept";
+import type { Mesh, Swept } from "./swept";
+import { gridIndices } from "./sweptGrid";
 
 const WG = 64;
 
