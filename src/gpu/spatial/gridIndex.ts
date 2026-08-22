@@ -267,7 +267,7 @@ export async function buildGridIndexGpu(points: Float32Array, opts: GridIndexOpt
   const lattice = latticeFor(xs, ys, opts.cell, opts.bounds, zs);
 
   const ptsBuf = ensureBuf(device, `${key}:pts`, Math.max(n, 1) * stride * 4, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST);
-  if (n > 0) device.queue.writeBuffer(ptsBuf, 0, points, 0, n * stride);
+  if (n > 0) device.queue.writeBuffer(ptsBuf, 0, points as unknown as BufferSource, 0, n * stride);
 
   const enc = device.createCommandEncoder();
   const idx = encodeGridIndex(ctx, ptsBuf, n, lattice, enc, opts);

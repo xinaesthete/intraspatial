@@ -16,12 +16,16 @@
 //     growth, hit the same crash — hence this layout-bound design).
 //
 // Brute force O(N^2): one thread per point loops over all points. No atomics /
-// shared memory, so it fits TGSL directly; the index-accelerated O(N*k) version
-// (uniform-grid spatial index) comes later.
+// shared memory, so it fits TGSL directly. With `cell` the uniform-grid index
+// (`gridIndex.ts`) is built in the same command buffer and the thread walks the
+// 3×3 stencil instead — O(N·k) — under the contract in `IndexedQueryOptions`.
+// Brute force stays the default and the golden.
 import tgpu from "typegpu";
 import * as d from "typegpu/data";
 import * as std from "typegpu/std";
-import { getDevice } from "../device";
+import { getDevice, sized } from "../device";
+import { type GridIndexCtx, getGridIndexCtx } from "./gridIndex";
+import { cellCoord, cellRange, encodeQueryIndex, type IndexedQueryOptions, LATTICE_BYTES, Lattice, StartArray } from "./gridIndexQuery";
 
 const WG = 64;
 const FAR = 3.4e38; // f32 max-ish sentinel for "no neighbour yet"
@@ -35,6 +39,45 @@ const layout = tgpu.bindGroupLayout({
   pts: { storage: (n: number) => d.arrayOf(d.f32, n), access: "readonly" },
   outb: { storage: (n: number) => d.arrayOf(d.f32, n), access: "mutable" },
 });
+
+// The indexed kernel's bindings: the brute-force set plus the lattice and the index.
+const layoutIdx = tgpu.bindGroupLayout({
+  params: { uniform: Params },
+  lat: { uniform: Lattice },
+  pts: { storage: (n: number) => d.arrayOf(d.f32, n), access: "readonly" },
+  start: { storage: StartArray, access: "readonly" },
+  items: { storage: StartArray, access: "readonly" },
+  outb: { storage: (n: number) => d.arrayOf(d.f32, n), access: "mutable" },
+});
+
+const nnIdxFn = tgpu
+  .computeFn({ in: { gid: d.builtin.globalInvocationId }, workgroupSize: [WG] })((input) => {
+    "use gpu";
+    const i = input.gid.x;
+    const count = layoutIdx.$.params.n;
+    if (i < count) {
+      const xi = layoutIdx.$.pts[2 * i]!;
+      const yi = layoutIdx.$.pts[2 * i + 1]!;
+      const c = cellCoord(d.vec2f(xi, yi), layoutIdx.$.lat);
+      let best = d.f32(FAR);
+      for (let dy = d.i32(-1); dy <= 1; dy++) {
+        for (let dx = d.i32(-1); dx <= 1; dx++) {
+          const r = cellRange(d.vec2i(c.x + dx, c.y + dy), layoutIdx.$.lat, d.ref(layoutIdx.$.start));
+          for (let s = r.x; s < r.y; s++) {
+            const j = layoutIdx.$.items[s]!;
+            const ddx = layoutIdx.$.pts[2 * j]! - xi;
+            const ddy = layoutIdx.$.pts[2 * j + 1]! - yi;
+            const dist = std.sqrt(ddx * ddx + ddy * ddy);
+            if (j !== i) {
+              best = std.min(best, dist);
+            }
+          }
+        }
+      }
+      layoutIdx.$.outb[i] = best;
+    }
+  })
+  .$name("nnDistIdx");
 
 const nnFn = tgpu
   .computeFn({ in: { gid: d.builtin.globalInvocationId }, workgroupSize: [WG] })((input) => {
@@ -64,6 +107,9 @@ interface Pipe {
   root: ReturnType<typeof tgpu.initFromDevice>;
   device: GPUDevice;
   pipeline: GPUComputePipeline;
+  /** Indexed variant; its layout is `layoutIdx`. */
+  pipelineIdx: GPUComputePipeline;
+  indexCtx: GridIndexCtx;
 }
 let pipeCache: Promise<Pipe> | undefined;
 
@@ -71,16 +117,16 @@ function getPipe(): Promise<Pipe> {
   pipeCache ??= (async () => {
     const device = await getDevice();
     const root = tgpu.initFromDevice({ device });
-    const { code, usedBindGroupLayouts } = tgpu.resolveWithContext([nnFn], { names: "strict" });
-    const module = device.createShaderModule({ code });
-    const pipeLayout = device.createPipelineLayout({
-      bindGroupLayouts: usedBindGroupLayouts.map((l) => root.unwrap(l)),
-    });
-    const pipeline = device.createComputePipeline({
-      layout: pipeLayout,
-      compute: { module, entryPoint: "nnDist" },
-    });
-    return { root, device, pipeline };
+    const build = (fn: typeof nnFn, entryPoint: string) => {
+      const { code, usedBindGroupLayouts } = tgpu.resolveWithContext([fn], { names: "strict" });
+      const module = device.createShaderModule({ code });
+      const pipeLayout = device.createPipelineLayout({
+        bindGroupLayouts: usedBindGroupLayouts.map((l) => root.unwrap(l)),
+      });
+      return device.createComputePipeline({ layout: pipeLayout, compute: { module, entryPoint } });
+    };
+    const indexCtx = await getGridIndexCtx();
+    return { root, device, pipeline: build(nnFn, "nnDist"), pipelineIdx: build(nnIdxFn, "nnDistIdx"), indexCtx };
   })();
   return pipeCache;
 }
@@ -104,13 +150,21 @@ function ensurePool(root: Root, n: number) {
 
 /** For each point, the Euclidean distance to its nearest other point.
  *  `xs`/`ys` are parallel coordinate arrays of equal length N (>= 2).
- *  Returns a Float32Array of length N. */
-export async function nearestNeighborDistancesGpu(xs: ArrayLike<number>, ys: ArrayLike<number>): Promise<Float32Array> {
+ *  Returns a Float32Array of length N.
+ *
+ *  With `opts.cell` the query is indexed (see `IndexedQueryOptions`): exact wherever the true
+ *  nearest neighbour is within `cell`; a point with no other point in its 3×3 stencil gets
+ *  `+Infinity`. */
+export async function nearestNeighborDistancesGpu(
+  xs: ArrayLike<number>,
+  ys: ArrayLike<number>,
+  opts: IndexedQueryOptions = {},
+): Promise<Float32Array> {
   const n = xs.length;
   if (ys.length !== n) throw new Error("nnDistance: xs and ys length mismatch");
   if (n < 2) throw new Error("nnDistance: need at least 2 points");
 
-  const { root, device, pipeline } = await getPipe();
+  const { root, device, pipeline, pipelineIdx, indexCtx } = await getPipe();
   const p = ensurePool(root, n);
 
   const flat = new Float32Array(2 * n);
@@ -121,15 +175,33 @@ export async function nearestNeighborDistancesGpu(xs: ArrayLike<number>, ys: Arr
   device.queue.writeBuffer(root.unwrap(p.pts), 0, flat as BufferSource);
   p.params.write({ n });
 
-  const bind = root.unwrap(root.createBindGroup(layout, { params: p.params, pts: p.pts, outb: p.outb }));
   const enc = device.createCommandEncoder();
+  let bind: GPUBindGroup;
+  if (opts.cell === undefined) {
+    bind = root.unwrap(root.createBindGroup(layout, { params: p.params, pts: p.pts, outb: p.outb }));
+  } else {
+    const q = encodeQueryIndex(indexCtx, root.unwrap(p.pts), n, xs, ys, opts.cell, opts.bounds, enc, "nnDistance:index");
+    bind = device.createBindGroup({
+      layout: root.unwrap(layoutIdx),
+      entries: [
+        { binding: 0, resource: { buffer: root.unwrap(p.params) } },
+        { binding: 1, resource: sized(q.lat, LATTICE_BYTES) },
+        { binding: 2, resource: sized(root.unwrap(p.pts), 2 * n * 4) },
+        { binding: 3, resource: sized(q.index.start, (q.index.M + 1) * 4) },
+        { binding: 4, resource: sized(q.index.items, n * 4) },
+        { binding: 5, resource: sized(root.unwrap(p.outb), n * 4) },
+      ],
+    });
+  }
   const pass = enc.beginComputePass();
-  pass.setPipeline(pipeline);
+  pass.setPipeline(opts.cell === undefined ? pipeline : pipelineIdx);
   pass.setBindGroup(0, bind);
   pass.dispatchWorkgroups(Math.ceil(n / WG));
   pass.end();
   device.queue.submit([enc.finish()]);
 
   const got = (await p.outb.read()) as ArrayLike<number>;
-  return Float32Array.from({ length: n }, (_, i) => got[i]!);
+  // The kernel's "no neighbour" sentinel is FAR; the documented value is +Infinity. (FAR
+  // rounds down in f32, so the test is a threshold, not equality.)
+  return Float32Array.from({ length: n }, (_, i) => (got[i]! >= 3e38 ? Number.POSITIVE_INFINITY : got[i]!));
 }
