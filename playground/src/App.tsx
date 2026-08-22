@@ -1117,26 +1117,17 @@ function ParamControl({
     );
   }
   const step = spec.step ?? (spec.type === "int" ? 1 : 0.01);
+  const set = (raw: string) => onChange(spec.type === "int" ? Math.round(+raw) : +raw);
+  // A slider needs BOTH ends. Defaulting a missing range to 0–1 (which this used to do) makes the
+  // slider lie about params that have no natural bound — a world coordinate, a timestep — and the
+  // first drag silently clamps the real value into [0, 1]. Those params get the number box alone.
+  const ranged = spec.min !== undefined && spec.max !== undefined;
   return (
     <label className="row">
       <span title={spec.describe}>{spec.name}</span>
-      <span className="num">
-        <input
-          type="range"
-          min={spec.min ?? 0}
-          max={spec.max ?? 1}
-          step={step}
-          value={Number(v)}
-          onChange={(e) => onChange(spec.type === "int" ? Math.round(+e.target.value) : +e.target.value)}
-        />
-        <input
-          type="number"
-          min={spec.min}
-          max={spec.max}
-          step={step}
-          value={Number(v)}
-          onChange={(e) => onChange(spec.type === "int" ? Math.round(+e.target.value) : +e.target.value)}
-        />
+      <span className={ranged ? "num" : "num num-unbounded"}>
+        {ranged && <input type="range" min={spec.min} max={spec.max} step={step} value={Number(v)} onChange={(e) => set(e.target.value)} />}
+        <input type="number" min={spec.min} max={spec.max} step={step} value={Number(v)} onChange={(e) => set(e.target.value)} />
       </span>
     </label>
   );
