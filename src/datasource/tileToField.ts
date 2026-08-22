@@ -13,7 +13,7 @@
 import type { Graph } from "../gpu/graph/graph";
 import type { FieldRole, FieldValue, GpuField, ResolvedPlacement, TensorAxis } from "../gpu/graph/handle";
 import { elementLanes } from "../gpu/graph/handle";
-import type { Tile } from "./types";
+import { hostSamples, type Tile } from "./types";
 
 /** Facets stamped onto the produced grid (all optional — absent ⇒ unchanged / today's behaviour).
  *  Every value here is **already resolved** by the caller (ADR-0015); the converter never derives them. */
@@ -42,8 +42,12 @@ export function tileToField(tile: Tile, opts: TileToFieldOpts = {}): FieldValue 
   const cells = width * height;
   const lanes = elementLanes(tile.element);
   const expected = cells * lanes;
-  if (tile.data.length !== expected) {
-    throw new Error(`tileToField: data length ${tile.data.length} != width*height*lanes (${width}*${height}*${lanes} = ${expected})`);
+  // A device-resident tile could in principle pass its `buffer` straight through as the
+  // FieldValue's resident payload (the layouts are identical by construction) — but only once a
+  // resident `source` op exists to receive it, so for now this stays the host path and says so.
+  const data = hostSamples(tile);
+  if (data.length !== expected) {
+    throw new Error(`tileToField: data length ${data.length} != width*height*lanes (${width}*${height}*${lanes} = ${expected})`);
   }
 
   const shape = { kind: "grid", width, height } as const;
@@ -54,12 +58,12 @@ export function tileToField(tile: Tile, opts: TileToFieldOpts = {}): FieldValue 
       throw new Error(`tileToField: channel ${opts.channel} out of range [0, ${lanes})`);
     }
     const out = new Float32Array(cells);
-    for (let i = 0; i < cells; i++) out[i] = tile.data[i * lanes + opts.channel]!;
+    for (let i = 0; i < cells; i++) out[i] = data[i * lanes + opts.channel]!;
     // A single de-interleaved lane is a scalar grid; the multi-lane `element` no longer applies.
     return { shape, dtype: tile.dtype, element: { kind: "scalar" }, data: out, ...base };
   }
 
-  return { shape, dtype: tile.dtype, element: tile.element, data: tile.data, ...base };
+  return { shape, dtype: tile.dtype, element: tile.element, data, ...base };
 }
 
 /** Convenience: convert a `Tile` (B1a) and add it as a graph `source` in one call, returning the

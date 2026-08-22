@@ -15,6 +15,11 @@ import { NaiveVolumeRenderer } from "./datasource/naiveVolumeRenderer";
 import { openSpatialDataVolume, type SpatialDataVolume, type SpatialDataVolumeHandle } from "./datasource/spatialDataVolume";
 
 const DEFAULT_STORE = "http://localhost:8080/8090_13_Punch1_fused_htj2k_lossy.zarr/";
+const params = new URLSearchParams(location.search);
+/** Escape hatch back to the host tile path, for comparing the two on the same store. */
+const hostTiles = params.get("hosttiles") === "1";
+/** `?store=<url>` prefills the store box, so a particular store is a link rather than a paste. */
+const storeParam = params.get("store");
 
 const $ = <T extends HTMLElement>(id: string): T => {
   const el = document.getElementById(id);
@@ -146,7 +151,11 @@ async function mountVolume(): Promise<void> {
 
   let vol: SpatialDataVolume;
   try {
-    vol = await handle.volume(elementSel.value, { channel: Number(channelSel.value) || 0 });
+    // Assemble bricks on the RENDERER's device (docs/gpu-resident-loader.md step 4): the decoded
+    // chunk goes straight to a texture three then samples, with no host pass over the samples.
+    // `?hosttiles=1` forces the old host path, so the two are A/B-comparable on the same store.
+    const device = hostTiles ? undefined : (r as unknown as { backend?: { device?: GPUDevice } }).backend?.device;
+    vol = await handle.volume(elementSel.value, { channel: Number(channelSel.value) || 0, device });
   } catch (e) {
     errEl.textContent = `Load failed:\n${e instanceof Error ? e.message : String(e)}`;
     labelEl.textContent = "—";
@@ -291,6 +300,7 @@ budgetSlider.addEventListener("input", () => {
 });
 elementSel.addEventListener("change", () => void mountVolume());
 channelSel.addEventListener("change", () => void mountVolume());
+if (storeParam) storeInput.value = storeParam;
 storeInput.addEventListener("change", () => void reopenStore());
 
 void reopenStore();

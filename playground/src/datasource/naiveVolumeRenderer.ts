@@ -27,19 +27,27 @@ import { MeshBasicNodeMaterial } from "three/webgpu";
 import {
   chunkArrayBox,
   chunkKey,
+  hostSamples,
   type Loader,
   type MemoryReporting,
   type Multiscale,
+  type ResidentTexture,
   type Selection,
   type Tile,
   worldFromArrayOf,
 } from "../../../src/datasource";
+import { destroyTileTexture } from "../../../src/gpu/tiles/assemble";
 
 const STEPS = 48; // per chunk — each box is small, so fewer steps than the whole-volume march
 
 interface ChunkMesh {
   mesh: THREE.Mesh;
-  tex: THREE.Data3DTexture;
+  tex: THREE.Data3DTexture | THREE.ExternalTexture;
+  /** Present when the brick came back device-resident: the GPUTexture WE own and must free.
+   *  three never destroys an `ExternalTexture`'s source (WebGPUTextureUtils skips it explicitly),
+   *  so `tex.dispose()` alone would leak the whole brick's VRAM on every eviction. */
+  owned?: ResidentTexture;
+  bytes: number;
   use: number;
 }
 
@@ -73,7 +81,7 @@ export class NaiveVolumeRenderer implements MemoryReporting {
   /** Resident VRAM (MemoryReporting): one 3D texture per resident chunk (no shared atlas). */
   get byteLength(): number {
     let n = 0;
-    for (const r of this.resident.values()) n += (r.tex.image.data as ArrayBufferView | undefined)?.byteLength ?? 0;
+    for (const r of this.resident.values()) n += r.bytes;
     return n;
   }
 
@@ -110,6 +118,7 @@ export class NaiveVolumeRenderer implements MemoryReporting {
       r.mesh.geometry.dispose();
       (r.mesh.material as THREE.Material).dispose();
       r.tex.dispose();
+      if (r.owned) destroyTileTexture(r.owned);
       this.resident.delete(k);
     }
   }
@@ -118,12 +127,20 @@ export class NaiveVolumeRenderer implements MemoryReporting {
     try {
       const tile = await this.loader.getChunk(id);
       const [ex, ey, ez] = tile.dims;
-      const data = new Uint8Array(ex * ey * ez);
-      for (let i = 0; i < data.length; i++) data[i] = Math.round((tile.data[i] ?? 0) * 255);
-      const tex = makeR8Texture(data, ex, ey, ez);
-      const mesh = this.makeChunkMesh(id, tex);
+      const entry: Omit<ChunkMesh, "mesh"> = tile.texture
+        ? // Device-resident: the samples were assembled on the renderer's own device and are
+          // already in their final format. Nothing here touches them — this is the whole point.
+          { tex: externalTexture3D(tile.texture), owned: tile.texture, bytes: ex * ey * ez * 2, use: ++this.useClock }
+        : // Host path, unchanged: quantise to R8 and upload.
+          (() => {
+            const src = hostSamples(tile);
+            const data = new Uint8Array(ex * ey * ez);
+            for (let i = 0; i < data.length; i++) data[i] = Math.round((src[i] ?? 0) * 255);
+            return { tex: makeR8Texture(data, ex, ey, ez), bytes: data.byteLength, use: ++this.useClock };
+          })();
+      const mesh = this.makeChunkMesh(id, entry.tex);
       this.group.add(mesh);
-      this.resident.set(k, { mesh, tex, use: ++this.useClock });
+      this.resident.set(k, { ...entry, mesh });
     } finally {
       this.loading.delete(k);
     }
@@ -131,7 +148,7 @@ export class NaiveVolumeRenderer implements MemoryReporting {
 
   /** One box for one chunk, at its own array box under the base affine, with a per-chunk
    *  raymarch that samples that chunk's texture in [0,1] chunk space. */
-  private makeChunkMesh(id: Tile["id"], tex: THREE.Data3DTexture): THREE.Mesh {
+  private makeChunkMesh(id: Tile["id"], tex: THREE.Data3DTexture | THREE.ExternalTexture): THREE.Mesh {
     const [lo, hi] = chunkArrayBox(this.ms, id);
     const ext: [number, number, number] = [hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]];
     const centre: [number, number, number] = [(lo[0] + hi[0]) / 2, (lo[1] + hi[1]) / 2, (lo[2] + hi[2]) / 2];
@@ -192,6 +209,28 @@ export class NaiveVolumeRenderer implements MemoryReporting {
     }
     this.resident.clear();
   }
+}
+
+/** Wrap a device-resident brick so three can sample it, with the two adaptations the spike found
+ *  necessary (docs/gpu-resident-loader.md §8a; the spike page itself was removed once this path exercised both on real data):
+ *
+ *  - `isData3DTexture` is REQUIRED. three picks the bind-group view dimension from that flag alone,
+ *    so without it a 3-D source binds as `texture_2d`, the generated WGSL fails to compile, and the
+ *    brick renders BLACK with nothing thrown — indistinguishable from a chunk that failed to load.
+ *  - the wrap modes must be set explicitly, or three warns `Unsupported texture wrap type
+ *    "undefined"` once per texture.
+ *
+ *  (`texture.image` is deliberately NOT set: the spike showed three never reads it for an external
+ *  texture, and a fake one would only invite someone to trust it.) */
+function externalTexture3D(res: ResidentTexture): THREE.ExternalTexture {
+  const t = new THREE.ExternalTexture(res.texture);
+  (t as unknown as { isData3DTexture: boolean }).isData3DTexture = true;
+  t.colorSpace = THREE.NoColorSpace;
+  t.minFilter = THREE.LinearFilter;
+  t.magFilter = THREE.LinearFilter;
+  t.wrapS = t.wrapT = THREE.ClampToEdgeWrapping;
+  (t as unknown as { wrapR: THREE.Wrapping }).wrapR = THREE.ClampToEdgeWrapping;
+  return t;
 }
 
 function makeR8Texture(data: Uint8Array, w: number, h: number, d: number): THREE.Data3DTexture {

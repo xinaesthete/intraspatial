@@ -37,7 +37,8 @@
     "umap:obsm": "tsx scripts/umap-obsm.ts",
     "umap:bench": "tsx scripts/umap-bench.ts",
     "qcm:bench": "tsx scripts/qcm-bench.ts",
-    "bench:scan": "tsx scripts/bench-scan.ts"
+    "bench:scan": "tsx scripts/bench-scan.ts",
+    "bench:assembly": "tsx scripts/bench-tile-assembly.ts"
   },
   "dependencies": {
     "@zarrita/storage": "^0.2.0",
