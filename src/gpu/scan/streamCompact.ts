@@ -41,8 +41,8 @@
 // (every other kernel shares that device) and belongs with whoever wires MDV up, not here.
 // Until then `checkBindingSize` throws with the number and the remedy, because the
 // alternative is the silent wrong answer described on the bind groups below.
-import { compileShader } from "../device";
-import { checkBindingSize, dispatchGrid, encodeScan, ensureBuf, getScanCtx, MAX_WORKGROUPS_PER_DIM, type ScanCtx } from "./prefixSum";
+import { checkBindingSize, compileShader } from "../device";
+import { dispatchGrid, encodeScan, ensureBuf, getScanCtx, MAX_WORKGROUPS_PER_DIM, type ScanCtx } from "./prefixSum";
 
 /** One thread per row in the predicate and scatter passes. Exported so a test can state
  *  the size at which `ceil(n / WG)` crosses 65535 without hardcoding it. */
@@ -204,7 +204,7 @@ export async function streamCompactGpu(mask: MaskArray, opts: CompactOptions = {
   const { device } = ctx.scan;
   // Before anything is allocated: the flags and offsets buffers are 4 bytes per row, and
   // over the binding limit every dispatch below silently does nothing.
-  checkBindingSize(device, "streamCompact", n);
+  checkBindingSize(device, `streamCompact: ${n} rows`, n * 4);
   const maxPerDim = opts.maxWorkgroupsPerDim ?? MAX_WORKGROUPS_PER_DIM;
   const { enc, words } = encodingOf(mask);
   const cmp = opts.pass === "eq" ? CMP.eq : CMP.gt;

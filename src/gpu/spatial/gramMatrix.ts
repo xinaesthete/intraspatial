@@ -29,7 +29,7 @@ import tgpu from "typegpu";
 import * as d from "typegpu/data";
 import type { ChannelCloud, GramParams, GramResult } from "../../spatial/gram";
 import { EPANECHNIKOV, kernelCode, roughness } from "../../spatial/kernels";
-import { getDevice } from "../device";
+import { checkBindingSize, getDevice, sized } from "../device";
 import { KERNEL_WGSL } from "./kernelWgsl";
 
 const REDUCE_WG = 256;
@@ -380,15 +380,19 @@ export async function gramMatrixGpu(channels: readonly ChannelCloud[], p: GramPa
   const { data, offsets, mass, apronMass } = packChannels(channels, p);
   const rowFloats = align256(w * 4) / 4;
 
+  // `rasters` is the one binding here that can reach `maxStorageBufferBindingSize`: K channels
+  // of a w*h f32 raster crosses 128 MiB at 49 channels of 827x827, and because the pool doubles
+  // on growth a preceding call at 585x585 is already enough to push the CAPACITY over. Both the
+  // channel count and the raster size come from the caller, so nothing bounds this. Past the
+  // limit the bind group is invalid and every dispatch silently returns the previous call's Gram
+  // matrix — see `sized`/`checkBindingSize` in `../device.ts`.
+  const rasterFloats = K * h * rowFloats;
+  checkBindingSize(device, `gramMatrixGpu: ${K} channels at ${w}x${h}`, rasterFloats * 4);
+
   const ptsBuf = ensureBuf(device, "pts", data.length, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST);
   const uniSplat = ensureBuf(device, "uniSplat", SPLAT_UNI_FLOATS, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST);
   const uniReduce = ensureBuf(device, "uniReduce", REDUCE_UNI_FLOATS, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST);
-  const rasters = ensureBuf(
-    device,
-    "rasters",
-    K * h * rowFloats,
-    GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
-  );
+  const rasters = ensureBuf(device, "rasters", rasterFloats, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC);
   const meansBuf = ensureBuf(device, "means", K, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST);
   const sums = ensureReadback(device, root, "sums", K);
   const rawOut = ensureReadback(device, root, "raw", K * K);
@@ -406,8 +410,8 @@ export async function gramMatrixGpu(channels: readonly ChannelCloud[], p: GramPa
   const splatBind = device.createBindGroup({
     layout: splat.getBindGroupLayout(0),
     entries: [
-      { binding: 0, resource: { buffer: uniSplat, size: SPLAT_UNI_FLOATS * 4 } },
-      { binding: 1, resource: { buffer: ptsBuf } },
+      { binding: 0, resource: sized(uniSplat, SPLAT_UNI_FLOATS * 4) },
+      { binding: 1, resource: sized(ptsBuf, data.length * 4) },
     ],
   });
 
@@ -436,12 +440,12 @@ export async function gramMatrixGpu(channels: readonly ChannelCloud[], p: GramPa
     device.createBindGroup({
       layout: reduceLayout,
       entries: [
-        { binding: 0, resource: { buffer: uniReduce, size: REDUCE_UNI_FLOATS * 4 } },
-        { binding: 1, resource: { buffer: rasters } },
-        { binding: 2, resource: { buffer: meansBuf } },
-        { binding: 3, resource: { buffer: sums.raw } },
-        { binding: 4, resource: { buffer: rawOut.raw } },
-        { binding: 5, resource: { buffer: cenOut.raw } },
+        { binding: 0, resource: sized(uniReduce, REDUCE_UNI_FLOATS * 4) },
+        { binding: 1, resource: sized(rasters, rasterFloats * 4) },
+        { binding: 2, resource: sized(meansBuf, K * 4) },
+        { binding: 3, resource: sized(sums.raw, K * 4) },
+        { binding: 4, resource: sized(rawOut.raw, K * K * 4) },
+        { binding: 5, resource: sized(cenOut.raw, K * K * 4) },
       ],
     });
 

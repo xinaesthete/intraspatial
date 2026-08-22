@@ -27,7 +27,7 @@ import * as d from "typegpu/data";
 import { type KernelSpec, kernelCode, TOPHAT } from "../../spatial/kernels";
 import type { CellCloud } from "../../spatial/tcm";
 import type { TcmKernelParams } from "../../spatial/tcmKernel";
-import { getDevice } from "../device";
+import { getDevice, sized } from "../device";
 import { KERNEL_WGSL } from "./kernelWgsl";
 
 // Uniform block shared by both passes: one flat Float32Array, no std140 padding puzzles.
@@ -241,32 +241,45 @@ function ensureReadback(device: GPUDevice, root: Root, floats: number) {
 // Bind groups memoised on the identity of what they point at. Pooled buffers only change identity
 // when they grow, so in steady state this is one bind group per pass for the whole process —
 // again to keep Dawn's exit-time object graph small.
-let kernelBg: { bg: GPUBindGroup; ub: GPUBuffer; pb: GPUBuffer } | undefined;
-function kernelBindGroup(device: GPUDevice, pipeline: GPURenderPipeline, ub: GPUBuffer, pb: GPUBuffer): GPUBindGroup {
-  if (kernelBg && kernelBg.ub === ub && kernelBg.pb === pb) return kernelBg.bg;
+// `ptFloats` joins the memo key. The point binding must be sized to THIS call rather than to the
+// pooled buffer — `ensurePts` doubles on growth, so a whole-buffer binding crosses
+// maxStorageBufferBindingSize at ~8.4M points once a larger call has been through, and past it
+// the bind group is invalid and the pass silently draws nothing (see `sized` in `../device.ts`).
+// That costs one extra `createBindGroup` whenever the point count changes; with a steady count
+// the memo still returns the same group for the life of the process, which is what it is for.
+let kernelBg: { bg: GPUBindGroup; ub: GPUBuffer; pb: GPUBuffer; floats: number } | undefined;
+function kernelBindGroup(device: GPUDevice, pipeline: GPURenderPipeline, ub: GPUBuffer, pb: GPUBuffer, floats: number): GPUBindGroup {
+  if (kernelBg && kernelBg.ub === ub && kernelBg.pb === pb && kernelBg.floats === floats) return kernelBg.bg;
   const bg = device.createBindGroup({
     layout: pipeline.getBindGroupLayout(0),
     entries: [
       { binding: 0, resource: { buffer: ub } },
-      { binding: 1, resource: { buffer: pb } },
+      { binding: 1, resource: sized(pb, floats * 4) },
     ],
   });
-  kernelBg = { bg, ub, pb };
+  kernelBg = { bg, ub, pb, floats };
   return bg;
 }
 
-let tcmBg: { bg: GPUBindGroup; ub: GPUBuffer; pb: GPUBuffer; view: GPUTextureView } | undefined;
-function tcmBindGroup(device: GPUDevice, pipeline: GPURenderPipeline, ub: GPUBuffer, pb: GPUBuffer, mark: Tex): GPUBindGroup {
-  if (tcmBg && tcmBg.ub === ub && tcmBg.pb === pb && tcmBg.view === mark.view) return tcmBg.bg;
+let tcmBg: { bg: GPUBindGroup; ub: GPUBuffer; pb: GPUBuffer; view: GPUTextureView; floats: number } | undefined;
+function tcmBindGroup(
+  device: GPUDevice,
+  pipeline: GPURenderPipeline,
+  ub: GPUBuffer,
+  pb: GPUBuffer,
+  mark: Tex,
+  floats: number,
+): GPUBindGroup {
+  if (tcmBg && tcmBg.ub === ub && tcmBg.pb === pb && tcmBg.view === mark.view && tcmBg.floats === floats) return tcmBg.bg;
   const bg = device.createBindGroup({
     layout: pipeline.getBindGroupLayout(0),
     entries: [
       { binding: 0, resource: { buffer: ub } },
-      { binding: 1, resource: { buffer: pb } },
+      { binding: 1, resource: sized(pb, floats * 4) },
       { binding: 2, resource: mark.view },
     ],
   });
-  tcmBg = { bg, ub, pb, view: mark.view };
+  tcmBg = { bg, ub, pb, view: mark.view, floats };
   return bg;
 }
 
@@ -356,14 +369,15 @@ function drawKernel(
   uni.set([minX, minY, 1 / (maxX - minX || 1), 1 / (maxY - minY || 1), radius, kernelCode(kernel)]);
   const ub = ensureUni(device);
   device.queue.writeBuffer(ub, 0, uni as BufferSource);
-  const pb = ensurePts(device, 2 * Math.max(xs.length, 1));
+  const ptFloats = 2 * Math.max(xs.length, 1);
+  const pb = ensurePts(device, ptFloats);
   device.queue.writeBuffer(pb, 0, packXY(xs, ys) as BufferSource);
 
   const pass = enc.beginRenderPass({
     colorAttachments: [{ view: target.view, clearValue: { r: 0, g: 0, b: 0, a: 0 }, loadOp: "clear", storeOp: "store" }],
   });
   pass.setPipeline(pipeline);
-  pass.setBindGroup(0, kernelBindGroup(device, pipeline, ub, pb));
+  pass.setBindGroup(0, kernelBindGroup(device, pipeline, ub, pb, ptFloats));
   if (xs.length > 0) pass.draw(4, xs.length);
   pass.end();
 }
@@ -441,7 +455,8 @@ export async function renderTcm(a: CellCloud, b: CellCloud, p: TcmRenderParams):
   ]);
   const ub = ensureUni(device);
   device.queue.writeBuffer(ub, 0, uni as BufferSource);
-  const pb = ensurePts(device, 2 * Math.max(a.xs.length, 1));
+  const ptFloats = 2 * Math.max(a.xs.length, 1);
+  const pb = ensurePts(device, ptFloats);
   device.queue.writeBuffer(pb, 0, packXY(a.xs, a.ys) as BufferSource);
 
   const enc2 = device.createCommandEncoder();
@@ -449,7 +464,7 @@ export async function renderTcm(a: CellCloud, b: CellCloud, p: TcmRenderParams):
     colorAttachments: [{ view: outTex.view, clearValue: { r: 0, g: 0, b: 0, a: 0 }, loadOp: "clear", storeOp: "store" }],
   });
   pass.setPipeline(tcmPipe);
-  pass.setBindGroup(0, tcmBindGroup(device, tcmPipe, ub, pb, markTex));
+  pass.setBindGroup(0, tcmBindGroup(device, tcmPipe, ub, pb, markTex, ptFloats));
   if (a.xs.length > 0) pass.draw(4, a.xs.length);
   pass.end();
   device.queue.submit([enc2.finish()]);

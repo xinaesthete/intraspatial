@@ -14,7 +14,7 @@
 // Raw WGSL rather than TGSL deliberately: `i / w` on u32 operands is honest integer division here,
 // where the TGSL transpiler turns it into float division and silently scrambles the row index (see
 // splatDensity's own de-pad for the bug that caused).
-import { getDevice } from "../device";
+import { getDevice, sized } from "../device";
 import type { ResidentTexture } from "./handle";
 
 const WG = 64;
@@ -94,8 +94,13 @@ export async function textureToBuffer(tex: ResidentTexture, dst: GPUBuffer): Pro
       layout: pipeline.getBindGroupLayout(0),
       entries: [
         { binding: 0, resource: { buffer: uni } },
-        { binding: 1, resource: { buffer: src } },
-        { binding: 2, resource: { buffer: dst } },
+        // `src` comes from the doubling staging pool, so it must be sized to this texture or a
+        // larger earlier copy pushes the binding past maxStorageBufferBindingSize and the depad
+        // silently writes nothing. `dst` is a Tier-2 pool buffer, which buckets to powers of two
+        // and so cannot exceed a power-of-two limit — but it is sized here anyway rather than
+        // relying on that arithmetic coincidence.
+        { binding: 1, resource: sized(src, bytesPerRow * h) },
+        { binding: 2, resource: sized(dst, w * h * 4) },
       ],
     }),
   );

@@ -22,7 +22,7 @@
 import tgpu from "typegpu";
 import * as d from "typegpu/data";
 import * as std from "typegpu/std";
-import { getDevice } from "../device";
+import { getDevice, sized } from "../device";
 import { rawBindGroup } from "../graph/residentBind";
 
 const SHADER = /* wgsl */ `
@@ -378,7 +378,11 @@ function renderPoints(
       layout: pipeline.getBindGroupLayout(0),
       entries: [
         { binding: 0, resource: { buffer: uniBuf } },
-        { binding: 1, resource: { buffer: pts.buffer } },
+        // n * stride floats, not the whole pooled buffer. `ensurePts` doubles on growth, so
+        // binding the buffer whole crosses maxStorageBufferBindingSize at ~5.6M points once a
+        // larger call has been through — and past it the draw silently splats nothing. This is
+        // the kernel MDV's note wants to point at 35M rows (420 MB), so it is on the path.
+        { binding: 1, resource: sized(pts.buffer, pts.n * pts.stride * 4) },
       ],
     }),
   );

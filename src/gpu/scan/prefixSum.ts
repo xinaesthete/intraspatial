@@ -40,7 +40,11 @@
 //     rows) is a validation error, i.e. silence. Every binding here carries an explicit
 //     `size` and `checkBindingSize` throws above the limit — see the note on the bind
 //     groups for the wrong answer that cost.
-import { compileShader, getDevice } from "../device";
+import { checkBindingSize, compileShader, dispatchGrid, getDevice, MAX_WORKGROUPS_PER_DIM, sized } from "../device";
+
+// Re-exported: they live in `device.ts` because every kernel with a per-element dispatch needs
+// them, but this module and its tests were their first caller.
+export { dispatchGrid, MAX_WORKGROUPS_PER_DIM };
 
 /** Threads per workgroup. */
 export const SCAN_WG = 256;
@@ -50,31 +54,6 @@ export const SCAN_WG = 256;
 export const SCAN_PER_THREAD = 4;
 /** Elements per workgroup. */
 export const SCAN_BLOCK = SCAN_WG * SCAN_PER_THREAD;
-
-/** WebGPU's floor guarantee for `maxComputeWorkgroupsPerDimension`. Used rather than the
- *  adapter's reported limit so the dispatch shape is identical on every machine — a grid
- *  that folds differently per device is one more thing to rule out when two runs disagree.
- *  Same reasoning as `umapLayoutGpu.ts`. */
-export const MAX_WORKGROUPS_PER_DIM = 65535;
-
-/**
- * Fold a linear workgroup count into a 2-D dispatch grid.
- *
- * Pure, and exported, because the case it exists for — crossing 65535 — needs 67M elements
- * to reach through the scan kernel and 16.8M through the per-element ones. That is testable
- * (and is tested, once) but far too slow to cover exhaustively, so the arithmetic is driven
- * directly with a small `maxPerDim`. The kernel reconstructs the block index as
- * `wid.x + wid.y * gridX`, so `x` is what has to go into the uniform.
- */
-export function dispatchGrid(workgroups: number, maxPerDim: number = MAX_WORKGROUPS_PER_DIM): { x: number; y: number } {
-  const wg = Math.max(1, workgroups);
-  const x = Math.min(wg, maxPerDim);
-  const y = Math.ceil(wg / x);
-  if (y > maxPerDim) {
-    throw new Error(`prefixSum: ${workgroups} workgroups exceeds ${maxPerDim}^2 and cannot be folded into a 2-D grid`);
-  }
-  return { x, y };
-}
 
 export type ScanElement = "u32" | "f32";
 
@@ -237,28 +216,6 @@ export function ensureBuf(device: GPUDevice, key: string, bytes: number, usage: 
  *  `getDevice()`, so anything evaluated at import time sees `undefined`. */
 const storageRw = () => GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST;
 
-/**
- * Refuse an `n` whose per-row buffers would not fit one storage binding.
- *
- * This has to throw rather than be discovered: an over-large binding is a validation
- * error, and a validation error is silence — the bind group is invalid, the command buffer
- * is invalid, every dispatch does nothing, and the caller reads whatever the pooled buffer
- * happened to hold. There is no exception and no wrong-looking timing.
- *
- * The default limit is 128 MiB, i.e. ~33.5M rows at 4 bytes each. Adapters commonly support
- * far more (this machine's reports 4 GiB), but `getDevice()` requests the defaults, so
- * raising it is a device-wide decision rather than something this module can do locally.
- */
-export function checkBindingSize(device: GPUDevice, who: string, n: number): void {
-  const max = device.limits.maxStorageBufferBindingSize;
-  if (n * 4 > max) {
-    throw new Error(
-      `${who}: ${n} rows needs a ${n * 4} byte storage binding, over this device's maxStorageBufferBindingSize of ${max}. ` +
-        `Request a higher limit in getDevice(), or split the input.`,
-    );
-  }
-}
-
 /** Copy `bytes` from `src` at `srcOffset` into a pooled staging buffer and map it.
  *
  *  Raw `mapAsync` on a pooled `MAP_READ` buffer used to kill the vitest worker; that was
@@ -318,7 +275,7 @@ export function encodeScan(
   maxWorkgroupsPerDim: number = MAX_WORKGROUPS_PER_DIM,
 ): EncodedScan {
   const { device } = ctx;
-  checkBindingSize(device, "prefixSum", n);
+  checkBindingSize(device, `prefixSum: ${n} elements`, n * 4);
 
   const levels: Level[] = [];
   let cur = src;
@@ -353,10 +310,10 @@ export function encodeScan(
       device.createBindGroup({
         layout: ctx.layout,
         entries: [
-          { binding: 0, resource: { buffer: uni, size: 16 } },
-          { binding: 1, resource: { buffer: srcBuf, size: srcBytes } },
-          { binding: 2, resource: { buffer: lv.dst, size: lv.n * 4 } },
-          { binding: 3, resource: { buffer: lv.blockSums, size: lv.numBlocks * 4 } },
+          { binding: 0, resource: sized(uni, 16) },
+          { binding: 1, resource: sized(srcBuf, srcBytes) },
+          { binding: 2, resource: sized(lv.dst, lv.n * 4) },
+          { binding: 3, resource: sized(lv.blockSums, lv.numBlocks * 4) },
         ],
       });
     // `scan` reads this level's input; `add` reads the level above's scanned output, which
