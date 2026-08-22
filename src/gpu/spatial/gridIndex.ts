@@ -267,6 +267,8 @@ export async function buildGridIndexGpu(points: Float32Array, opts: GridIndexOpt
   const lattice = latticeFor(xs, ys, opts.cell, opts.bounds, zs);
 
   const ptsBuf = ensureBuf(device, `${key}:pts`, Math.max(n, 1) * stride * 4, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST);
+  // The view's own buffer, not the view: under TS 5.9's lib a `Float32Array` may sit on a
+  // SharedArrayBuffer, which `BufferSource` excludes but `writeBuffer` itself allows.
   if (n > 0) device.queue.writeBuffer(ptsBuf, 0, points.buffer, points.byteOffset, n * stride * 4);
 
   const enc = device.createCommandEncoder();
