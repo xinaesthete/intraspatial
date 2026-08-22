@@ -18,22 +18,63 @@
 // implies, so the exact distance test still rejects it, and a genuinely in-range point can never
 // be clamped past one bucket of its true position.
 
-export interface BucketGrid {
+/** The lattice a bucket grid is laid over. `src/gpu/spatial/gridIndex.ts` builds the same
+ *  structure on the device from exactly this, so the two builds agree cell for cell. */
+export interface GridLattice {
   readonly cols: number;
   readonly rows: number;
   /** Bucket side length in world units (= the query radius the grid was built for). */
   readonly cell: number;
   readonly minX: number;
   readonly minY: number;
+}
+
+export interface BucketGrid extends GridLattice {
   /** `cols*rows + 1` prefix offsets into `items`. */
   readonly start: Int32Array;
   /** Point indices grouped by bucket; `items[start[b] .. start[b+1])` is bucket b. */
   readonly items: Int32Array;
 }
 
-/** Build a CSR bucket grid over `(xs, ys)` with the given cell size. `bounds`
- *  (`[minX, minY, maxX, maxY]`) fixes the grid origin/extent; without it the points' own bounds
- *  are used. */
+/** `[minX, minY, maxX, maxY]` of the points; all zeros for no points. */
+function boundsOf(xs: ArrayLike<number>, ys: ArrayLike<number>): [number, number, number, number] {
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (let i = 0; i < xs.length; i++) {
+    const x = xs[i]!;
+    const y = ys[i]!;
+    if (x < minX) minX = x;
+    if (x > maxX) maxX = x;
+    if (y < minY) minY = y;
+    if (y > maxY) maxY = y;
+  }
+  return Number.isFinite(minX) ? [minX, minY, maxX, maxY] : [0, 0, 0, 0];
+}
+
+/** The lattice `buildBucketGrid` lays over `(xs, ys)` with the given cell size: origin at the
+ *  min corner, `ceil(extent / cell) + 1` buckets per axis (the `+ 1` keeps a point on the max
+ *  edge in range without a clamp). `bounds` (`[minX, minY, maxX, maxY]`) fixes origin/extent;
+ *  without it the points' own bounds are used. */
+export function latticeFor(
+  xs: ArrayLike<number>,
+  ys: ArrayLike<number>,
+  cell: number,
+  bounds?: readonly [number, number, number, number],
+): GridLattice {
+  const [minX, minY, maxX, maxY] = bounds ?? boundsOf(xs, ys);
+  const c = Math.max(cell, 1e-9);
+  return {
+    cols: Math.max(1, Math.ceil((maxX - minX) / c) + 1),
+    rows: Math.max(1, Math.ceil((maxY - minY) / c) + 1),
+    cell: c,
+    minX,
+    minY,
+  };
+}
+
+/** Build a CSR bucket grid over `(xs, ys)` with the given cell size; see `latticeFor` for `bounds`. */
 export function buildBucketGrid(
   xs: ArrayLike<number>,
   ys: ArrayLike<number>,
@@ -41,35 +82,8 @@ export function buildBucketGrid(
   bounds?: readonly [number, number, number, number],
 ): BucketGrid {
   const n = xs.length;
-  let minX: number;
-  let minY: number;
-  let maxX: number;
-  let maxY: number;
-  if (bounds) {
-    [minX, minY, maxX, maxY] = bounds;
-  } else {
-    minX = Infinity;
-    minY = Infinity;
-    maxX = -Infinity;
-    maxY = -Infinity;
-    for (let i = 0; i < n; i++) {
-      const x = xs[i]!;
-      const y = ys[i]!;
-      if (x < minX) minX = x;
-      if (x > maxX) maxX = x;
-      if (y < minY) minY = y;
-      if (y > maxY) maxY = y;
-    }
-    if (!Number.isFinite(minX)) {
-      minX = 0;
-      minY = 0;
-      maxX = 0;
-      maxY = 0;
-    }
-  }
-  const c = Math.max(cell, 1e-9);
-  const cols = Math.max(1, Math.ceil((maxX - minX) / c) + 1);
-  const rows = Math.max(1, Math.ceil((maxY - minY) / c) + 1);
+  const lattice = latticeFor(xs, ys, cell, bounds);
+  const { cols, rows, cell: c, minX, minY } = lattice;
   const nb = cols * rows;
 
   const start = new Int32Array(nb + 1);
@@ -87,5 +101,5 @@ export function buildBucketGrid(
     const b = bucketOf(i);
     items[cursor[b]!++] = i;
   }
-  return { cols, rows, cell: c, minX, minY, start, items };
+  return { ...lattice, start, items };
 }

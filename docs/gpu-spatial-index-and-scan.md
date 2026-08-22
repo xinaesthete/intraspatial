@@ -152,10 +152,8 @@ nowhere to carry a weight.
 1. **No encoder-level compaction.** Needed: `encodeCompact(ctx, maskBuf, n, enc) → { indices, countBuf }`
    into a worst-case `n`-sized buffer, count on-device, one submit. The 3D note's
    occupied-cell list wants the same.
-2. **Pool keys are global.** `encodeScan` leases fixed names (`scan:${elem}:dst${li}`), so two
-   scans in one command buffer alias each other's output — fine for one scan per build, not
-   for a fused build-plus-occupied-cells pass. Add `keyPrefix` (the `gap-analysis.md`
-   signature shows one and has the argument order wrong; the code has neither).
+2. ~~**Pool keys are global.**~~ Fixed: `encodeScan` takes a trailing `keyPrefix` (default
+   `"scan"`), so a fused build-plus-occupied-cells pass can give each scan its own pool.
 3. **No segmented scan, no counting-sort helper.** Not needed for the index; a segmented scan
    matters only for per-cell reductions over the sorted list.
 4. **Resident bridge is f32-only.** `executor.ts` throws on non-f32 resident values
@@ -224,10 +222,12 @@ lighter. The 3D note's `opaque` handle predates ADR-0017; this supersedes it.
 ### 3.4 Query API
 
 ```ts
-export interface GridIndexOptions { cell: number; dims: 2 | 3; stride?: 2 | 3; bounds?: number[]; }
+// landed (ADR-0022), src/gpu/spatial/gridIndex.ts — 2D; `dims: 3` still to come
+export interface GridIndexOptions { cell: number; stride?: 2 | 3; bounds?: [number, number, number, number]; keyPrefix?: string; maxWorkgroupsPerDim?: number; }
 export interface GridIndexResident { start: GPUBuffer; items: GPUBuffer; M: number; n: number; lattice: GridLattice; }
-export function encodeGridIndex(points: GPUBuffer, n: number, opts: GridIndexOptions, enc: GPUCommandEncoder): GridIndexResident;
-export async function buildGridIndexGpu(points: Float32Array, opts: GridIndexOptions): Promise<BucketGrid | BucketGrid3D>;
+export function encodeGridIndex(ctx: GridIndexCtx, points: GPUBuffer, n: number, lattice: GridLattice, enc: GPUCommandEncoder, opts?): GridIndexResident;
+export async function buildGridIndexGpu(points: Float32Array, opts: GridIndexOptions): Promise<BucketGrid>;
+export function latticeFor(xs, ys, cell, bounds?): GridLattice;   // src/spatial/bucketGrid.ts, shared with the CPU build
 ```
 
 `encodeGridIndex` fuses build + query in one submit; `buildGridIndexGpu` reads back into the
@@ -317,8 +317,9 @@ compiles today's kernel and the morphology bit-exact test stays green.
 
 ## 5. Sequencing
 
-1. **2D index, host-in/host-out, golden against `bucketGrid.ts`**; swap `crossPcf.ts` and
-   `tcm.ts` onto it. Proves the build; adds `scripts/bench-grid-index.ts` (like `bench-scan`).
+1. ~~**2D index, host-in/host-out, golden against `bucketGrid.ts`**; swap `crossPcf.ts` and
+   `tcm.ts` onto it. Proves the build; adds `scripts/bench-grid-index.ts` (like `bench-scan`).~~
+   **Done 2026-08-22 → [ADR-0022](decisions/0022-gpu-uniform-grid-index.md).**
 2. **Indexed `nnDistance` / `kthNeighborDistance` / `knn`** via `cellCoord`/`cellRange`,
    brute force as golden. Unblocks O(N·k) point statistics past `knn.ts`'s O(N²) wall; CkNN
    and fuzzy adjacency follow since they compose `kthNeighborDistanceGpu`.
@@ -335,7 +336,7 @@ compiles today's kernel and the morphology bit-exact test stays green.
    3D note's `splatVolume` gather consumes the same three ports and the occupied-cell list is
    one `encodeCompact` over `counts`.
 
-Promote to an ADR at step 1; the ADR absorbs the 3D note and this one.
+Promoted at step 1 (ADR-0022); the ADR records what is built, this note keeps the reasoning.
 
 ## 6. Open questions
 

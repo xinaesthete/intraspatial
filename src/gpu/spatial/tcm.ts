@@ -20,9 +20,10 @@
 import tgpu from "typegpu";
 import * as d from "typegpu/data";
 import * as std from "typegpu/std";
-import { buildBucketGrid } from "../../spatial/bucketGrid";
+import { latticeFor } from "../../spatial/bucketGrid";
 import type { CellCloud, TcmParams } from "../../spatial/tcm";
 import { getDevice } from "../device";
+import { encodeGridIndex, type GridIndexCtx, getGridIndexCtx } from "./gridIndex";
 
 const WG = 64;
 
@@ -191,6 +192,7 @@ const mkSplatParams = (root: Root) => root.createBuffer(SplatParams).$usage("uni
 interface Ctx {
   device: GPUDevice;
   root: Root;
+  index: GridIndexCtx;
   marks: GPUComputePipeline;
   splat: GPUComputePipeline;
   markParams: ReturnType<typeof mkMarkParams>;
@@ -211,6 +213,7 @@ function getCtx(): Promise<Ctx> {
     return {
       device,
       root,
+      index: await getGridIndexCtx(),
       marks: build(marksFn, "tcmMarks"),
       splat: build(splatFn, "tcmSplat"),
       markParams: mkMarkParams(root),
@@ -229,7 +232,6 @@ function mkU32(root: Root, n: number) {
   return root.createBuffer(d.arrayOf(d.u32, n)).$usage("storage");
 }
 const f32Pool = new Map<string, { buf: ReturnType<typeof mkF32>; cap: number }>();
-const u32Pool = new Map<string, { buf: ReturnType<typeof mkU32>; cap: number }>();
 
 function ensureF32(root: Root, key: string, n: number) {
   const got = f32Pool.get(key);
@@ -239,13 +241,18 @@ function ensureF32(root: Root, key: string, n: number) {
   f32Pool.set(key, { buf, cap });
   return buf;
 }
-function ensureU32(root: Root, key: string, n: number) {
-  const got = u32Pool.get(key);
-  if (got && got.cap >= n) return got.buf;
-  const cap = Math.max(n, (got?.cap ?? 0) * 2, 1);
-  const buf = mkU32(root, cap);
-  u32Pool.set(key, { buf, cap });
-  return buf;
+
+/** The index's `start`/`items` come back from `encodeGridIndex` as raw pooled buffers; the
+ *  TypeGPU bind group wants wrappers. One wrapper per underlying buffer, cached for as long as
+ *  the pool keeps that buffer (it only ever swaps on growth). */
+const u32Wraps = new WeakMap<GPUBuffer, ReturnType<typeof mkU32>>();
+function wrapU32(root: Root, raw: GPUBuffer) {
+  let w = u32Wraps.get(raw);
+  if (!w) {
+    w = root.createBuffer(d.arrayOf(d.u32, raw.size / 4), raw).$usage("storage");
+    u32Wraps.set(raw, w);
+  }
+  return w;
 }
 
 function packXY(xs: ArrayLike<number>, ys: ArrayLike<number>): Float32Array {
@@ -262,22 +269,25 @@ function packXY(xs: ArrayLike<number>, ys: ArrayLike<number>): Float32Array {
  *  is the interesting per-cell quantity — a cell-level "is this A cell in a B-rich place?" score
  *  that can be coloured straight onto the scatter, independent of the Γ raster. */
 export async function crossMarksGpu(a: CellCloud, b: CellCloud, p: TcmParams): Promise<Float32Array> {
-  const { device, root, marks: pipeline, markParams } = await getCtx();
+  const { device, root, index, marks: pipeline, markParams } = await getCtx();
   const [minX, minY, maxX, maxY] = p.bbox;
   const roiArea = Math.max((maxX - minX) * (maxY - minY), 1e-12);
   const nA = a.xs.length;
-  const grid = buildBucketGrid(b.xs, b.ys, p.radius);
+  const nB = b.xs.length;
+  // Over B's own extent as the GPU reads it (f32), cell = the mark radius.
+  const grid = latticeFor(Float32Array.from(b.xs), Float32Array.from(b.ys), p.radius);
 
   const aPts = ensureF32(root, "aPts", 2 * Math.max(nA, 1));
-  const bPts = ensureF32(root, "bPts", 2 * Math.max(b.xs.length, 1));
-  const bStart = ensureU32(root, "bStart", grid.start.length);
-  const bItems = ensureU32(root, "bItems", Math.max(grid.items.length, 1));
+  const bPts = ensureF32(root, "bPts", 2 * Math.max(nB, 1));
   const out = ensureF32(root, "marks", Math.max(nA, 1));
 
   device.queue.writeBuffer(root.unwrap(aPts), 0, packXY(a.xs, a.ys) as BufferSource);
   device.queue.writeBuffer(root.unwrap(bPts), 0, packXY(b.xs, b.ys) as BufferSource);
-  device.queue.writeBuffer(root.unwrap(bStart), 0, grid.start as BufferSource);
-  if (grid.items.length > 0) device.queue.writeBuffer(root.unwrap(bItems), 0, grid.items as BufferSource);
+  // The index over B is built on the device, in the same submit, from the B points just uploaded.
+  const enc = device.createCommandEncoder();
+  const bIdx = encodeGridIndex(index, root.unwrap(bPts), nB, grid, enc, { keyPrefix: "tcm:b" });
+  const bStart = wrapU32(root, bIdx.start);
+  const bItems = wrapU32(root, bIdx.items);
   markParams.write({
     nA,
     cols: grid.cols,
@@ -292,7 +302,6 @@ export async function crossMarksGpu(a: CellCloud, b: CellCloud, p: TcmParams): P
   });
 
   const bind = root.unwrap(root.createBindGroup(markLayout, { params: markParams, aPts, bPts, bStart, bItems, marks: out }));
-  const enc = device.createCommandEncoder();
   const pass = enc.beginComputePass();
   pass.setPipeline(pipeline);
   pass.setBindGroup(0, bind);
@@ -308,7 +317,7 @@ export async function crossMarksGpu(a: CellCloud, b: CellCloud, p: TcmParams): P
  *  validated against `computeTcmReference`. Both kernels run back to back in one submission; only
  *  the finished grid crosses back to the host. */
 export async function computeTcmGpu(a: CellCloud, b: CellCloud, p: TcmParams): Promise<Float32Array> {
-  const { device, root, marks: marksPipe, splat: splatPipe, markParams, splatParams } = await getCtx();
+  const { device, root, index, marks: marksPipe, splat: splatPipe, markParams, splatParams } = await getCtx();
   const [minX, minY, maxX, maxY] = p.bbox;
   const roiArea = Math.max((maxX - minX) * (maxY - minY), 1e-12);
   const { width: w, height: h, sigma } = p;
@@ -320,24 +329,26 @@ export async function computeTcmGpu(a: CellCloud, b: CellCloud, p: TcmParams): P
   // Grid over B at the mark radius; grid over A at the kernel's world reach. A point's window can
   // extend (kr + 1.5) cells past its own centre, so (kr + 2) cells is a safe bucket side — with it,
   // every A point that can reach an output cell is in that cell's 3×3 bucket neighbourhood.
-  const bGrid = buildBucketGrid(b.xs, b.ys, p.radius);
-  const aGrid = buildBucketGrid(a.xs, a.ys, (kr + 2) * Math.max(cw, ch), p.bbox);
+  const nB = b.xs.length;
+  const bGrid = latticeFor(Float32Array.from(b.xs), Float32Array.from(b.ys), p.radius);
+  const aGrid = latticeFor(a.xs, a.ys, (kr + 2) * Math.max(cw, ch), p.bbox);
 
   const aPts = ensureF32(root, "aPts", 2 * Math.max(nA, 1));
-  const bPts = ensureF32(root, "bPts", 2 * Math.max(b.xs.length, 1));
-  const bStart = ensureU32(root, "bStart", bGrid.start.length);
-  const bItems = ensureU32(root, "bItems", Math.max(bGrid.items.length, 1));
+  const bPts = ensureF32(root, "bPts", 2 * Math.max(nB, 1));
   const marks = ensureF32(root, "marks", Math.max(nA, 1));
-  const aStart = ensureU32(root, "aStart", aGrid.start.length);
-  const aItems = ensureU32(root, "aItems", Math.max(aGrid.items.length, 1));
   const out = ensureF32(root, "out", w * h);
 
   device.queue.writeBuffer(root.unwrap(aPts), 0, packXY(a.xs, a.ys) as BufferSource);
   device.queue.writeBuffer(root.unwrap(bPts), 0, packXY(b.xs, b.ys) as BufferSource);
-  device.queue.writeBuffer(root.unwrap(bStart), 0, bGrid.start as BufferSource);
-  if (bGrid.items.length > 0) device.queue.writeBuffer(root.unwrap(bItems), 0, bGrid.items as BufferSource);
-  device.queue.writeBuffer(root.unwrap(aStart), 0, aGrid.start as BufferSource);
-  if (aGrid.items.length > 0) device.queue.writeBuffer(root.unwrap(aItems), 0, aGrid.items as BufferSource);
+  // Both indexes are built on the device in this one submit. Distinct `keyPrefix`es: the builds
+  // share the scan pool, and under one prefix the second would overwrite the first's offsets.
+  const enc = device.createCommandEncoder();
+  const bIdx = encodeGridIndex(index, root.unwrap(bPts), nB, bGrid, enc, { keyPrefix: "tcm:b" });
+  const aIdx = encodeGridIndex(index, root.unwrap(aPts), nA, aGrid, enc, { keyPrefix: "tcm:a" });
+  const bStart = wrapU32(root, bIdx.start);
+  const bItems = wrapU32(root, bIdx.items);
+  const aStart = wrapU32(root, aIdx.start);
+  const aItems = wrapU32(root, aIdx.items);
 
   markParams.write({
     nA,
@@ -368,7 +379,6 @@ export async function computeTcmGpu(a: CellCloud, b: CellCloud, p: TcmParams): P
 
   const markBind = root.unwrap(root.createBindGroup(markLayout, { params: markParams, aPts, bPts, bStart, bItems, marks }));
   const splatBind = root.unwrap(root.createBindGroup(splatLayout, { params: splatParams, aPts, marks, aStart, aItems, out }));
-  const enc = device.createCommandEncoder();
   const pass = enc.beginComputePass();
   pass.setPipeline(marksPipe);
   pass.setBindGroup(0, markBind);

@@ -1,8 +1,10 @@
 // GPU cross-PCF — the pair-counting half of `src/spatial/pcf.ts` moved onto the device.
 //
 // Both kernels are the same shape: one thread per anchor cell, which walks the 3×3 bucket
-// neighbourhood of a CSR `BucketGrid` (cell size = the query radius, so every in-range neighbour
-// is in those 9 buckets) and `atomicAdd`s into a small histogram. The anchors are embarrassingly
+// neighbourhood of a uniform-grid index (cell size = the query radius, so every in-range
+// neighbour is in those 9 buckets) and `atomicAdd`s into a small histogram. The index is the
+// `src/spatial/bucketGrid.ts` offset list, built ON THE DEVICE by `gridIndex.ts` from the points
+// already uploaded for the query pass, in the same submit — the host never sees `start`/`items`. The anchors are embarrassingly
 // parallel; the histogram is tiny and shared, which is exactly what integer atomics are for. They
 // are authored as WGSL templates rather than TGSL because that is where ADR-0003 puts kernels
 // carrying `array<atomic<u32>>` — the TCM kernels next door, which need no atomics, are TGSL.
@@ -18,10 +20,11 @@
 // of the statistic rather than two.
 import tgpu from "typegpu";
 import * as d from "typegpu/data";
-import { buildBucketGrid } from "../../spatial/bucketGrid";
+import { type GridLattice, latticeFor } from "../../spatial/bucketGrid";
 import type { LabelledCells, PcfMatrixParams, PcfMatrixResult, PcfParams, PcfResult } from "../../spatial/pcf";
 import type { CellCloud } from "../../spatial/tcm";
 import { checkBindingSize, getDevice, sized } from "../device";
+import { encodeGridIndex, type GridIndexCtx, getGridIndexCtx } from "./gridIndex";
 
 const WG = 64;
 
@@ -38,7 +41,7 @@ struct Uni {
 @group(0) @binding(0) var<uniform> U: Uni;
 @group(0) @binding(1) var<storage, read> aPts: array<f32>;        // [x0,y0,x1,y1,...]
 @group(0) @binding(2) var<storage, read> bPts: array<f32>;
-@group(0) @binding(3) var<storage, read> start: array<u32>;       // CSR bucket offsets over B
+@group(0) @binding(3) var<storage, read> start: array<u32>;       // grid-index offsets over B
 @group(0) @binding(4) var<storage, read> items: array<u32>;
 @group(0) @binding(5) var<storage, read_write> counts: array<atomic<u32>>;
 
@@ -130,6 +133,7 @@ type Root = ReturnType<typeof tgpu.initFromDevice>;
 interface Ctx {
   device: GPUDevice;
   root: Root;
+  index: GridIndexCtx;
   hist: GPUComputePipeline;
   matrix: GPUComputePipeline;
 }
@@ -139,9 +143,10 @@ function getCtx(): Promise<Ctx> {
   ctxCache ??= (async () => {
     const device = await getDevice();
     const root = tgpu.initFromDevice({ device });
+    const index = await getGridIndexCtx();
     const mk = (code: string, entryPoint: string) =>
       device.createComputePipeline({ layout: "auto", compute: { module: device.createShaderModule({ code }), entryPoint } });
-    return { device, root, hist: mk(HIST_SHADER, "pcfHist"), matrix: mk(MATRIX_SHADER, "pcfMatrix") };
+    return { device, root, index, hist: mk(HIST_SHADER, "pcfHist"), matrix: mk(MATRIX_SHADER, "pcfMatrix") };
   })();
   return ctxCache;
 }
@@ -192,34 +197,39 @@ function packXY(xs: ArrayLike<number>, ys: ArrayLike<number>): Float32Array {
   return flat;
 }
 
+/** Which of the two uploaded point sets the index is built over: the histogram kernel indexes
+ *  B and walks it from A; the matrix kernel indexes the one cloud it has. */
+type IndexOver = "a" | "b";
+
 async function runCounts(
   pipeline: GPUComputePipeline,
   uni: Float32Array,
   ptsA: Float32Array,
   second: Float32Array | Uint32Array,
-  grid: { start: Int32Array; items: Int32Array },
+  index: { over: IndexOver; n: number; lattice: GridLattice },
   threads: number,
   nCounts: number,
 ): Promise<Uint32Array> {
-  const { device, root } = await getCtx();
+  const { device, root, index: indexCtx } = await getCtx();
   const uniBuf = ensure(device, "uni", UNI_FLOATS, GPUBufferUsage.UNIFORM);
   const aBuf = ensure(device, "a", ptsA.length);
   const bBuf = ensure(device, "b", second.length);
-  const startBuf = ensure(device, "start", grid.start.length);
-  const itemsBuf = ensure(device, "items", Math.max(grid.items.length, 1));
   ensureCounts(device, root, nCounts);
   // Every buffer here is one entry (or two floats) per point, so they cross together at ~16.8M
   // points. Throw rather than let an over-large binding turn the pass into a silent no-op that
-  // returns the previous call's histogram.
-  const widest = Math.max(ptsA.length, second.length, grid.start.length, grid.items.length, nCounts);
+  // returns the previous call's histogram. (The index build checks its own bindings.)
+  const widest = Math.max(ptsA.length, second.length, nCounts);
   checkBindingSize(device, `crossPcf: ${ptsA.length / 2} points`, widest * 4);
 
   device.queue.writeBuffer(uniBuf, 0, uni);
   device.queue.writeBuffer(aBuf, 0, ptsA);
   device.queue.writeBuffer(bBuf, 0, second);
-  device.queue.writeBuffer(startBuf, 0, grid.start);
-  if (grid.items.length > 0) device.queue.writeBuffer(itemsBuf, 0, grid.items);
   device.queue.writeBuffer(countsRaw!, 0, new Uint32Array(countsCap)); // clear
+
+  // Index build and query in one command buffer: the pass ordering inside a submit is what
+  // makes `start`/`items` complete before the query pass reads them.
+  const enc = device.createCommandEncoder();
+  const grid = encodeGridIndex(indexCtx, index.over === "a" ? aBuf : bBuf, index.n, index.lattice, enc, { keyPrefix: "crossPcf:index" });
 
   const bind = device.createBindGroup({
     layout: pipeline.getBindGroupLayout(0),
@@ -230,12 +240,11 @@ async function runCounts(
       // call's histogram. See `sized` in `../device.ts`.
       { binding: 1, resource: sized(aBuf, ptsA.length * 4) },
       { binding: 2, resource: sized(bBuf, second.length * 4) },
-      { binding: 3, resource: sized(startBuf, grid.start.length * 4) },
-      { binding: 4, resource: sized(itemsBuf, Math.max(grid.items.length, 1) * 4) },
+      { binding: 3, resource: sized(grid.start, (grid.M + 1) * 4) },
+      { binding: 4, resource: sized(grid.items, Math.max(grid.n, 1) * 4) },
       { binding: 5, resource: sized(countsRaw!, nCounts * 4) },
     ],
   });
-  const enc = device.createCommandEncoder();
   const pass = enc.beginComputePass();
   pass.setPipeline(pipeline);
   pass.setBindGroup(0, bind);
@@ -258,10 +267,13 @@ export async function crossPCFGpu(a: CellCloud, b: CellCloud, p: PcfParams): Pro
   const dr = p.rMax / p.nBins;
   const nA = a.xs.length;
 
-  const grid = buildBucketGrid(b.xs, b.ys, p.rMax); // over B's own extent, cell = rMax
+  const bPts = packXY(b.xs, b.ys);
+  // Over B's own extent (as read by the GPU, i.e. f32), cell = rMax.
+  const grid = latticeFor(Float32Array.from(b.xs), Float32Array.from(b.ys), p.rMax);
   const uni = new Float32Array(UNI_FLOATS);
   uni.set([nA, grid.cols, grid.rows, p.nBins, grid.minX, grid.minY, grid.cell, p.rMax * p.rMax, 1 / dr]);
-  const counts = await runCounts((await getCtx()).hist, uni, packXY(a.xs, a.ys), packXY(b.xs, b.ys), grid, nA, p.nBins);
+  const index = { over: "b" as const, n: b.xs.length, lattice: grid };
+  const counts = await runCounts((await getCtx()).hist, uni, packXY(a.xs, a.ys), bPts, index, nA, p.nBins);
 
   const r: number[] = [];
   const g: number[] = [];
@@ -301,10 +313,11 @@ export async function crossPCFMatrixGpu(cells: LabelledCells, p: PcfMatrixParams
     nPer[k]!++;
   }
 
-  const grid = buildBucketGrid(cells.xs, cells.ys, r, p.bbox);
+  const grid = latticeFor(cells.xs, cells.ys, r, p.bbox);
   const uni = new Float32Array(UNI_FLOATS);
   uni.set([n, grid.cols, grid.rows, N, grid.minX, grid.minY, grid.cell, r * r]);
-  const counts = await runCounts((await getCtx()).matrix, uni, packXY(cells.xs, cells.ys), ti, grid, n, N * N);
+  const index = { over: "a" as const, n, lattice: grid };
+  const counts = await runCounts((await getCtx()).matrix, uni, packXY(cells.xs, cells.ys), ti, index, n, N * N);
 
   const diskArea = Math.PI * r * r;
   const g = new Float64Array(N * N);

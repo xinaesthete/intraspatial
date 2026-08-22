@@ -50,7 +50,7 @@ Two of these share one substrate: a **GPU prefix-sum / scan / stream-compaction 
 // src/gpu/scan/prefixSum.ts — recursive two-level WGSL scan, 1024 elements/block, 2-D dispatch fold
 export function exclusiveScanGpu(values: Uint32Array, opts?: ScanOptions): Promise<ScanResult<Uint32Array>>;
 export function exclusiveScanGpu(values: Float32Array, opts?: ScanOptions): Promise<ScanResult<Float32Array>>;
-export function encodeScan(ctx: ScanCtx, elem: ScanElement, src: GPUBuffer, n: number, enc: GPUCommandEncoder, maxWorkgroupsPerDim?: number): EncodedScan;
+export function encodeScan(ctx: ScanCtx, elem: ScanElement, src: GPUBuffer, n: number, enc: GPUCommandEncoder, maxWorkgroupsPerDim?: number, keyPrefix?: string): EncodedScan;
 export function getScanCtx(): Promise<ScanCtx>;
 // src/gpu/scan/streamCompact.ts — mask (u8 | u32 | f32, eq | gt) → packed index list + count
 export async function streamCompactGpu(mask: MaskArray, opts?: CompactOptions): Promise<CompactResult>;
@@ -58,15 +58,18 @@ export async function streamCompactGpu(mask: MaskArray, opts?: CompactOptions): 
 
 It is exercised by `src/gpu/scan/*.gpu.test.ts` and `pnpm bench:scan` (33M-row scan: 46.6 ms in the file header's measurement, ~34 ms on a later run of the same bench —
 compaction ~9–11 ms, readback-dominated). Companion helpers `dispatchGrid` / `checkBindingSize` /
-`sized` landed in [`device.ts`](../src/gpu/device.ts). Neither the spatial index nor the
-`support` facet consumes it yet — the kernel is the unlock, not the unlocked thing.
+`sized` landed in [`device.ts`](../src/gpu/device.ts). The spatial index build
+(`gridIndex.ts`) now consumes it; the `support` facet does not yet.
 
 - **GPU uniform-grid spatial index (2D + 3D)** — the single biggest hole. Decided as the
   "build-first" primitive in [ADR-0004](decisions/0004-field-type-model-and-volumetric-splat.md),
   specced in full in [`gpu-spatial-index-3d.md`](gpu-spatial-index-3d.md), named the
   "foundational unlock" in [`gpu-spatial-analysis-toolbox.md`](gpu-spatial-analysis-toolbox.md).
-  **Nothing built** — only a 2D *CPU* bucket grid ([`src/spatial/bucketGrid.ts`](../src/spatial/bucketGrid.ts))
-  exists; point stats are still brute-force O(N²). Also unbuilt from ADR-0004: **3D domain**
+  **2D build landed** ([ADR-0022](decisions/0022-gpu-uniform-grid-index.md),
+  [`src/gpu/spatial/gridIndex.ts`](../src/gpu/spatial/gridIndex.ts), 2026-08-22): on-device
+  histogram → scan → scatter, consumed by `crossPcf.ts` and `tcm.ts`; 10M points in 5.5 ms.
+  Still missing: the graph op, indexed `nnDistance`/`knn` (point stats are still brute-force
+  O(N²)), and 3D. Also unbuilt from ADR-0004: **3D domain**
   (`Shape` in [`handle.ts`](../src/gpu/graph/handle.ts) is 2D-only, no `dim: 2|3`) and
   **volumetric splat** (points → voxel grid).
 - **The resident render op** — [ADR-0009](decisions/0009-rendering-as-ops.md) (rendering-as-ops),
@@ -185,8 +188,8 @@ hold — `src/` is verified three.js-free.)
   else. The render op is really *one* capability wearing three ADR numbers (0009, 0014,
   0017 stages 4–5).
 - **One kernel unlocks two facets.** Prefix-sum / scan / stream-compaction underlies both
-  the spatial index and the `support` facet — the highest-leverage single kernel, now written
-  at `src/gpu/scan/` but not yet consumed by either.
+  the spatial index and the `support` facet — the highest-leverage single kernel, written
+  at `src/gpu/scan/` and consumed by the index build since 2026-08-22; the facet is next.
 - **The value lattice is half-built.** Element algebra, `axes`, `role`, and `placement` are
   real and threaded through the builder/executor; `support`, `extent`, 3D domain, and the
   `fourier` basis are not.
