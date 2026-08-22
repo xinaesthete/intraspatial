@@ -701,6 +701,11 @@
         "count": 1
       }
     },
+    "src/gpu/sim/jet.ts": {
+      "crap_moderate": {
+        "count": 1
+      }
+    },
     "src/gpu/spatial/anni.ts": {
       "complexity_moderate": {
         "count": 1
