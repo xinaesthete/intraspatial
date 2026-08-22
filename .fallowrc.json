@@ -14,6 +14,9 @@
   // Standalone HTML explainers/proposals embed ad-hoc JS/CSS; biome already refuses to parse
   // them and they are documents, not code.
   "ignorePatterns": ["docs/**/*.html", "viz/**"],
+  // Loaded via `await import("./htj2kWorkerPool")` so the decoder is not bundled onto the
+  // main-thread path; the static graph cannot see it and reported `decodePool` as dead.
+  "dynamicallyLoaded": ["playground/src/datasource/htj2kWorkerPool.ts"],
 
   "duplicates": { "minOccurrences": 3 },
   "rules": {

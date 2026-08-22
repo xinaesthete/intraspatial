@@ -91,6 +91,7 @@ export default defineConfig({
             { label: "Fuzzy TDA", slug: "concepts/fuzzy-tda" },
             { label: "Filtrations & persistence", slug: "concepts/filtrations" },
             { label: "Draw in the DWT domain", slug: "concepts/dwt-draw" },
+            { label: "Prefix sums on the GPU", slug: "concepts/prefix-sum" },
           ],
         },
         {
