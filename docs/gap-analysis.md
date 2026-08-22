@@ -35,7 +35,22 @@ gate large downstream cascades, a set of **science/application slices**, and the
 ## Tier 1 — Load-bearing primitives (gate cascades)
 
 Two of these share one substrate: a **GPU prefix-sum / scan / stream-compaction kernel**.
-Build that once and both the spatial index and the `support` facet unlock.
+**That kernel now exists** (2026-08-01, migrated 2026-08-22) at [`src/gpu/scan/`](../src/gpu/scan/):
+
+```ts
+// src/gpu/scan/prefixSum.ts — recursive two-level WGSL scan, 1024 elements/block, 2-D dispatch fold
+export function exclusiveScanGpu(values: Uint32Array, opts?: ScanOptions): Promise<ScanResult<Uint32Array>>;
+export function exclusiveScanGpu(values: Float32Array, opts?: ScanOptions): Promise<ScanResult<Float32Array>>;
+export function encodeScan(ctx: ScanCtx, encoder: GPUCommandEncoder, elem: ScanElement, input: GPUBuffer, n: number, keyPrefix: string, maxPerDim?: number): EncodedScan;
+export function getScanCtx(): Promise<ScanCtx>;
+// src/gpu/scan/streamCompact.ts — mask (u8 | u32 | f32, eq | gt) → packed index list + count
+export async function streamCompactGpu(mask: MaskArray, opts?: CompactOptions): Promise<CompactResult>;
+```
+
+It is exercised by `src/gpu/scan/*.gpu.test.ts` and `pnpm bench:scan` (33M-row scan ~34 ms,
+compaction ~9–11 ms, readback-dominated). Companion helpers `dispatchGrid` / `checkBindingSize` /
+`sized` landed in [`device.ts`](../src/gpu/device.ts). Neither the spatial index nor the
+`support` facet consumes it yet — the kernel is the unlock, not the unlocked thing.
 
 - **GPU uniform-grid spatial index (2D + 3D)** — the single biggest hole. Decided as the
   "build-first" primitive in [ADR-0004](decisions/0004-field-type-model-and-volumetric-splat.md),
@@ -54,8 +69,11 @@ Build that once and both the spatial index and the `support` facet unlock.
 - **The `support` facet** — [ADR-0005](decisions/0005-columnar-filters-and-sparse-support.md) /
   [`mdv-dimension-vs-support-facet.md`](mdv-dimension-vs-support-facet.md): mask⇄index
   duality, weighted reductions, the corrected t-norm operators. **Essentially zero** (only
-  standalone [`sparseColumns.ts`](../src/datasource/sparseColumns.ts) host code). Blocked on
-  the same prefix-sum/compaction kernel as the spatial index.
+  standalone [`sparseColumns.ts`](../src/datasource/sparseColumns.ts) host code). The
+  prefix-sum/compaction kernel it was blocked on now exists (see above); a first partial step —
+  mask ops as plain fields ([`filterOps.ts`](../src/gpu/graph/ops/filterOps.ts): `maskRange`,
+  `maskEquals`, `maskCount`, `maskedDensity`) — landed in the composer, but no `support` facet
+  in the value lattice yet.
 
 ## Tier 2 — Engine capabilities decided but unbuilt
 
@@ -154,7 +172,8 @@ hold — `src/` is verified three.js-free.)
   else. The render op is really *one* capability wearing three ADR numbers (0009, 0014,
   0017 stages 4–5).
 - **One kernel unlocks two facets.** Prefix-sum / scan / stream-compaction underlies both
-  the spatial index and the `support` facet — the highest-leverage single kernel to write.
+  the spatial index and the `support` facet — the highest-leverage single kernel, now written
+  at `src/gpu/scan/` but not yet consumed by either.
 - **The value lattice is half-built.** Element algebra, `axes`, `role`, and `placement` are
   real and threaded through the builder/executor; `support`, `extent`, 3D domain, and the
   `fourier` basis are not.
