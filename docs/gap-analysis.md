@@ -50,13 +50,13 @@ Two of these share one substrate: a **GPU prefix-sum / scan / stream-compaction 
 // src/gpu/scan/prefixSum.ts — recursive two-level WGSL scan, 1024 elements/block, 2-D dispatch fold
 export function exclusiveScanGpu(values: Uint32Array, opts?: ScanOptions): Promise<ScanResult<Uint32Array>>;
 export function exclusiveScanGpu(values: Float32Array, opts?: ScanOptions): Promise<ScanResult<Float32Array>>;
-export function encodeScan(ctx: ScanCtx, encoder: GPUCommandEncoder, elem: ScanElement, input: GPUBuffer, n: number, keyPrefix: string, maxPerDim?: number): EncodedScan;
+export function encodeScan(ctx: ScanCtx, elem: ScanElement, src: GPUBuffer, n: number, enc: GPUCommandEncoder, maxWorkgroupsPerDim?: number): EncodedScan;
 export function getScanCtx(): Promise<ScanCtx>;
 // src/gpu/scan/streamCompact.ts — mask (u8 | u32 | f32, eq | gt) → packed index list + count
 export async function streamCompactGpu(mask: MaskArray, opts?: CompactOptions): Promise<CompactResult>;
 ```
 
-It is exercised by `src/gpu/scan/*.gpu.test.ts` and `pnpm bench:scan` (33M-row scan ~34 ms,
+It is exercised by `src/gpu/scan/*.gpu.test.ts` and `pnpm bench:scan` (33M-row scan: 46.6 ms in the file header's measurement, ~34 ms on a later run of the same bench —
 compaction ~9–11 ms, readback-dominated). Companion helpers `dispatchGrid` / `checkBindingSize` /
 `sized` landed in [`device.ts`](../src/gpu/device.ts). Neither the spatial index nor the
 `support` facet consumes it yet — the kernel is the unlock, not the unlocked thing.
