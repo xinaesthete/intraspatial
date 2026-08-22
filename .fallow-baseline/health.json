@@ -1,0 +1,1045 @@
+{
+  "finding_counts": {
+    "docs-site/astro.config.mjs": {
+      "crap_high": {
+        "count": 1
+      },
+      "crap_moderate": {
+        "count": 1
+      }
+    },
+    "docs-site/src/components/DwtDraw.tsx": {
+      "complexity_critical": {
+        "count": 3
+      },
+      "complexity_high": {
+        "count": 1
+      },
+      "crap_critical": {
+        "count": 3
+      },
+      "crap_high": {
+        "count": 2
+      },
+      "crap_moderate": {
+        "count": 1
+      }
+    },
+    "docs-site/src/components/dancer/BreedingStrip.tsx": {
+      "crap_moderate": {
+        "count": 1
+      }
+    },
+    "docs-site/src/components/dancer/Dancer.tsx": {
+      "complexity_critical": {
+        "count": 2
+      },
+      "crap_critical": {
+        "count": 3
+      },
+      "crap_moderate": {
+        "count": 2
+      }
+    },
+    "docs-site/src/components/dancer/dancerCell.ts": {
+      "crap_moderate": {
+        "count": 1
+      }
+    },
+    "docs-site/src/components/dancer/matrix.ts": {
+      "complexity_critical": {
+        "count": 1
+      },
+      "crap_critical": {
+        "count": 1
+      },
+      "crap_high": {
+        "count": 1
+      }
+    },
+    "docs-site/src/components/dancer/renderer.ts": {
+      "complexity_critical": {
+        "count": 1
+      },
+      "crap_critical": {
+        "count": 1
+      },
+      "crap_high": {
+        "count": 2
+      },
+      "crap_moderate": {
+        "count": 1
+      }
+    },
+    "docs-site/src/components/dancer/sim.ts": {
+      "complexity_critical": {
+        "count": 1
+      },
+      "crap_critical": {
+        "count": 1
+      },
+      "crap_moderate": {
+        "count": 1
+      }
+    },
+    "docs-site/src/lib/dwt.ts": {
+      "complexity_critical": {
+        "count": 2
+      },
+      "crap_critical": {
+        "count": 4
+      },
+      "crap_high": {
+        "count": 1
+      },
+      "crap_moderate": {
+        "count": 1
+      }
+    },
+    "docs-site/src/lib/dwtImages.ts": {
+      "crap_moderate": {
+        "count": 2
+      }
+    },
+    "docs-site/src/lib/gpuField.ts": {
+      "crap_critical": {
+        "count": 1
+      }
+    },
+    "docs-site/src/lib/hornMutator.ts": {
+      "crap_critical": {
+        "count": 2
+      },
+      "crap_high": {
+        "count": 6
+      },
+      "crap_moderate": {
+        "count": 2
+      }
+    },
+    "playground/src/App.tsx": {
+      "complexity_critical": {
+        "count": 2
+      },
+      "crap_critical": {
+        "count": 2
+      },
+      "crap_high": {
+        "count": 5
+      },
+      "crap_moderate": {
+        "count": 4
+      }
+    },
+    "playground/src/CommandPalette.tsx": {
+      "crap_moderate": {
+        "count": 1
+      }
+    },
+    "playground/src/FieldTooltip.tsx": {
+      "complexity_critical": {
+        "count": 1
+      },
+      "crap_critical": {
+        "count": 2
+      },
+      "crap_high": {
+        "count": 1
+      },
+      "crap_moderate": {
+        "count": 1
+      }
+    },
+    "playground/src/GroupNode.tsx": {
+      "crap_moderate": {
+        "count": 1
+      }
+    },
+    "playground/src/HelpTooltip.tsx": {
+      "crap_high": {
+        "count": 1
+      }
+    },
+    "playground/src/InstanceNode.tsx": {
+      "crap_moderate": {
+        "count": 1
+      }
+    },
+    "playground/src/InterfaceNode.tsx": {
+      "crap_high": {
+        "count": 1
+      }
+    },
+    "playground/src/PointsScatter.tsx": {
+      "crap_critical": {
+        "count": 1
+      }
+    },
+    "playground/src/Preview.tsx": {
+      "complexity_critical": {
+        "count": 1
+      },
+      "crap_critical": {
+        "count": 4
+      },
+      "crap_high": {
+        "count": 3
+      }
+    },
+    "playground/src/R3fSpike.tsx": {
+      "crap_high": {
+        "count": 1
+      },
+      "crap_moderate": {
+        "count": 1
+      }
+    },
+    "playground/src/SpatialScene.tsx": {
+      "complexity_critical": {
+        "count": 1
+      },
+      "crap_critical": {
+        "count": 1
+      },
+      "crap_high": {
+        "count": 1
+      },
+      "crap_moderate": {
+        "count": 2
+      }
+    },
+    "playground/src/buildGraph.ts": {
+      "crap_critical": {
+        "count": 2
+      },
+      "crap_moderate": {
+        "count": 1
+      }
+    },
+    "playground/src/cellModesMain.ts": {
+      "complexity_critical": {
+        "count": 1
+      },
+      "crap_critical": {
+        "count": 5
+      },
+      "crap_high": {
+        "count": 10
+      },
+      "crap_moderate": {
+        "count": 4
+      }
+    },
+    "playground/src/cellStatsMain.ts": {
+      "complexity_critical": {
+        "count": 4
+      },
+      "complexity_high": {
+        "count": 1
+      },
+      "crap_critical": {
+        "count": 14
+      },
+      "crap_high": {
+        "count": 8
+      },
+      "crap_moderate": {
+        "count": 6
+      }
+    },
+    "playground/src/datasource/brickSource.ts": {
+      "crap_moderate": {
+        "count": 2
+      }
+    },
+    "playground/src/datasource/cellCsv.ts": {
+      "crap_moderate": {
+        "count": 1
+      }
+    },
+    "playground/src/datasource/cellTable.ts": {
+      "complexity_critical": {
+        "count": 2
+      },
+      "crap_critical": {
+        "count": 4
+      },
+      "crap_high": {
+        "count": 5
+      },
+      "crap_moderate": {
+        "count": 4
+      }
+    },
+    "playground/src/datasource/dualView.ts": {
+      "complexity_critical": {
+        "count": 1
+      },
+      "crap_critical": {
+        "count": 1
+      },
+      "crap_high": {
+        "count": 2
+      },
+      "crap_moderate": {
+        "count": 4
+      }
+    },
+    "playground/src/datasource/imageContext.ts": {
+      "complexity_critical": {
+        "count": 1
+      },
+      "crap_critical": {
+        "count": 1
+      },
+      "crap_high": {
+        "count": 1
+      },
+      "crap_moderate": {
+        "count": 1
+      }
+    },
+    "playground/src/datasource/loadScheduler.ts": {
+      "crap_moderate": {
+        "count": 1
+      }
+    },
+    "playground/src/datasource/mdvCellTable.ts": {
+      "crap_critical": {
+        "count": 3
+      },
+      "crap_high": {
+        "count": 1
+      }
+    },
+    "playground/src/datasource/multiImageScene.ts": {
+      "crap_critical": {
+        "count": 1
+      },
+      "crap_high": {
+        "count": 2
+      },
+      "crap_moderate": {
+        "count": 1
+      }
+    },
+    "playground/src/datasource/naiveVolumeRenderer.ts": {
+      "crap_moderate": {
+        "count": 1
+      }
+    },
+    "playground/src/datasource/overlays.ts": {
+      "crap_moderate": {
+        "count": 2
+      }
+    },
+    "playground/src/datasource/spatialDataLoader.ts": {
+      "complexity_critical": {
+        "count": 2
+      },
+      "crap_critical": {
+        "count": 4
+      },
+      "crap_high": {
+        "count": 1
+      }
+    },
+    "playground/src/datasource/spatialDataVolume.ts": {
+      "complexity_critical": {
+        "count": 3
+      },
+      "crap_critical": {
+        "count": 4
+      },
+      "crap_high": {
+        "count": 2
+      },
+      "crap_moderate": {
+        "count": 3
+      }
+    },
+    "playground/src/datasource/tileChannelMaterial.ts": {
+      "complexity_critical": {
+        "count": 1
+      },
+      "crap_critical": {
+        "count": 1
+      }
+    },
+    "playground/src/datasource/tileRenderer.ts": {
+      "crap_moderate": {
+        "count": 2
+      }
+    },
+    "playground/src/datasource/umapSource.ts": {
+      "complexity_critical": {
+        "count": 1
+      },
+      "crap_critical": {
+        "count": 2
+      },
+      "crap_high": {
+        "count": 1
+      },
+      "crap_moderate": {
+        "count": 1
+      }
+    },
+    "playground/src/datasource/varMatrix.ts": {
+      "complexity_critical": {
+        "count": 1
+      },
+      "crap_critical": {
+        "count": 1
+      },
+      "crap_high": {
+        "count": 5
+      },
+      "crap_moderate": {
+        "count": 1
+      }
+    },
+    "playground/src/datasource/volumeRenderer.ts": {
+      "complexity_critical": {
+        "count": 1
+      },
+      "crap_critical": {
+        "count": 2
+      },
+      "crap_high": {
+        "count": 1
+      },
+      "crap_moderate": {
+        "count": 2
+      }
+    },
+    "playground/src/datasourceMain.ts": {
+      "crap_high": {
+        "count": 1
+      },
+      "crap_moderate": {
+        "count": 1
+      }
+    },
+    "playground/src/geometryMain.ts": {
+      "crap_high": {
+        "count": 1
+      }
+    },
+    "playground/src/geometryShapes.ts": {
+      "crap_moderate": {
+        "count": 1
+      }
+    },
+    "playground/src/grouping.ts": {
+      "complexity_critical": {
+        "count": 2
+      },
+      "crap_critical": {
+        "count": 5
+      },
+      "crap_high": {
+        "count": 2
+      }
+    },
+    "playground/src/rasterStatMain.ts": {
+      "crap_high": {
+        "count": 1
+      },
+      "crap_moderate": {
+        "count": 1
+      }
+    },
+    "playground/src/raymarchMain.ts": {
+      "crap_moderate": {
+        "count": 1
+      }
+    },
+    "playground/src/sources.ts": {
+      "crap_critical": {
+        "count": 1
+      },
+      "crap_moderate": {
+        "count": 1
+      }
+    },
+    "playground/src/spatialDataMain.ts": {
+      "crap_high": {
+        "count": 1
+      },
+      "crap_moderate": {
+        "count": 2
+      }
+    },
+    "playground/src/spatialVolumeMain.ts": {
+      "crap_critical": {
+        "count": 1
+      },
+      "crap_high": {
+        "count": 1
+      },
+      "crap_moderate": {
+        "count": 2
+      }
+    },
+    "playground/src/subgraphs.ts": {
+      "crap_critical": {
+        "count": 1
+      },
+      "crap_high": {
+        "count": 1
+      }
+    },
+    "playground/src/umapMain.ts": {
+      "complexity_critical": {
+        "count": 1
+      },
+      "crap_critical": {
+        "count": 3
+      },
+      "crap_high": {
+        "count": 4
+      },
+      "crap_moderate": {
+        "count": 7
+      }
+    },
+    "scripts/guarded.mjs": {
+      "crap_critical": {
+        "count": 1
+      },
+      "crap_high": {
+        "count": 1
+      }
+    },
+    "scripts/mdv-h5-to-zarr.ts": {
+      "complexity_critical": {
+        "count": 1
+      },
+      "crap_critical": {
+        "count": 1
+      },
+      "crap_high": {
+        "count": 2
+      },
+      "crap_moderate": {
+        "count": 1
+      }
+    },
+    "scripts/mdv-pcf-parity.ts": {
+      "complexity_critical": {
+        "count": 1
+      },
+      "crap_critical": {
+        "count": 2
+      }
+    },
+    "scripts/mdv-quadrat-parity.ts": {
+      "complexity_critical": {
+        "count": 1
+      },
+      "crap_critical": {
+        "count": 2
+      }
+    },
+    "scripts/umap-bench.ts": {
+      "complexity_critical": {
+        "count": 1
+      },
+      "crap_critical": {
+        "count": 3
+      },
+      "crap_high": {
+        "count": 1
+      }
+    },
+    "scripts/umap-obsm.ts": {
+      "crap_high": {
+        "count": 4
+      }
+    },
+    "src/datasource/annDataIo.ts": {
+      "complexity_high": {
+        "count": 1
+      }
+    },
+    "src/datasource/mdvStore.ts": {
+      "crap_critical": {
+        "count": 1
+      },
+      "crap_moderate": {
+        "count": 3
+      }
+    },
+    "src/datasource/select.ts": {
+      "crap_moderate": {
+        "count": 1
+      }
+    },
+    "src/datasource/sparseColumns.ts": {
+      "complexity_critical": {
+        "count": 1
+      }
+    },
+    "src/evo/traitSpace.ts": {
+      "complexity_moderate": {
+        "count": 1
+      }
+    },
+    "src/geometry/bsp.ts": {
+      "complexity_high": {
+        "count": 3
+      },
+      "crap_high": {
+        "count": 2
+      },
+      "crap_moderate": {
+        "count": 1
+      }
+    },
+    "src/geometry/hybrid.ts": {
+      "complexity_moderate": {
+        "count": 1
+      },
+      "crap_moderate": {
+        "count": 1
+      }
+    },
+    "src/geometry/implicit.ts": {
+      "complexity_critical": {
+        "count": 1
+      },
+      "crap_critical": {
+        "count": 1
+      },
+      "crap_moderate": {
+        "count": 1
+      }
+    },
+    "src/geometry/structured.ts": {
+      "crap_moderate": {
+        "count": 1
+      }
+    },
+    "src/gpu/graph/dwt.ts": {
+      "complexity_high": {
+        "count": 2
+      },
+      "crap_high": {
+        "count": 2
+      },
+      "crap_moderate": {
+        "count": 2
+      }
+    },
+    "src/gpu/graph/executor.ts": {
+      "complexity_critical": {
+        "count": 1
+      },
+      "crap_critical": {
+        "count": 1
+      },
+      "crap_high": {
+        "count": 1
+      }
+    },
+    "src/gpu/graph/graph.ts": {
+      "crap_moderate": {
+        "count": 1
+      }
+    },
+    "src/gpu/graph/ops/danceForces.run.test.ts": {
+      "crap_moderate": {
+        "count": 1
+      }
+    },
+    "src/gpu/graph/ringBuffer.ts": {
+      "crap_moderate": {
+        "count": 1
+      }
+    },
+    "src/gpu/sim/dancerGpu.gpu.test.ts": {
+      "complexity_high": {
+        "count": 1
+      },
+      "complexity_moderate": {
+        "count": 1
+      },
+      "crap_high": {
+        "count": 1
+      },
+      "crap_moderate": {
+        "count": 1
+      }
+    },
+    "src/gpu/sim/dancerGpu.ts": {
+      "complexity_moderate": {
+        "count": 1
+      }
+    },
+    "src/gpu/sim/dancerGpuMatrix.gpu.test.ts": {
+      "crap_moderate": {
+        "count": 1
+      }
+    },
+    "src/gpu/sim/hspf/hspf.gpu.test.ts": {
+      "complexity_high": {
+        "count": 2
+      },
+      "complexity_moderate": {
+        "count": 1
+      },
+      "crap_high": {
+        "count": 2
+      },
+      "crap_moderate": {
+        "count": 1
+      }
+    },
+    "src/gpu/sim/hspf/scaffold.ts": {
+      "complexity_moderate": {
+        "count": 1
+      }
+    },
+    "src/gpu/sim/jet.ts": {
+      "crap_moderate": {
+        "count": 1
+      }
+    },
+    "src/gpu/spatial/anni.ts": {
+      "complexity_moderate": {
+        "count": 1
+      }
+    },
+    "src/gpu/spatial/convolveSeparable.ts": {
+      "crap_moderate": {
+        "count": 1
+      }
+    },
+    "src/gpu/spatial/emptySpace.ts": {
+      "complexity_moderate": {
+        "count": 1
+      },
+      "crap_moderate": {
+        "count": 1
+      }
+    },
+    "src/gpu/spatial/gramEnvelope.ts": {
+      "crap_moderate": {
+        "count": 1
+      }
+    },
+    "src/gpu/spatial/gramMatrix.ts": {
+      "complexity_critical": {
+        "count": 1
+      },
+      "crap_critical": {
+        "count": 1
+      },
+      "crap_high": {
+        "count": 1
+      }
+    },
+    "src/gpu/spatial/gramModes.ts": {
+      "complexity_critical": {
+        "count": 1
+      },
+      "crap_critical": {
+        "count": 1
+      }
+    },
+    "src/gpu/spatial/gramTerrain.ts": {
+      "complexity_critical": {
+        "count": 1
+      },
+      "crap_critical": {
+        "count": 2
+      },
+      "crap_high": {
+        "count": 2
+      },
+      "crap_moderate": {
+        "count": 2
+      }
+    },
+    "src/gpu/spatial/imageOverlayWgsl.ts": {
+      "crap_high": {
+        "count": 1
+      }
+    },
+    "src/gpu/spatial/knn.gpu.test.ts": {
+      "complexity_moderate": {
+        "count": 1
+      }
+    },
+    "src/gpu/spatial/knnDescentGpu.ts": {
+      "complexity_moderate": {
+        "count": 1
+      }
+    },
+    "src/gpu/spatial/paintField.ts": {
+      "crap_high": {
+        "count": 1
+      }
+    },
+    "src/gpu/spatial/quadratCorrelationGpu.gpu.test.ts": {
+      "complexity_moderate": {
+        "count": 1
+      }
+    },
+    "src/gpu/spatial/quadratCorrelationGpu.ts": {
+      "complexity_high": {
+        "count": 1
+      }
+    },
+    "src/gpu/spatial/splatDensity.ts": {
+      "complexity_high": {
+        "count": 1
+      }
+    },
+    "src/gpu/spatial/tcm.ts": {
+      "complexity_moderate": {
+        "count": 2
+      },
+      "crap_moderate": {
+        "count": 1
+      }
+    },
+    "src/gpu/spatial/umapLayoutGpu.ts": {
+      "complexity_high": {
+        "count": 1
+      },
+      "crap_high": {
+        "count": 1
+      }
+    },
+    "src/spatial/bucketGrid.test.ts": {
+      "complexity_moderate": {
+        "count": 1
+      },
+      "crap_moderate": {
+        "count": 1
+      }
+    },
+    "src/spatial/bucketGrid.ts": {
+      "complexity_moderate": {
+        "count": 1
+      }
+    },
+    "src/spatial/cellCsv.ts": {
+      "complexity_moderate": {
+        "count": 1
+      }
+    },
+    "src/spatial/contactNetwork.test.ts": {
+      "complexity_moderate": {
+        "count": 1
+      }
+    },
+    "src/spatial/contactNetwork.ts": {
+      "complexity_critical": {
+        "count": 1
+      },
+      "crap_critical": {
+        "count": 1
+      }
+    },
+    "src/spatial/eigenSym.ts": {
+      "complexity_critical": {
+        "count": 1
+      }
+    },
+    "src/spatial/envelope.ts": {
+      "complexity_high": {
+        "count": 1
+      }
+    },
+    "src/spatial/gram.ts": {
+      "complexity_critical": {
+        "count": 1
+      }
+    },
+    "src/spatial/knnDescent.ts": {
+      "complexity_high": {
+        "count": 2
+      },
+      "complexity_moderate": {
+        "count": 1
+      }
+    },
+    "src/spatial/ngffTransform.ts": {
+      "crap_high": {
+        "count": 1
+      }
+    },
+    "src/spatial/pcf.ts": {
+      "complexity_critical": {
+        "count": 3
+      },
+      "complexity_high": {
+        "count": 1
+      },
+      "crap_critical": {
+        "count": 2
+      }
+    },
+    "src/spatial/pcfBootstrap.ts": {
+      "complexity_critical": {
+        "count": 1
+      },
+      "crap_critical": {
+        "count": 1
+      }
+    },
+    "src/spatial/pcfEnvelope.ts": {
+      "complexity_high": {
+        "count": 1
+      },
+      "complexity_moderate": {
+        "count": 1
+      },
+      "crap_high": {
+        "count": 1
+      },
+      "crap_moderate": {
+        "count": 4
+      }
+    },
+    "src/spatial/permute.ts": {
+      "complexity_moderate": {
+        "count": 1
+      }
+    },
+    "src/spatial/persistence.ts": {
+      "complexity_critical": {
+        "count": 1
+      }
+    },
+    "src/spatial/pointPatterns.test.ts": {
+      "complexity_moderate": {
+        "count": 1
+      }
+    },
+    "src/spatial/pointPatterns.ts": {
+      "complexity_moderate": {
+        "count": 1
+      }
+    },
+    "src/spatial/quadratCorrelation.test.ts": {
+      "complexity_moderate": {
+        "count": 1
+      }
+    },
+    "src/spatial/quadratCorrelation.ts": {
+      "complexity_critical": {
+        "count": 1
+      },
+      "complexity_moderate": {
+        "count": 1
+      }
+    },
+    "src/spatial/scalarField.ts": {
+      "complexity_high": {
+        "count": 1
+      },
+      "complexity_moderate": {
+        "count": 2
+      },
+      "crap_moderate": {
+        "count": 1
+      }
+    },
+    "src/spatial/sublevelsetPersistence.ts": {
+      "complexity_high": {
+        "count": 1
+      }
+    },
+    "src/spatial/syntheticManifolds.test.ts": {
+      "complexity_moderate": {
+        "count": 1
+      },
+      "crap_moderate": {
+        "count": 1
+      }
+    },
+    "src/spatial/tcm.ts": {
+      "complexity_critical": {
+        "count": 1
+      }
+    },
+    "src/spatial/tcmKernel.ts": {
+      "complexity_high": {
+        "count": 1
+      }
+    },
+    "src/spatial/umapGraph.ts": {
+      "complexity_critical": {
+        "count": 1
+      },
+      "complexity_moderate": {
+        "count": 2
+      }
+    },
+    "src/spatial/umapLayout.ts": {
+      "complexity_high": {
+        "count": 2
+      }
+    },
+    "vite.lib.config.ts": {
+      "crap_moderate": {
+        "count": 1
+      }
+    }
+  },
+  "runtime_coverage_findings": [],
+  "target_keys": [
+    "docs-site/src/components/dancer/matrix.ts:dead code",
+    "playground/src/grouping.ts:circular dependency",
+    "src/geometry/swept.ts:circular dependency",
+    "playground/src/Preview.tsx:untested risk",
+    "src/geometry/placement.ts:high impact",
+    "playground/src/examples.ts:dead code",
+    "docs-site/src/lib/dwt.ts:dead code",
+    "playground/src/cellStatsMain.ts:complexity",
+    "src/gpu/graph/memory.ts:high impact",
+    "src/spatial/knnDescent.ts:complexity",
+    "playground/src/datasource/umapSource.ts:complexity",
+    "playground/src/datasource/cellTable.ts:complexity",
+    "playground/src/App.tsx:complexity",
+    "playground/src/FieldTooltip.tsx:untested risk",
+    "docs-site/src/lib/oklabTsl.ts:dead code",
+    "src/spatial/pcf.ts:complexity",
+    "src/gpu/sim/hspf/hspf.gpu.test.ts:untested risk",
+    "playground/src/subgraphs.ts:circular dependency",
+    "src/gpu/spatial/gramModes.ts:complexity",
+    "src/spatial/eigenSym.ts:complexity",
+    "src/spatial/persistence.ts:high impact",
+    "src/gpu/graph/executor.ts:complexity",
+    "src/gpu/sim/vec3.ts:high impact",
+    "src/spatial/pcfBootstrap.ts:complexity",
+    "src/spatial/ngffTransform.ts:high impact",
+    "src/gpu/graph/dwt.ts:untested risk",
+    "src/spatial/sublevelsetPersistence.ts:complexity",
+    "src/spatial/gram.ts:complexity",
+    "src/geometry/implicit.ts:complexity",
+    "src/spatial/tcm.ts:complexity",
+    "src/spatial/quadratCorrelation.ts:complexity",
+    "src/gpu/spatial/gramMatrix.ts:complexity",
+    "src/spatial/contactNetwork.ts:complexity",
+    "src/datasource/sparseColumns.ts:complexity",
+    "src/spatial/umapLayout.ts:complexity",
+    "src/spatial/envelope.ts:complexity",
+    "playground/src/datasource/spatialDataVolume.ts:untested risk",
+    "src/gpu/spatial/gramTerrain.ts:complexity",
+    "src/spatial/umapGraph.ts:complexity",
+    "src/geometry/sweptGpu.ts:circular dependency",
+    "scripts/mdv-quadrat-parity.ts:complexity",
+    "src/geometry/bsp.ts:complexity",
+    "src/gpu/spatial/quadratCorrelationGpu.ts:complexity",
+    "scripts/mdv-h5-to-zarr.ts:complexity",
+    "scripts/mdv-pcf-parity.ts:complexity",
+    "src/datasource/annDataIo.ts:complexity",
+    "playground/src/SpatialScene.tsx:complexity",
+    "docs-site/src/components/DwtDraw.tsx:complexity"
+  ]
+}
