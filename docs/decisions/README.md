@@ -64,15 +64,16 @@ Numbers 0019–0021 are **retired, not reused**, so commit history keeps pointin
 | [0016](0016-topact-box-vs-kde-reproduce-then-improve.md) | TopACT: reproduce then improve | draft | **open** | no code |
 | [0017](0017-tier2-resident-buffer-edges.md) | Tier-2 resident buffer edges | accepted | **partial** | stages 1–3 + invariant 5 landed; 4–5 remain |
 | [0018](0018-field-domains-placement-and-resolution.md) | Field domains: extent, placement, resolution | draft | **partial** | `placement` on `GpuField`+`FieldValue` + `inferPlacement`/`outPlacements` landed (2026-08); `boundsOf` + `ParamSpec.units` remain |
+| [0019](0019-package-surface-and-prebuilt-kernels.md) | Package surface: `intraspatial` subpath exports, pre-transformed kernels, Dawn optional | accepted | **landed** | `package.json` exports, `vite.lib.config.ts`, `tsconfig.build.json`, barrels, lazy Dawn in `device.ts` |
 
 ⚠ **Two ADRs share the number 0010** (`procedural-geometry-composable-ops` and
 `spatialdata-js-as-loader-source`). Renumbering breaks inbound links in `docs/gpu-resource-sync.md`
 and across the ADRs themselves, so it has been left alone and is recorded here instead. Refer to them
 as *ADR-0010-geometry* and *ADR-0010-loader*.
 
-Roughly **8 landed, 7 partial, 4 open** across 19 records (0018 moved open→partial when the
-placement facet landed in 2026-08). No ADR has been added since the audit — deliberately. The
-three documents written on audit day all became design notes.
+Roughly **9 landed, 7 partial, 4 open** across 20 records (0018 moved open→partial when the
+placement facet landed in 2026-08; 0019 was promoted from the packaging design note on the day the
+package was cut, 2026-08-22 — the first ADR since the audit, and written about work in flight).
 
 ## Notable gaps worth knowing before planning
 

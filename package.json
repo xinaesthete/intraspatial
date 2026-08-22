@@ -1,8 +1,8 @@
 {
   "name": "intraspatial",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "type": "module",
-  "description": "IntraSpatial \u2014 an in-GPU operation-graph runtime and spatial-analysis toolbox on TypeGPU/WebGPU.",
+  "description": "IntraSpatial — an in-GPU operation-graph runtime and spatial-analysis toolbox on TypeGPU/WebGPU.",
   "license": "MIT",
   "packageManager": "pnpm@11.12.0",
   "engines": {
@@ -14,6 +14,9 @@
     "dev:docs": "pnpm --filter docs-site dev",
     "build:playground": "pnpm --filter intraspatial-playground build",
     "build:docs": "pnpm --filter docs-site build",
+    "build": "pnpm build:lib",
+    "build:lib": "vite build -c vite.lib.config.ts && node scripts/guarded.mjs -- tsc -p tsconfig.build.json",
+    "prepack": "pnpm build:lib",
     "test": "vitest run && vitest run -c vitest.gpu.config.ts",
     "test:cpu": "vitest run",
     "test:gpu": "vitest run -c vitest.gpu.config.ts",
@@ -35,8 +38,6 @@
   "dependencies": {
     "@zarrita/storage": "^0.2.0",
     "geotiff": "^3.0.5",
-    "typegpu": "catalog:",
-    "webgpu": "^0.4.0",
     "wgpu-matrix": "^3.4.2",
     "zarrita": "^0.7.3"
   },
@@ -48,11 +49,98 @@
     "@types/node": "^22.0.0",
     "@webgpu/types": "^0.1.40",
     "tsx": "^4.23.1",
+    "typegpu": "catalog:",
     "typescript": "catalog:",
     "unplugin-typegpu": "catalog:",
-    "vitest": "^4.1.10"
+    "vite": "^8.1.4",
+    "vitest": "^4.1.10",
+    "webgpu": "^0.4.0"
   },
   "volta": {
     "node": "24.18.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/xinaesthete/intraspatial.git"
+  },
+  "homepage": "https://xinaesthete.github.io/intraspatial/",
+  "keywords": [
+    "webgpu",
+    "typegpu",
+    "spatial-statistics",
+    "spatial-biology",
+    "gis",
+    "operation-graph",
+    "gpu"
+  ],
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./graph": {
+      "types": "./dist/gpu/graph/index.d.ts",
+      "default": "./dist/gpu/graph/index.js"
+    },
+    "./graph/*": {
+      "types": "./dist/gpu/graph/*.d.ts",
+      "default": "./dist/gpu/graph/*.js"
+    },
+    "./device": {
+      "types": "./dist/gpu/device.d.ts",
+      "default": "./dist/gpu/device.js"
+    },
+    "./datasource": {
+      "types": "./dist/datasource/index.d.ts",
+      "default": "./dist/datasource/index.js"
+    },
+    "./geometry": {
+      "types": "./dist/geometry/index.d.ts",
+      "default": "./dist/geometry/index.js"
+    },
+    "./evo": {
+      "types": "./dist/evo/index.d.ts",
+      "default": "./dist/evo/index.js"
+    },
+    "./spatial": {
+      "types": "./dist/spatial/index.d.ts",
+      "default": "./dist/spatial/index.js"
+    },
+    "./color": {
+      "types": "./dist/color/index.d.ts",
+      "default": "./dist/color/index.js"
+    },
+    "./gpu/spatial": {
+      "types": "./dist/gpu/spatial/index.d.ts",
+      "default": "./dist/gpu/spatial/index.js"
+    },
+    "./gpu/sim": {
+      "types": "./dist/gpu/sim/index.d.ts",
+      "default": "./dist/gpu/sim/index.js"
+    },
+    "./gpu/interop": {
+      "types": "./dist/gpu/interop/index.d.ts",
+      "default": "./dist/gpu/interop/index.js"
+    },
+    "./*": {
+      "types": "./dist/*.d.ts",
+      "default": "./dist/*.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "peerDependencies": {
+    "typegpu": "^0.11.9",
+    "webgpu": "^0.4.0"
+  },
+  "peerDependenciesMeta": {
+    "webgpu": {
+      "optional": true
+    }
   }
 }

@@ -1,9 +1,29 @@
 // Headless WebGPU device for Node via the Dawn (`webgpu`) binding.
 //
-// In the browser this module is replaced by `navigator.gpu`. Under Node we use
-// the Dawn N-API addon. (Bun segfaults on the compute path — see
-// docs/decisions/0002-runtime-node-not-bun.md.)
-import { create, globals } from "webgpu";
+// In the browser `navigator.gpu` is used directly. Under Node we load the Dawn N-API addon
+// — but only then, and only via a dynamic import: `webgpu` is an OPTIONAL peer of the
+// published package, so a browser bundle must never try to resolve it. The specifier is
+// held in a variable so bundlers leave the import alone (`@vite-ignore` covers Vite).
+// (Bun segfaults on the compute path — see docs/decisions/0002-runtime-node-not-bun.md.)
+
+type DawnModule = { create(args: string[]): GPU; globals: Record<string, unknown> };
+
+async function loadDawn(): Promise<GPU> {
+  const specifier = "webgpu";
+  let dawn: DawnModule;
+  try {
+    dawn = (await import(/* @vite-ignore */ specifier)) as DawnModule;
+  } catch (e) {
+    throw new Error(
+      "intraspatial: no `navigator.gpu` and the optional `webgpu` (Dawn) package is not installed — " +
+        "install it for headless Node use, or run in a WebGPU-capable browser.",
+      { cause: e },
+    );
+  }
+  // Make GPUBufferUsage, GPUMapMode, etc. available as globals (the browser has them already).
+  Object.assign(globalThis, dawn.globals);
+  return dawn.create([]);
+}
 
 let devicePromise: Promise<GPUDevice> | undefined;
 
@@ -34,9 +54,7 @@ let adapterRef: GPUAdapter | undefined;
 /** Get (and cache) a headless GPUDevice. */
 export function getDevice(): Promise<GPUDevice> {
   devicePromise ??= (async () => {
-    // Make GPUBufferUsage, GPUMapMode, etc. available as globals.
-    Object.assign(globalThis, globals);
-    const gpu: GPU = (globalThis as { navigator?: { gpu?: GPU } }).navigator?.gpu ?? create([]);
+    const gpu: GPU = (globalThis as { navigator?: { gpu?: GPU } }).navigator?.gpu ?? (await loadDawn());
     instanceRef = gpu;
     const adapter = await gpu.requestAdapter();
     if (!adapter) throw new Error("intraspatial: no WebGPU adapter available");

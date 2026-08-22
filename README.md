@@ -42,6 +42,26 @@ afterthought:
 
 See [FAIR by design](docs-site/src/content/docs/concepts/fair.md) for the full treatment.
 
+## Using it as a package
+
+```sh
+pnpm add intraspatial typegpu        # browser: that's all
+pnpm add webgpu                      # headless Node only (Dawn; optional peer)
+```
+
+```ts
+import { nearestNeighborDistancesGpu } from "intraspatial/gpu/spatial";
+import { Graph, pullData } from "intraspatial/graph";
+import { getDevice } from "intraspatial/device";
+```
+
+Subpaths: `intraspatial` (engine), `/graph`, `/device`, `/datasource`, `/geometry`, `/evo`,
+`/spatial` (CPU goldens), `/color`, `/gpu/spatial`, `/gpu/sim`, `/gpu/interop`, and any module by
+its `src/` path (`intraspatial/gpu/spatial/anni`). The `"use gpu"` kernels ship **pre-transformed**,
+so no bundler plugin is needed — see
+[ADR-0019](docs/decisions/0019-package-surface-and-prebuilt-kernels.md). Not yet on npm; build
+locally with `pnpm build:lib` and `pnpm pack`.
+
 ## Layout
 
 | Path | What |
@@ -90,6 +110,7 @@ All run from the repo root.
 | `pnpm dev:docs` | Run the docs site → http://localhost:4321 |
 | `pnpm build:playground` | Production build of the composer |
 | `pnpm build:docs` | Production build of the docs site |
+| `pnpm build:lib` | Build the publishable package to `dist/` (Vite lib build + declaration emit) |
 | `pnpm test` | Full test suite — CPU then GPU vitest projects |
 | `pnpm test:cpu` | CPU vitest suite only |
 | `pnpm test:gpu` | GPU vitest suite only (Dawn `webgpu`; one fork per file) |
