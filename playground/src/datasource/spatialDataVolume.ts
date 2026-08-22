@@ -7,16 +7,25 @@
 // `spatialDataLoader` (spatialdata.html + spatialscene.html) is untouched. Each page is its own
 // module graph, so this page's codec registration cannot affect theirs.
 //
-// DECODER — `openjph-wasm`, not cornerstone. A z-deep chunk is written by the encoder as one
-// JPEG2000 component PER Z SLICE (measured: a `[1,1,32,512,512]` chunk is a 97×75 codestream with
-// `Csiz=32`). The `@cornerstonejs/codec-openjph` build that zarrextra@0.2.3 ships on npm cannot
-// handle independent multi-component data — it keeps component 0 and replicates it — so volumetric
-// chunks fail. zarrextra's SOURCE has already been switched to `openjph-wasm` (the from-source
-// OpenJPH build with validated multi-component decode) but that isn't published yet, so here we
-// register a custom `ImageCodecDecoder` backed by `openjph-wasm` directly. Once a zarrextra with
-// that switch ships, this shim can simply be deleted.
-// NB this also means NO `enableWorkerChunkDecode()` on this page: the worker bundle has cornerstone
-// baked in, so it would bypass the shim. Decode is on the main thread here.
+// DECODER — `openjph-wasm`, via zarrextra's own adapter. A z-deep chunk is written by the encoder as
+// one JPEG2000 component PER Z SLICE (measured: a `[1,1,32,512,512]` chunk is a 97×75 codestream with
+// `Csiz=32`), and that is exactly the case zarrextra@0.2.3 could not decode: the
+// `@cornerstonejs/codec-openjph` build it shipped kept component 0 and replicated it across the rest.
+// The failure mode was SILENT — a replicated component 0 renders as an entirely plausible volume in
+// which every z slice is identical — so this path is verified by comparing slices numerically, not by
+// looking at the page.
+//
+// zarrextra@0.4.0 fixed that upstream (HTJ2K now goes through `openjph-wasm`; cornerstone is only
+// `codec-openjpeg`, for legacy JPEG 2000). It does NOT retire passing a decoder: zarrextra's built-in
+// one reaches `openjph-wasm` through `Function("specifier", "return import(specifier)")`, deliberately
+// opaque to bundlers, and a browser cannot resolve a bare specifier — it throws `Failed to resolve
+// module specifier 'openjph-wasm'` inside a `CodecPipelineError`. zarrextra now exports
+// `createOpenJphDecoder(decode)` for exactly this, but it is typed against `openjph-wasm`'s own
+// `decode` (bitDepth/isSigned included), and our decode runs in OUR worker pool (`htj2kWorkerPool`)
+// whose result carries only the planar samples + dims — so this page keeps its own small
+// `ImageCodecDecoder` that validates the codestream against the chunk shape and passes the buffer
+// through. Migration note (2026-08-22): the codec repo's WIP upgrade used `createOpenJphDecoder`
+// because that branch still decoded on the main thread; here the pool predates the upgrade.
 //
 // CHUNK SEAM — native 3-D reads. We deliberately do NOT go through zarrextra's viv-compatible
 // `PixelSource.getTile`: that seam is 2-D (an (x,y) tile plus a `selection` over the other axes), so

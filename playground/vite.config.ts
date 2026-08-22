@@ -58,7 +58,17 @@ export default defineConfig({
   // `openjph-wasm` is excluded for the same reason as zarrextra: it loads its Emscripten glue via
   // `new URL("./wasm/libopenjph.mjs", import.meta.url)`, which pre-bundling would rewrite to a
   // `.vite/deps` path that never emits the sibling `.wasm`.
-  optimizeDeps: { exclude: ["zarrextra", "zarrextra/workers", "openjph-wasm"] },
+  // `@spatialdata/core` is excluded for a third variant of the same problem, and MDV excludes it too
+  // (`~/code/www/MDV/vite.config.mts`): core defers its vendored parquet-wasm behind
+  // `import(/* @vite-ignore */ "../vendor/parquet-wasm/parquet_wasm.js")`, a path relative to core's
+  // OWN dist. Pre-bundled, that module is served from `.vite/deps/`, where `../vendor/...` points at
+  // nothing — Vite fails the import analysis and the whole `@spatialdata_core.js` chunk 500s, so
+  // every page that touches sd.js dies on `Failed to fetch dynamically imported module` while the
+  // parquet path is named only in the SERVER log. Excluding it serves core from node_modules, where
+  // the relative path resolves.
+  // NB MDV also excludes `zod`, because MDV is on Zod 3 while core wants Zod 4. That does not apply
+  // here: `pnpm why zod` reports one version (4.x) across the workspace.
+  optimizeDeps: { exclude: ["zarrextra", "zarrextra/workers", "openjph-wasm", "@spatialdata/core"] },
   resolve: {
     alias: {
       webgpu: fileURLToPath(new URL("./src/webgpu-stub.ts", import.meta.url)),

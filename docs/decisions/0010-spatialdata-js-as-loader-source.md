@@ -17,7 +17,9 @@ downstream consumer** to **also the Milestone-2 Loader source**, one-way
 ## The seam, confirmed against the source
 
 - **Entry is two published npm packages, no monorepo restructure, no `link:`.**
-  `@spatialdata/core@^0.2.5` and `zarrextra@^0.2.3` are on npm; `openjph-wasm` is already a
+  `@spatialdata/core` and `zarrextra` are on npm (decided against `^0.2.5` / `^0.2.3`; since
+  2026-08-22 the playground is on `@spatialdata/core@^0.8.0` + `zarrextra@0.4.0` exact — see
+  `docs/zarrextra-worker-decode.md`); `openjph-wasm` is already a
   tgpu-htj2k `optionalDependency` (`file:../openjph-wasm`). They install into the **playground**
   package — the engine core (`src/datasource`) stays dependency-free per ADR-0008 §layering.
 - **`@spatialdata/core` for discovery + transforms.** `readZarr(store) → SpatialData`;
@@ -151,8 +153,10 @@ make the bounded-working-set behaviour tangible).
     `@cornerstonejs/codec-openjph` as a bare specifier. One instance from node_modules fixes both.
     (We are on Vite 5; MDV on Vite 7 uses `worker: { format: 'iife' }` and does *not* exclude — the
     trade-off differs by Vite version.)
-  - `@spatialdata/core` also pulls `apache-arrow`/`parquet-wasm` (its table support) which log
-    harmless warnings on image-only use.
+  - `@spatialdata/core` also pulls `apache-arrow` (its table support) which logs harmless warnings
+    on image-only use. (`parquet-wasm` was a separate dependency at 0.2.x; from core 0.8.0 it is
+    vendored into core's dist and loaded by a relative dynamic import — which is why core must be
+    excluded from Vite's dep pre-bundling.)
   - The local dev server is **CORS-enabled**, so no vite proxy is required.
 - **Implementation status (2026-07-06): 1a landed and verified in the browser.** `he_image`
   (1.5 Gpx RGB HTJ2K) streams from the store, decodes per-chunk, and renders on the plane; zooming
