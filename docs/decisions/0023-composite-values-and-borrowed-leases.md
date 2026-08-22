@@ -98,6 +98,12 @@ bundle part throws, naming itself.
 validation all read ports statically — and would lose per-part typing at build time. A new bundle
 type costs a few lines of registration.
 
+Each part carries a `kind` in the `BundleSpec`, so an extract op's output port is typed
+(`points`, `grid`) rather than `any`: the exact shape needs a run, the kind never changes, and the
+composer can colour the port and reject a wrong edge at wiring time. A part that is a host
+`payload` (the lattice) passes to a resident consumer as-is — there is nothing to upload, and
+treating that as "no data" is what broke recombining a bucket grid.
+
 ### 5. A bundle port declares its members statically
 
 `PortSpec` gains `bundle?: { name, parts }`. A port typed only `kind: "bundle"` tells a reader
