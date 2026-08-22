@@ -232,6 +232,11 @@ async function main() {
         if (m.stringWidth !== undefined) {
           // Fixed-length null-padded UTF-8, stored as [rows, width] bytes. Kept rather than dropped
           // so the conversion is lossless; `mdvStore` decodes it on demand.
+          const bytes = new Uint8Array(toArrayBuffer(raw));
+          // Mirror the numeric-branch guard: a short/long dump would silently misalign every
+          // row against the declared [rows, width] shape, corrupting the column.
+          if (bytes.length !== rows * m.stringWidth)
+            throw new Error(`${group}/${m.name}: dumped ${bytes.length} bytes, expected ${rows * m.stringWidth} (${rows} rows × ${m.stringWidth} width)`);
           const arr = await zarr.create(dsLoc.resolve(col.key), {
             shape: [rows, m.stringWidth],
             chunkShape: [Math.min(rows, ROWS_PER_CHUNK), m.stringWidth],
@@ -239,7 +244,7 @@ async function main() {
             attributes: { mdv: { ...col, stringWidth: m.stringWidth } },
           });
           await zarr.set(arr as never, null, {
-            data: new Uint8Array(toArrayBuffer(raw)),
+            data: bytes,
             shape: [rows, m.stringWidth],
             stride: [m.stringWidth, 1],
           } as never);

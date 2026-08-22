@@ -3,6 +3,7 @@
   "version": "0.0.0",
   "type": "module",
   "description": "WebGPU HTJ2K (JPEG 2000 Part 15) codec \u2014 Rust/wasm CPU core + TypeScript/TypeGPU GPU layer.",
+  "license": "MIT AND BSD-2-Clause",
   "packageManager": "pnpm@11.12.0",
   "engines": {
     "node": ">=20.11"

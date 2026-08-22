@@ -1,6 +1,8 @@
 # Decision records — index and implementation status
 
-Last audited: **2026-07-23**.
+Last audited: **2026-07-23** (this table). Gap analysis refreshed **2026-08-22** across all
+ADRs *and* the forward-looking design notes — see [`../gap-analysis.md`](../gap-analysis.md).
+The rows below are corrected inline where the newer audit found them stale.
 
 ## When to write an ADR (and when not to)
 
@@ -48,7 +50,7 @@ Numbers 0019–0021 are **retired, not reused**, so commit history keeps pointin
 | [0003](0003-use-gpu-tgsl-kernels.md) | `"use gpu"` TGSL kernels | accepted | **landed** | used throughout `src/gpu` |
 | [0004](0004-field-type-model-and-volumetric-splat.md) | Field type model + volumetric splat | proposed | **partial** | element algebra + `axes` (via 0015) landed; `splatDensity.ts` exists |
 | [0005](0005-columnar-filters-and-sparse-support.md) | `support` facet, sparse columns | proposed | **open** | no `support` in the value lattice; operator set **corrected** 2026-08-01 (see [`mdv-dimension-vs-support-facet.md`](../mdv-dimension-vs-support-facet.md)) |
-| [0006](0006-spectral-and-wavelet-domain-representation.md) | `basis` facet | exploratory | **partial** | `Basis` type in `handle.ts`; no consumer |
+| [0006](0006-spectral-and-wavelet-domain-representation.md) | `basis` facet | exploratory | **partial** | `Basis` + `inferBasis` consumed at build; `registerWaveletOps` ships `fdwt`/`idwt` (CPU nodes); **Fourier/FFT absent**; wavelet GPU-layout bridge unbuilt |
 | [0007](0007-expression-ir-dsl-graph-duality.md) | Expression IR ⇄ DSL ⇄ graph | proposed | **partial** | `src/geometry/expr.ts` has its *own* `Expr`, not unified with the graph |
 | [0008](0008-view-driven-multiscale-datasource.md) | View-driven multiscale datasource | proposed | **landed** | `src/datasource` (its `index.ts` says "so it can graduate") |
 | [0009](0009-rendering-as-ops.md) | Rendering as ops; three.js demoted | exploratory | **open** | three.js still owns rendering |
@@ -58,28 +60,34 @@ Numbers 0019–0021 are **retired, not reused**, so commit history keeps pointin
 | [0012](0012-geometry-provenance-and-pick-to-feature-editing.md) | Provenance / pick-to-feature | exploratory | **open** | no `resolve`, no picking channel |
 | [0013](0013-hybrid-strategy-dispatch-and-progen-parallelism.md) | Hybrid strategy dispatch | exploratory | **partial** | `src/geometry/hybrid.ts` |
 | [0014](0014-procedural-geometry-render-contract.md) | Render contract (depth · distance · G-buffer) | exploratory | **open** | not a contract; raymarch is playground-local |
-| [0015](0015-channel-axis-labels-coordinate-systems.md) | Channel axis, labels, coordinate systems | draft | **partial** | `FieldRole`/`LabelMeta` landed; **`ResolvedPlacement` did not** |
+| [0015](0015-channel-axis-labels-coordinate-systems.md) | Channel axis, labels, coordinate systems | draft | **partial** | `FieldRole`/`LabelMeta` **and** `ResolvedPlacement` now landed (via 0018); vector `ParamType` still missing |
 | [0016](0016-topact-box-vs-kde-reproduce-then-improve.md) | TopACT: reproduce then improve | draft | **open** | no code |
 | [0017](0017-tier2-resident-buffer-edges.md) | Tier-2 resident buffer edges | accepted | **partial** | stages 1–3 + invariant 5 landed; 4–5 remain |
-| [0018](0018-field-domains-placement-and-resolution.md) | Field domains: extent, placement, resolution | draft | **open** | no `extent`/`placement` on `FieldValue` |
+| [0018](0018-field-domains-placement-and-resolution.md) | Field domains: extent, placement, resolution | draft | **partial** | `placement` on `GpuField`+`FieldValue` + `inferPlacement`/`outPlacements` landed (2026-08); `boundsOf` + `ParamSpec.units` remain |
 
 ⚠ **Two ADRs share the number 0010** (`procedural-geometry-composable-ops` and
 `spatialdata-js-as-loader-source`). Renumbering breaks inbound links in `docs/gpu-resource-sync.md`
 and across the ADRs themselves, so it has been left alone and is recorded here instead. Refer to them
 as *ADR-0010-geometry* and *ADR-0010-loader*.
 
-Roughly **8 landed, 6 partial, 5 open** across 19 records. No ADR has been added since the audit —
-deliberately. The three documents written on audit day all became design notes.
+Roughly **8 landed, 7 partial, 4 open** across 19 records (0018 moved open→partial when the
+placement facet landed in 2026-08). No ADR has been added since the audit — deliberately. The
+three documents written on audit day all became design notes.
 
 ## Notable gaps worth knowing before planning
 
-- **`ResolvedPlacement` (0015 §3) never landed.** `src/datasource/types.ts` still carries a single
-  `worldFromArray`. Anything wanting multiple named coordinate systems — a viewer with a system
-  selector, the scene note's `aligned` — needs it, and it is a small, well-specified change.
+- **`ResolvedPlacement` (0015 §3 / 0018) landed** (2026-08). It is on `GpuField`+`FieldValue` in
+  `src/gpu/graph/handle.ts` with `placementOf`/`systemsAgree`, an `inferPlacement` hook, executor
+  stamping, tests, and a `placements[]` array on `src/datasource/types.ts`. The remaining pieces are
+  `boundsOf` and `ParamSpec.units` (0018 dec 4–5), not the facet itself.
 - **There are two expression systems** (0007). `src/geometry/expr.ts` builds `(s, θ)` expressions for
   procedural geometry; `src/gpu/graph` is a separate DAG. The claimed duality is aspirational.
-- **The value lattice is half-built** (0004/0005/0006/0018): element algebra and `axes` are real;
-  `support`, `extent`, `placement` are not, and `basis` is a type with no consumer.
+- **The value lattice is half-built** (0004/0005/0006/0018): element algebra, `axes`, `role`, and
+  now `placement` are real; `support`, `extent`, and the 3D domain are not, and the `basis` facet
+  has consumers (`inferBasis` + wavelet ops) but no `fourier` variant.
+- **Wavelet on GPU is easy to mis-state** (0006). The **codec** DWT is GPU and benchmarked
+  (`src/gpu/idwt53.ts` etc.); only the op-graph wavelet *nodes* (`ops/waveletOps.ts`) are CPU. The
+  gap is the layout bridge between them, not a missing kernel — see [`../gap-analysis.md`](../gap-analysis.md).
 - **`src/` is entirely three.js-free** — verified, zero `from "three"` outside `playground/`. The
   renderer-agnostic boundary 0008 asserted actually holds, which is what makes a published core
   package cheap. See [`packaging-and-consumers.md`](../packaging-and-consumers.md).
