@@ -333,9 +333,11 @@ compiles today's kernel and the morphology bit-exact test stays green.
    **Done 2026-08-22** — `src/gpu/spatial/gridIndexQuery.ts` (2D helpers, `vec2f`/`vec2i`
    for now; the 3D signatures above wait on step 6) + an optional `cell` on all three
    kernels; contract in `IndexedQueryOptions`. CkNN / fuzzy adjacency still call brute force.
-3. **Resident index op** (§3.3) and a resident `separate` / `spring` force op reading it.
-   Unblocks force-directed layout at scale (TerraCognita's displacement-field terrain) and the first
-   per-tick resident chain (ADR-0017 stage 3 feedback state).
+3. ~~**Resident index op** (§3.3)~~ **done 2026-08-22** (`src/gpu/graph/ops/gridIndex.ts`: three
+   ports, one lease each, extent from params because `inferShapes` predates the values; `pull()`
+   on the u32 ports throws by design) — and a resident `separate` / `spring` force op reading it,
+   still to come. That unblocks force-directed layout at scale (TerraCognita's displacement-field
+   terrain) and the first per-tick resident chain (ADR-0017 stage 3 feedback state).
 4. **`encodeCompact` + the `support` facet** (§4.2, §4.4 steps 1–4), pointwise and reduction
    rules. Unblocks the mask ⇄ index duality, weighted null models, MDV filtered density with
    zero marshalling.
