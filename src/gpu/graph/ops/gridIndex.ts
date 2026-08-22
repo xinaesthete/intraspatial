@@ -27,7 +27,7 @@ import type { ExecCtx, OpType, Params } from "../op";
 import { type BundleSpec, bundleValue, combineOp, extractOp } from "./bundleOps";
 
 /** The bundle this op produces; `extractOp`/`combineOp` generate its accessors from it. */
-export const GRID_INDEX_BUNDLE: BundleSpec = { name: "gridIndex", label: "Grid index", parts: ["start", "items", "lattice"] };
+export const GRID_INDEX_BUNDLE: BundleSpec = { name: "gridIndex", label: "Bucket grid", parts: ["start", "items", "lattice"] };
 
 /** What the `lattice` port carries. Shaped so a consumer can rebuild the cell arithmetic without
  *  reading either buffer, and so a readback can be compared against `buildBucketGrid`. */
@@ -92,17 +92,21 @@ function payload(lattice: GridLattice, n: number, placement?: ResolvedPlacement)
 
 export const gridIndexOp: OpType = {
   name: "gridIndex",
-  label: "Uniform grid index",
-  category: "Spatial",
-  describe: "Bucket a points cloud into a uniform grid: per-cell start offsets and point indices, built on the device.",
+  label: "Bucket points into cells",
+  category: "Spatial & TDA",
+  describe: "Sort a cloud into a grid of square cells, so neighbour queries read 9 cells instead of every point.",
   help: {
     detail:
-      "The offset list every neighbourhood query walks: with the cell size set to the query radius, " +
-      "each point's 3×3 cell neighbourhood holds every point within that radius. `start[b]..start[b+1]` " +
-      "is cell b's slice of `items`. Both outputs are u32 and stay on the device.",
+      "Set the cell size to the radius you will query at, and every point within that radius of a " +
+      "given point lies in its own cell or the 8 around it — so a neighbour search reads 9 cells " +
+      "rather than the whole cloud. The result (a *bucket grid*, or uniform grid index) is one value " +
+      "with three parts: `start`, the offset where each cell's points begin; `items`, the point ids " +
+      "grouped by cell; and `lattice`, the cell geometry. They travel together so two cannot come " +
+      "from different clouds. Both buffers are u32 and stay on the device — `Points per cell` is the " +
+      "way to see what the bucketing did.",
   },
   inputs: [{ name: "points", kind: "points", dtype: "f32" }],
-  outputs: [{ name: "index", kind: "bundle" }],
+  outputs: [{ name: "buckets", kind: "bundle" }],
   params: [
     { name: "cell", type: "number", default: 1, min: 1e-6, describe: "Cell side in world units — set it to the query radius." },
     { name: "minX", type: "number", default: 0, describe: "Lattice origin x." },
@@ -215,9 +219,12 @@ export const gridIndexOp: OpType = {
 /** `gridIndex.start` / `.items` / `.lattice` — take one part out, borrowing the buffer rather
  *  than copying it (ADR-0023). */
 export const gridIndexPartOps: OpType[] = [
-  extractOp(GRID_INDEX_BUNDLE, "start", "Per-cell start offsets into `items` (u32, device-only)."),
-  extractOp(GRID_INDEX_BUNDLE, "items", "Point indices grouped by cell (u32, device-only)."),
-  extractOp(GRID_INDEX_BUNDLE, "lattice", "The lattice the index was built over — cols, rows, cell, origin."),
+  extractOp(GRID_INDEX_BUNDLE, "start", {
+    label: "cell offsets",
+    describe: "Where each cell's run of point ids begins: cell b owns `items[start[b] .. start[b+1])`. u32, device-only.",
+  }),
+  extractOp(GRID_INDEX_BUNDLE, "items", { label: "point ids", describe: "Point ids grouped by the cell they fell in. u32, device-only." }),
+  extractOp(GRID_INDEX_BUNDLE, "lattice", { label: "lattice", describe: "The cell geometry — columns, rows, cell size and origin." }),
 ];
 
 /** `gridIndex.bundle` — reassemble an index from parts, for a producer that builds them itself. */

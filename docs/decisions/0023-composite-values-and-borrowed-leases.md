@@ -87,6 +87,15 @@ and the composer preview see it.
 validation all read ports statically — and would lose per-part typing at build time. A new bundle
 type costs a few lines of registration.
 
+### 5. The composer calls it a **bucket grid**, and the port is `buckets`
+
+`index` is ambiguous twice over in this graph: it reads as "an array index", and the bundle's own
+`items` part holds exactly that. The registry keys stay `gridIndex` / `gridIndex.start` (they are
+identifiers, and "uniform grid index" is the term in the literature — the ADRs keep it), but every
+string a user reads uses the concrete name `src/spatial/bucketGrid.ts` already established:
+`Bucket points into cells` produces `buckets`, `Points per cell` consumes them, and the part ops
+read `Bucket grid → cell offsets` / `→ point ids` / `→ lattice`.
+
 ## Consequences
 
 - `gridIndex` becomes single-output. ADR-0022's three-port shape is superseded before it had a

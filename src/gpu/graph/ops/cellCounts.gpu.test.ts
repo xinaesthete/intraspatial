@@ -40,7 +40,7 @@ function countsCpu(xs: number[], ys: number[], cell: number) {
 function chain(xs: number[], ys: number[], cell: number) {
   const g = new Graph();
   const idx = g.op1("gridIndex", { points: g.points(xs, ys) }, { cell, ...BOUNDS });
-  return { g, counts: g.op1("cellCounts", { index: idx }) };
+  return { g, counts: g.op1("cellCounts", { buckets: idx }) };
 }
 
 describe("cellCountsOp", () => {
@@ -95,7 +95,7 @@ describe("cellCountsOp", () => {
       },
     };
     const idx = g.op1("gridIndex", { points: g.source(placed, "points") }, { cell: 10, ...BOUNDS });
-    const v = await pullResident(g, g.op1("cellCounts", { index: idx }));
+    const v = await pullResident(g, g.op1("cellCounts", { buckets: idx }));
     // One counts cell spans 10 point-units, and each point-unit is 2 world units.
     expect(v.placement?.worldFromArray.axes[0]).toEqual([20, 0, 0]);
   });
@@ -118,6 +118,6 @@ describe("cellCountsOp", () => {
 
   it("rejects an input that is not a grid-index bundle", () => {
     const g = new Graph();
-    expect(() => g.op1("cellCounts", { index: g.grid(new Float32Array(16), 4, 4) })).toThrow(/expected a "gridIndex" bundle/);
+    expect(() => g.op1("cellCounts", { buckets: g.grid(new Float32Array(16), 4, 4) })).toThrow(/expected a "gridIndex" bundle/);
   });
 });

@@ -22,7 +22,7 @@ export interface BundleSpec {
   /** Nominal tag — `shapesEqual` compares it, so two bundles with the same part shapes but
    *  different names do not interchange. */
   readonly name: string;
-  /** Display label for the palette ("Grid index"). */
+  /** Display label for the palette ("Bucket grid") — also the palette group its part ops sit in. */
   readonly label: string;
   /** Part names, in the order the combine op takes them. */
   readonly parts: readonly string[];
@@ -46,14 +46,15 @@ function partOf(v: FieldValue, part: string, who: string): FieldValue {
  * which is why this op is `resident`: it must be allowed to pass a resident value through
  * untouched rather than have the executor download it on the way out.
  */
-export function extractOp(spec: BundleSpec, part: string, help?: string): OpType {
+export function extractOp(spec: BundleSpec, part: string, opts: { label?: string; describe?: string } = {}): OpType {
   const name = `${spec.name}.${part}`;
   const who = name;
   return {
     name,
-    label: `${spec.label} → ${part}`,
-    category: "Bundles",
-    describe: help ?? `Take the \`${part}\` part out of a ${spec.label.toLowerCase()} bundle.`,
+    // The label says what the part IS; the port keeps the structural name the parts are keyed by.
+    label: `${spec.label} → ${opts.label ?? part}`,
+    category: spec.label,
+    describe: opts.describe ?? `Take the \`${part}\` part out of a ${spec.label.toLowerCase()}.`,
     inputs: [{ name: "bundle", kind: "bundle" }],
     // The part's own shape is only known from the input, so the port is declared `any` and
     // `inferShapes` narrows it — the same thing `complexOps`' lane ops do.
@@ -89,8 +90,8 @@ export function combineOp(spec: BundleSpec, portKinds: Record<string, Shape["kin
   return {
     name: who,
     label: `${spec.label} ← parts`,
-    category: "Bundles",
-    describe: `Assemble a ${spec.label.toLowerCase()} bundle from its ${spec.parts.length} parts.`,
+    category: spec.label,
+    describe: `Assemble a ${spec.label.toLowerCase()} from its ${spec.parts.length} parts.`,
     inputs: spec.parts.map((p) => ({ name: p, kind: portKinds[p] ?? ("any" as const) })),
     outputs: [{ name: "bundle", kind: "bundle" }],
     params: [],

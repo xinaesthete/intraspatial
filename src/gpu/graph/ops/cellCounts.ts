@@ -85,16 +85,17 @@ function latticeShape(s: Shape, who: string): { width: number; height: number } 
 
 export const cellCountsOp: OpType = {
   name: "cellCounts",
-  label: "Cell counts",
-  category: "Spatial",
-  describe: "How many points fell in each cell of a grid index (bundle -> grid).",
+  label: "Points per cell",
+  category: "Spatial & TDA",
+  describe: "How many points fell in each cell of a bucket grid — a coarse density raster at the cell size.",
   help: {
     detail:
-      "Differences of the index's start offsets: cell b holds `start[b+1] - start[b]` points. " +
-      "This is a quadrat count — a coarse density raster whose resolution is the index's cell size — " +
-      "and the cheapest way to see what an index actually did.",
+      "Differences of the bucket grid's cell offsets: cell b holds `start[b+1] - start[b]` points. " +
+      "Statisticians call it a quadrat count; here it is also the cheapest way to SEE what the " +
+      "bucketing did, since the counts are f32 and can come back to the host while the index itself " +
+      "cannot.",
   },
-  inputs: [{ name: "index", kind: "bundle" }],
+  inputs: [{ name: "buckets", kind: "bundle" }],
   outputs: [{ name: "counts", kind: "grid", dtype: "f32" }],
   params: [],
   inferShapes(inputs) {

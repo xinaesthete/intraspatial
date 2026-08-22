@@ -277,7 +277,7 @@ export function gridIndexExample(): Example {
   ];
   const edges: Edge[] = [
     e("gi-p", "pts", "points", "idx", "points"),
-    e("gi-c", "idx", "index", "counts", "index"),
+    e("gi-c", "idx", "buckets", "counts", "buckets"),
     e("gi-k", "pts", "points", "kde", "points"),
   ];
   return { label: "Points → cells (spatial index)", nodes, edges, sink: { node: "counts", port: "counts" } };

@@ -46,8 +46,9 @@ placeholder that neither indexes nor resolves.
 
 The three-port shape below shipped for one afternoon and was replaced the same day: `start` and
 `items` are both `points`/u32, so a graph could wire them from *different* indexes and get a
-plausible wrong answer. The op now emits ONE `gridIndex` bundle; `gridIndex.start` and its
-siblings take a part out. Everything below still describes what the op computes — only the port
+plausible wrong answer. The op now emits ONE `gridIndex` bundle on a port named `buckets`;
+`gridIndex.start` and its siblings take a part out. In the composer the whole thing is called a
+*bucket grid* — `index` reads as "an array index", which is what the `items` part actually holds. Everything below still describes what the op computes — only the port
 shape changed.
 
 ## Original three-port shape
