@@ -43,3 +43,6 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 
 # large reference papers (kept out of git; see links in docs)
 docs/*.pdf
+
+# Python bytecode, from the scripts/ conversion utilities
+__pycache__/
