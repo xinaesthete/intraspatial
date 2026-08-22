@@ -224,7 +224,7 @@ const storageRw = () => GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBu
  *  rather than TypeGPU's `.read()` because the compacted index list has a length that is
  *  only known at run time, and `.read()` reads the whole wrapper — a pooled wrapper sized
  *  for the worst case would move 140 MB to return a thousand indices. */
-async function readBack(device: GPUDevice, key: string, src: GPUBuffer, srcOffset: number, bytes: number): Promise<ArrayBuffer> {
+export async function readBack(device: GPUDevice, key: string, src: GPUBuffer, srcOffset: number, bytes: number): Promise<ArrayBuffer> {
   const staging = ensureBuf(device, key, bytes, GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST);
   const enc = device.createCommandEncoder();
   enc.copyBufferToBuffer(src, srcOffset, staging, 0, bytes);
@@ -265,6 +265,11 @@ export interface EncodedScan {
  * could be — each block reads its own range before the barrier and writes it after — but
  * that needs the same buffer bound as both `read-only-storage` and `storage` in one bind
  * group, which is aliasing WebGPU does not define.
+ *
+ * The pool keys are global, so two scans recorded into one command buffer under the same
+ * `keyPrefix` alias each other's `dst` and the second silently overwrites the first. A caller
+ * that fuses more than one scan per submit (an index build plus an occupied-cell compaction,
+ * say) gives each its own prefix; the default serves the one-scan-per-submit case.
  */
 export function encodeScan(
   ctx: ScanCtx,
@@ -273,6 +278,7 @@ export function encodeScan(
   n: number,
   enc: GPUCommandEncoder,
   maxWorkgroupsPerDim: number = MAX_WORKGROUPS_PER_DIM,
+  keyPrefix = "scan",
 ): EncodedScan {
   const { device } = ctx;
   checkBindingSize(device, `prefixSum: ${n} elements`, n * 4);
@@ -282,8 +288,8 @@ export function encodeScan(
   let curN = n;
   for (let li = 0; ; li++) {
     const numBlocks = Math.ceil(curN / SCAN_BLOCK);
-    const dst = ensureBuf(device, `scan:${elem}:dst${li}`, curN * 4, storageRw());
-    const blockSums = ensureBuf(device, `scan:${elem}:bs${li}`, numBlocks * 4, storageRw());
+    const dst = ensureBuf(device, `${keyPrefix}:${elem}:dst${li}`, curN * 4, storageRw());
+    const blockSums = ensureBuf(device, `${keyPrefix}:${elem}:bs${li}`, numBlocks * 4, storageRw());
     const { x: gridX, y: gridY } = dispatchGrid(numBlocks, maxWorkgroupsPerDim);
     levels.push({ src: cur, dst, blockSums, n: curN, numBlocks, gridX, gridY });
     if (numBlocks <= 1) break;
@@ -297,7 +303,7 @@ export function encodeScan(
   // `umapLayoutGpu.ts` documents, where the work still happens and the answer is merely
   // wrong. Per-level buffers make the ordering question disappear.
   const binds = levels.map((lv, li) => {
-    const uni = ensureBuf(device, `scan:${elem}:uni${li}`, 16, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST);
+    const uni = ensureBuf(device, `${keyPrefix}:${elem}:uni${li}`, 16, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST);
     device.queue.writeBuffer(uni, 0, new Uint32Array([lv.n, lv.numBlocks, lv.gridX, 0]));
     // Every binding carries an explicit `size`. Without it the binding covers the whole
     // POOLED buffer, which is grow-only and routinely larger than this call needs — and a
