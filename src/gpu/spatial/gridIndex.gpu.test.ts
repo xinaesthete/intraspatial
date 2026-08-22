@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { type BucketGrid, buildBucketGrid, latticeFor } from "../../spatial/bucketGrid";
+import { type BucketGrid, buildBucketGrid, latticeFor, numCells } from "../../spatial/bucketGrid";
 import { buildGridIndexGpu, GRID_INDEX_WG, type GridIndexOptions } from "./gridIndex";
 
 // Dawn-on-Node house rules, as in the neighbouring suites: assertions are AGGREGATED (one
@@ -15,11 +15,13 @@ function rng(seed: number) {
   };
 }
 
-function pack(xs: ArrayLike<number>, ys: ArrayLike<number>): Float32Array {
-  const out = new Float32Array(2 * xs.length);
+function pack(xs: ArrayLike<number>, ys: ArrayLike<number>, zs?: ArrayLike<number>): Float32Array {
+  const s = zs ? 3 : 2;
+  const out = new Float32Array(s * xs.length);
   for (let i = 0; i < xs.length; i++) {
-    out[2 * i] = xs[i]!;
-    out[2 * i + 1] = ys[i]!;
+    out[s * i] = xs[i]!;
+    out[s * i + 1] = ys[i]!;
+    if (zs) out[s * i + 2] = zs[i]!;
   }
   return out;
 }
@@ -28,11 +30,18 @@ function pack(xs: ArrayLike<number>, ys: ArrayLike<number>): Float32Array {
  *  within a cell is not part of the contract). Returns a summary rather than asserting so the
  *  caller makes one `expect`. */
 function compare(gpu: BucketGrid, cpu: BucketGrid) {
-  const lattice = gpu.cols === cpu.cols && gpu.rows === cpu.rows && gpu.minX === cpu.minX && gpu.minY === cpu.minY && gpu.cell === cpu.cell;
+  const lattice =
+    gpu.cols === cpu.cols &&
+    gpu.rows === cpu.rows &&
+    gpu.minX === cpu.minX &&
+    gpu.minY === cpu.minY &&
+    gpu.cell === cpu.cell &&
+    gpu.depth === cpu.depth &&
+    gpu.minZ === cpu.minZ;
   let startMismatch = 0;
   for (let b = 0; b < cpu.start.length; b++) if (gpu.start[b] !== cpu.start[b]) startMismatch++;
   let cellMismatch = 0;
-  const M = cpu.cols * cpu.rows;
+  const M = numCells(cpu);
   for (let b = 0; b < M; b++) {
     const lo = cpu.start[b]!;
     const hi = cpu.start[b + 1]!;
@@ -44,12 +53,14 @@ function compare(gpu: BucketGrid, cpu: BucketGrid) {
 }
 
 /** Structural invariants that hold regardless of the CPU reference (3D note §5). */
-function invariants(g: BucketGrid, n: number, xs: number[], ys: number[]) {
-  const M = g.cols * g.rows;
+function invariants(g: BucketGrid, n: number, xs: number[], ys: number[], zs?: number[]) {
+  const M = numCells(g);
+  const at = (v: number, lo: number, hi: number) => Math.min(hi - 1, Math.max(0, Math.floor((v - lo) / g.cell)));
   const cellOf = (i: number) => {
-    const c = Math.min(g.cols - 1, Math.max(0, Math.floor((xs[i]! - g.minX) / g.cell)));
-    const r = Math.min(g.rows - 1, Math.max(0, Math.floor((ys[i]! - g.minY) / g.cell)));
-    return r * g.cols + c;
+    const c = at(xs[i]!, g.minX, g.cols);
+    const r = at(ys[i]!, g.minY, g.rows);
+    const l = zs ? at(zs[i]!, g.minZ!, g.depth!) : 0;
+    return c + g.cols * (r + g.rows * l);
   };
   let monotone = g.start[0] === 0 && g.start[M] === n;
   for (let b = 0; b < M; b++) if (g.start[b + 1]! < g.start[b]!) monotone = false;
@@ -77,6 +88,17 @@ async function both(xs: number[], ys: number[], cell: number, opts: Partial<Grid
   const cpu = buildBucketGrid(fx, fy, cell, opts.bounds);
   const gpu = await buildGridIndexGpu(pts, { cell, ...opts });
   return { cpu, gpu, fx, fy };
+}
+
+/** The 3D counterpart: `zs` goes to both builds, `dims: 3` + `stride: 3` to the GPU. */
+async function both3(xs: number[], ys: number[], zs: number[], cell: number, opts: Partial<GridIndexOptions> = {}) {
+  const pts = pack(xs, ys, zs);
+  const fx = Array.from(xs, Math.fround);
+  const fy = Array.from(ys, Math.fround);
+  const fz = Array.from(zs, Math.fround);
+  const cpu = buildBucketGrid(fx, fy, cell, opts.bounds, fz);
+  const gpu = await buildGridIndexGpu(pts, { cell, ...opts, dims: 3, stride: 3 });
+  return { cpu, gpu, fx, fy, fz };
 }
 
 describe("latticeFor", () => {
@@ -192,5 +214,92 @@ describe("buildGridIndexGpu", () => {
     const { cpu, gpu } = await both(xs, ys, 8, { maxWorkgroupsPerDim: 3 });
     expect(compare(gpu, cpu)).toEqual({ lattice: true, startMismatch: 0, cellMismatch: 0, cells: cpu.cols * cpu.rows });
     expect(gpu.start[cpu.cols * cpu.rows]).toBe(n);
+  });
+
+  describe("dims: 3", () => {
+    it("matches buildBucketGrid(…, zs) cell-for-cell on a random cloud", async () => {
+      const rnd = rng(0xc0ffee);
+      const xs: number[] = [];
+      const ys: number[] = [];
+      const zs: number[] = [];
+      for (let i = 0; i < 1500; i++) {
+        xs.push(rnd() * 120);
+        ys.push(rnd() * 90);
+        zs.push(rnd() * 60);
+      }
+      const { cpu, gpu, fx, fy, fz } = await both3(xs, ys, zs, 10);
+      expect(gpu.depth).toBeGreaterThan(1);
+      expect(compare(gpu, cpu)).toEqual({ lattice: true, startMismatch: 0, cellMismatch: 0, cells: numCells(cpu) });
+      expect(invariants(gpu, xs.length, fx, fy, fz)).toEqual({ monotone: true, misplaced: 0, dup: 0, covered: xs.length });
+      expect(gpu.start[numCells(cpu)]).toBe(xs.length);
+    });
+
+    it("puts one point per cell of a 4×3×5 lattice, x-fastest", async () => {
+      const [cols, rows, depth] = [4, 3, 5];
+      const xs: number[] = [];
+      const ys: number[] = [];
+      const zs: number[] = [];
+      const M = cols * rows * depth;
+      for (let b = 0; b < M; b++) {
+        const k = (b * 7) % M; // scrambled visiting order
+        const cx = k % cols;
+        const cy = Math.floor(k / cols) % rows;
+        const cz = Math.floor(k / (cols * rows));
+        xs.push(cx * 10 + 5);
+        ys.push(cy * 10 + 5);
+        zs.push(cz * 10 + 5);
+      }
+      const { cpu, gpu } = await both3(xs, ys, zs, 10, { bounds: [0, 0, 0, 30, 20, 40] });
+      expect([gpu.cols, gpu.rows, gpu.depth]).toEqual([cols, rows, depth]);
+      expect(compare(gpu, cpu).cellMismatch).toBe(0);
+      // cell b holds the point visited at step k where (k*7) % M == b, i.e. items[b] == k
+      let wrong = 0;
+      for (let b = 0; b < M; b++) {
+        if (gpu.start[b] !== b) wrong++;
+        const k = gpu.items[b]!;
+        if ((k * 7) % M !== b) wrong++;
+      }
+      expect(wrong).toBe(0);
+    });
+
+    it("floors and clamps boundary, corner and out-of-bounds points on all three axes", async () => {
+      const xs = [0, 10, 20, 30, 10, 29.999, 30.001, -5, 45, 0, 15, 15];
+      const ys = [0, 10, 20, 20, 0, 19.999, 20.001, -5, 35, 20, 15, 15];
+      const zs = [0, 10, 10, 10, 0, 9.999, 10.001, -5, 25, 10, -1e6, 1e6];
+      const { cpu, gpu, fx, fy, fz } = await both3(xs, ys, zs, 10, { bounds: [0, 0, 0, 30, 20, 10] });
+      expect(compare(gpu, cpu)).toEqual({ lattice: true, startMismatch: 0, cellMismatch: 0, cells: numCells(cpu) });
+      expect(invariants(gpu, xs.length, fx, fy, fz)).toEqual({ monotone: true, misplaced: 0, dup: 0, covered: xs.length });
+    });
+
+    it("leaves an empty z-slab as a run of equal offsets", async () => {
+      const rnd = rng(11);
+      const xs: number[] = [];
+      const ys: number[] = [];
+      const zs: number[] = [];
+      for (let i = 0; i < 300; i++) {
+        xs.push(rnd() * 50);
+        ys.push(rnd() * 50);
+        zs.push(rnd() * 20); // bottom two layers only
+      }
+      const { cpu, gpu } = await both3(xs, ys, zs, 10, { bounds: [0, 0, 0, 50, 50, 100] });
+      expect(compare(gpu, cpu).cellMismatch).toBe(0);
+      const plane = gpu.cols * gpu.rows;
+      let flat = true;
+      for (let b = 3 * plane; b < numCells(gpu); b++) if (gpu.start[b + 1] !== gpu.start[b]) flat = false;
+      expect(flat).toBe(true);
+      expect(gpu.start[3 * plane]).toBe(xs.length);
+    });
+
+    it("builds an empty index for n = 0", async () => {
+      const gpu = await buildGridIndexGpu(new Float32Array(0), { cell: 5, dims: 3, stride: 3, bounds: [0, 0, 0, 20, 20, 10] });
+      expect([gpu.cols, gpu.rows, gpu.depth]).toEqual([5, 5, 3]);
+      expect(gpu.items.length).toBe(0);
+      expect(gpu.start.length).toBe(numCells(gpu) + 1);
+      expect(gpu.start.every((v) => v === 0)).toBe(true);
+    });
+
+    it("refuses a 3D lattice without stride 3", async () => {
+      await expect(buildGridIndexGpu(new Float32Array(4), { cell: 1, dims: 3 })).rejects.toThrow(/stride 3/);
+    });
   });
 });
