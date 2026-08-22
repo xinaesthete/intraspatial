@@ -25,6 +25,12 @@
 // otherwise: parity is asserted on the *structure* the embedding preserves
 // (`trustworthiness`), not on coordinates. See `umapLayout.gpu.test.ts`.
 
+// `mulberry32` — the repo's standard seeded PRNG — is declared once, in kernelAnalysis; it is
+// re-exported here because the layout SGD and its GPU mirror (and the playground) seed from it.
+import { mulberry32 } from "./kernelAnalysis";
+
+export { mulberry32 };
+
 /** Curve parameters for the low-dimensional membership Ψ(d) = 1/(1 + a·d^(2b)). */
 export interface AbParams {
   readonly a: number;
@@ -110,19 +116,6 @@ export function fitAB(minDist = 0.1, spread = 1): AbParams {
     }
   }
   return { a, b };
-}
-
-/** Deterministic 32-bit PRNG — the repo's standard seeded generator, so a run with a
- *  given seed is reproducible on the host and the GPU kernel can mirror the same
- *  recurrence per thread. */
-export function mulberry32(seed: number): () => number {
-  let a = seed >>> 0;
-  return () => {
-    a = (a + 0x6d2b79f5) | 0;
-    let t = Math.imul(a ^ (a >>> 15), 1 | a);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
 }
 
 /**
