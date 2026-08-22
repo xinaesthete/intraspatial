@@ -1,9 +1,9 @@
 {
-  "name": "tgpu-htj2k",
+  "name": "intraspatial",
   "version": "0.0.0",
   "type": "module",
-  "description": "WebGPU HTJ2K (JPEG 2000 Part 15) codec \u2014 Rust/wasm CPU core + TypeScript/TypeGPU GPU layer.",
-  "license": "MIT AND BSD-2-Clause",
+  "description": "IntraSpatial \u2014 an in-GPU operation-graph runtime and spatial-analysis toolbox on TypeGPU/WebGPU.",
+  "license": "MIT",
   "packageManager": "pnpm@11.12.0",
   "engines": {
     "node": ">=20.11"
@@ -18,9 +18,6 @@
     "test:cpu": "vitest run",
     "test:gpu": "vitest run -c vitest.gpu.config.ts",
     "test:watch": "vitest",
-    "bench:gpu": "BENCH=1 vitest run -c vitest.gpu.config.ts test/bench_idwt.gpu.test.ts",
-    "bench:readback": "tsx scripts/bench-idwt-readback.ts",
-    "test:rust": "cargo test --manifest-path rust/htj2k-core/Cargo.toml",
     "typecheck": "pnpm typecheck:core && pnpm typecheck:playground",
     "typecheck:core": "node scripts/guarded.mjs -- tsc --noEmit",
     "typecheck:playground": "node scripts/guarded.mjs -- node scripts/tsc-5.mjs --noEmit -p playground/tsconfig.typecheck.json",
@@ -28,8 +25,6 @@
     "lint": "biome check . && biome check test",
     "lint:fix": "biome check --write . && biome check --write test",
     "format": "biome format --write .",
-    "build:wasm": "wasm-pack build rust/htj2k-core --target web --out-dir pkg --out-name htj2k_core",
-    "build:wasm:dev": "wasm-pack build rust/htj2k-core --dev --target web --out-dir pkg --out-name htj2k_core",
     "mdv:zarr": "tsx scripts/mdv-h5-to-zarr.ts",
     "mdv:parity": "tsx scripts/mdv-pcf-parity.ts",
     "mdv:quadrat": "tsx scripts/mdv-quadrat-parity.ts",
@@ -46,7 +41,7 @@
     "zarrita": "^0.7.3"
   },
   "optionalDependencies": {
-    "openjph-wasm": "file:../openjph-wasm"
+    "openjph-wasm": "file:../codecs/openjph-wasm"
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.2",
