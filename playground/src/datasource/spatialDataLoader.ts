@@ -63,20 +63,21 @@ function parseHexColor(hex: unknown): [number, number, number] | null {
 
 let workerReady: Promise<void> | null = null;
 /** Enable zarrextra's off-main-thread codec worker pool once — MDV's `ensureChunkWorker` pattern
- *  (`enableWorkerChunkDecode` from `zarrextra/workers`, same `zarrextra@0.2.3`). The worker
- *  self-contains the OpenJPH/HTJ2K codec + wasm (zarrextra's optional `@cornerstonejs/codec-openjph`
+ *  (`enableWorkerChunkDecode` from `zarrextra/workers`, `zarrextra@0.4.0`). The worker
+ *  self-contains the OpenJPH/HTJ2K codec + wasm (`openjph-wasm`, inlined into `codec-worker.js`
  *  behind the `@fideus-labs/*` worker pool) and hooks zarrita's decode path, so `getTile` decodes
  *  HTJ2K in a worker: no main-thread codec registration, no `openjph-wasm` import, and no extra
- *  vite config (the worker URL uses the `import.meta.url` pattern Vite bundles natively). Decode
- *  stays CPU (ADR-0008 §9) but off the main thread, so the UI no longer stalls while tiles decode. */
+ *  vite config beyond the `optimizeDeps.exclude` that keeps the worker's `import.meta.url` intact.
+ *  Decode stays CPU (ADR-0008 §9) but off the main thread, so the UI no longer stalls while tiles
+ *  decode. `@spatialdata/core@0.5.0` does not enable the pool itself, so this call is required. */
 function ensureWorkerDecode(): Promise<void> {
   if (!workerReady) {
     workerReady = (async () => {
       const zx = await import("zarrextra");
-      // Register the codec id so the decode pipeline recognises `experimental.openjph_htj2k`; with
-      // `@cornerstonejs/codec-openjph` now installed (a zarrextra optional dep, same as MDV) this
-      // needs no custom decoder. Enabling the worker pool then routes the actual decode
-      // off-main-thread — registration says *what* the codec is, the worker says *where* it runs.
+      // Register the codec id so the decode pipeline recognises `experimental.openjph_htj2k`; 0.4.0
+      // supplies the `openjph-wasm` decoder, so this needs no custom `decoder`. Enabling the worker
+      // pool then routes the actual decode off-main-thread — registration says *what* the codec is,
+      // the worker says *where* it runs.
       zx.registerExperimentalHtj2kCodec();
       const { enableWorkerChunkDecode } = await import("zarrextra/workers");
       enableWorkerChunkDecode();

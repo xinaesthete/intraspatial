@@ -117,6 +117,77 @@ export async function releaseDevice(): Promise<void> {
   }
 }
 
+/** WebGPU's floor guarantee for `maxComputeWorkgroupsPerDimension`. Used rather than the
+ *  adapter's reported limit so the dispatch shape is identical on every machine — a grid that
+ *  folds differently per device is one more thing to rule out when two runs disagree. */
+export const MAX_WORKGROUPS_PER_DIM = 65535;
+
+/**
+ * Fold a linear workgroup count into a 2-D dispatch grid.
+ *
+ * A 1-D dispatch past `maxComputeWorkgroupsPerDimension` is NOT clamped: Dawn invalidates the
+ * command buffer, the pass never runs, and the only outward sign is that it got faster. The
+ * kernel rebuilds the linear index as `wid.x + wid.y * gridX`, where `gridX` is `x` here (or
+ * `num_workgroups.x`, which saves a uniform field).
+ */
+export function dispatchGrid(workgroups: number, maxPerDim: number = MAX_WORKGROUPS_PER_DIM): { x: number; y: number } {
+  const wg = Math.max(1, workgroups);
+  const x = Math.min(wg, maxPerDim);
+  const y = Math.ceil(wg / x);
+  if (y > maxPerDim) {
+    throw new Error(`dispatchGrid: ${workgroups} workgroups exceeds ${maxPerDim}^2 and cannot be folded into a 2-D grid`);
+  }
+  return { x, y };
+}
+
+/**
+ * Refuse a storage binding larger than the device allows, rather than discovering it as a
+ * wrong answer.
+ *
+ * An over-large binding is a *validation* error, and a validation error is silence: the bind
+ * group is invalid, the command buffer is invalid, every dispatch does nothing, and the
+ * readback returns whatever the buffer held before. No exception, and the timing looks fast
+ * and healthy — a killed dispatch is quicker than a real one.
+ *
+ * The default limit is 128 MiB (2^27), i.e. ~33.5M f32. Adapters routinely support far more —
+ * the Dawn adapter here reports 4 GiB — but `getDevice()` requests default limits, so raising
+ * it is a device-wide decision rather than something an individual kernel can take.
+ */
+export function checkBindingSize(device: GPUDevice, who: string, bytes: number): void {
+  const max = device.limits.maxStorageBufferBindingSize;
+  if (bytes > max) {
+    throw new Error(
+      `${who}: needs a ${bytes} byte storage binding, over this device's maxStorageBufferBindingSize of ${max}. ` +
+        `Request a higher limit in getDevice(), or split the input.`,
+    );
+  }
+}
+
+/**
+ * A buffer binding sized to **this call**, not to the pooled buffer behind it.
+ *
+ * Every pool in this repo is grow-only, and most grow by doubling, so `{ buffer }` on its own
+ * binds however big some earlier, larger call made the buffer. Once that capacity passes
+ * `maxStorageBufferBindingSize` the bind group is invalid and the dispatch silently returns
+ * the previous call's data — see `checkBindingSize` above. Measured 2026-08-01 in
+ * `streamCompact`: 132 MB of data in a 160 MB pooled buffer reported the *previous* call's
+ * answer, 3,913,615 rows, in 7 ms.
+ *
+ * Doubling is what makes this bite early: a buffer holding 70 MB can have a 134 MB capacity,
+ * so the binding crosses the limit while the data is only half way there.
+ *
+ * (Note the Tier-2 pool in `graph/pool.ts` is *not* exposed to this, because it buckets to
+ * powers of two and the limit is itself a power of two — `bucket(x) <= 2^27` whenever
+ * `x <= 2^27`. That is an arithmetic accident rather than a design, and it stops holding if
+ * either the bucketing or the limit stops being a power of two.)
+ */
+export function sized(buffer: GPUBuffer, bytes: number): GPUBufferBinding {
+  if (bytes <= 0 || bytes > buffer.size) {
+    throw new Error(`sized: ${bytes} is not a valid binding length into the ${buffer.size} byte buffer '${buffer.label || "unlabelled"}'`);
+  }
+  return { buffer, size: bytes };
+}
+
 /**
  * Compile a shader module and surface its diagnostics as an exception.
  *

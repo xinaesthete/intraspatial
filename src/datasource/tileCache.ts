@@ -5,6 +5,7 @@
 
 import type { MemoryReporting } from "../gpu/graph/memory";
 import type { ChunkId, Loader, Selection, Tile } from "./types";
+import { tileBytes } from "./types";
 
 /** Stable identity of a chunk — the TileCache key. */
 export const chunkKey = (id: ChunkId): string => `${id.level}:${id.x}:${id.y}:${id.z}`;
@@ -118,7 +119,7 @@ export async function resolve(selection: Selection, loader: Loader, cache?: Tile
       }
       pending.add(key);
       const tile = await loader.getChunk(sc.id);
-      cache?.set(key, tile, tile.data.byteLength);
+      cache?.set(key, tile, tileBytes(tile));
       out.set(key, tile);
     }),
   );

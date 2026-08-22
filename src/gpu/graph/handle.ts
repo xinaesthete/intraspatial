@@ -206,6 +206,11 @@ export interface ResidentTexture {
   readonly texture: GPUTexture;
   readonly width: number;
   readonly height: number;
+  /** Depth of a 3-D texture. Absent ⇒ 1, i.e. a plain 2-D texture, which is every graph-internal
+   *  resident texture (the splat/paint path is 2-D and the pool leases 2-D only). A volumetric
+   *  `Tile` payload is the one producer of a 3-D one — a `[32, 512, 512]` brick is a single 3-D
+   *  texture, not 32 layers — so consumers must read this rather than assume a plane. */
+  readonly depth?: number;
   readonly format: GPUTextureFormat;
   readonly lease: TextureLeaseToken;
 }

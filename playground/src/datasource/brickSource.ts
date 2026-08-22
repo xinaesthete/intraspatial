@@ -12,7 +12,7 @@
 // Both yield a `Uint8Array` of exactly B³ voxels (the atlas is R8). The seam is where the
 // load scheduler + latency simulation will wrap in the next steps.
 
-import { type ChunkId, chunkVoxelExtent, type Loader, levelVoxelDims, type Multiscale } from "../../../src/datasource";
+import { type ChunkId, chunkVoxelExtent, hostSamples, type Loader, levelVoxelDims, type Multiscale } from "../../../src/datasource";
 import { type MandelbulbRegion, mandelbulbBrickGpu } from "../../../src/gpu/fields/mandelbulb";
 import type { GpuBackend } from "../../../src/gpu/graph/backend";
 
@@ -80,6 +80,7 @@ export function loaderBrickSource(loader: Loader, B: number): BrickSource {
   return {
     async brick(id: ChunkId): Promise<Uint8Array> {
       const tile = await loader.getChunk(id);
+      const src = hostSamples(tile);
       const [ex, ey, ez] = tile.dims;
       const out = new Uint8Array(B * B * B);
       for (let z = 0; z < B; z++) {
@@ -88,7 +89,7 @@ export function loaderBrickSource(loader: Loader, B: number): BrickSource {
           const sy = Math.min(ey - 1, ((y * ey) / B) | 0);
           for (let x = 0; x < B; x++) {
             const sx = Math.min(ex - 1, ((x * ex) / B) | 0);
-            out[(z * B + y) * B + x] = Math.round((tile.data[(sz * ey + sy) * ex + sx] ?? 0) * 255);
+            out[(z * B + y) * B + x] = Math.round((src[(sz * ey + sy) * ex + sx] ?? 0) * 255);
           }
         }
       }

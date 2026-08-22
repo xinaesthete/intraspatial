@@ -13,10 +13,10 @@
   "dependencies": {
     "@react-three/drei": "^10.7.7",
     "@react-three/fiber": "^9.6.1",
-    "@spatialdata/core": "^0.2.5",
+    "@spatialdata/core": "^0.8.0",
     "@types/katex": "^0.16.8",
     "openjph-wasm": "^0.1.0",
-    "zarrextra": "^0.2.3",
+    "zarrextra": "0.4.0",
     "@visx/axis": "^4.0.0",
     "@visx/grid": "^4.0.0",
     "@visx/group": "^4.0.0",

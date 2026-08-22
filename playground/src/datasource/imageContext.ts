@@ -26,7 +26,7 @@
 // worse than no overlay.
 
 import type { SpatialData } from "@spatialdata/core";
-import type { Affine3 } from "../../../src/datasource";
+import { type Affine3, hostSamples } from "../../../src/datasource";
 import { getDevice } from "../../../src/gpu/device";
 import { imageHandle, type SpatialDataImage } from "./spatialDataLoader";
 import type { ChannelSettings } from "./tileChannelMaterial";
@@ -100,6 +100,7 @@ export async function loadContextImage(sdata: SpatialData, element: string, opts
     for (let cx = 0; cx < nx; cx++) {
       jobs.push(
         img.loader.getChunk({ level, x: cx, y: cy, z: 0 }).then((t) => {
+          const samples = hostSamples(t);
           const [tw, th] = t.dims;
           for (let y = 0; y < th; y++) {
             const gy = cy * tile + y;
@@ -115,7 +116,7 @@ export async function loadContextImage(sdata: SpatialData, element: string, opts
                 const ch = img.channels[c];
                 if (!ch) continue;
                 const [lo, hi] = ch.contrastLimits;
-                const raw = t.data[(y * tw + x) * lanes + c] ?? 0;
+                const raw = samples[(y * tw + x) * lanes + c] ?? 0;
                 // Additive across channels, matching how the scene editor composites — for a
                 // 3-channel RGB image with unit colours this is the identity.
                 const v = hi > lo ? Math.min(Math.max((raw - lo) / (hi - lo), 0), 1) : 0;

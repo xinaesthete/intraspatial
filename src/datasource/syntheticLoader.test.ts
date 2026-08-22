@@ -3,6 +3,7 @@
 import { describe, expect, it } from "vitest";
 import { chunkCounts, chunkVoxelExtent } from "./multiscale";
 import { mandelbrotField, mandelbulbField, syntheticPlane, syntheticVolume } from "./syntheticLoader";
+import { hostSamples } from "./types";
 
 const inUnit = (data: Float32Array): boolean => data.every((v) => Number.isFinite(v) && v >= 0 && v <= 1);
 
@@ -21,8 +22,8 @@ describe("syntheticLoader.getChunk", () => {
     const { loader } = syntheticPlane({ width: 256, height: 256, chunk: 64, levelCount: 3 });
     const tile = await loader.getChunk({ level: 0, x: 1, y: 1, z: 0 });
     expect(tile.dims).toEqual([64, 64, 1]);
-    expect(tile.data.length).toBe(64 * 64);
-    expect(inUnit(tile.data)).toBe(true);
+    expect(hostSamples(tile).length).toBe(64 * 64);
+    expect(inUnit(hostSamples(tile))).toBe(true);
   });
 
   it("clamps border chunks to the level extent", async () => {
@@ -32,15 +33,15 @@ describe("syntheticLoader.getChunk", () => {
     expect(extent).toEqual([36, 36, 1]);
     const tile = await loader.getChunk({ level: 0, x: 1, y: 1, z: 0 });
     expect(tile.dims).toEqual([36, 36, 1]);
-    expect(tile.data.length).toBe(36 * 36);
+    expect(hostSamples(tile).length).toBe(36 * 36);
   });
 
   it("is deterministic (same id → identical bytes)", async () => {
     const { loader } = syntheticVolume({ size: 64, chunk: 16, levelCount: 3 });
     const a = await loader.getChunk({ level: 1, x: 0, y: 1, z: 0 });
     const b = await loader.getChunk({ level: 1, x: 0, y: 1, z: 0 });
-    expect(Array.from(a.data)).toEqual(Array.from(b.data));
-    expect(inUnit(a.data)).toBe(true);
+    expect(Array.from(hostSamples(a))).toEqual(Array.from(hostSamples(b)));
+    expect(inUnit(hostSamples(a))).toBe(true);
   });
 
   it("coarser levels have fewer chunks over the same field", async () => {

@@ -7,6 +7,7 @@ import type { OpHelp } from "../../src/gpu/graph";
 /** Category per node name (ops + sources). Drives palette grouping + the `/` palette. */
 export const OP_CATEGORY: Record<string, string> = {
   // sources
+  cellTable: "Sources",
   ringPoints: "Sources",
   blobPoints: "Sources",
   grayScottSeed: "Sources",

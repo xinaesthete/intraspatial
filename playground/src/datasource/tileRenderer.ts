@@ -10,6 +10,7 @@ import {
   type ChunkId,
   chunkArrayBox,
   chunkKey,
+  hostSamples,
   type Loader,
   type MemoryReporting,
   type Multiscale,
@@ -174,10 +175,11 @@ export class TileRenderer implements MemoryReporting {
     // replication) — a scalar tile is one Red channel, the material/greyscale shader reads .r.
     // (Precision is fixed at fp16 for now; making it configurable — fp32 exact ↔ 8-bit for VRAM —
     // is a future VRAM/quality knob.) This texture is raw DATA (NoColorSpace); the material colours it.
+    const src = hostSamples(tile);
     const half = new Uint16Array(ex * ey * comps);
     const toHalf = THREE.DataUtils.toHalfFloat;
     for (let i = 0; i < ex * ey; i++) {
-      for (let c = 0; c < comps; c++) half[i * comps + c] = toHalf(c < lanes ? (tile.data[i * lanes + c] ?? 0) : 0);
+      for (let c = 0; c < comps; c++) half[i * comps + c] = toHalf(c < lanes ? (src[i * lanes + c] ?? 0) : 0);
     }
     const tex = new THREE.DataTexture(half, ex, ey, format, THREE.HalfFloatType);
     // nb in viv and elsewhere there is an assumption that Nearest is more appropriate;
