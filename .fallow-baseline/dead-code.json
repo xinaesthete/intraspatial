@@ -54,8 +54,7 @@
   ],
   "unused_dev_dependencies": [],
   "circular_dependencies": [
-    "playground/src/grouping.ts->playground/src/subgraphs.ts",
-    "src/geometry/swept.ts->src/geometry/sweptGpu.ts"
+    "playground/src/grouping.ts->playground/src/subgraphs.ts"
   ],
   "re_export_cycles": [],
   "unused_optional_dependencies": [],
