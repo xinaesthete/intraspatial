@@ -90,7 +90,7 @@ import {
   SWAP_BETWEEN,
   SWAP_BURN_IN,
 } from "../../spatial/quadratCorrelation";
-import { getDevice } from "../device";
+import { checkBindingSize, dispatchGrid, getDevice, MAX_WORKGROUPS_PER_DIM, sized } from "../device";
 
 /** Shuffles resident on the device at once. Bounds the count buffer (B·K·Q u32) and every dispatch,
  *  so no single command approaches the ~2 s the OS watchdog kills silently. */
@@ -175,11 +175,26 @@ fn keyFor(s: u32) -> u32 { return mix32(U.seedBase + s * 0x9e3779b9u + 1u); }
 
 // ---- 1. scatter: one thread per (shuffle, cell) ---------------------------------------------------
 
+// One thread per count slot, over a 2-D grid of workgroups folded back here.
+//
+// 'batch * K * Q / ${SCATTER_WG}' passes 65535 workgroups at Q = 1338 quadrats (swap batch 256,
+// K = 49) — a 37x37 grid, which is an ordinary thing for a caller to ask for. A 1-D dispatch
+// past the limit is NOT clamped: Dawn invalidates the command buffer, the counts are never
+// cleared or seeded, and the null is then computed from whatever the pooled buffer held. That
+// produces a complete, plausible, wrong reference distribution. Measured 2026-08-01: at a
+// quadrat size of 20 on a 1000x1000 bbox this dispatched 122,500 workgroups and the call
+// returned a result.
+//
+// 'num_workgroups' supplies the row stride, so this needs no extra uniform field.
+fn slotOf(lid: vec3u, wid: vec3u, nwg: vec3u) -> u32 {
+  return (wid.x + wid.y * nwg.x) * ${SCATTER_WG}u + lid.x;
+}
+
 @compute @workgroup_size(${SCATTER_WG})
-fn clearCounts(@builtin(global_invocation_id) gid: vec3u) {
-  let total = U.batch * U.K * U.Q;
-  if (gid.x >= total) { return; }
-  atomicStore(&counts[gid.x], 0u);
+fn clearCounts(@builtin(local_invocation_id) lid: vec3u, @builtin(workgroup_id) wid: vec3u, @builtin(num_workgroups) nwg: vec3u) {
+  let i = slotOf(lid, wid, nwg);
+  if (i >= U.batch * U.K * U.Q) { return; }
+  atomicStore(&counts[i], 0u);
 }
 
 @compute @workgroup_size(${SCATTER_WG})
@@ -196,16 +211,16 @@ fn scatter(@builtin(global_invocation_id) gid: vec3u) {
 // ---- 1b. the swap null: seed each slot from the observed table, then walk a chain ------------------
 
 @compute @workgroup_size(${SCATTER_WG})
-fn seedChains(@builtin(global_invocation_id) gid: vec3u) {
+fn seedChains(@builtin(local_invocation_id) lid: vec3u, @builtin(workgroup_id) wid: vec3u, @builtin(num_workgroups) nwg: vec3u) {
   let per = U.K * U.Q;
-  let total = U.batch * per;
-  if (gid.x >= total) { return; }
+  let i = slotOf(lid, wid, nwg);
+  if (i >= U.batch * per) { return; }
   // The observed table rides in the tail of 'obs' rather than a binding of its own: WebGPU
   // guarantees only 8 storage buffers per stage and bindings 1-8 already use all of them, so a
   // ninth makes the LAYOUT invalid — every dispatch then silently does nothing and the only
   // results that survive are the ones the CPU computed. Counts are small integers, so f32 holds
   // them exactly.
-  atomicStore(&counts[gid.x], u32(obs[2u * U.K * U.K + (gid.x % per)]));
+  atomicStore(&counts[i], u32(obs[2u * U.K * U.K + (i % per)]));
 }
 
 fn nextRand(state: ptr<function, u32>) -> u32 {
@@ -557,7 +572,19 @@ export async function quadratCorrelationGpu(cells: LabelledCells, p: QuadratCorr
   const sims = p.simulations ?? 0;
   const empty = () => new Float64Array(0);
   if (sims <= 0) {
-    return { nTypes: K, quadrats: Q, r, pc, ses: empty(), p: empty(), q: empty(), pcSes: empty(), pcP: empty(), pcQ: empty(), simulations: 0 };
+    return {
+      nTypes: K,
+      quadrats: Q,
+      r,
+      pc,
+      ses: empty(),
+      p: empty(),
+      q: empty(),
+      pcSes: empty(),
+      pcP: empty(),
+      pcQ: empty(),
+      simulations: 0,
+    };
   }
   if (!quadratCorrelationGpuSupported(K)) {
     throw new Error(`quadratCorrelationGpu: ${K} types exceeds the ${MAX_TYPES} the in-workgroup inverse allows`);
@@ -586,15 +613,32 @@ export async function quadratCorrelationGpu(cells: LabelledCells, p: QuadratCorr
   const between = p.swapBetween ?? SWAP_BETWEEN;
   const batchCap = swap ? SWAP_BATCH : BATCH;
 
-  const quadBuf = ensureBuf(device, "cellQuadrat", n * 4, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST);
-  const labBuf = ensureBuf(device, "cellLabel", n * 4, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST);
-  const countBuf = ensureBuf(device, "counts", batchCap * K * Q * 4, GPUBufferUsage.STORAGE);
-  const momBuf = ensureBuf(device, "moments", batchCap * K * 2 * 4, GPUBufferUsage.STORAGE);
-  const corrBuf = ensureBuf(device, "corr", batchCap * K * K * 4, GPUBufferUsage.STORAGE);
-  const partBuf = ensureBuf(device, "part", batchCap * K * K * 4, GPUBufferUsage.STORAGE);
+  // Byte counts are named because each is needed TWICE: once to size the pooled allocation and
+  // once as the binding length. The pool is grow-only and doubles, so binding a whole buffer
+  // binds however big an earlier, larger call made it — and past
+  // `maxStorageBufferBindingSize` that is a silent no-op returning the previous call's data,
+  // not an error. `counts` is the one that reaches it: `batch * K * Q * 4` at the swap null's
+  // batch of 256 and K = 49 crosses 128 MiB at Q = 2675 quadrats (a 52x52 grid), and the
+  // doubling means a preceding call at half that is enough to push the capacity over. Q is a
+  // free parameter — it falls out of the caller's `quadratSize` — so this is reachable, not
+  // theoretical. See `sized`/`checkBindingSize` in `../device.ts`.
+  const quadBytes = n * 4;
+  const countBytes = batchCap * K * Q * 4;
+  const momBytes = batchCap * K * 2 * 4;
+  const matBytes = batchCap * K * K * 4;
+  const obsBytes = (2 * K * K + K * Q) * 4;
+  const accBytes = K * K * 6 * 4;
+  checkBindingSize(device, `quadratCorrelationGpu: ${batchCap} shuffles x ${K} types x ${Q} quadrats`, countBytes);
+
+  const quadBuf = ensureBuf(device, "cellQuadrat", quadBytes, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST);
+  const labBuf = ensureBuf(device, "cellLabel", quadBytes, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST);
+  const countBuf = ensureBuf(device, "counts", countBytes, GPUBufferUsage.STORAGE);
+  const momBuf = ensureBuf(device, "moments", momBytes, GPUBufferUsage.STORAGE);
+  const corrBuf = ensureBuf(device, "corr", matBytes, GPUBufferUsage.STORAGE);
+  const partBuf = ensureBuf(device, "part", matBytes, GPUBufferUsage.STORAGE);
   // [ r | pc | observed counts ] in one buffer — see `seedChains` for why the counts are not their
   // own binding.
-  const obsBuf = ensureBuf(device, "obs", (2 * K * K + K * Q) * 4, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST);
+  const obsBuf = ensureBuf(device, "obs", obsBytes, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST);
   const uniBuf = ensureBuf(device, "uni", 32, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST);
   const accRb = ensureReadback(device, root, "acc", K * K * 6);
 
@@ -617,17 +661,29 @@ export async function quadratCorrelationGpu(cells: LabelledCells, p: QuadratCorr
   const bind = device.createBindGroup({
     layout,
     entries: [
-      { binding: 0, resource: { buffer: uniBuf } },
-      { binding: 1, resource: { buffer: quadBuf } },
-      { binding: 2, resource: { buffer: labBuf } },
-      { binding: 3, resource: { buffer: countBuf } },
-      { binding: 4, resource: { buffer: momBuf } },
-      { binding: 5, resource: { buffer: corrBuf } },
-      { binding: 6, resource: { buffer: partBuf } },
-      { binding: 7, resource: { buffer: obsBuf } },
-      { binding: 8, resource: { buffer: accRb.raw } },
+      { binding: 0, resource: sized(uniBuf, 32) },
+      { binding: 1, resource: sized(quadBuf, quadBytes) },
+      { binding: 2, resource: sized(labBuf, quadBytes) },
+      { binding: 3, resource: sized(countBuf, countBytes) },
+      { binding: 4, resource: sized(momBuf, momBytes) },
+      { binding: 5, resource: sized(corrBuf, matBytes) },
+      { binding: 6, resource: sized(partBuf, matBytes) },
+      { binding: 7, resource: sized(obsBuf, obsBytes) },
+      { binding: 8, resource: sized(accRb.raw, accBytes) },
     ],
   });
+
+  // The counts pass is one thread per (shuffle, type, quadrat), which is the only dispatch here
+  // that can pass 65535 workgroups — see `clearCounts` in the shader for what that costs.
+  const slotGrid = dispatchGrid(Math.ceil((batchCap * K * Q) / SCATTER_WG));
+  // `scatter` already dispatches 2-D (y is the shuffle), so only its x needs checking. n is the
+  // cell count, so this needs a 16.8M-cell ROI to bite; it throws rather than folding because
+  // no such input exists today and an untested fold would be worse than an honest refusal.
+  if (Math.ceil(n / SCATTER_WG) > MAX_WORKGROUPS_PER_DIM) {
+    throw new Error(
+      `quadratCorrelationGpu: ${n} cells needs ${Math.ceil(n / SCATTER_WG)} workgroups, over the ${MAX_WORKGROUPS_PER_DIM} limit`,
+    );
+  }
 
   const seed = (p.seed ?? 0x9ced) >>> 0;
   for (let done = 0; done < sims; done += batchCap) {
@@ -646,11 +702,11 @@ export async function quadratCorrelationGpu(cells: LabelledCells, p: QuadratCorr
       // estimate more precise than the published column rather than merely different from it.
       if (done === 0) {
         pass.setPipeline(pipes.seedChains);
-        pass.dispatchWorkgroups(Math.ceil((batch * K * Q) / SCATTER_WG));
+        pass.dispatchWorkgroups(slotGrid.x, slotGrid.y);
       }
     } else {
       pass.setPipeline(pipes.clearCounts);
-      pass.dispatchWorkgroups(Math.ceil((batch * K * Q) / SCATTER_WG));
+      pass.dispatchWorkgroups(slotGrid.x, slotGrid.y);
       pass.setPipeline(pipes.scatter);
       pass.dispatchWorkgroups(Math.ceil(n / SCATTER_WG), batch);
     }

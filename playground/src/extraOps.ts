@@ -15,12 +15,16 @@ import {
   addFieldsOp,
   crossFieldsOp,
   dotFieldsOp,
+  invertFieldOp,
+  maxFieldsOp,
+  minFieldsOp,
   mulFieldsOp,
   normalizeFieldOp,
   scaleFieldOp,
   subFieldsOp,
 } from "../../src/gpu/graph/ops/fieldArithmetic";
 import { divergenceOp, gradientMagnitudeOp, gradientOp, laplacianOp, structureOrientationOp } from "../../src/gpu/graph/ops/fieldCalculus";
+import { FILTER_OPS } from "../../src/gpu/graph/ops/filterOps";
 import { reactionDiffusionComplexOp } from "../../src/gpu/graph/ops/reactionDiffusionComplex";
 import { UMAP_OPS } from "../../src/gpu/graph/ops/umapOps";
 import { fdwtOp, idwtOp, thresholdDetailOp } from "../../src/gpu/graph/ops/waveletOps";
@@ -39,6 +43,9 @@ export function registerExtraOps(): void {
     addFieldsOp,
     subFieldsOp,
     mulFieldsOp,
+    minFieldsOp,
+    maxFieldsOp,
+    invertFieldOp,
     scaleFieldOp,
     dotFieldsOp,
     crossFieldsOp,
@@ -57,6 +64,10 @@ export function registerExtraOps(): void {
     // node. Registered here rather than through `registerUmapOps` for the module-instance
     // reason above.
     ...UMAP_OPS,
+    // Filter pack: mask leaves + the masked KDE sink. The AND/OR/NOT combinators are the
+    // min/max/invert ops above — a selection is an ordinary field, so composing selections
+    // is ordinary field arithmetic.
+    ...FILTER_OPS,
   ];
   for (const op of ops) if (!hasOp(op.name)) registerOp(op);
 }

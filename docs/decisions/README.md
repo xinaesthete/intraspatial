@@ -11,8 +11,8 @@ The 2026-07-23 audit found a clean pattern, and it is the reason this file exist
 > **Every ADR that landed was written about work already in flight or just finished. Every ADR that
 > did not land was written about direction.**
 
-Landed: 0001, 0002, 0003, 0008, 0011, 0017, 0010-loader. Not landed: 0005, 0006, 0009, 0012, 0014,
-0016, 0018 — none of which are *wrong*, and several of which are good. They were simply speculation
+Landed: 0001, 0002, 0003, 0008, 0011, 0017, 0010-loader. Partial: 0005 (kernel + filterOps, no
+facet). Not landed: 0006, 0009, 0012, 0014, 0016, 0018 — none of which are *wrong*, and several of which are good. They were simply speculation
 wearing the costume of a decision, which turns the log into a source of guilt rather than a map.
 
 So:
@@ -49,7 +49,7 @@ Numbers 0019–0021 are **retired, not reused**, so commit history keeps pointin
 | [0002](0002-runtime-node-not-bun.md) | Node toolchain, not Bun | accepted | **landed** | vitest configs, CLAUDE.md override |
 | [0003](0003-use-gpu-tgsl-kernels.md) | `"use gpu"` TGSL kernels | accepted | **landed** | used throughout `src/gpu` |
 | [0004](0004-field-type-model-and-volumetric-splat.md) | Field type model + volumetric splat | proposed | **partial** | element algebra + `axes` (via 0015) landed; `splatDensity.ts` exists |
-| [0005](0005-columnar-filters-and-sparse-support.md) | `support` facet, sparse columns | proposed | **open** | no `support` in the value lattice; operator set **corrected** 2026-08-01 (see [`mdv-dimension-vs-support-facet.md`](../mdv-dimension-vs-support-facet.md)) |
+| [0005](0005-columnar-filters-and-sparse-support.md) | `support` facet, sparse columns | proposed | **partial** | scan/compaction kernel landed (`src/gpu/scan/`) and mask-as-field ops landed (`src/gpu/graph/ops/filterOps.ts`, 2026-08-22); still no `support` in the value lattice; operator set **corrected** 2026-08-01 (see [`mdv-dimension-vs-support-facet.md`](../mdv-dimension-vs-support-facet.md)) |
 | [0006](0006-spectral-and-wavelet-domain-representation.md) | `basis` facet | exploratory | **partial** | `Basis` + `inferBasis` consumed at build; `registerWaveletOps` ships `fdwt`/`idwt` (CPU nodes); **Fourier/FFT absent**; wavelet GPU-layout bridge unbuilt |
 | [0007](0007-expression-ir-dsl-graph-duality.md) | Expression IR ⇄ DSL ⇄ graph | proposed | **partial** | `src/geometry/expr.ts` has its *own* `Expr`, not unified with the graph |
 | [0008](0008-view-driven-multiscale-datasource.md) | View-driven multiscale datasource | proposed | **landed** | `src/datasource` (its `index.ts` says "so it can graduate") |

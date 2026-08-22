@@ -21,7 +21,7 @@ import * as d from "typegpu/data";
 import { buildBucketGrid } from "../../spatial/bucketGrid";
 import type { LabelledCells, PcfMatrixParams, PcfMatrixResult, PcfParams, PcfResult } from "../../spatial/pcf";
 import type { CellCloud } from "../../spatial/tcm";
-import { getDevice } from "../device";
+import { checkBindingSize, getDevice, sized } from "../device";
 
 const WG = 64;
 
@@ -208,6 +208,11 @@ async function runCounts(
   const startBuf = ensure(device, "start", grid.start.length);
   const itemsBuf = ensure(device, "items", Math.max(grid.items.length, 1));
   ensureCounts(device, root, nCounts);
+  // Every buffer here is one entry (or two floats) per point, so they cross together at ~16.8M
+  // points. Throw rather than let an over-large binding turn the pass into a silent no-op that
+  // returns the previous call's histogram.
+  const widest = Math.max(ptsA.length, second.length, grid.start.length, grid.items.length, nCounts);
+  checkBindingSize(device, `crossPcf: ${ptsA.length / 2} points`, widest * 4);
 
   device.queue.writeBuffer(uniBuf, 0, uni);
   device.queue.writeBuffer(aBuf, 0, ptsA);
@@ -220,11 +225,14 @@ async function runCounts(
     layout: pipeline.getBindGroupLayout(0),
     entries: [
       { binding: 0, resource: { buffer: uniBuf, size: UNI_FLOATS * 4 } },
-      { binding: 1, resource: { buffer: aBuf } },
-      { binding: 2, resource: { buffer: bBuf } },
-      { binding: 3, resource: { buffer: startBuf } },
-      { binding: 4, resource: { buffer: itemsBuf } },
-      { binding: 5, resource: { buffer: countsRaw! } },
+      // Sized to THIS call, not to the pooled buffer: the pool doubles on growth, and a
+      // binding past maxStorageBufferBindingSize is a silent no-op returning the previous
+      // call's histogram. See `sized` in `../device.ts`.
+      { binding: 1, resource: sized(aBuf, ptsA.length * 4) },
+      { binding: 2, resource: sized(bBuf, second.length * 4) },
+      { binding: 3, resource: sized(startBuf, grid.start.length * 4) },
+      { binding: 4, resource: sized(itemsBuf, Math.max(grid.items.length, 1) * 4) },
+      { binding: 5, resource: sized(countsRaw!, nCounts * 4) },
     ],
   });
   const enc = device.createCommandEncoder();

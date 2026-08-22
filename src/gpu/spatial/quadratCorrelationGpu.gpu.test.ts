@@ -68,7 +68,8 @@ describe("quadratCorrelationGpu", () => {
       for (let b = a + 1; b < 4; b++) {
         const i = a * 4 + b;
         if (Number.isFinite(gpu.ses[i]!) && Number.isFinite(cpu.ses[i]!)) worstR = Math.max(worstR, Math.abs(gpu.ses[i]! - cpu.ses[i]!));
-        if (Number.isFinite(gpu.pcSes[i]!) && Number.isFinite(cpu.pcSes[i]!)) worstPc = Math.max(worstPc, Math.abs(gpu.pcSes[i]! - cpu.pcSes[i]!));
+        if (Number.isFinite(gpu.pcSes[i]!) && Number.isFinite(cpu.pcSes[i]!))
+          worstPc = Math.max(worstPc, Math.abs(gpu.pcSes[i]! - cpu.pcSes[i]!));
       }
     }
     expect(worstR).toBeLessThan(0.5);

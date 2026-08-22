@@ -12,8 +12,11 @@ import { defScopeId } from "./subgraphs";
 // App before App's own registerExtraOps() runs, so register here too (idempotent).
 registerExtraOps();
 
-function node(id: string, opName: string, x: number, y: number): Node {
-  const data = { opName, params: defaultParamsFor(getSpec(opName)) };
+function node(id: string, opName: string, x: number, y: number, params?: Record<string, unknown>): Node {
+  // Overrides matter for an example that must look right the moment it loads: a range
+  // mask's default [0, 1] window over a column whose values run to ~100 selects nothing,
+  // and an example that opens empty reads as broken rather than as unconfigured.
+  const data = { opName, params: { ...defaultParamsFor(getSpec(opName)), ...params } };
   return { id, type: "op", position: { x, y }, data: data as unknown as Record<string, unknown> };
 }
 
@@ -218,4 +221,46 @@ export function waveletDenoiseExample(): Example {
   return { label: "Wavelet denoise", nodes, edges, sink: { node: "inv", port: "out" } };
 }
 
-export const EXAMPLES: Example[] = [ceilidhExample(), reactionDiffusionExample(), reusableSubgraphExample(), waveletDenoiseExample()];
+// A filter GRAPH over a cell table, which is the shape MDV's flat conjunction of
+// Dimensions cannot express. Two selections are built from two different columns of the
+// same table, combined with AND (min), and the result drives a density field — so the KDE
+// shows only the selected cells, continuously as the bounds move.
+//
+// The DIAMOND is the point. `marker` feeds both the range mask and, through Invert, the
+// complement — and both branches meet again at Max (OR). Under ADR-0005's original product
+// AND that shared ancestor would be multiplied in twice and the answer would depend on the
+// graph's topology rather than on the set being described. Under min/max it does not; see
+// `filterOps.ts` for the derivation. Drag `softness` up on either mask node to watch the
+// selection stop being crisp — `Mask: count` then separates from total weight, which is the
+// readout that tells you a mask has gone soft.
+export function tableFilterExample(): Example {
+  const nodes: Node[] = [
+    node("tbl", "cellTable", 20, 240),
+    // The marker column runs 0..~108, peaking inside cluster 0, so [45, ∞) selects roughly
+    // the half of the cells nearest that cluster. The op's own default window is [0, 1],
+    // which over this column would select nothing at all.
+    node("mMarker", "maskRange", 260, 120, { lo: 45, hi: 200, softness: 0 }),
+    node("mType", "maskEquals", 260, 300, { code: 0, tolerance: 0.5 }),
+    node("and", "minFields", 500, 200),
+    node("count", "maskCount", 720, 60),
+    node("kde", "maskedDensity", 720, 240, { width: 96, height: 96, sigma: 3 }),
+  ];
+  const edges: Edge[] = [
+    e("f-mk", "tbl", "marker", "mMarker", "value"),
+    e("f-ty", "tbl", "type", "mType", "value"),
+    e("f-a1", "mMarker", "mask", "and", "a"),
+    e("f-a2", "mType", "mask", "and", "b"),
+    e("f-c", "and", "out", "count", "mask"),
+    e("f-p", "tbl", "points", "kde", "points"),
+    e("f-m", "and", "out", "kde", "mask"),
+  ];
+  return { label: "Table filter (mask graph)", nodes, edges, sink: { node: "kde", port: "density" } };
+}
+
+export const EXAMPLES: Example[] = [
+  tableFilterExample(),
+  ceilidhExample(),
+  reactionDiffusionExample(),
+  reusableSubgraphExample(),
+  waveletDenoiseExample(),
+];
