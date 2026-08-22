@@ -41,8 +41,19 @@
 // (every other kernel shares that device) and belongs with whoever wires MDV up, not here.
 // Until then `checkBindingSize` throws with the number and the remedy, because the
 // alternative is the silent wrong answer described on the bind groups below.
-import { checkBindingSize, compileShader } from "../device";
-import { dispatchGrid, encodeScan, ensureBuf, getScanCtx, MAX_WORKGROUPS_PER_DIM, type ScanCtx } from "./prefixSum";
+//
+// ## `encodeCompact`: the one-submit, on-device variant
+//
+// A consumer whose mask is already on the device and whose index list should stay there
+// (a spatial index built over a masked cloud, the 3D note's occupied-cell list) has no use
+// for the readback in the middle. `encodeCompact` records predicate → scan → scatter into
+// the CALLER's encoder, scatters into a worst-case `n`-sized pooled buffer, and leaves the
+// count in the scan's `totalBuf`. That is exactly the trade `streamCompactGpu` declines —
+// 4 bytes of output per row whether or not it passes — and it is right here because nothing
+// crosses to the host: the worst case costs device memory, not transfer. Same kernels, same
+// bind-group layout; only the sequencing differs.
+import { checkBindingSize, compileShader, sized } from "../device";
+import { dispatchGrid, encodeScan, ensureBuf, getScanCtx, MAX_WORKGROUPS_PER_DIM, readBack, type ScanCtx } from "./prefixSum";
 
 /** One thread per row in the predicate and scatter passes. Exported so a test can state
  *  the size at which `ceil(n / WG)` crosses 65535 without hardcoding it. */
@@ -55,6 +66,8 @@ const ENC = { u8: 0, u32: 1, f32: 2 } as const;
 const CMP = { eq: 0, gt: 1 } as const;
 
 export type MaskArray = Uint8Array | Uint32Array | Float32Array;
+/** The typed-array flavour of `MaskArray`, named for callers whose mask is a `GPUBuffer`. */
+export type MaskEncoding = "u8" | "u32" | "f32";
 
 export interface CompactOptions {
   /** `"gt"` (default) selects rows whose mask entry is greater than `value`; `"eq"` selects
@@ -72,6 +85,26 @@ export interface CompactResult {
   indices: Uint32Array;
   /** Number of passing rows. */
   count: number;
+}
+
+export interface EncodeCompactOptions extends CompactOptions {
+  /** Layout of `maskBuf`. Default `"u32"`, one word per row; `"u8"` packs a byte per row,
+   *  4 to a word (MDV's `filterArray` uploaded verbatim); `"f32"` is one weight per row. */
+  readonly mask?: MaskEncoding;
+  /** Pool namespace (default `"encodeCompact"`). Two compactions recorded into one command
+   *  buffer need distinct prefixes or the second overwrites the first's flags, offsets and
+   *  output — the rule `encodeScan` states, whose own prefix derives from this one. */
+  readonly keyPrefix?: string;
+}
+
+/** The compaction as it lives on the device. Pooled under the call's `keyPrefix`: valid until
+ *  the next `encodeCompact` under that prefix, never destroyed. */
+export interface EncodedCompact {
+  /** Worst-case `n` words. The first `count` hold the ascending passing row indices; the
+   *  rest are whatever an earlier call under this prefix left behind. */
+  indices: GPUBuffer;
+  /** One u32: the number of passing rows. The scan's `totalBuf`, not a copy. */
+  countBuf: GPUBuffer;
 }
 
 const SHADER = /* wgsl */ `
@@ -134,7 +167,7 @@ fn scatter(@builtin(local_invocation_id) lid: vec3u, @builtin(workgroup_id) wid:
 }
 `;
 
-interface CompactCtx {
+export interface CompactCtx {
   scan: ScanCtx;
   layout: GPUBindGroupLayout;
   predicate: GPUComputePipeline;
@@ -142,7 +175,9 @@ interface CompactCtx {
 }
 let ctxCache: Promise<CompactCtx> | undefined;
 
-function getCtx(): Promise<CompactCtx> {
+/** Pipelines and layout, built once. `encodeCompact` takes this as an argument so the one
+ *  async step happens before the caller starts recording. */
+export function getCompactCtx(): Promise<CompactCtx> {
   ctxCache ??= (async () => {
     const scan = await getScanCtx();
     const { device } = scan;
@@ -165,16 +200,133 @@ function getCtx(): Promise<CompactCtx> {
   return ctxCache;
 }
 
-/** Words the mask occupies on the device, and its encoding. */
-function encodingOf(mask: MaskArray): { enc: number; words: number } {
-  if (mask instanceof Uint8Array) return { enc: ENC.u8, words: Math.ceil(mask.length / 4) };
-  return { enc: mask instanceof Float32Array ? ENC.f32 : ENC.u32, words: mask.length };
+/** The encoding a typed-array mask carries. */
+export function maskEncodingOf(mask: MaskArray): MaskEncoding {
+  if (mask instanceof Uint8Array) return "u8";
+  return mask instanceof Float32Array ? "f32" : "u32";
+}
+
+/** Words `n` rows of a mask occupy on the device. */
+export function maskWords(enc: MaskEncoding, n: number): number {
+  return enc === "u8" ? Math.ceil(n / 4) : n;
+}
+
+/** The 32-byte `Uni` struct, resolved from the options once. */
+function uniformWords(enc: MaskEncoding, n: number, gridX: number, opts: CompactOptions): Uint32Array {
+  const cmp = opts.pass === "eq" ? CMP.eq : CMP.gt;
+  const value = opts.value ?? 0;
+  // f32 compares against the bits of the threshold; u8/u32 against the integer itself.
+  const refBits = enc === "f32" ? new Uint32Array(Float32Array.of(value).buffer)[0]! : value >>> 0;
+  return new Uint32Array([n, gridX, ENC[enc], cmp, refBits, 0, 0, 0]);
+}
+
+interface Bindings {
+  uni: GPUBuffer;
+  mask: GPUBuffer;
+  maskBytes: number;
+  flags: GPUBuffer;
+  flagsBytes: number;
+  offsets: GPUBuffer;
+  offsetsBytes: number;
+  out: GPUBuffer;
+  outBytes: number;
+}
+
+/** One bind group shape for both kernels. Every binding is `sized()` to this call: the pool
+ *  is grow-only, so binding a whole buffer binds however big an earlier call made it, and
+ *  past `maxStorageBufferBindingSize` that is a silent no-op (see `sized` in `device.ts`). */
+function bindGroup(ctx: CompactCtx, b: Bindings): GPUBindGroup {
+  return ctx.scan.device.createBindGroup({
+    layout: ctx.layout,
+    entries: [
+      { binding: 0, resource: sized(b.uni, 32) },
+      { binding: 1, resource: sized(b.mask, b.maskBytes) },
+      { binding: 2, resource: sized(b.flags, b.flagsBytes) },
+      { binding: 3, resource: sized(b.offsets, b.offsetsBytes) },
+      { binding: 4, resource: sized(b.out, b.outBytes) },
+    ],
+  });
+}
+
+/** The predicate pass does not touch `offsets` or `outIdx`, but every binding in the layout
+ *  must still be filled, and it cannot be filled with a spare pointer at `flags`: WebGPU
+ *  rejects a bind group that aliases one buffer across two writable bindings (or a writable
+ *  and a readable one), the rejection invalidates the whole command buffer, and the
+ *  predicate simply never runs. So the slots get scratch buffers that nothing ever writes. */
+function scratch(device: GPUDevice): { ro: GPUBuffer; rw: GPUBuffer } {
+  return {
+    ro: ensureBuf(device, "compact:scratchRo", 256, GPUBufferUsage.STORAGE),
+    rw: ensureBuf(device, "compact:scratchRw", 256, GPUBufferUsage.STORAGE),
+  };
+}
+
+function encodePass(
+  enc: GPUCommandEncoder,
+  label: string,
+  pipeline: GPUComputePipeline,
+  bind: GPUBindGroup,
+  grid: { x: number; y: number },
+): void {
+  const pass = enc.beginComputePass({ label });
+  pass.setPipeline(pipeline);
+  pass.setBindGroup(0, bind);
+  pass.dispatchWorkgroups(grid.x, grid.y);
+  pass.end();
+}
+
+/**
+ * Record a compaction of the mask in `maskBuf` (`n` rows) into `enc`: predicate, scan and
+ * scatter in one command buffer, output left on the device. The caller owns submission. The
+ * file header says why this and `streamCompactGpu` differ in shape.
+ *
+ * `maskBuf` needs at least `maskWords(opts.mask, n) * 4` bytes and `STORAGE` usage. `n === 0`
+ * records only a clear of the count.
+ */
+export function encodeCompact(
+  ctx: CompactCtx,
+  maskBuf: GPUBuffer,
+  n: number,
+  enc: GPUCommandEncoder,
+  opts: EncodeCompactOptions = {},
+): EncodedCompact {
+  const { device } = ctx.scan;
+  const key = opts.keyPrefix ?? "encodeCompact";
+  const encoding = opts.mask ?? "u32";
+  const maxPerDim = opts.maxWorkgroupsPerDim ?? MAX_WORKGROUPS_PER_DIM;
+  checkBindingSize(device, `encodeCompact: ${n} rows`, n * 4);
+
+  const out = ensureBuf(device, `${key}:out`, n * 4, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC);
+  if (n === 0) {
+    const countBuf = ensureBuf(device, `${key}:count0`, 4, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST);
+    enc.clearBuffer(countBuf, 0, 4);
+    return { indices: out, countBuf };
+  }
+
+  const flags = ensureBuf(device, `${key}:flags`, n * 4, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST);
+  // A uniform per prefix, not one shared: `queue.writeBuffer` is ordered against submits, so
+  // two compactions sharing a uniform in one submit would both run with the second's `n`.
+  const grid = dispatchGrid(Math.ceil(n / WG), maxPerDim);
+  const uni = ensureBuf(device, `${key}:uni`, 32, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST);
+  device.queue.writeBuffer(uni, 0, uniformWords(encoding, n, grid.x, opts));
+  const common = { uni, mask: maskBuf, maskBytes: maskWords(encoding, n) * 4, flags, flagsBytes: n * 4 };
+
+  const s = scratch(device);
+  encodePass(
+    enc,
+    `${key}:predicate`,
+    ctx.predicate,
+    bindGroup(ctx, { ...common, offsets: s.ro, offsetsBytes: 256, out: s.rw, outBytes: 256 }),
+    grid,
+  );
+  const { dst: offsets, totalBuf } = encodeScan(ctx.scan, "u32", flags, n, enc, maxPerDim, `${key}:scan`);
+  encodePass(enc, `${key}:scatter`, ctx.scatter, bindGroup(ctx, { ...common, offsets, offsetsBytes: n * 4, out, outBytes: n * 4 }), grid);
+  return { indices: out, countBuf: totalBuf };
 }
 
 /** Upload the mask verbatim. `writeBuffer` needs a size that is a multiple of 4, so a byte
  *  mask whose length is not writes its aligned prefix as a view (no copy — the point of
  *  the u8 path) and its 1-3 byte tail separately. */
-function uploadMask(device: GPUDevice, buf: GPUBuffer, mask: MaskArray): void {
+export function uploadMask(device: GPUDevice, buf: GPUBuffer, mask: MaskArray): void {
   if (!(mask instanceof Uint8Array)) {
     device.queue.writeBuffer(buf, 0, mask as unknown as BufferSource, 0, mask.length);
     return;
@@ -200,17 +352,14 @@ export async function streamCompactGpu(mask: MaskArray, opts: CompactOptions = {
   const n = mask.length;
   if (n === 0) return { indices: new Uint32Array(0), count: 0 };
 
-  const ctx = await getCtx();
+  const ctx = await getCompactCtx();
   const { device } = ctx.scan;
   // Before anything is allocated: the flags and offsets buffers are 4 bytes per row, and
   // over the binding limit every dispatch below silently does nothing.
   checkBindingSize(device, `streamCompact: ${n} rows`, n * 4);
   const maxPerDim = opts.maxWorkgroupsPerDim ?? MAX_WORKGROUPS_PER_DIM;
-  const { enc, words } = encodingOf(mask);
-  const cmp = opts.pass === "eq" ? CMP.eq : CMP.gt;
-  const value = opts.value ?? 0;
-  // f32 compares against the bits of the threshold; u8/u32 against the integer itself.
-  const refBits = enc === ENC.f32 ? new Uint32Array(Float32Array.of(value).buffer)[0]! : value >>> 0;
+  const encoding = maskEncodingOf(mask);
+  const words = maskWords(encoding, n);
 
   const maskBuf = ensureBuf(device, "compact:mask", words * 4, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST);
   uploadMask(device, maskBuf, mask);
@@ -218,80 +367,39 @@ export async function streamCompactGpu(mask: MaskArray, opts: CompactOptions = {
   const flags = ensureBuf(device, "compact:flags", n * 4, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST);
   const uni = ensureBuf(device, "compact:uni", 32, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST);
   const grid = dispatchGrid(Math.ceil(n / WG), maxPerDim);
-  device.queue.writeBuffer(uni, 0, new Uint32Array([n, grid.x, enc, cmp, refBits, 0, 0, 0]));
+  device.queue.writeBuffer(uni, 0, uniformWords(encoding, n, grid.x, opts));
+  const common = { uni, mask: maskBuf, maskBytes: words * 4, flags, flagsBytes: n * 4 };
 
   // --- pass 1 + 2: predicate, then scan the flags in the same command buffer ------------
+  // `offsets` and `outIdx` do not exist yet — the scan has not run and the output is not
+  // yet sized, which is the point of the two submits — so the predicate binds scratch.
   const enc1 = device.createCommandEncoder();
-  {
-    // `offsets` and `outIdx` do not exist yet — the scan has not run and the output is not
-    // yet sized, which is the point of the two submits — but every binding in the layout
-    // must still be filled. They get their own scratch buffers rather than a spare pointer
-    // at `flags`: WebGPU rejects a bind group that aliases one buffer across two writable
-    // bindings (or a writable and a readable one), and the rejection invalidates the whole
-    // command buffer, so the predicate would simply never run.
-    const scratchRo = ensureBuf(device, "compact:scratchRo", 256, GPUBufferUsage.STORAGE);
-    const scratchRw = ensureBuf(device, "compact:scratchRw", 256, GPUBufferUsage.STORAGE);
-    // Explicit `size` on every binding — see the same note in `prefixSum.ts`. The pool is
-    // grow-only, so binding a whole buffer binds however big a previous call made it.
-    const bind = device.createBindGroup({
-      layout: ctx.layout,
-      entries: [
-        { binding: 0, resource: { buffer: uni, size: 32 } },
-        { binding: 1, resource: { buffer: maskBuf, size: words * 4 } },
-        { binding: 2, resource: { buffer: flags, size: n * 4 } },
-        { binding: 3, resource: { buffer: scratchRo, size: 256 } },
-        { binding: 4, resource: { buffer: scratchRw, size: 256 } },
-      ],
-    });
-    const pass = enc1.beginComputePass({ label: "compact:predicate" });
-    pass.setPipeline(ctx.predicate);
-    pass.setBindGroup(0, bind);
-    pass.dispatchWorkgroups(grid.x, grid.y);
-    pass.end();
-  }
+  const s = scratch(device);
+  encodePass(
+    enc1,
+    "compact:predicate",
+    ctx.predicate,
+    bindGroup(ctx, { ...common, offsets: s.ro, offsetsBytes: 256, out: s.rw, outBytes: 256 }),
+    grid,
+  );
   const { dst: offsets, totalBuf } = encodeScan(ctx.scan, "u32", flags, n, enc1, maxPerDim);
   device.queue.submit([enc1.finish()]);
 
-  const count = new Uint32Array(await readWord(device, totalBuf))[0]!;
+  const count = new Uint32Array(await readBack(device, "compact:total", totalBuf, 0, 4))[0]!;
   if (count === 0) return { indices: new Uint32Array(0), count: 0 };
 
   // --- pass 3: scatter, into a buffer sized to the answer -------------------------------
   const outBuf = ensureBuf(device, "compact:out", count * 4, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC);
   const enc2 = device.createCommandEncoder();
-  const bind = device.createBindGroup({
-    layout: ctx.layout,
-    entries: [
-      { binding: 0, resource: { buffer: uni, size: 32 } },
-      { binding: 1, resource: { buffer: maskBuf, size: words * 4 } },
-      { binding: 2, resource: { buffer: flags, size: n * 4 } },
-      { binding: 3, resource: { buffer: offsets, size: n * 4 } },
-      { binding: 4, resource: { buffer: outBuf, size: count * 4 } },
-    ],
-  });
-  const pass = enc2.beginComputePass({ label: "compact:scatter" });
-  pass.setPipeline(ctx.scatter);
-  pass.setBindGroup(0, bind);
-  pass.dispatchWorkgroups(grid.x, grid.y);
-  pass.end();
+  encodePass(
+    enc2,
+    "compact:scatter",
+    ctx.scatter,
+    bindGroup(ctx, { ...common, offsets, offsetsBytes: n * 4, out: outBuf, outBytes: count * 4 }),
+    grid,
+  );
   device.queue.submit([enc2.finish()]);
 
-  const staging = ensureBuf(device, "compact:staging", count * 4, GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST);
-  const copy = device.createCommandEncoder();
-  copy.copyBufferToBuffer(outBuf, 0, staging, 0, count * 4);
-  device.queue.submit([copy.finish()]);
-  await staging.mapAsync(GPUMapMode.READ, 0, count * 4);
-  const indices = new Uint32Array(staging.getMappedRange(0, count * 4).slice(0));
-  staging.unmap();
+  const indices = new Uint32Array(await readBack(device, "compact:staging", outBuf, 0, count * 4));
   return { indices, count };
-}
-
-async function readWord(device: GPUDevice, src: GPUBuffer): Promise<ArrayBuffer> {
-  const staging = ensureBuf(device, "compact:total", 4, GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST);
-  const enc = device.createCommandEncoder();
-  enc.copyBufferToBuffer(src, 0, staging, 0, 4);
-  device.queue.submit([enc.finish()]);
-  await staging.mapAsync(GPUMapMode.READ, 0, 4);
-  const copy = staging.getMappedRange(0, 4).slice(0);
-  staging.unmap();
-  return copy;
 }
