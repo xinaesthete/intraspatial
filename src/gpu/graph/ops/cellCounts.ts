@@ -16,6 +16,7 @@ import { checkBindingSize, compileShader, dispatchGrid, MAX_WORKGROUPS_PER_DIM, 
 import { ensureBuf, getScanCtx } from "../../scan/prefixSum";
 import type { FieldValue, Shape } from "../handle";
 import type { ExecCtx, OpType, Params } from "../op";
+import { partNames } from "./bundleOps";
 import type { GridLatticePayload } from "./gridIndex";
 import { GRID_INDEX_BUNDLE, GRID_LATTICE } from "./gridIndex";
 
@@ -95,7 +96,7 @@ export const cellCountsOp: OpType = {
       "bucketing did, since the counts are f32 and can come back to the host while the index itself " +
       "cannot.",
   },
-  inputs: [{ name: "buckets", kind: "bundle", bundle: { name: GRID_INDEX_BUNDLE.name, parts: GRID_INDEX_BUNDLE.parts } }],
+  inputs: [{ name: "buckets", kind: "bundle", bundle: { name: GRID_INDEX_BUNDLE.name, parts: partNames(GRID_INDEX_BUNDLE) } }],
   outputs: [{ name: "counts", kind: "grid", dtype: "f32" }],
   params: [],
   inferShapes(inputs) {

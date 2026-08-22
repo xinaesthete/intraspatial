@@ -383,6 +383,11 @@ async function runTick(graph: Graph, field: GpuField, o: TickOptions): Promise<M
     if (!v) throw new Error(`executor (unexpected): no value at ${k}`);
     if (v.parts) return await residentBundle(k, v);
     if (v.buffer) return v;
+    // An opaque payload has no GPU representation to make — a resident op that takes one (the
+    // bundle combine op, handed a `lattice`) reads it on the host. Uploading is not merely
+    // unnecessary, it is impossible, and treating it as "no data" is what made recombining a
+    // bucket grid fail.
+    if (v.payload !== undefined) return v;
     // Texture-resident, but this consumer binds a storage buffer. Adapt on-device — the value stays
     // GPU-resident throughout, so this is a copy, never a round trip. Paid only because a buffer
     // consumer exists: a render→render edge never reaches here.
@@ -395,7 +400,7 @@ async function runTick(graph: Graph, field: GpuField, o: TickOptions): Promise<M
       own(k, res); // the tick leased it, so the tick returns it — alongside the texture
       return bridged;
     }
-    if (!v.data) throw new Error(`executor: cannot make value at ${k} resident — it has no data`);
+    if (!v.data) throw new Error(`executor: cannot make value at ${k} resident — it has no data, buffer, texture or payload`);
     o.onBridge?.(k, "upload");
     const res = await o.ctx.backend.upload(v.data);
     const bridged: FieldValue = { ...v, buffer: res };

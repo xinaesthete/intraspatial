@@ -14,8 +14,19 @@
 // Factories rather than one dynamic `extract` op: ports are read statically by the palette, by
 // `inferShapes` and by edge validation, so a runtime part name would cost per-part typing at
 // build time. A new bundle type is a few lines of registration.
-import type { FieldValue, Shape } from "../handle";
+import type { FieldValue, Shape, ShapeKind } from "../handle";
 import type { OpType, Params } from "../op";
+
+/** One member of a bundle. The `kind` is what makes an extract op's output port properly typed
+ *  rather than `any`: the part's exact SHAPE needs a run, but its kind never changes, so the
+ *  composer can colour the port and refuse a wrong edge at wiring time. */
+export interface BundlePart {
+  readonly name: string;
+  readonly kind: ShapeKind | "any";
+  /** Display label for the extract op ("cell offsets"). Defaults to `name`. */
+  readonly label?: string;
+  readonly describe?: string;
+}
 
 /** Describes one bundle type: its `name` tag and the parts it always carries. */
 export interface BundleSpec {
@@ -24,8 +35,19 @@ export interface BundleSpec {
   readonly name: string;
   /** Display label for the palette ("Bucket grid") — also the palette group its part ops sit in. */
   readonly label: string;
-  /** Part names, in the order the combine op takes them. */
-  readonly parts: readonly string[];
+  /** The members, in the order the combine op takes them. */
+  readonly parts: readonly BundlePart[];
+}
+
+/** Part names, for a `PortSpec.bundle` descriptor. */
+export function partNames(spec: BundleSpec): readonly string[] {
+  return spec.parts.map((p) => p.name);
+}
+
+function partSpec(spec: BundleSpec, name: string): BundlePart {
+  const p = spec.parts.find((x) => x.name === name);
+  if (!p) throw new Error(`${spec.name}: no part "${name}"`);
+  return p;
 }
 
 function bundleShape(s: Shape, spec: BundleSpec, who: string): Extract<Shape, { kind: "bundle" }> {
@@ -46,19 +68,21 @@ function partOf(v: FieldValue, part: string, who: string): FieldValue {
  * which is why this op is `resident`: it must be allowed to pass a resident value through
  * untouched rather than have the executor download it on the way out.
  */
-export function extractOp(spec: BundleSpec, part: string, opts: { label?: string; describe?: string } = {}): OpType {
+export function extractOp(spec: BundleSpec, part: string): OpType {
+  const p = partSpec(spec, part);
   const name = `${spec.name}.${part}`;
   const who = name;
   return {
     name,
     // The label says what the part IS; the port keeps the structural name the parts are keyed by.
-    label: `${spec.label} → ${opts.label ?? part}`,
+    label: `${spec.label} → ${p.label ?? part}`,
     category: spec.label,
-    describe: opts.describe ?? `Take the \`${part}\` part out of a ${spec.label.toLowerCase()}.`,
-    inputs: [{ name: "bundle", kind: "bundle", bundle: { name: spec.name, parts: spec.parts } }],
-    // The part's own shape is only known from the input, so the port is declared `any` and
-    // `inferShapes` narrows it — the same thing `complexOps`' lane ops do.
-    outputs: [{ name: part, kind: "any" }],
+    describe: p.describe ?? `Take the \`${part}\` part out of a ${spec.label.toLowerCase()}.`,
+    inputs: [{ name: "bundle", kind: "bundle", bundle: { name: spec.name, parts: partNames(spec) } }],
+    // Typed by the part's declared kind, not `any`: the exact shape still comes from `inferShapes`
+    // (it depends on the producer's params), but the KIND is fixed, so the composer colours the
+    // port and rejects a wrong edge without waiting for a run.
+    outputs: [{ name: part, kind: p.kind }],
     params: [],
     inferShapes(inputs) {
       const s = bundleShape(inputs[0]!, spec, who);
@@ -85,20 +109,20 @@ export function extractOp(spec: BundleSpec, part: string, opts: { label?: string
  * points at its inputs' payloads rather than copying them, so the inputs stay alive as long as
  * the bundle does.
  */
-export function combineOp(spec: BundleSpec, portKinds: Record<string, Shape["kind"] | "any"> = {}): OpType {
+export function combineOp(spec: BundleSpec): OpType {
   const who = `${spec.name}.bundle`;
   return {
     name: who,
     label: `${spec.label} ← parts`,
     category: spec.label,
     describe: `Assemble a ${spec.label.toLowerCase()} from its ${spec.parts.length} parts.`,
-    inputs: spec.parts.map((p) => ({ name: p, kind: portKinds[p] ?? ("any" as const) })),
-    outputs: [{ name: "bundle", kind: "bundle", bundle: { name: spec.name, parts: spec.parts } }],
+    inputs: spec.parts.map((p) => ({ name: p.name, kind: p.kind })),
+    outputs: [{ name: "bundle", kind: "bundle", bundle: { name: spec.name, parts: partNames(spec) } }],
     params: [],
     inferShapes(inputs) {
       const parts: Record<string, Shape> = {};
       spec.parts.forEach((p, i) => {
-        parts[p] = inputs[i]!;
+        parts[p.name] = inputs[i]!;
       });
       return [{ kind: "bundle", name: spec.name, parts }];
     },
@@ -119,9 +143,9 @@ export function bundleValue(spec: BundleSpec, values: FieldValue[]): FieldValue 
   const shapes: Record<string, Shape> = {};
   spec.parts.forEach((p, i) => {
     const v = values[i];
-    if (!v) throw new Error(`${spec.name}.bundle: missing part "${p}"`);
-    parts[p] = v;
-    shapes[p] = v.shape;
+    if (!v) throw new Error(`${spec.name}.bundle: missing part "${p.name}"`);
+    parts[p.name] = v;
+    shapes[p.name] = v.shape;
   });
   // A bundle has no dtype of its own; each part keeps its own. `f32` is the neutral label the
   // rest of the value model expects on every value.

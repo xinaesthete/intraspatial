@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { buildBucketGrid } from "../../../spatial/bucketGrid";
 import { nodeBackend } from "../backend.node";
 import { Graph, pull, pullResident, registerBuiltinOps } from "../index";
+import { getOp } from "../registry";
 
 // The first consumer of a bundle (ADR-0023) — so as well as the arithmetic, this is where a
 // bundle travelling along a resident edge is exercised end to end.
@@ -114,6 +115,42 @@ describe("cellCountsOp", () => {
     expect(v.buffer).toBeTruthy();
     // The caller owns the counts grid; the index's own buffers went back to the pool.
     expect(after.live - before.live).toBe(1);
+  });
+
+  it("survives a round trip through extract and combine", async () => {
+    // The user-reported path: take the three parts out, put them back together, and consume the
+    // result. Two things used to break here — the extract ports were typed `any`, and the
+    // `lattice` part is payload-only, which `residentAt` treated as "no data" and threw on.
+    const { xs, ys } = cloud(300, 77);
+    const g = new Graph();
+    const idx = g.op1("gridIndex", { points: g.points(xs, ys) }, { cell: 12, ...BOUNDS });
+    const rebuilt = g.op1("bucketGrid.bundle", {
+      cellOffsets: g.op1("bucketGrid.cellOffsets", { bundle: idx }),
+      pointIds: g.op1("bucketGrid.pointIds", { bundle: idx }),
+      lattice: g.op1("bucketGrid.lattice", { bundle: idx }),
+    });
+    expect(rebuilt.shape).toEqual(idx.shape);
+
+    const direct = (await pull(g, g.op1("cellCounts", { buckets: idx }))).data as Float32Array;
+    const viaParts = (await pull(g, g.op1("cellCounts", { buckets: rebuilt }))).data as Float32Array;
+    let mismatch = 0;
+    let total = 0;
+    for (let i = 0; i < direct.length; i++) {
+      if (direct[i] !== viaParts[i]) mismatch++;
+      total += viaParts[i]!;
+    }
+    expect({ mismatch, total, len: viaParts.length }).toEqual({ mismatch: 0, total: xs.length, len: direct.length });
+  });
+
+  it("types each extracted port by its part's kind, not `any`", () => {
+    const g = new Graph();
+    const idx = g.op1("gridIndex", { points: g.points([1, 2], [3, 4]) }, { cell: 10, ...BOUNDS });
+    // A `points` part cannot be fed to the port that wants the `grid` one, and the composer can
+    // tell from the declared kinds alone — before anything runs.
+    const kinds = ["cellOffsets", "pointIds", "lattice"].map((p) => getOp(`bucketGrid.${p}`).outputs[0]!.kind);
+    expect(kinds).toEqual(["points", "points", "grid"]);
+    expect(getOp("bucketGrid.bundle").inputs.map((i) => i.kind)).toEqual(["points", "points", "grid"]);
+    expect(g.op1("bucketGrid.lattice", { bundle: idx }).shape.kind).toBe("grid");
   });
 
   it("rejects an input that is not a grid-index bundle", () => {

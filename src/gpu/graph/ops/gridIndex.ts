@@ -24,14 +24,27 @@ import { type BucketGrid, buildBucketGrid, type GridLattice, latticeFor, numCell
 import { encodeGridIndex, getGridIndexCtx } from "../../spatial/gridIndex";
 import type { FieldValue, ResolvedPlacement, Shape } from "../handle";
 import type { ExecCtx, OpType, Params } from "../op";
-import { type BundleSpec, bundleValue, combineOp, extractOp } from "./bundleOps";
+import { type BundleSpec, bundleValue, combineOp, extractOp, partNames } from "./bundleOps";
 
 /** The bundle this op produces; `extractOp`/`combineOp` generate its accessors from it. */
 // The TYPE tag is `bucketGrid`, not `gridIndex`: it surfaces in error messages and in the
 // composer's value summary, so it reads as the structure ("a bucket grid") rather than as the op
 // that happens to build it. The producing op keeps `gridIndex` — that is the name of the
 // algorithm, and of ADR-0022.
-export const GRID_INDEX_BUNDLE: BundleSpec = { name: "bucketGrid", label: "Bucket grid", parts: ["cellOffsets", "pointIds", "lattice"] };
+export const GRID_INDEX_BUNDLE: BundleSpec = {
+  name: "bucketGrid",
+  label: "Bucket grid",
+  parts: [
+    {
+      name: "cellOffsets",
+      kind: "points",
+      label: "cell offsets",
+      describe: "Where each cell's run of point ids begins: cell b owns `pointIds[cellOffsets[b] .. cellOffsets[b+1])`. u32.",
+    },
+    { name: "pointIds", kind: "points", label: "point ids", describe: "Point ids grouped by the cell they fell in. u32." },
+    { name: "lattice", kind: "grid", label: "lattice", describe: "The cell geometry — columns, rows, cell size and origin." },
+  ],
+};
 
 /** What the `lattice` port carries. Shaped so a consumer can rebuild the cell arithmetic without
  *  reading either buffer, and so a readback can be compared against `buildBucketGrid`. */
@@ -109,7 +122,7 @@ export const gridIndexOp: OpType = {
       "from different clouds. `Points per cell` turns one into a picture.",
   },
   inputs: [{ name: "points", kind: "points", dtype: "f32" }],
-  outputs: [{ name: "buckets", kind: "bundle", bundle: { name: GRID_INDEX_BUNDLE.name, parts: GRID_INDEX_BUNDLE.parts } }],
+  outputs: [{ name: "buckets", kind: "bundle", bundle: { name: GRID_INDEX_BUNDLE.name, parts: partNames(GRID_INDEX_BUNDLE) } }],
   params: [
     { name: "cell", type: "number", default: 1, min: 1e-6, describe: "Cell side in world units — set it to the query radius." },
     { name: "minX", type: "number", default: 0, describe: "Lattice origin x." },
@@ -219,19 +232,9 @@ export const gridIndexOp: OpType = {
   },
 };
 
-/** `gridIndex.start` / `.items` / `.lattice` — take one part out, borrowing the buffer rather
+/** `bucketGrid.cellOffsets` / `.pointIds` / `.lattice` — take one part out, borrowing the buffer rather
  *  than copying it (ADR-0023). */
-export const gridIndexPartOps: OpType[] = [
-  extractOp(GRID_INDEX_BUNDLE, "cellOffsets", {
-    label: "cell offsets",
-    describe: "Where each cell's run of point ids begins: cell b owns `items[start[b] .. start[b+1])`. u32, device-only.",
-  }),
-  extractOp(GRID_INDEX_BUNDLE, "pointIds", {
-    label: "point ids",
-    describe: "Point ids grouped by the cell they fell in. u32, device-only.",
-  }),
-  extractOp(GRID_INDEX_BUNDLE, "lattice", { label: "lattice", describe: "The cell geometry — columns, rows, cell size and origin." }),
-];
+export const gridIndexPartOps: OpType[] = GRID_INDEX_BUNDLE.parts.map((p) => extractOp(GRID_INDEX_BUNDLE, p.name));
 
-/** `gridIndex.bundle` — reassemble an index from parts, for a producer that builds them itself. */
-export const gridIndexCombineOp: OpType = combineOp(GRID_INDEX_BUNDLE, { cellOffsets: "points", pointIds: "points", lattice: "grid" });
+/** `bucketGrid.bundle` — reassemble a bucket grid from parts, for a producer that builds them itself. */
+export const gridIndexCombineOp: OpType = combineOp(GRID_INDEX_BUNDLE);
