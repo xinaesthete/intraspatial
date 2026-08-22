@@ -90,6 +90,86 @@ export const mulFieldsOp = binaryOp(
   },
 );
 
+// --- the fuzzy-set operators (AND / OR / NOT) -------------------------------------------
+//
+// Lane-wise min, max and 1−a. Pointwise arithmetic like everything above, and they live
+// here for that reason — but their *purpose* is composing the soft selection masks in
+// `filterOps.ts`, and the choice of these three rather than any other triple is load
+// bearing.
+//
+// ADR-0005's body specifies `AND = a·b` with `OR = max(a,b)`, which mixes a product t-norm
+// with a Gödel t-conorm. They are not De Morgan dual (`1−(1−a)(1−b) = 0.92` against
+// `max = 0.8` at a=0.8, b=0.6), and product AND is not idempotent (`a·a = 0.64` against
+// `a = 0.8`). The second breaks a **diamond** — two branches off one upstream gate,
+// recombined — which is the ordinary shape of a gating tree: the shared ancestor gets
+// multiplied in twice and the answer starts depending on the graph's topology rather than
+// on the set being described. Silently, because the mask merely gets dimmer.
+//
+// min/max/1−a are idempotent, De Morgan-consistent, associative and the cheapest of the
+// three. Set difference is `min(a, 1−b)`. Every pair coincides on hard 0/1 masks, which is
+// why the defect survived — soft membership is the whole point of the encoding. Full
+// derivation in `docs/mdv-dimension-vs-support-facet.md` §6; ADR-0005 carries the
+// correction in its status block.
+//
+// A caveat worth keeping visible rather than resolving: min/max are not *strict* — they
+// ignore the non-extremal operand, so a soft brush ANDed with a soft window keeps the
+// tighter one and loses the other's gradient. If a weighted-permutation null turns out to
+// want that gradient, the product may be right *for that consumer*, which would be an
+// argument for the operator being a property of the edge. That should be settled with a
+// real null in hand, not on paper.
+
+function lanewise(f: (x: number, y: number) => number) {
+  return (a: ArrayLike<number>, b: ArrayLike<number>): Float32Array => {
+    if (a.length !== b.length) throw new Error(`lane count mismatch: ${a.length} vs ${b.length}`);
+    const out = new Float32Array(a.length);
+    for (let i = 0; i < a.length; i++) out[i] = f(a[i]!, b[i]!);
+    return out;
+  };
+}
+
+const minLanes = lanewise(Math.min);
+const maxLanes = lanewise(Math.max);
+
+export const minFieldsOp = binaryOp(
+  "minFields",
+  "Min (AND)",
+  "Lane-wise min — fuzzy AND, and the intersection of two selection masks.",
+  (_el, a, b) => minLanes(a, b),
+);
+
+export const maxFieldsOp = binaryOp(
+  "maxFields",
+  "Max (OR)",
+  "Lane-wise max — fuzzy OR, and the union of two selection masks.",
+  (_el, a, b) => maxLanes(a, b),
+);
+
+/** invert(a) = 1 − a: fuzzy NOT, and the complement of a selection mask. Involutive, so
+ *  `invert(invert(a))` is `a` exactly — which `1/(1+a)` and friends are not. */
+export const invertFieldOp: OpType = {
+  name: "invertField",
+  label: "Invert (NOT)",
+  describe: "1 − a — fuzzy NOT, and the complement of a selection mask.",
+  inputs: [{ name: "in", kind: "any" }],
+  outputs: [{ name: "out", kind: "any", dtype: "f32" }],
+  params: [],
+  inferShapes: (inputs) => [inputs[0]!],
+  inferElements: (inputs) => [inputs[0]!],
+  async execute(_ctx, inputs) {
+    return [invertField(inputs[0]!)];
+  },
+  cpuGolden(inputs) {
+    return [invertField(inputs[0]!)];
+  },
+};
+
+function invertField(v: FieldValue): FieldValue {
+  const src = v.data!;
+  const out = new Float32Array(src.length);
+  for (let i = 0; i < src.length; i++) out[i] = 1 - src[i]!;
+  return { shape: v.shape, dtype: "f32", element: v.element ?? SCALAR, data: out };
+}
+
 /** scale(a): multiply every lane by a real scalar param. Element-preserving. */
 export const scaleFieldOp: OpType = {
   name: "scaleField",

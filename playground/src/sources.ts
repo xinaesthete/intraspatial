@@ -266,7 +266,91 @@ const clockStart: SourceSpec = {
   },
 };
 
+/**
+ * A synthetic cell table: centroids plus the per-row COLUMNS you would filter on.
+ *
+ * The point of a table source, as against `blobPoints`, is the extra outputs. A filter
+ * graph needs a value per row to threshold, and the columns here are the two kinds a real
+ * SpatialData table has: a categorical (`type`, an AnnData `obs` code) and a continuous
+ * marker (`marker`, a gene / channel intensity out of `X`). `x` and `y` are exposed too
+ * because a spatial crop is the same operator as any other range filter — which is the
+ * argument for the mask encoding in the first place.
+ *
+ * Deliberately generated here rather than through `datasource/cellTable.ts`'s
+ * `syntheticCellTable`. That module imports `@spatialdata/core` at the top level, so
+ * reaching for it would pull the whole zarr stack into the composer's bundle for a fixture.
+ * Phase 2's real-store node is where that dependency belongs, and it can produce the same
+ * output ports from a real table.
+ *
+ * The marker is CORRELATED with position — high inside one cluster, low elsewhere — so a
+ * range filter on it visibly moves the density. An uncorrelated column would thin the cloud
+ * uniformly and every filter would look the same.
+ */
+const cellTable: SourceSpec = {
+  name: "cellTable",
+  label: "Cell table (synthetic)",
+  describe: "Synthetic cell centroids plus filterable columns: type (categorical), marker (continuous), x, y.",
+  outputs: [
+    { name: "points", kind: "points" },
+    { name: "type", kind: "points" },
+    { name: "marker", kind: "points" },
+    { name: "x", kind: "points" },
+    { name: "y", kind: "points" },
+  ],
+  params: [
+    { name: "n", type: "int", default: 1200, min: 50, max: 20000, describe: "cells" },
+    { name: "types", type: "int", default: 4, min: 1, max: 12, describe: "cell types (clusters)" },
+    { name: "spread", type: "number", default: 6, min: 0.5, max: 40, step: 0.5, describe: "cluster std dev (world units)" },
+    { name: "seed", type: "int", default: 1, min: 1, max: 9999 },
+  ],
+  make(g, params) {
+    const n = params.n as number;
+    const types = params.types as number;
+    const spread = params.spread as number;
+    const rng = mulberry32(params.seed as number);
+
+    // Cluster centres on a ring, so every type is equally far from the middle and the
+    // marker gradient below is not confounded with distance from the origin.
+    const centres = Array.from({ length: types }, (_, k) => {
+      const a = (2 * Math.PI * k) / types;
+      return [Math.cos(a) * 28, Math.sin(a) * 28] as const;
+    });
+
+    const xs = new Float32Array(n);
+    const ys = new Float32Array(n);
+    const type = new Float32Array(n);
+    const marker = new Float32Array(n);
+    for (let i = 0; i < n; i++) {
+      const k = Math.floor(rng() * types) % types;
+      const [gx, gy] = gauss2(rng);
+      const [cx, cy] = centres[k]!;
+      xs[i] = cx + gx * spread;
+      ys[i] = cy + gy * spread;
+      type[i] = k;
+      // High in cluster 0, falling off with distance from its centre, plus noise. Gives a
+      // continuous column whose range filter selects a SPATIALLY coherent subset — the
+      // thing worth looking at when the mask drives a density field.
+      const [hx, hy] = centres[0]!;
+      const d = Math.hypot(xs[i]! - hx, ys[i]! - hy);
+      marker[i] = Math.max(0, 1 - d / 60) * 100 + rng() * 8;
+    }
+
+    // Columns are `points{n}` carrying exactly n values; the cloud is `points{n}` carrying
+    // 2n. Same shape, different lane count — the filter ops check the length and say so,
+    // because connecting the cloud to a value port would otherwise read x as the value.
+    const column = (data: Float32Array, label: string) => g.source({ shape: { kind: "points", n }, dtype: "f32", data }, label);
+    return {
+      points: g.points(xs, ys),
+      type: column(type, "cellTable.type"),
+      marker: column(marker, "cellTable.marker"),
+      x: column(xs.slice(), "cellTable.x"),
+      y: column(ys.slice(), "cellTable.y"),
+    };
+  },
+};
+
 export const SOURCES: SourceSpec[] = [
+  cellTable,
   ringPoints,
   blobPoints,
   grayScottSeed,
