@@ -140,12 +140,16 @@ Three interlocking design notes, **none built**, plus the data migrations:
   [`wand-contours-and-lofted-geometry.md`](wand-contours-and-lofted-geometry.md): a whole
   `src/imaging/` that doesn't exist yet; `swept` still sweeps a straight axis (no sampled
   path/profile).
-- **Data migration to SpatialData** — imagery
+- **Data migration to SpatialData** — **landed.** The imagery
   ([`covid-imagery-to-spatialdata-plan.md`](covid-imagery-to-spatialdata-plan.md)) and tables
-  ([`mdv-zarr-to-spatialdata-tables.md`](mdv-zarr-to-spatialdata-tables.md)); both "not
-  started," gated on watershed labels. The ADR-0010-loader **Alignment gizmo fed back into
-  `Select`** isn't there, and `loadScheduler` still isn't wired into the SpatialData tile
-  path.
+  ([`mdv-zarr-to-spatialdata-tables.md`](mdv-zarr-to-spatialdata-tables.md)) plans are
+  executed by `scripts/covid-imagery-to-spatialdata.py` (with `covid-imagery-inventory.py`,
+  `covid-he-registration-check.py`, `covid-spatialdata-validate.py`); the outcome, the
+  three facts that did not survive contact with the data, and the validation numbers are in
+  [`covid-spatialdata-migration.md`](covid-spatialdata-migration.md). The store itself lives
+  on an external volume, not in this repo. Still open from the same plans: the
+  ADR-0010-loader **Alignment gizmo fed back into `Select`** isn't there, and
+  `loadScheduler` still isn't wired into the SpatialData tile path.
 
 ## Tier 5 — Geometry / art deferred
 

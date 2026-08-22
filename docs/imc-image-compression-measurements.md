@@ -1,6 +1,22 @@
 # Compressing the COVID IMC stack: measured
 
-**Status: investigation complete, nothing implemented (2026-08-01).** Companion to
+**Status: IMPLEMENTED (2026-08-01) — `docs/covid-spatialdata-migration.md`.** The recommendation
+below was carried out unchanged and its numbers reproduced exactly: 131.1 MB per 2000² ROI at
+zstd-19 for level 0, and 519.8 MB of HTJ2K against 681.2 MB of PNG (1.31×) for the H&E. Three things
+to carry forward:
+
+- **The stacks are already 2-level pyramids.** `tf.pages` shows 49 planes, `tf.series[0].levels`
+  shows two. That is the 197.5 MB / 247.4 MB discrepancy between "LZW" here and the file on disk, and
+  it is why the dataset total is 6.43 GB rather than 6.0. The stored store carries the level too:
+  4.36 GB against 6.43 GB, like for like.
+- **The source's level 1 is an exact 2× subsample, and reproducing it beats a block mean by 1.67×**
+  (33.8 MB against 56.4 MB per ROI). Averaging float32s manufactures bit patterns that were not in
+  the data — the same mechanism as finding 2, from the other direction.
+- **The HTJ2K choice for the H&E gates the whole store**: `spatialdata.read_zarr` fails with
+  `UnknownCodecError` without `spatialdata-js-util` installed, for every element, not just the 30
+  H&E. Clean error, total effect, and not noted when the codec was chosen.
+
+Companion to
 `docs/covid-imagery-to-spatialdata-plan.md`, which left "lossless or lossy for the IMC stack?" as
 open question 1 and guessed that "LZW on float32 is close to the worst case, so the headroom may be
 large." **That guess is wrong**, and the measurements below are the reason it is worth writing down

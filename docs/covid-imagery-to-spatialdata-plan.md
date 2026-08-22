@@ -1,9 +1,27 @@
 # Migrating the COVID project's imagery to SpatialData zarr
 
+**Status: DONE (2026-08-01) — see `docs/covid-spatialdata-migration.md` for what was built and
+which claims below turned out to be wrong.** This document is kept as the survey it was; the
+decisions in it all held, but three of its facts did not:
+
+1. **MDV's y axis points up.** Every `position` here, and the cell table's `y`, is measured from the
+   bottom of the ROI. Read as image-space they misplace 19 of the 30 H&E images, by up to 920 µm.
+2. **The IMC stacks are already 2-level pyramids** (open question 2 below says otherwise) — the
+   hidden level is 20% of each file, and it is an exact 2× subsample.
+3. **`cellmask` already separates every cell.** Only 2 blobs in the entire dataset contain two
+   centroids, so the labels are the original segmentation recovered exactly, not reconstructed.
+
+Also: 10 stacks are not 2000², not eight; and `COVID_SAMPLE_6_ROI_1`'s mask is 2000 × 1086 against a
+2000 × 2000 stack.
+
+<details><summary>Original status</summary>
+
 **Status: planned, not started (2026-08-01).** Written while the facts were in front of me, because
 every one of them below cost a probe to establish and the extension lies about the format. Nothing
 here is in flight, so it is deliberately not an ADR (see `docs/decisions/README.md` — ADRs are for
 decisions being acted on).
+
+</details>
 
 The cell *table* is already converted: `~/data/covid.mdv.zarr`, 168 MB, and it is all the cell-stats
 pages need. What is still MDV-shaped, and still only on the external volume, is the imagery.
