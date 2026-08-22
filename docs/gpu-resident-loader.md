@@ -328,7 +328,7 @@ worth of parallelism, and 5.2 MB of compressed bytes stand in for 16 MB of sampl
 - The device must come from the **host renderer**, never `navigator.gpu` — `adoptDevice`
   ([`src/gpu/interop/adoptDevice.ts`](../src/gpu/interop/adoptDevice.ts)) is that seam, and the
   playground already adopts three's device in `datasourceMain.ts`.
-- three.js side: **verified** (`playground/externaltexture.html`, three 0.185, Chrome/Dawn). A
+- three.js side: **verified** (the `playground/externaltexture.html` spike, since removed — see the 2026-08-10 note at the end; three 0.185, Chrome/Dawn). A
   `GPUTexture` we allocate on `renderer.backend.device` and fill with the assembly pass samples
   correctly through `THREE.ExternalTexture`, in both shapes that matter: 2-D `rgba16float` via
   `texture(ext, uv())` and 3-D `r16float` via `texture3D()`. Max error 0.0015 against the pattern
@@ -336,7 +336,7 @@ worth of parallelism, and 5.2 MB of compressed bytes stand in for 16 MB of sampl
 
 ### 8a. What the ExternalTexture spike actually found
 
-`playground/externaltexture.html` is self-checking rather than eyeballed: it fills a texture through
+The spike page (`playground/externaltexture.html`, now deleted) was self-checking rather than eyeballed: it fills a texture through
 the real assembly pass, renders it, reads the pixels back, and compares against the pattern it wrote.
 Both cases pass. Two things are worth carrying forward, and neither was visible from reading three's
 source:
@@ -370,7 +370,7 @@ are compared, so a collapsed z axis cannot pass.
 2. ✅ **The assembly pass** — `src/gpu/tiles/assemble.ts`, verified against the host loops it replaces
    in `assemble.gpu.test.ts` (8/16/32-bit unpack, half-pack with row padding, and the full chain into an
    `rgba16float` texture read back through `textureLoad`). Benched on real chunks: §1a.
-3. ✅ **`THREE.ExternalTexture` spike** — `playground/externaltexture.html`, self-checking, 2-D and
+3. ✅ **`THREE.ExternalTexture` spike** — `playground/externaltexture.html` (since deleted; findings kept in §8a), self-checking, 2-D and
    3-D both correct on the adopted device (§8a). The last unverified link is closed: nothing now
    stands between a device-resident `Tile` and a rendered pixel.
 4. 🟡 **Wire it into a Loader** — the **volume half is done**: `spatialDataVolume` takes `{ device }`
@@ -433,3 +433,21 @@ path is genuinely in use, since the host path cannot produce that number.
   `VolumeRenderer` assumes a cube (`B = ms.chunkShape[0]`, i.e. 512 → a 512³ = 134 MB atlas entry),
   which is why the real store goes through `NaiveVolumeRenderer` instead. Unrelated to this seam, but it
   is the next thing that limits the volume path.
+
+## Postscript (2026-08-10): the throughput case closed against the GPU codec
+
+Recorded from the codec repo's commit `984027a` ("OpenJPH already has the advantage we were
+building, and cores beat one device"), whose code was not migrated here — only its conclusion is.
+zarrextra 0.4.0 moved to openjph-wasm on a worker pool, so "we free the main thread" stopped being a
+difference between us and upstream, leaving throughput (chunks/s from N cores plus one device) as the
+only honest metric. Measured that way the GPU decoder loses, and loses worse as the pool grows: the
+device is fixed, so it is GPU-bound from four workers on (~36 chunks/s) while OpenJPH scales linearly
+past it; stripping every fence and pipelining perfectly moves the ceiling to ~50 and no further. The
+last differentiator, resolution-progressive decode, belongs to the CPU path too (`restrict_input_resolution`
+is already exported by the openjph-wasm wrapper; driving it gives 3.8x/14x/52x at reduce 1/2/3). Two
+corrections to the numbers above: the resident-GPU column of the lossy bench was ~3x inflated by a busy
+machine (quiet: 21–37 ms), and the q0.005/q0.02 "lossy" fixtures were in fact 32x-downsampled thumbnails,
+so the lossy headline is retracted. What survives is codec-independent and is what this repo keeps: the
+device-resident `Tile`, the assembly pass (`src/gpu/tiles/assemble.ts`), and the worker-pool decode;
+the GPU IDWT as a performance play and the coefficient-domain decoder hook (§5) are dropped, not pending.
+The `THREE.ExternalTexture` spike page was deleted in the same commit, its two findings living in §8a.

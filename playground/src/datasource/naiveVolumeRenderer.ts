@@ -212,7 +212,7 @@ export class NaiveVolumeRenderer implements MemoryReporting {
 }
 
 /** Wrap a device-resident brick so three can sample it, with the two adaptations the spike found
- *  necessary (playground/externaltexture.html, docs/gpu-resident-loader.md §8a):
+ *  necessary (docs/gpu-resident-loader.md §8a; the spike page itself was removed once this path exercised both on real data):
  *
  *  - `isData3DTexture` is REQUIRED. three picks the bind-group view dimension from that flag alone,
  *    so without it a 3-D source binds as `texture_2d`, the generated WGSL fails to compile, and the
