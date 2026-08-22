@@ -38,6 +38,11 @@ import {
 import { IDENTITY } from "./placement";
 import { type BranchOptions, type StackOptions, Structured } from "./structured";
 import { signPow, type Vec3 } from "./superellipsoid";
+import { gridIndices, gridSampleAngles } from "./sweptGrid";
+
+// The grid helpers live in `sweptGrid.ts` so `sweptGpu.ts` can import them without a cycle back
+// into this module (it needs only types from here); re-exported to keep this module's surface.
+export { gridIndices, gridSampleAngles };
 
 // ── The Transform-stack ───────────────────────────────────────────────────────────────
 
@@ -121,11 +126,6 @@ function cross(a: Vec3, b: Vec3): Vec3 {
 
 function sub3(a: Vec3, b: Vec3): Vec3 {
   return [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
-}
-
-/** `(s, θ)` for grid corner `(col, row)` of a `slices × stacks` tessellation. */
-export function gridSampleAngles(col: number, row: number, slices: number, stacks: number): { s: number; theta: number } {
-  return { s: row / stacks, theta: (col / slices) * 2 * Math.PI };
 }
 
 // ── The Swept Geometry value ──────────────────────────────────────────────────────────
@@ -327,29 +327,6 @@ export interface ToMeshOptions extends TessellateOptions {
   mode?: "cpu" | "gpu";
   device?: GPUDevice;
   root?: import("../gpu/graph/backend").Root;
-}
-
-/** Two triangles per quad over the `(slices + 1) × (stacks + 1)` vertex grid, wound so the
- *  face normal agrees with the analytic outward normal. */
-export function gridIndices(slices: number, stacks: number): Uint32Array {
-  const cols = slices + 1;
-  const indices = new Uint32Array(slices * stacks * 6);
-  let k = 0;
-  for (let row = 0; row < stacks; row++) {
-    for (let col = 0; col < slices; col++) {
-      const a = row * cols + col;
-      const b = a + 1;
-      const c = a + cols;
-      const dd = c + 1;
-      indices[k++] = a;
-      indices[k++] = c;
-      indices[k++] = dd;
-      indices[k++] = a;
-      indices[k++] = dd;
-      indices[k++] = b;
-    }
-  }
-  return indices;
 }
 
 // ── Generator-op + catalogue ──────────────────────────────────────────────────────────

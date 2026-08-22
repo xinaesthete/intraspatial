@@ -8,8 +8,6 @@ export * from "./eigenSym";
 export * from "./envelope";
 export * from "./gram";
 export * from "./kernelAnalysis";
-// `mulberry32` is declared in both kernelAnalysis and umapLayout (identical PRNG); export one.
-export { mulberry32 } from "./kernelAnalysis";
 export * from "./kernelSpectrum";
 export * from "./kernels";
 export * from "./knnDescent";

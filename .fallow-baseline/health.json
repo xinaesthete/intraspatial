@@ -777,6 +777,11 @@
         "count": 1
       }
     },
+    "src/gpu/spatial/morphology.gpu.test.ts": {
+      "complexity_moderate": {
+        "count": 1
+      }
+    },
     "src/gpu/spatial/paintField.ts": {
       "crap_high": {
         "count": 1
@@ -995,7 +1000,6 @@
   "target_keys": [
     "docs-site/src/components/dancer/matrix.ts:dead code",
     "playground/src/grouping.ts:circular dependency",
-    "src/geometry/swept.ts:circular dependency",
     "playground/src/Preview.tsx:untested risk",
     "src/geometry/placement.ts:high impact",
     "playground/src/examples.ts:dead code",
@@ -1023,16 +1027,15 @@
     "src/spatial/gram.ts:complexity",
     "src/geometry/implicit.ts:complexity",
     "src/spatial/tcm.ts:complexity",
+    "src/spatial/umapLayout.ts:complexity",
     "src/spatial/quadratCorrelation.ts:complexity",
     "src/gpu/spatial/gramMatrix.ts:complexity",
     "src/spatial/contactNetwork.ts:complexity",
     "src/datasource/sparseColumns.ts:complexity",
-    "src/spatial/umapLayout.ts:complexity",
     "src/spatial/envelope.ts:complexity",
     "playground/src/datasource/spatialDataVolume.ts:untested risk",
     "src/gpu/spatial/gramTerrain.ts:complexity",
     "src/spatial/umapGraph.ts:complexity",
-    "src/geometry/sweptGpu.ts:circular dependency",
     "scripts/mdv-quadrat-parity.ts:complexity",
     "src/geometry/bsp.ts:complexity",
     "src/gpu/spatial/quadratCorrelationGpu.ts:complexity",
