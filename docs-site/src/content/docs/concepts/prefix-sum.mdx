@@ -1,0 +1,41 @@
+---
+title: Prefix sums on the GPU
+description: Why a running total is hard to parallelise, and how reduce-then-scan does it anyway.
+---
+
+import ScanExplainer from '../../../components/ScanExplainer.tsx';
+
+A **prefix sum** (or *scan*) turns a list of numbers into its running totals. It looks
+like the least parallel thing imaginable — every output depends on every input before it —
+and yet it is the workhorse under almost every "sort things into buckets" step on a GPU:
+the [uniform-grid spatial index](/primitives/nearest-neighbour-distance/) needs it to know
+where each cell's points start, and filtering a table down to the rows that pass needs it to
+know where each surviving row goes.
+
+The trick is to stop thinking of one long chain and think of **blocks**. Step through it:
+
+<ScanExplainer client:only="react" />
+
+## Why this shape
+
+- **No waiting between blocks.** The obvious single-pass alternative (*decoupled
+  lookback*) has each block spin until its left neighbour has published a total. WebGPU
+  makes no promise that the neighbour is even running, so a spin can wait forever on a
+  device that schedules workgroups one at a time. Reduce-then-scan has no such dependency.
+- **Shallow recursion.** Each level divides the problem by the block size (1024 elements
+  per block in `src/gpu/scan/prefixSum.ts`), so 35 million rows take three levels and
+  anything under a million takes two. Every level after the first is tiny.
+- **Bandwidth, not latency.** Each pass reads every element about once; the extra pass
+  costs roughly a second read per element, which is not the bottleneck at the sizes that
+  matter here — a 33 M-element scan measures under 50 ms including the readback.
+
+## Where it is used
+
+| Consumer | What the scan computes |
+| --- | --- |
+| Uniform-grid index (`gridIndex.ts`) | per-cell start offsets from per-cell point counts |
+| Stream compaction (`streamCompact.ts`) | each passing row's slot in the compact output |
+| The `support` facet (planned) | dense mask → compact index list, and back |
+
+The implementation is `src/gpu/scan/prefixSum.ts`; the design note is
+`docs/gpu-spatial-index-and-scan.md`.
