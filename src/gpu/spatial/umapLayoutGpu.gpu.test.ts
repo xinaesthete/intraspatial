@@ -39,29 +39,39 @@ const hostTrust = trustworthiness(fixture.data, hostEmbedding, fixture.n, DIM, 2
 
 describe("GpuUmapLayout", () => {
   it("reaches host-comparable trustworthiness from a random init", async () => {
-    const layout = await GpuUmapLayout.create(graph, { nEpochs: 300, seed: 5 });
-    try {
-      layout.step(300);
-      const emb = await layout.read();
-      let finite = true;
-      for (let t = 0; t < emb.length; t++) if (!Number.isFinite(emb[t]!)) finite = false;
-      expect(finite).toBe(true);
-
-      const gpuTrust = trustworthiness(fixture.data, emb, fixture.n, DIM, 2, 8);
-      // The absolute bar is deliberately loose. This kernel is Hogwild — the thread
-      // interleaving differs run to run, so the score moves by a few points from nothing
-      // but scheduling, and a bar set close to the typical value is a coin flip rather
-      // than a check. Observed failing at 0.9 under the parallel suite while passing on
-      // its own; 0.85 is far enough below the ~0.92 it actually scores to be meaningful
-      // without being a lottery.
-      expect(gpuTrust).toBeGreaterThan(0.85);
-      // This is the assertion that carries the weight: allowed to be a little worse than
-      // the host, since the races cost some precision, but not materially worse. A large
-      // gap means the kernel is wrong, not merely racy.
-      expect(gpuTrust).toBeGreaterThan(hostTrust - 0.05);
-    } finally {
-      layout.destroy();
+    // Hogwild means one run is a sample, not a value. Measured 2026-08-22 (seed 5, 300
+    // epochs, 30 isolated runs): trust 0.902–0.940, median 0.931, mean 0.927, sd ≈ 0.013;
+    // runs inside the full file also produced 0.893 and 0.896. Host on the same graph
+    // scores 0.962 (0.955–0.962 across seeds), so the GPU–host gap is ~0.03 typically and
+    // ~0.07 at worst. The previous single-run `> hostTrust - 0.05` bar (0.912) sat inside
+    // that spread and failed about one run in four. So: several seeds, compared through
+    // the median, with the margin set from the measured distribution rather than guessed.
+    const SEEDS = [5, 1, 2, 3, 4, 6, 7];
+    const gpu: number[] = [];
+    let finite = true;
+    for (const seed of SEEDS) {
+      const layout = await GpuUmapLayout.create(graph, { nEpochs: 300, seed });
+      try {
+        layout.step(300);
+        const emb = await layout.read();
+        for (let t = 0; t < emb.length; t++) if (!Number.isFinite(emb[t]!)) finite = false;
+        gpu.push(trustworthiness(fixture.data, emb, fixture.n, DIM, 2, 8));
+      } finally {
+        layout.destroy();
+      }
     }
+    expect(finite).toBe(true);
+    const host = SEEDS.map((seed) => trustworthiness(fixture.data, optimizeLayout(graph, { nEpochs: 300, seed }), fixture.n, DIM, 2, 8));
+    const median = (a: number[]) => [...a].sort((x, y) => x - y)[a.length >> 1] ?? Number.NaN;
+
+    // Absolute floor on the WORST run: ~3 sd below the lowest score ever observed (0.893),
+    // so a breach means the kernel broke, not that the scheduler was unkind.
+    expect(Math.min(...gpu)).toBeGreaterThan(0.85);
+    // The assertion that carries the weight: the median GPU run may be a little worse
+    // than the median host run (the races cost some precision) but not materially so.
+    // 0.06 is twice the typical gap and ~5 sd of a 7-run median away from it; a large
+    // gap means the kernel is wrong, not merely racy.
+    expect(median(gpu)).toBeGreaterThan(median(host) - 0.06);
   });
 
   it("separates the blobs it was given", async () => {
