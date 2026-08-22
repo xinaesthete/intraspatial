@@ -122,7 +122,7 @@ const strengthSpec = (def = 0.5): ParamSpec => ({ name: "strength", type: "numbe
 
 // ── The forces ──────────────────────────────────────────────────────────────────────
 
-const constrainOp = makeForceOp({
+export const constrainOp = makeForceOp({
   name: "constrain",
   label: "Constrain",
   describe: "Containment toward the centre (DANCERL constraint box).",
@@ -131,7 +131,7 @@ const constrainOp = makeForceOp({
   kernel: (i, pos, _v, _n, p) => constrainForce(readVec3(pos, i), num(p, "strength"), num(p, "power")),
 });
 
-const swimOp = makeForceOp({
+export const swimOp = makeForceOp({
   name: "swim",
   label: "Swim",
   describe: "Outward drift from the centre (DANCERL swim).",
@@ -140,7 +140,7 @@ const swimOp = makeForceOp({
   kernel: (i, pos, _v, _n, p) => swimForce(readVec3(pos, i), num(p, "strength")),
 });
 
-const vortexOp = makeForceOp({
+export const vortexOp = makeForceOp({
   name: "vortex",
   label: "Vortex",
   describe: "Circular stirring about the y-axis (DANCERL circle).",
@@ -149,7 +149,7 @@ const vortexOp = makeForceOp({
   kernel: (i, pos, _v, _n, p) => vortexForce(readVec3(pos, i), num(p, "strength")),
 });
 
-const solenoidOp = makeForceOp({
+export const solenoidOp = makeForceOp({
   name: "solenoid",
   label: "Solenoid",
   describe: "Single-coil solenoid field about the y-axis (DANCERL solenoid).",
@@ -158,7 +158,7 @@ const solenoidOp = makeForceOp({
   kernel: (i, pos, _v, _n, p) => solenoidForce(readVec3(pos, i), num(p, "strength"), num(p, "coilRadius")),
 });
 
-const orbitOp = makeForceOp({
+export const orbitOp = makeForceOp({
   name: "orbit",
   label: "Orbit",
   describe: "Orbital acceleration about the centre (DANCERL orbit, (p×v)×p).",
@@ -167,7 +167,7 @@ const orbitOp = makeForceOp({
   kernel: (i, pos, vel, _n, p) => orbitForce(readVec3(pos, i), readVec3(vel ?? pos, i), num(p, "strength")),
 });
 
-const cohereOp = makeForceOp({
+export const cohereOp = makeForceOp({
   name: "cohere",
   label: "Cohere",
   describe: "Pull toward the centroid of neighbours within radius (DANCERL bond).",
@@ -176,7 +176,7 @@ const cohereOp = makeForceOp({
   kernel: (i, pos, _v, n, p) => cohereForce(i, pos, n, num(p, "strength"), num(p, "radius")),
 });
 
-const separateOp = makeForceOp({
+export const separateOp = makeForceOp({
   name: "separate",
   label: "Separate",
   describe: "Radius repulsion between near neighbours (DANCERL collision).",
@@ -185,7 +185,7 @@ const separateOp = makeForceOp({
   kernel: (i, pos, _v, n, p) => separateForce(i, pos, n, num(p, "strength"), num(p, "radius")),
 });
 
-const springOp = makeForceOp({
+export const springOp = makeForceOp({
   name: "spring",
   label: "Spring",
   describe: "Bonds pulling neighbours toward an equilibrium distance (DANCERL distance).",
@@ -200,7 +200,7 @@ const springOp = makeForceOp({
 
 // ── bodyTap: expose pos/vel from the body field ──────────────────────────────────────
 
-const bodyTapOp: OpType = {
+export const bodyTapOp: OpType = {
   name: "bodyTap",
   label: "Body tap (pos/vel)",
   describe: "Extract the position and velocity fields from a swarm body, for the force ops to read.",
@@ -268,7 +268,7 @@ function integrateParams(p: Params): IntegrateParams {
   };
 }
 
-const integrateOp: OpType = {
+export const integrateOp: OpType = {
   name: "integrate",
   label: "Integrate (rigid body)",
   describe: "Advance the swarm body by the summed force (jerk-limited, DANCERL timescale + rigid-body spin).",
@@ -330,7 +330,7 @@ function runIntegrate(ins: FieldValue[], params: Params): FieldValue[] {
 
 // ── clock: a graph-native frame counter (drives the caller's figures) ────────────────
 
-const clockOp: OpType = {
+export const clockOp: OpType = {
   name: "clock",
   label: "Clock",
   describe: "A frame counter: outputs prev + rate each tick (seed from a scalar, close the loop).",
@@ -365,7 +365,7 @@ const CALLER_PARAMS: ParamSpec[] = [
   { name: "speed", type: "number", default: 0.6, min: 0, max: 2, step: 0.05, describe: "target speed of motion" },
 ];
 
-const callerOp: OpType = {
+export const callerOp: OpType = {
   name: "caller",
   label: "Caller (Ceilidh)",
   describe: "Drives each dancer toward the called figure's state of motion; couples advance through partners.",
@@ -428,7 +428,7 @@ function callForces(ins: FieldValue[], params: Params): FieldValue[] {
 
 // ── partnerOrbit: a standalone couple-swing force ────────────────────────────────────
 
-const partnerOrbitOp = makeForceOp({
+export const partnerOrbitOp = makeForceOp({
   name: "partnerOrbit",
   label: "Partner orbit",
   describe: "Each dancer swings around a partner (offset in the ring) — DANCERL pairwise orbit.",
@@ -443,9 +443,6 @@ const partnerOrbitOp = makeForceOp({
 
 // ── Registration ─────────────────────────────────────────────────────────────────────
 
-/** The dance force building blocks, in palette order. The individual ops are reached through
- *  this list (the playground's palette) or `registerForceOps` (the registry); they are not
- *  exported one by one. */
 export const FORCE_OPS: OpType[] = [
   constrainOp,
   swimOp,
