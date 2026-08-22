@@ -20,6 +20,7 @@ import { fuzzyAdjacencyAdaptiveOp } from "./fuzzyAdjacencyAdaptive";
 import { getisOrdOp } from "./getisOrd";
 import { kthNeighborDistanceOp } from "./kthNeighborDistance";
 import { membershipToDistanceOp } from "./membershipToDistance";
+import { morphologyOp } from "./morphology";
 import { reactionDiffusionStepOp } from "./reactionDiffusion";
 import { splatDensityOp } from "./splatDensity";
 import { thresholdOp } from "./threshold";
@@ -37,6 +38,7 @@ export function registerBuiltinOps(): void {
   reg(getisOrdOp);
   reg(thresholdOp);
   reg(addGridsOp);
+  reg(morphologyOp);
   // fuzzy TDA front
   reg(kthNeighborDistanceOp);
   reg(fuzzyAdjacencyOp);
@@ -130,6 +132,7 @@ export {
   getisOrdOp,
   kthNeighborDistanceOp,
   membershipToDistanceOp,
+  morphologyOp,
   reactionDiffusionStepOp,
   splatDensityOp,
   thresholdOp,
