@@ -1,7 +1,19 @@
 import { describe, expect, it } from "vitest";
 import { getDevice } from "../device";
-import { SCAN_BLOCK } from "./prefixSum";
-import { COMPACT_WG, type CompactOptions, type MaskArray, streamCompactGpu } from "./streamCompact";
+import { ensureBuf, readBack, SCAN_BLOCK } from "./prefixSum";
+import {
+  COMPACT_WG,
+  type CompactOptions,
+  type EncodeCompactOptions,
+  type EncodedCompact,
+  encodeCompact,
+  getCompactCtx,
+  type MaskArray,
+  maskEncodingOf,
+  maskWords,
+  streamCompactGpu,
+  uploadMask,
+} from "./streamCompact";
 
 function mulberry32(seed: number) {
   let a = seed >>> 0;
@@ -213,4 +225,112 @@ describe("streamCompactGpu", () => {
     expect(got.ascending).toBe(true);
     expect(indices[count - 1]).toBeGreaterThan(19_900_000);
   }, 120_000);
+});
+
+describe("encodeCompact", () => {
+  function upload(device: GPUDevice, key: string, mask: MaskArray): GPUBuffer {
+    const bytes = Math.max(4, maskWords(maskEncodingOf(mask), mask.length) * 4);
+    const buf = ensureBuf(device, key, bytes, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST);
+    uploadMask(device, buf, mask);
+    return buf;
+  }
+  async function readResult(device: GPUDevice, key: string, r: EncodedCompact) {
+    const count = new Uint32Array(await readBack(device, `${key}:count`, r.countBuf, 0, 4))[0]!;
+    const indices = count > 0 ? new Uint32Array(await readBack(device, `${key}:idx`, r.indices, 0, count * 4)) : new Uint32Array(0);
+    return { count, indices };
+  }
+  /** One compaction recorded into a fresh encoder, submitted once, read back — what a fused
+   *  consumer does, minus its own passes. */
+  async function compactViaEncoder(mask: MaskArray, opts: EncodeCompactOptions = {}) {
+    const ctx = await getCompactCtx();
+    const { device } = ctx.scan;
+    const maskBuf = upload(device, "test:encMask", mask);
+    const enc = device.createCommandEncoder();
+    const r = encodeCompact(ctx, maskBuf, mask.length, enc, { ...opts, mask: maskEncodingOf(mask) });
+    device.queue.submit([enc.finish()]);
+    return readResult(device, "test:enc", r);
+  }
+
+  // Every encoding x both comparisons, each against the CPU golden AND the two-submit path,
+  // so a disagreement localises: golden differs → the kernels; only the two paths differ →
+  // the sequencing that is new here.
+  const CASES: Array<{ name: string; mk: (n: number, rnd: () => number) => MaskArray; opts: CompactOptions }> = [
+    { name: "u32 gt 0", mk: (n, rnd) => Uint32Array.from({ length: n }, () => (rnd() < 0.3 ? 1 : 0)), opts: {} },
+    { name: "u32 eq 2", mk: (n, rnd) => Uint32Array.from({ length: n }, () => Math.floor(rnd() * 4)), opts: { pass: "eq", value: 2 } },
+    { name: "u8 eq 0 (MDV)", mk: (n, rnd) => Uint8Array.from({ length: n }, () => Math.floor(rnd() * 4)), opts: { pass: "eq", value: 0 } },
+    { name: "u8 gt 1", mk: (n, rnd) => Uint8Array.from({ length: n }, () => Math.floor(rnd() * 4)), opts: { pass: "gt", value: 1 } },
+    { name: "f32 gt 0.5", mk: (n, rnd) => Float32Array.from({ length: n }, () => rnd()), opts: { pass: "gt", value: 0.5 } },
+    { name: "f32 eq 1", mk: (n, rnd) => Float32Array.from({ length: n }, () => (rnd() < 0.2 ? 1 : rnd())), opts: { pass: "eq", value: 1 } },
+  ];
+  for (const [ci, c] of CASES.entries()) {
+    it(`matches streamCompactGpu and the golden: ${c.name}`, async () => {
+      const n = 3 * SCAN_BLOCK + 5 + ci; // off every boundary, and a u8 tail of 1-3 bytes
+      const mask = c.mk(n, mulberry32(0xe0c0 + ci));
+      const want = compactCpu(mask, c.opts);
+      const two = await streamCompactGpu(mask, c.opts);
+      const one = await compactViaEncoder(mask, c.opts);
+      const got = checksumOf(one.indices);
+
+      expect(one.count, "count vs golden").toBe(want.count);
+      expect(want.count, "degenerate case").toBeGreaterThan(n / 10);
+      expect(got.checksum, "checksum vs golden").toBe(want.checksum);
+      expect(got.ascending).toBe(true);
+      let mismatch = 0;
+      for (let i = 0; i < two.count; i++) if (two.indices[i] !== one.indices[i]) mismatch++;
+      expect(mismatch, "mismatches vs streamCompactGpu").toBe(0);
+    });
+  }
+
+  it("leaves the count on the device as a u32 the caller reads back", async () => {
+    const { count, indices } = await compactViaEncoder(new Uint32Array([0, 1, 0, 0, 1, 1, 0, 1]));
+    expect(count).toBe(4);
+    expect(Array.from(indices)).toEqual([1, 4, 5, 7]);
+  });
+
+  it("records only a zero count for n=0", async () => {
+    const { count } = await compactViaEncoder(new Uint32Array(0));
+    expect(count).toBe(0);
+  });
+
+  it("reports zero for a mask that selects nothing", async () => {
+    const { count } = await compactViaEncoder(new Uint32Array(5000));
+    expect(count).toBe(0);
+  });
+
+  it("keeps two compactions in one submit apart under distinct keyPrefixes", async () => {
+    // The regression this guards: pool keys are global, so two compactions under one prefix
+    // in one command buffer share flags/offsets/out and the second silently wins both.
+    const ctx = await getCompactCtx();
+    const { device } = ctx.scan;
+    const nA = 2 * SCAN_BLOCK + 9;
+    const nB = 5 * SCAN_BLOCK + 3;
+    const rA0 = mulberry32(0xa);
+    const rB0 = mulberry32(0xb);
+    const a = Uint32Array.from({ length: nA }, () => (rA0() < 0.5 ? 1 : 0));
+    const b = Float32Array.from({ length: nB }, () => rB0());
+    const optsB: CompactOptions = { pass: "gt", value: 0.25 };
+    const wantA = compactCpu(a);
+    const wantB = compactCpu(b, optsB);
+
+    const enc = device.createCommandEncoder();
+    const rA = encodeCompact(ctx, upload(device, "test:maskA", a), nA, enc, { mask: "u32", keyPrefix: "test:A" });
+    const rB = encodeCompact(ctx, upload(device, "test:maskB", b), nB, enc, { ...optsB, mask: "f32", keyPrefix: "test:B" });
+    device.queue.submit([enc.finish()]);
+    const gotA = await readResult(device, "test:A", rA);
+    const gotB = await readResult(device, "test:B", rB);
+
+    expect(rA.indices, "distinct output buffers").not.toBe(rB.indices);
+    expect([gotA.count, gotB.count]).toEqual([wantA.count, wantB.count]);
+    expect([checksumOf(gotA.indices).checksum, checksumOf(gotB.indices).checksum]).toEqual([wantA.checksum, wantB.checksum]);
+  });
+
+  it("is unchanged when the dispatch is forced into a 2-D grid", async () => {
+    const n = 7000; // 28 workgroups at 256 threads, folded into 6x5
+    const rnd = mulberry32(0x2d);
+    const mask = Uint32Array.from({ length: n }, () => (rnd() < 0.4 ? 1 : 0));
+    const want = compactCpu(mask);
+    const { count, indices } = await compactViaEncoder(mask, { maxWorkgroupsPerDim: 6 });
+    expect(count).toBe(want.count);
+    expect(checksumOf(indices).checksum).toBe(want.checksum);
+  });
 });

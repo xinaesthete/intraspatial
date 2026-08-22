@@ -54,6 +54,8 @@ export function encodeScan(ctx: ScanCtx, elem: ScanElement, src: GPUBuffer, n: n
 export function getScanCtx(): Promise<ScanCtx>;
 // src/gpu/scan/streamCompact.ts — mask (u8 | u32 | f32, eq | gt) → packed index list + count
 export async function streamCompactGpu(mask: MaskArray, opts?: CompactOptions): Promise<CompactResult>;
+// encoder-level twin: one submit, worst-case n-sized output, count left on-device (opts.mask = u8 | u32 | f32, opts.keyPrefix)
+export function encodeCompact(ctx: CompactCtx, maskBuf: GPUBuffer, n: number, enc: GPUCommandEncoder, opts?: EncodeCompactOptions): EncodedCompact;
 ```
 
 It is exercised by `src/gpu/scan/*.gpu.test.ts` and `pnpm bench:scan` (33M-row scan: 46.6 ms in the file header's measurement, ~34 ms on a later run of the same bench —

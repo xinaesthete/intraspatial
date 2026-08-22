@@ -121,8 +121,15 @@ export type MaskArray = Uint8Array | Uint32Array | Float32Array;
 export interface CompactOptions { readonly pass?: "gt" | "eq"; readonly value?: number; readonly maxWorkgroupsPerDim?: number; }
 export interface CompactResult { indices: Uint32Array; count: number; }
 export async function streamCompactGpu(mask: MaskArray, opts?: CompactOptions): Promise<CompactResult>;
+export type MaskEncoding = "u8" | "u32" | "f32";
+export interface EncodeCompactOptions extends CompactOptions { readonly mask?: MaskEncoding; readonly keyPrefix?: string; }
+export interface EncodedCompact { indices: GPUBuffer; countBuf: GPUBuffer; }
+export function getCompactCtx(): Promise<CompactCtx>;
+export function encodeCompact(ctx: CompactCtx, maskBuf: GPUBuffer, n: number, enc: GPUCommandEncoder, opts?: EncodeCompactOptions): EncodedCompact;
 ```
 
+`encodeCompact` records the same three passes into a caller-owned encoder, **one submit**,
+worst-case `n`-sized output, count on-device (see §2.4.1). `streamCompactGpu` does
 `predicate` → `encodeScan` → `scatter` (`outIdx[offsets[i]] = i`) in **two submits**: the
 output is sized to the count read back after the scan. u8/u32/f32 × eq/gt lets MDV's
 byte-per-row `filterArray` upload verbatim and ADR-0005's soft f32 thresholds share the
@@ -149,9 +156,9 @@ nowhere to carry a weight.
 
 ### 2.4 Gaps in the primitive
 
-1. **No encoder-level compaction.** Needed: `encodeCompact(ctx, maskBuf, n, enc) → { indices, countBuf }`
-   into a worst-case `n`-sized buffer, count on-device, one submit. The 3D note's
-   occupied-cell list wants the same.
+1. ~~**No encoder-level compaction.**~~ Landed: `encodeCompact(ctx, maskBuf, n, enc, opts) → { indices, countBuf }`
+   in `streamCompact.ts` — one submit into a worst-case `n`-sized pooled buffer, count left in
+   the scan's `totalBuf`; `opts.mask` picks u8/u32/f32, `opts.keyPrefix` namespaces the pool.
 2. ~~**Pool keys are global.**~~ Fixed: `encodeScan` takes a trailing `keyPrefix` (default
    `"scan"`), so a fused build-plus-occupied-cells pass can give each scan its own pool.
 3. **No segmented scan, no counting-sort helper.** Not needed for the index; a segmented scan
