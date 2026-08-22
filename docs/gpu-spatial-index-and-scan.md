@@ -222,12 +222,12 @@ lighter. The 3D note's `opaque` handle predates ADR-0017; this supersedes it.
 ### 3.4 Query API
 
 ```ts
-// landed (ADR-0022), src/gpu/spatial/gridIndex.ts — 2D; `dims: 3` still to come
-export interface GridIndexOptions { cell: number; stride?: 2 | 3; bounds?: [number, number, number, number]; keyPrefix?: string; maxWorkgroupsPerDim?: number; }
+// landed (ADR-0022), src/gpu/spatial/gridIndex.ts — 2D and 3D (`dims: 3` needs `stride: 3`)
+export interface GridIndexOptions { cell: number; stride?: 2 | 3; dims?: 2 | 3; bounds?: Bounds2 | Bounds3; keyPrefix?: string; maxWorkgroupsPerDim?: number; }
 export interface GridIndexResident { start: GPUBuffer; items: GPUBuffer; M: number; n: number; lattice: GridLattice; }
 export function encodeGridIndex(ctx: GridIndexCtx, points: GPUBuffer, n: number, lattice: GridLattice, enc: GPUCommandEncoder, opts?): GridIndexResident;
 export async function buildGridIndexGpu(points: Float32Array, opts: GridIndexOptions): Promise<BucketGrid>;
-export function latticeFor(xs, ys, cell, bounds?): GridLattice;   // src/spatial/bucketGrid.ts, shared with the CPU build
+export function latticeFor(xs, ys, cell, bounds?, zs?): GridLattice;   // src/spatial/bucketGrid.ts, shared with the CPU build; `zs` ⇒ depth/minZ
 ```
 
 `encodeGridIndex` fuses build + query in one submit; `buildGridIndexGpu` reads back into the
@@ -332,9 +332,12 @@ compiles today's kernel and the morphology bit-exact test stays green.
 5. **Nodata-aware stencils and the N×N→1 decimation** (§4.3). Unblocks the terrain chain:
    morphology over a LIDAR raster with holes, bare-earth opening that does not grow them,
    block means psychogeo can call instead of its own `block_mean`.
-6. **`dims: 3`** once ADR-0004's `points{n, dim}` lands (or via `stride: 3` before it); the
-   3D note's `splatVolume` gather consumes the same three ports and the occupied-cell list is
-   one `encodeCompact` over `counts`.
+6. ~~**`dims: 3`** once ADR-0004's `points{n, dim}` lands (or via `stride: 3` before it).~~
+   **Done 2026-08-22**: `latticeFor`/`buildBucketGrid` take `zs` (+ 6-number bounds) and the
+   lattice gains `depth`/`minZ`; the kernel reads z when the lattice has it (`stride: 3`
+   required, `dims: 3` on `buildGridIndexGpu`). Still open: the 3D note's `splatVolume`
+   gather over the same three ports, and the occupied-cell list as one `encodeCompact` over
+   `counts`; `dims` folds into `Shape.dim` when ADR-0004 lands.
 
 Promoted at step 1 (ADR-0022); the ADR records what is built, this note keeps the reasoning.
 

@@ -19,23 +19,29 @@
 // with the CPU build by construction — `latticeFor` IS the CPU build's, and the kernel repeats its
 // floor-and-clamp — so the two builds agree on which cell a boundary point lands in.
 //
-// 2D only in this slice. The kernel is written against a `stride` so 3-component points can be
-// indexed by their xy, but a third lattice axis waits on a `zs` golden in `bucketGrid.ts`.
-import { type BucketGrid, type GridLattice, latticeFor } from "../../spatial/bucketGrid";
+// Third axis: a lattice with `depth`/`minZ` (from `latticeFor(…, zs)`) makes the kernel take z as
+// well, which needs `stride: 3`. `stride: 3` on a 2D lattice still indexes xy only.
+import { type Bounds2, type Bounds3, type BucketGrid, type GridLattice, latticeFor, numCells } from "../../spatial/bucketGrid";
 import { checkBindingSize, compileShader, dispatchGrid, getDevice, MAX_WORKGROUPS_PER_DIM, sized } from "../device";
 import { encodeScan, ensureBuf, getScanCtx, readBack, type ScanCtx } from "../scan/prefixSum";
 
 /** One thread per point in the histogram and scatter passes. */
 export const GRID_INDEX_WG = 256;
 const WG = GRID_INDEX_WG;
+/** `Uni` below: 10 words, padded to 16-byte alignment. */
+const UNI_BYTES = 48;
 
 export interface GridIndexOptions {
   /** Cell side in world units — the query radius the index is built for. */
   readonly cell: number;
-  /** Floats per point in the buffer (`[x, y]` or `[x, y, z]`); the first two are indexed. */
+  /** Floats per point in the buffer (`[x, y]` or `[x, y, z]`). With `dims: 2` the first two
+   *  are indexed; `dims: 3` needs `stride: 3`. */
   readonly stride?: 2 | 3;
-  /** `[minX, minY, maxX, maxY]`. Without it the points' own bounds are used (a host pass). */
-  readonly bounds?: readonly [number, number, number, number];
+  /** Lattice axes (default 2). `3` indexes z too and takes 6-number bounds. */
+  readonly dims?: 2 | 3;
+  /** `[minX, minY, maxX, maxY]` (`dims: 2`) or `[minX, minY, minZ, maxX, maxY, maxZ]`
+   *  (`dims: 3`). Without it the points' own bounds are used (a host pass). */
+  readonly bounds?: Bounds2 | Bounds3;
   /** Test seam, as in `ScanOptions`: exercise the 2-D dispatch fold at small n. */
   readonly maxWorkgroupsPerDim?: number;
   /** Pool namespace. Two indexes recorded into one command buffer need distinct prefixes or
@@ -50,7 +56,7 @@ export interface GridIndexResident {
   readonly start: GPUBuffer;
   /** `max(n, 1)` u32 point indices grouped by cell. */
   readonly items: GPUBuffer;
-  /** Cell count `cols * rows`. */
+  /** Cell count `cols * rows * (depth ?? 1)`. */
   readonly M: number;
   readonly n: number;
   readonly lattice: GridLattice;
@@ -66,6 +72,8 @@ struct Uni {
   minY: f32,
   cell: f32,
   stride: u32,
+  depth: u32,   // 0 on a 2D lattice: z is not read
+  minZ: f32,
 };
 @group(0) @binding(0) var<uniform> U: Uni;
 @group(0) @binding(1) var<storage, read> pts: array<f32>;
@@ -87,7 +95,12 @@ fn cellOfPoint(i: u32) -> u32 {
   let y = pts[U.stride * i + 1u];
   let cx = clamp(i32(floor((x - U.minX) / U.cell)), 0, i32(U.cols) - 1);
   let cy = clamp(i32(floor((y - U.minY) / U.cell)), 0, i32(U.rows) - 1);
-  return u32(cy) * U.cols + u32(cx);
+  var cz = 0i;
+  if (U.depth > 0u) {
+    let z = pts[U.stride * i + 2u];
+    cz = clamp(i32(floor((z - U.minZ) / U.cell)), 0, i32(U.depth) - 1);
+  }
+  return u32(cx) + U.cols * (u32(cy) + U.rows * u32(cz));
 }
 
 @compute @workgroup_size(${WG})
@@ -159,20 +172,21 @@ export function encodeGridIndex(
   const stride = opts.stride ?? 2;
   const maxWg = opts.maxWorkgroupsPerDim ?? MAX_WORKGROUPS_PER_DIM;
   const key = opts.keyPrefix ?? "gridIndex";
-  const M = lattice.cols * lattice.rows;
+  if (lattice.depth !== undefined && stride !== 3) throw new Error(`gridIndex: a 3D lattice needs stride 3, got ${stride}`);
+  const M = numCells(lattice);
   // A sparse lattice (M ≫ n) is bounded by the scan over M + 1 cells, not by n. Occupied-cell
   // compaction is the real fix for that case; until then this is a loud failure, not a silent one.
   checkBindingSize(device, `gridIndex: ${M} cells`, (M + 1) * 4);
   checkBindingSize(device, `gridIndex: ${n} points`, Math.max(n, 1) * stride * 4);
 
-  const uni = ensureBuf(device, `${key}:uni`, 32, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST);
+  const uni = ensureBuf(device, `${key}:uni`, UNI_BYTES, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST);
   const cellOf = ensureBuf(device, `${key}:cellOf`, Math.max(n, 1) * 4, storageRw());
   const counts = ensureBuf(device, `${key}:counts`, (M + 1) * 4, storageRw());
   const cursor = ensureBuf(device, `${key}:cursor`, (M + 1) * 4, storageRw());
   const items = ensureBuf(device, `${key}:items`, Math.max(n, 1) * 4, storageRw());
 
   const { x: gridX, y: gridY } = dispatchGrid(Math.ceil(n / WG), maxWg);
-  const u = new ArrayBuffer(32);
+  const u = new ArrayBuffer(UNI_BYTES);
   const dv = new DataView(u);
   dv.setUint32(0, n, true);
   dv.setUint32(4, gridX, true);
@@ -182,13 +196,15 @@ export function encodeGridIndex(
   dv.setFloat32(20, lattice.minY, true);
   dv.setFloat32(24, lattice.cell, true);
   dv.setUint32(28, stride, true);
+  dv.setUint32(32, lattice.depth ?? 0, true);
+  dv.setFloat32(36, lattice.minZ ?? 0, true);
   device.queue.writeBuffer(uni, 0, u);
 
   const group = (heads: GPUBuffer) =>
     device.createBindGroup({
       layout: ctx.layout,
       entries: [
-        { binding: 0, resource: sized(uni, 32) },
+        { binding: 0, resource: sized(uni, UNI_BYTES) },
         { binding: 1, resource: sized(points, Math.max(n, 1) * stride * 4) },
         { binding: 2, resource: sized(cellOf, Math.max(n, 1) * 4) },
         { binding: 3, resource: sized(heads, (M + 1) * 4) },
@@ -226,7 +242,7 @@ export function encodeGridIndex(
 /**
  * Build the index on the GPU and read it back as the host `BucketGrid`, so anything written
  * against `buildBucketGrid` can take this instead. `points` is `[x0, y0, x1, y1, …]` (or xyz
- * with `stride: 3`).
+ * with `stride: 3`; `dims: 3` indexes the z as well).
  *
  * This is the test and drop-in path. A kernel that walks the index on the device should use
  * `encodeGridIndex` and never bring `start`/`items` to the host.
@@ -235,16 +251,20 @@ export async function buildGridIndexGpu(points: Float32Array, opts: GridIndexOpt
   const ctx = await getGridIndexCtx();
   const { device } = ctx.scan;
   const stride = opts.stride ?? 2;
+  const dims = opts.dims ?? 2;
+  if (dims === 3 && stride !== 3) throw new Error(`gridIndex: dims 3 needs stride 3, got ${stride}`);
   const n = Math.floor(points.length / stride);
   const key = opts.keyPrefix ?? "gridIndex";
 
   const xs = new Float32Array(n);
   const ys = new Float32Array(n);
+  const zs = dims === 3 ? new Float32Array(n) : undefined;
   for (let i = 0; i < n; i++) {
     xs[i] = points[stride * i]!;
     ys[i] = points[stride * i + 1]!;
+    if (zs) zs[i] = points[stride * i + 2]!;
   }
-  const lattice = latticeFor(xs, ys, opts.cell, opts.bounds);
+  const lattice = latticeFor(xs, ys, opts.cell, opts.bounds, zs);
 
   const ptsBuf = ensureBuf(device, `${key}:pts`, Math.max(n, 1) * stride * 4, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST);
   if (n > 0) device.queue.writeBuffer(ptsBuf, 0, points, 0, n * stride);
