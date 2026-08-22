@@ -102,6 +102,7 @@ export default defineConfig({
             { label: "KDE density splat", slug: "primitives/kde-splat" },
             { label: "Separable convolution", slug: "primitives/separable-convolution" },
             { label: "Morphology (min/max)", slug: "primitives/morphology" },
+            { label: "Decimate (block reduce)", slug: "primitives/decimate" },
             { label: "Getis-Ord hotspots", slug: "primitives/getis-ord-hotspots" },
             { label: "Fuzzy adjacency", slug: "primitives/fuzzy-adjacency" },
             { label: "k-th neighbour distance", slug: "primitives/kth-neighbour-distance" },
