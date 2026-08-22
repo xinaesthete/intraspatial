@@ -12,7 +12,7 @@ The 2026-07-23 audit found a clean pattern, and it is the reason this file exist
 > did not land was written about direction.**
 
 Landed: 0001, 0002, 0003, 0008, 0011, 0017, 0019, 0010-loader. Partial: 0005 (kernel + filterOps, no
-facet), 0022 (2D index built, no op / 3D). Not landed: 0006, 0009, 0012, 0014, 0016, 0018 — none of which are *wrong*, and several of which are good. They were simply speculation
+facet), 0022 (index built + graph op), 0023 (bundles land, feedback of one does not). Not landed: 0006, 0009, 0012, 0014, 0016, 0018 — none of which are *wrong*, and several of which are good. They were simply speculation
 wearing the costume of a decision, which turns the log into a source of guilt rather than a map.
 
 So:
@@ -36,7 +36,7 @@ accumulated in the first place. **A record earns the ADR form by being built, no
 believed in.**
 
 Numbers 0019–0021 are **retired, not reused**, so commit history keeps pointing at something real.
-**The next ADR is 0023.**
+**The next ADR is 0024.**
 
 ## Status
 
@@ -66,6 +66,7 @@ Numbers 0019–0021 are **retired, not reused**, so commit history keeps pointin
 | [0018](0018-field-domains-placement-and-resolution.md) | Field domains: extent, placement, resolution | draft | **partial** | `placement` on `GpuField`+`FieldValue` + `inferPlacement`/`outPlacements` landed (2026-08); `boundsOf` + `ParamSpec.units` remain |
 | [0019](0019-package-surface-and-prebuilt-kernels.md) | Package surface: `intraspatial` subpath exports, pre-transformed kernels, Dawn optional | accepted | **landed** | `package.json` exports, `vite.lib.config.ts`, `tsconfig.build.json`, barrels, lazy Dawn in `device.ts` |
 | [0022](0022-gpu-uniform-grid-index.md) | GPU uniform-grid spatial index (2D, on-device build) | accepted | **partial** | `src/gpu/spatial/gridIndex.ts`, `latticeFor` in `bucketGrid.ts`, consumed by `crossPcf.ts` + `tcm.ts` (2026-08-22); no graph op, no 3D |
+| [0023](0023-composite-values-and-borrowed-leases.md) | Composite field values (bundles) + borrowed resident leases | proposed | **partial** | `bundle` shape + `parts`, borrow liveness in `executor.ts`, `bundleOps.ts` factories, `gridIndex` + `cellCounts` (2026-08-22); no bundle feedback |
 
 ⚠ **Two ADRs share the number 0010** (`procedural-geometry-composable-ops` and
 `spatialdata-js-as-loader-source`). Renumbering breaks inbound links in `docs/gpu-resource-sync.md`

@@ -1,17 +1,18 @@
 // Tier-2 graph node wrapping `encodeGridIndex` (points -> offset list) — ADR-0022's index as a
 // node, design note `docs/gpu-spatial-index-and-scan.md` §3.3.
 //
-// Three output ports rather than one opaque handle, because the executor tracks resident
-// ownership through `v.buffer` alone (`executor.ts`'s `own(...)`): buffers hidden inside an
-// opaque `payload` would never be released. So `start` and `items` are ordinary `points{n}`
-// ports with dtype `u32`, and only the (host-sized, numeric-free) lattice travels as a payload.
+// ONE output: a `gridIndex` **bundle** (ADR-0023) whose parts are `start`, `items` and `lattice`.
+// Three sibling ports was the first shape (ADR-0022), and it let a graph wire `start` from one
+// index and `items` from another — both are `points`/u32, so the mistake typechecks and returns a
+// plausible wrong neighbourhood. A bundle makes that unrepresentable. `gridIndex.start` and its
+// siblings (from `extractOp`) take a part out, borrowing the buffer rather than copying it.
 //
-// ## Two things a consumer must know
+// ## What a consumer must know
 //
-// **The outputs are u32, and the executor's resident bridge is f32-only** (`residentF32Count`
-// throws on anything else, ADR-0017 stage 1). So `pull()` on `start`/`items` fails by design:
-// these ports feed *resident* consumers, and a test reads them through the device. `pullResident`
-// is the supported path; `mode: "cpu"` runs `cpuGolden`, which produces host arrays instead.
+// **`start` and `items` are u32, and the host bridge is f32-only** (ADR-0017 stage 1), so a
+// `pull()` of the bundle throws naming the offending part. They feed *resident* consumers
+// (`cellCounts` is the first); `pullResident` hands the bundle over whole, and `mode: "cpu"` runs
+// `cpuGolden`, which produces host arrays instead.
 //
 // **The lattice is a param, not a measurement.** `inferShapes` must produce `points{M+1}` at
 // graph-build time, when no values exist, so the extent cannot be read off the points — it comes
@@ -23,10 +24,17 @@ import { type BucketGrid, buildBucketGrid, type GridLattice, latticeFor, numCell
 import { encodeGridIndex, getGridIndexCtx } from "../../spatial/gridIndex";
 import type { FieldValue, ResolvedPlacement, Shape } from "../handle";
 import type { ExecCtx, OpType, Params } from "../op";
+import { type BundleSpec, bundleValue, combineOp, extractOp } from "./bundleOps";
+
+/** The bundle this op produces; `extractOp`/`combineOp` generate its accessors from it. */
+export const GRID_INDEX_BUNDLE: BundleSpec = { name: "gridIndex", label: "Grid index", parts: ["start", "items", "lattice"] };
 
 /** What the `lattice` port carries. Shaped so a consumer can rebuild the cell arithmetic without
  *  reading either buffer, and so a readback can be compared against `buildBucketGrid`. */
 export interface GridLatticePayload extends GridLattice {
+  /** Discriminator — the part's *shape* is a grid (that is what makes a consumer's extent
+   *  inferable), so the payload is what says "this grid is an index lattice". */
+  readonly kind: typeof GRID_LATTICE;
   /** Cell count (`cols * rows`), i.e. `start.length - 1`. */
   readonly cells: number;
   /** Points indexed. */
@@ -35,6 +43,7 @@ export interface GridLatticePayload extends GridLattice {
   readonly placement?: ResolvedPlacement;
 }
 
+/** Tag on the lattice payload, so a reader can recognise it. */
 export const GRID_LATTICE = "gridLattice";
 
 function pointsN(s: Shape): number {
@@ -78,7 +87,7 @@ function latticePlacement(pts: ResolvedPlacement | undefined, lattice: GridLatti
 }
 
 function payload(lattice: GridLattice, n: number, placement?: ResolvedPlacement): GridLatticePayload {
-  return { ...lattice, cells: numCells(lattice), n, placement };
+  return { kind: GRID_LATTICE, ...lattice, cells: numCells(lattice), n, placement };
 }
 
 export const gridIndexOp: OpType = {
@@ -93,11 +102,7 @@ export const gridIndexOp: OpType = {
       "is cell b's slice of `items`. Both outputs are u32 and stay on the device.",
   },
   inputs: [{ name: "points", kind: "points", dtype: "f32" }],
-  outputs: [
-    { name: "start", kind: "points", dtype: "u32" },
-    { name: "items", kind: "points", dtype: "u32" },
-    { name: "lattice", kind: "opaque" },
-  ],
+  outputs: [{ name: "index", kind: "bundle" }],
   params: [
     { name: "cell", type: "number", default: 1, min: 1e-6, describe: "Cell side in world units — set it to the query radius." },
     { name: "minX", type: "number", default: 0, describe: "Lattice origin x." },
@@ -109,15 +114,24 @@ export const gridIndexOp: OpType = {
     const n = pointsN(inputs[0]!);
     const lattice = latticeOf(params);
     return [
-      { kind: "points", n: numCells(lattice) + 1 },
-      { kind: "points", n: Math.max(n, 1) },
-      { kind: "opaque", name: GRID_LATTICE },
+      {
+        kind: "bundle",
+        name: GRID_INDEX_BUNDLE.name,
+        parts: {
+          start: { kind: "points", n: numCells(lattice) + 1 },
+          items: { kind: "points", n: Math.max(n, 1) },
+          // The lattice part IS the cell grid, so its shape says so: `cols × rows`. That makes
+          // a consumer's output extent (`cellCounts`) inferable at build time, and it is more
+          // honest than `opaque` — the payload beside it carries cell size, origin and placement.
+          lattice: { kind: "grid", width: lattice.cols, height: lattice.rows },
+        },
+      },
     ];
   },
-  inferPlacement(inputs, params) {
-    // `start` and `items` are index lists — they have no position, so they stay array-space
-    // (the pass-through default would wrongly claim the points' world for them).
-    return [undefined, undefined, latticePlacement(inputs[0], latticeOf(params))];
+  inferPlacement() {
+    // The bundle is not itself placed: `start`/`items` are index lists with no position, and the
+    // `lattice` part carries the cell grid's placement (stamped in `execute` / `cpuGolden`).
+    return [undefined];
   },
   resident: true,
   async execute(ctx: ExecCtx, inputs: FieldValue[], params: Params) {
@@ -149,14 +163,18 @@ export const gridIndexOp: OpType = {
 
     if (uploaded) ctx.backend.release(uploaded);
 
+    const place = latticePlacement(pts.placement, lattice);
     return [
-      { shape: { kind: "points", n: cells + 1 }, dtype: "u32", buffer: startOut },
-      { shape: { kind: "points", n: Math.max(n, 1) }, dtype: "u32", buffer: itemsOut },
-      {
-        shape: { kind: "opaque", name: GRID_LATTICE },
-        dtype: "u32",
-        payload: payload(lattice, n, latticePlacement(pts.placement, lattice)),
-      },
+      bundleValue(GRID_INDEX_BUNDLE, [
+        { shape: { kind: "points", n: cells + 1 }, dtype: "u32", buffer: startOut },
+        { shape: { kind: "points", n: Math.max(n, 1) }, dtype: "u32", buffer: itemsOut },
+        {
+          shape: { kind: "grid", width: lattice.cols, height: lattice.rows },
+          dtype: "f32",
+          payload: payload(lattice, n, place),
+          placement: place,
+        },
+      ]),
     ];
   },
   cpuGolden(inputs, params) {
@@ -178,14 +196,29 @@ export const gridIndexOp: OpType = {
     ]);
     const items = new Uint32Array(Math.max(n, 1));
     items.set(grid.items);
+    const place = latticePlacement(pts.placement, lattice);
     return [
-      { shape: { kind: "points", n: grid.start.length }, dtype: "u32", data: new Uint32Array(grid.start) },
-      { shape: { kind: "points", n: Math.max(n, 1) }, dtype: "u32", data: items },
-      {
-        shape: { kind: "opaque", name: GRID_LATTICE },
-        dtype: "u32",
-        payload: payload(lattice, n, latticePlacement(pts.placement, lattice)),
-      },
+      bundleValue(GRID_INDEX_BUNDLE, [
+        { shape: { kind: "points", n: grid.start.length }, dtype: "u32", data: new Uint32Array(grid.start) },
+        { shape: { kind: "points", n: Math.max(n, 1) }, dtype: "u32", data: items },
+        {
+          shape: { kind: "grid", width: lattice.cols, height: lattice.rows },
+          dtype: "f32",
+          payload: payload(lattice, n, place),
+          placement: place,
+        },
+      ]),
     ];
   },
 };
+
+/** `gridIndex.start` / `.items` / `.lattice` — take one part out, borrowing the buffer rather
+ *  than copying it (ADR-0023). */
+export const gridIndexPartOps: OpType[] = [
+  extractOp(GRID_INDEX_BUNDLE, "start", "Per-cell start offsets into `items` (u32, device-only)."),
+  extractOp(GRID_INDEX_BUNDLE, "items", "Point indices grouped by cell (u32, device-only)."),
+  extractOp(GRID_INDEX_BUNDLE, "lattice", "The lattice the index was built over — cols, rows, cell, origin."),
+];
+
+/** `gridIndex.bundle` — reassemble an index from parts, for a producer that builds them itself. */
+export const gridIndexCombineOp: OpType = combineOp(GRID_INDEX_BUNDLE, { start: "points", items: "points", lattice: "opaque" });

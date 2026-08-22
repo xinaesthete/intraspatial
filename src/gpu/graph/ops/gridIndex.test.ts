@@ -25,19 +25,30 @@ const placed: ResolvedPlacement = {
   },
 };
 
+/** The bundle shape the op declares, or a failure if it declared something else. */
+function bundleParts(params: Record<string, unknown>, n = 3) {
+  const s = op().inferShapes([{ kind: "points", n }], params)[0]!;
+  if (s.kind !== "bundle") throw new Error(`expected a bundle, got ${s.kind}`);
+  return s;
+}
+
 describe("gridIndexOp — shapes", () => {
-  it("sizes start as cells + 1 and items as n, matching buildBucketGrid", () => {
+  it("declares ONE bundle whose parts size to the lattice and the cloud", () => {
     const cpu = buildBucketGrid([1, 2, 3], [4, 5, 6], 10, [BOUNDS.minX, BOUNDS.minY, BOUNDS.maxX, BOUNDS.maxY]);
-    const shapes = op().inferShapes([{ kind: "points", n: 3 }], { cell: 10, ...BOUNDS });
-    expect(shapes).toEqual([
-      { kind: "points", n: cpu.cols * cpu.rows + 1 },
-      { kind: "points", n: 3 },
-      { kind: "opaque", name: "gridLattice" },
-    ]);
+    expect(bundleParts({ cell: 10, ...BOUNDS })).toEqual({
+      kind: "bundle",
+      name: "gridIndex",
+      parts: {
+        start: { kind: "points", n: cpu.cols * cpu.rows + 1 },
+        items: { kind: "points", n: 3 },
+        // The lattice part IS the cell grid, which is what makes a consumer's extent inferable.
+        lattice: { kind: "grid", width: cpu.cols, height: cpu.rows },
+      },
+    });
   });
 
   it("keeps items bindable for an empty cloud", () => {
-    expect(op().inferShapes([{ kind: "points", n: 0 }], { cell: 10, ...BOUNDS })[1]).toEqual({ kind: "points", n: 1 });
+    expect(bundleParts({ cell: 10, ...BOUNDS }, 0).parts.items).toEqual({ kind: "points", n: 1 });
   });
 
   it("rejects a non-points input and bad params", () => {
@@ -49,11 +60,17 @@ describe("gridIndexOp — shapes", () => {
 });
 
 describe("gridIndexOp — placement", () => {
+  // The bundle itself is unplaced; the placement lives on its `lattice` part, which `execute` and
+  // `cpuGolden` stamp — so the algebra is checked by running the golden.
+  const latticePlacementOf = (params: Record<string, unknown>) =>
+    op().cpuGolden!(
+      [{ shape: { kind: "points", n: 2 }, dtype: "f32", data: new Float32Array([1, 2, 3, 4]), placement: placed }],
+      params,
+    )[0]!.parts?.lattice?.placement;
+
   it("scales the points' axes by the cell size and moves the origin to the lattice corner", () => {
-    const [start, items, lattice] = op().inferPlacement!([placed], { cell: 10, ...BOUNDS, minX: 4, minY: 6 });
-    // Index lists have no position.
-    expect([start, items]).toEqual([undefined, undefined]);
-    expect(lattice).toEqual({
+    expect(op().inferPlacement!([placed], { cell: 10, ...BOUNDS })).toEqual([undefined]);
+    expect(latticePlacementOf({ cell: 10, ...BOUNDS, minX: 4, minY: 6 })).toEqual({
       system: "global",
       // origin + minX·axes[0] + minY·axes[1] = (10 + 4·2, 5 + 6·3, 0); axes ×10, z untouched.
       worldFromArray: {
@@ -69,7 +86,7 @@ describe("gridIndexOp — placement", () => {
 
   it("maps cell (cx, cy) to the world position of that cell's corner", () => {
     const cell = 10;
-    const lattice = op().inferPlacement!([placed], { cell, ...BOUNDS })[2]!;
+    const lattice = latticePlacementOf({ cell, ...BOUNDS })!;
     const at = (cx: number, cy: number) => {
       const { origin, axes } = lattice.worldFromArray;
       return [origin[0] + cx * axes[0][0] + cy * axes[1][0], origin[1] + cx * axes[0][1] + cy * axes[1][1]];
@@ -80,18 +97,56 @@ describe("gridIndexOp — placement", () => {
     expect(at(0, 0)).toEqual([10, 5]);
   });
 
-  it("leaves everything array-space when the points are unplaced", () => {
-    expect(op().inferPlacement!([undefined], { cell: 10, ...BOUNDS })).toEqual([undefined, undefined, undefined]);
+  it("leaves the lattice array-space when the points are unplaced", () => {
+    const v = op().cpuGolden!([{ shape: { kind: "points", n: 1 }, dtype: "f32", data: new Float32Array([1, 2]) }], {
+      cell: 10,
+      ...BOUNDS,
+    })[0]!;
+    expect(op().inferPlacement!([undefined], { cell: 10, ...BOUNDS })).toEqual([undefined]);
+    expect(v.parts?.lattice?.placement).toBeUndefined();
   });
 
-  it("stamps the lattice placement onto the built field", () => {
+  it("gives the graph one bundle output, unplaced", () => {
     const g = new Graph();
     const pts = g.source(
       { shape: { kind: "points", n: 2 }, dtype: "f32", data: new Float32Array([1, 2, 3, 4]), placement: placed },
       "points",
     );
-    const [start, , lattice] = g.op("gridIndex", { points: pts }, { cell: 10, ...BOUNDS });
-    expect(start!.placement).toBeUndefined();
-    expect(lattice!.placement?.worldFromArray.axes[0]).toEqual([20, 0, 0]);
+    const outs = g.op("gridIndex", { points: pts }, { cell: 10, ...BOUNDS });
+    expect(outs.length).toBe(1);
+    expect(outs[0]!.shape.kind).toBe("bundle");
+    expect(outs[0]!.placement).toBeUndefined();
+  });
+});
+
+describe("gridIndex parts — extract and combine", () => {
+  const bundleOf = () =>
+    op().cpuGolden!([{ shape: { kind: "points", n: 2 }, dtype: "f32", data: new Float32Array([1, 2, 3, 4]), placement: placed }], {
+      cell: 10,
+      ...BOUNDS,
+    })[0]!;
+
+  it("hands back the very same part value, not a copy", () => {
+    const bundle = bundleOf();
+    for (const part of ["start", "items", "lattice"] as const) {
+      const extract = getOp(`gridIndex.${part}`);
+      expect(extract.inferShapes([bundle.shape], {})).toEqual([bundle.parts![part]!.shape]);
+      // Identity, not equality: extraction BORROWS (ADR-0023), so a copy here would be the bug.
+      expect(extract.cpuGolden!([bundle], {})[0]).toBe(bundle.parts![part]);
+    }
+  });
+
+  it("rejects a bundle of the wrong type", () => {
+    const wrong = { kind: "bundle", name: "knn", parts: {} } as const;
+    expect(() => getOp("gridIndex.start").inferShapes([wrong], {})).toThrow(/expected a "gridIndex" bundle/);
+    expect(() => getOp("gridIndex.start").inferShapes([{ kind: "points", n: 3 }], {})).toThrow(/expected a "gridIndex" bundle/);
+  });
+
+  it("round-trips through combine", () => {
+    const bundle = bundleOf();
+    const parts = ["start", "items", "lattice"].map((p) => bundle.parts![p]!);
+    const combined = getOp("gridIndex.bundle").cpuGolden!(parts, {})[0]!;
+    expect(combined.shape).toEqual(bundle.shape);
+    for (const p of ["start", "items", "lattice"]) expect(combined.parts![p]).toBe(bundle.parts![p]);
   });
 });

@@ -204,7 +204,10 @@ via `inferPlacement`.
 
 ### 3.3 Handle shape
 
-**Decision: three output ports, no new `Shape` kind.**
+**Decision: three output ports, no new `Shape` kind.** — *superseded 2026-08-22 by
+[ADR-0023](decisions/0023-composite-values-and-borrowed-leases.md): the op emits ONE `gridIndex`
+bundle whose parts are these three, because sibling ports can be wired from different indexes.
+The reasoning below is why the parts are buffers rather than a payload, which still holds.*
 
 ```ts
 outputs: [

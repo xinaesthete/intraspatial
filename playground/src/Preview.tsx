@@ -113,6 +113,13 @@ function drawPersistence(canvas: HTMLCanvasElement, pairs: PersistencePair[]) {
   ctx.restore();
 }
 
+/** Which values get the canvas. An opaque one only if it is actually a persistence diagram —
+ *  every other payload would render as an empty birth/death plot. */
+function canvasKinds(value: FieldValue, s: NonNullable<FieldValue["shape"]>): boolean {
+  if (s.kind === "grid" || s.kind === "matrix") return true;
+  return s.kind === "opaque" && !!persistencePairs(value);
+}
+
 /** A persistence diagram, or null for any other opaque payload. `vietorisRips` is not the only
  *  op that emits `opaque` any more — `gridIndex` emits a lattice descriptor — so the diagram
  *  renderer has to ask rather than assume. */
@@ -148,8 +155,9 @@ export function Preview({ value, error, stale }: { value: FieldValue | null; err
     const s = value.shape;
     if (s.kind === "grid" && value.data) drawHeatmap(canvas, project(value.data, s.width * s.height, lanes, lane), s.width, s.height);
     else if (s.kind === "matrix" && value.data) drawHeatmap(canvas, value.data, s.cols, s.rows);
-    else if (s.kind === "opaque" && persistencePairs(value)) {
-      drawPersistence(canvas, persistencePairs(value)!);
+    else if (s.kind === "opaque") {
+      const pairs = persistencePairs(value);
+      if (pairs) drawPersistence(canvas, pairs);
     }
   }, [value, lane, lanes]);
 
@@ -158,7 +166,7 @@ export function Preview({ value, error, stale }: { value: FieldValue | null; err
   // An opaque value only gets the canvas if it is actually a persistence diagram — every other
   // payload (a grid-index lattice, say) would otherwise render as an empty birth/death plot,
   // which reads as "computed nothing" rather than "not a diagram".
-  const showCanvas = s ? s.kind === "grid" || s.kind === "matrix" || (s.kind === "opaque" && !!value && !!persistencePairs(value)) : false;
+  const showCanvas = !!s && !!value && canvasKinds(value, s);
 
   return (
     <div className="preview">

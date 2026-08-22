@@ -13,13 +13,14 @@ const reg = (op: OpType): void => {
 };
 
 import { addGridsOp } from "./addGrids";
+import { cellCountsOp } from "./cellCounts";
 import { convolveSeparableOp } from "./convolveSeparable";
 import { decimateOp } from "./decimate";
 import { feedbackOp } from "./feedback";
 import { fuzzyAdjacencyOp } from "./fuzzyAdjacency";
 import { fuzzyAdjacencyAdaptiveOp } from "./fuzzyAdjacencyAdaptive";
 import { getisOrdOp } from "./getisOrd";
-import { gridIndexOp } from "./gridIndex";
+import { gridIndexCombineOp, gridIndexOp, gridIndexPartOps } from "./gridIndex";
 import { kthNeighborDistanceOp } from "./kthNeighborDistance";
 import { membershipToDistanceOp } from "./membershipToDistance";
 import { morphologyOp } from "./morphology";
@@ -43,6 +44,9 @@ export function registerBuiltinOps(): void {
   reg(morphologyOp);
   reg(decimateOp);
   reg(gridIndexOp);
+  for (const op of gridIndexPartOps) reg(op);
+  reg(gridIndexCombineOp);
+  reg(cellCountsOp);
   // fuzzy TDA front
   reg(kthNeighborDistanceOp);
   reg(fuzzyAdjacencyOp);

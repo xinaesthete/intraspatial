@@ -42,7 +42,15 @@ default and the golden (`gridIndexQuery.gpu.test.ts`). TypeGPU 0.11 note: the ru
 schema for pointer params must be `d.arrayOf(d.u32, 0)` — the count-less form is a comptime
 placeholder that neither indexes nor resolves.
 
-## Graph op (2026-08-22)
+## Graph op (2026-08-22) — superseded by [ADR-0023](0023-composite-values-and-borrowed-leases.md)
+
+The three-port shape below shipped for one afternoon and was replaced the same day: `start` and
+`items` are both `points`/u32, so a graph could wire them from *different* indexes and get a
+plausible wrong answer. The op now emits ONE `gridIndex` bundle; `gridIndex.start` and its
+siblings take a part out. Everything below still describes what the op computes — only the port
+shape changed.
+
+## Original three-port shape
 
 [`ops/gridIndex.ts`](../../src/gpu/graph/ops/gridIndex.ts), the note's §3.3 shape: **three output
 ports**, `start` (`points{M+1}`, u32), `items` (`points{n}`, u32) and `lattice` (opaque
@@ -70,5 +78,6 @@ array-space.
 
 - A resident `separate` / `spring` force op reading the index (note §5 step 3); CkNN and fuzzy
   adjacency still call `kthNeighborDistanceGpu` brute force.
+- `cellCounts` (bundle → per-cell counts) is the only graph-level consumer so far.
 - The query helpers (`gridIndexQuery.ts`) are `vec2`-shaped: no `dz` loop yet for a 3D lattice.
 - Occupied-cell compaction for sparse lattices (needs `encodeCompact`, note §2.4).
