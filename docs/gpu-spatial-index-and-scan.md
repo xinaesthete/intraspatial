@@ -21,7 +21,7 @@ and the first slice swaps that host build out from under `crossPcf.ts` and `tcm.
 | [`knn.ts`](../src/gpu/spatial/knn.ts), [`kthNeighborDistance.ts`](../src/gpu/spatial/kthNeighborDistance.ts) | WGSL templates (private k-array TGSL cannot express), O(N²·k) | same |
 | [`splatDensity.ts`](../src/gpu/spatial/splatDensity.ts) | scatter through the blend unit; no index needed in 2D; no 3D equivalent (ADR-0004) | the 3D note's gather |
 | [`crossPcf.ts`](../src/gpu/spatial/crossPcf.ts), [`tcm.ts`](../src/gpu/spatial/tcm.ts) | `buildBucketGrid` from [`src/spatial/bucketGrid.ts`](../src/spatial/bucketGrid.ts) on the host, two arrays uploaded, 3×3 walk in WGSL | the same arrays built on-device |
-| [`forces.ts`](../src/gpu/sim/forces.ts) `separateForce`/`cohereForce`/`springForce`, [`danceForces.ts`](../src/gpu/graph/ops/danceForces.ts) | O(N) host loops per body; **no GPU pairwise-force kernel exists** (`execute` and `cpuGolden` are the same `computeForce`) | neighbour query with `cell = radius` (the "displacement-field flagship" layout — cited from the brief, not `gap-analysis.md`) |
+| [`forces.ts`](../src/gpu/sim/forces.ts) `separateForce`/`cohereForce`/`springForce`, [`danceForces.ts`](../src/gpu/graph/ops/danceForces.ts) | O(N) host loops per body; **no GPU pairwise-force kernel exists** (`execute` and `cpuGolden` are the same `computeForce`) | neighbour query with `cell = radius` (the force-directed layout behind TerraCognita's displacement-field terrain, which this engine serves as a consumer) |
 | [`morphology.ts`](../src/gpu/spatial/morphology.ts), [`convolveSeparable.ts`](../src/gpu/spatial/convolveSeparable.ts) | clamp-to-edge gathers with no invalid tap: a nodata sentinel is a hole erosion spreads or a value the mean averages in | §4 |
 
 The consumer contract `crossPcf.ts` and `tcm.ts` already run, and its host producer:
@@ -323,7 +323,7 @@ compiles today's kernel and the morphology bit-exact test stays green.
    brute force as golden. Unblocks O(N·k) point statistics past `knn.ts`'s O(N²) wall; CkNN
    and fuzzy adjacency follow since they compose `kthNeighborDistanceGpu`.
 3. **Resident index op** (§3.3) and a resident `separate` / `spring` force op reading it.
-   Unblocks force-directed layout at scale (the displacement-field flagship) and the first
+   Unblocks force-directed layout at scale (TerraCognita's displacement-field terrain) and the first
    per-tick resident chain (ADR-0017 stage 3 feedback state).
 4. **`encodeCompact` + the `support` facet** (§4.2, §4.4 steps 1–4), pointwise and reduction
    rules. Unblocks the mask ⇄ index duality, weighted null models, MDV filtered density with
