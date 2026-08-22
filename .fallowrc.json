@@ -1,0 +1,31 @@
+{
+  // JSONC — fallow reads these comments. Adopted 2026-08-22 (see docs/fallow-findings.md once PR-D lands).
+  "$schema": "./node_modules/fallow/schema.json",
+
+  // Entry points. ADR-0019 makes every non-test `src/` module public API (the `./*` export
+  // wildcard), so "exported but not imported inside this repo" is NOT dead code for `src/`.
+  // Seeding all of src as entries says exactly that; the vitest/vite/astro plugins add the
+  // tests, playground pages and docs-site on their own. `scripts/` are CLI entry points.
+  "entry": ["src/**/*.ts", "!src/**/*.test.ts", "scripts/*.ts", "scripts/*.mjs", "vite.lib.config.ts"],
+  // The root package is consumed outside this graph (it is the published library).
+  "publicPackages": ["intraspatial"],
+  "workspaces": { "patterns": ["playground", "docs-site"] },
+
+  // Standalone HTML explainers/proposals embed ad-hoc JS/CSS; biome already refuses to parse
+  // them and they are documents, not code.
+  "ignorePatterns": ["docs/**/*.html", "viz/**"],
+
+  "duplicates": { "minOccurrences": 3 },
+  "rules": {
+    "unused-dependencies": "warn"
+  },
+  // The PR gate (`pnpm lint:fallow`): only findings a changeset INTRODUCES drive the verdict;
+  // inherited findings are reported with attribution. Baselines below make whole-repo runs
+  // report deltas only; re-save them (`pnpm fallow:baseline`) when a cleanup PR lands.
+  "audit": {
+    "gate": "new-only",
+    "deadCodeBaseline": ".fallow-baseline/dead-code.json",
+    "healthBaseline": ".fallow-baseline/health.json",
+    "dupesBaseline": ".fallow-baseline/dupes.json"
+  }
+}

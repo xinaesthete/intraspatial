@@ -42,6 +42,15 @@ jobs:
       # depends on the PUBLISHED openjph-wasm, which installs normally and the volume viewer needs.)
       - run: pnpm install --frozen-lockfile
 
+      # Code-quality gate (fallow): dead code / complexity / duplication scoped to the changed files,
+      # new-vs-inherited attributed. Non-blocking until the committed baselines are trusted.
+      - name: fallow audit (non-blocking)
+        if: github.event_name == 'pull_request'
+        continue-on-error: true
+        run: |
+          git fetch --no-tags --depth=1 origin "${{ github.base_ref }}"
+          pnpm exec fallow audit --base "origin/${{ github.base_ref }}" --format github-annotations
+
       # The viewer prototypes are a separate Vite multi-page app. Build them first; the docs build's
       # sync-playground step copies the result into public/playground/ so Pages serves them at
       # <base>/playground/*.html.
