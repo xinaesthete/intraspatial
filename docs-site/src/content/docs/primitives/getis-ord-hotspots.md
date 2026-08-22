@@ -31,7 +31,7 @@ point cloud becomes a hotspot map in one call.
 ## Usage
 
 ```ts
-import { getisOrdGpu, pointHotspotsGpu } from 'tgpu-htj2k/gpu/spatial/getisOrd';
+import { getisOrdGpu, pointHotspotsGpu } from 'intraspatial/gpu/spatial/getisOrd';
 
 // on an existing grid
 const { z } = await getisOrdGpu(grid, w, h, { radius: 2 });

@@ -45,7 +45,7 @@ Numbers 0019–0021 are **retired, not reused**, so commit history keeps pointin
 
 | # | Title | Claimed | Actual | What's in the code |
 |---|---|---|---|---|
-| [0001](0001-language-split.md) | Rust/wasm CPU core + TS/TypeGPU GPU | accepted | **landed** | `rust/htj2k-core`, `src/gpu` |
+| [0001](0001-language-split.md) | Rust/wasm CPU core + TS/TypeGPU GPU | accepted | **landed** (moved to `tgpu-htj2k` repo) | `src/gpu`; Rust core now in the codec repo |
 | [0002](0002-runtime-node-not-bun.md) | Node toolchain, not Bun | accepted | **landed** | vitest configs, CLAUDE.md override |
 | [0003](0003-use-gpu-tgsl-kernels.md) | `"use gpu"` TGSL kernels | accepted | **landed** | used throughout `src/gpu` |
 | [0004](0004-field-type-model-and-volumetric-splat.md) | Field type model + volumetric splat | proposed | **partial** | element algebra + `axes` (via 0015) landed; `splatDensity.ts` exists |
@@ -64,15 +64,16 @@ Numbers 0019–0021 are **retired, not reused**, so commit history keeps pointin
 | [0016](0016-topact-box-vs-kde-reproduce-then-improve.md) | TopACT: reproduce then improve | draft | **open** | no code |
 | [0017](0017-tier2-resident-buffer-edges.md) | Tier-2 resident buffer edges | accepted | **partial** | stages 1–3 + invariant 5 landed; 4–5 remain |
 | [0018](0018-field-domains-placement-and-resolution.md) | Field domains: extent, placement, resolution | draft | **partial** | `placement` on `GpuField`+`FieldValue` + `inferPlacement`/`outPlacements` landed (2026-08); `boundsOf` + `ParamSpec.units` remain |
+| [0019](0019-package-surface-and-prebuilt-kernels.md) | Package surface: `intraspatial` subpath exports, pre-transformed kernels, Dawn optional | accepted | **landed** | `package.json` exports, `vite.lib.config.ts`, `tsconfig.build.json`, barrels, lazy Dawn in `device.ts` |
 
 ⚠ **Two ADRs share the number 0010** (`procedural-geometry-composable-ops` and
 `spatialdata-js-as-loader-source`). Renumbering breaks inbound links in `docs/gpu-resource-sync.md`
 and across the ADRs themselves, so it has been left alone and is recorded here instead. Refer to them
 as *ADR-0010-geometry* and *ADR-0010-loader*.
 
-Roughly **8 landed, 7 partial, 4 open** across 19 records (0018 moved open→partial when the
-placement facet landed in 2026-08). No ADR has been added since the audit — deliberately. The
-three documents written on audit day all became design notes.
+Roughly **9 landed, 7 partial, 4 open** across 20 records (0018 moved open→partial when the
+placement facet landed in 2026-08; 0019 was promoted from the packaging design note on the day the
+package was cut, 2026-08-22 — the first ADR since the audit, and written about work in flight).
 
 ## Notable gaps worth knowing before planning
 
@@ -86,7 +87,7 @@ three documents written on audit day all became design notes.
   now `placement` are real; `support`, `extent`, and the 3D domain are not, and the `basis` facet
   has consumers (`inferBasis` + wavelet ops) but no `fourier` variant.
 - **Wavelet on GPU is easy to mis-state** (0006). The **codec** DWT is GPU and benchmarked
-  (`src/gpu/idwt53.ts` etc.); only the op-graph wavelet *nodes* (`ops/waveletOps.ts`) are CPU. The
+  (`src/gpu/idwt53.ts` etc. — now in the `tgpu-htj2k` repo since the 2026-08-22 split); only the op-graph wavelet *nodes* (`ops/waveletOps.ts`) are CPU. The
   gap is the layout bridge between them, not a missing kernel — see [`../gap-analysis.md`](../gap-analysis.md).
 - **`src/` is entirely three.js-free** — verified, zero `from "three"` outside `playground/`. The
   renderer-agnostic boundary 0008 asserted actually holds, which is what makes a published core

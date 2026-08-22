@@ -106,7 +106,7 @@ The Milestone-2 `Loader` implementation, backed by published spatialdata.js
 (`@spatialdata/core` for element discovery + transforms, `zarrextra` for the per-level `getTile`
 chunk seam and OpenJPH HTJ2K decode). An adapter, not a new abstraction: it maps a SpatialData
 multiscale **image** element onto our Multiscale/Tile model. The dependency is one-way
-(`tgpu-htj2k → sd.js`), lives in the playground (heavy deps out of the engine core), and does not
+(`intraspatial → sd.js`), lives in the playground (heavy deps out of the engine core), and does not
 pull deck.gl/React (`@spatialdata/layers`/`vis`). The counterpart to the dep-free `SyntheticLoader`
 — two Loaders behind one interface (ADR-0010).
 _Avoid_: OmeZarrLoader (the earlier raw-zarrita name it replaces), sdLoader.

@@ -1,6 +1,9 @@
 # Packaging and consumer seams
 
-Status: **design note** (2026-07-23) — promote to an ADR when the first package is actually cut.
+Status: **design note** (2026-07-23). Sequencing step 1 (a publishable `core`) **landed 2026-08-22 as
+[ADR-0019](decisions/0019-package-surface-and-prebuilt-kernels.md)** — as one `intraspatial` package with
+subpath exports rather than `@intraspatial/core`; the TGSL build question is resolved there (pre-transformed
+kernels). Steps 2–4 (viewer-three, the SpatialData bridge, the deck spike) remain as written.
 
 The goal is to be able to use this work from other codebases: psychogeo/TerraCognita (terrain, GIS
 raster), MDV + spatialdata.js (interactive spatial analysis), assorted experimental graphics and

@@ -28,7 +28,7 @@ match the CPU golden; a normalised Gaussian conserves total mass.
 ```ts
 import {
   convolveSeparableGpu, boxKernel, gaussianKernel,
-} from 'tgpu-htj2k/gpu/spatial/convolveSeparable';
+} from 'intraspatial/gpu/spatial/convolveSeparable';
 
 const smoothed = await convolveSeparableGpu(grid, w, h, gaussianKernel(2));
 const localSum = await convolveSeparableGpu(grid, w, h, boxKernel(3)); // window radius 3

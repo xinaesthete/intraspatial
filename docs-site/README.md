@@ -1,6 +1,6 @@
-# tgpu-htj2k docs site
+# IntraSpatial docs site
 
-The documentation site for [`tgpu-htj2k`](../README.md), built with
+The documentation site for [`intraspatial`](../README.md), built with
 [Astro](https://astro.build) + [Starlight](https://starlight.astro.build). Beyond prose,
 it hosts **interactive demos** as React islands (`@astrojs/react`) and renders maths with
 KaTeX (`remark-math` + `rehype-katex`) — the same KaTeX setup the playground uses.

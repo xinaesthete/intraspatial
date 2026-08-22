@@ -28,7 +28,7 @@ on the GPU — it reuses an existing primitive, which is the point.
 ## Usage
 
 ```ts
-import { anniGpu } from 'tgpu-htj2k/gpu/spatial/anni';
+import { anniGpu } from 'intraspatial/gpu/spatial/anni';
 
 const r = await anniGpu(xs, ys, { area: width * height });
 // { index, zScore, interpretation: 'clustered' | 'random' | 'dispersed', ... }
