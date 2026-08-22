@@ -22,7 +22,7 @@ import * as d from "typegpu/data";
 import * as std from "typegpu/std";
 import { latticeFor } from "../../spatial/bucketGrid";
 import type { CellCloud, TcmParams } from "../../spatial/tcm";
-import { getDevice } from "../device";
+import { getDevice, writeView } from "../device";
 import { encodeGridIndex, type GridIndexCtx, getGridIndexCtx } from "./gridIndex";
 
 const WG = 64;
@@ -281,8 +281,8 @@ export async function crossMarksGpu(a: CellCloud, b: CellCloud, p: TcmParams): P
   const bPts = ensureF32(root, "bPts", 2 * Math.max(nB, 1));
   const out = ensureF32(root, "marks", Math.max(nA, 1));
 
-  device.queue.writeBuffer(root.unwrap(aPts), 0, packXY(a.xs, a.ys) as BufferSource);
-  device.queue.writeBuffer(root.unwrap(bPts), 0, packXY(b.xs, b.ys) as BufferSource);
+  writeView(device.queue, root.unwrap(aPts), packXY(a.xs, a.ys));
+  writeView(device.queue, root.unwrap(bPts), packXY(b.xs, b.ys));
   // The index over B is built on the device, in the same submit, from the B points just uploaded.
   const enc = device.createCommandEncoder();
   const bIdx = encodeGridIndex(index, root.unwrap(bPts), nB, grid, enc, { keyPrefix: "tcm:b" });
@@ -338,8 +338,8 @@ export async function computeTcmGpu(a: CellCloud, b: CellCloud, p: TcmParams): P
   const marks = ensureF32(root, "marks", Math.max(nA, 1));
   const out = ensureF32(root, "out", w * h);
 
-  device.queue.writeBuffer(root.unwrap(aPts), 0, packXY(a.xs, a.ys) as BufferSource);
-  device.queue.writeBuffer(root.unwrap(bPts), 0, packXY(b.xs, b.ys) as BufferSource);
+  writeView(device.queue, root.unwrap(aPts), packXY(a.xs, a.ys));
+  writeView(device.queue, root.unwrap(bPts), packXY(b.xs, b.ys));
   // Both indexes are built on the device in this one submit. Distinct `keyPrefix`es: the builds
   // share the scan pool, and under one prefix the second would overwrite the first's offsets.
   const enc = device.createCommandEncoder();

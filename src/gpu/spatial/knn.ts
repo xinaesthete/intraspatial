@@ -33,7 +33,7 @@
 import tgpu from "typegpu";
 import * as d from "typegpu/data";
 import type { KnnResult } from "../../spatial/umapGraph";
-import { getDevice, sized } from "../device";
+import { getDevice, sized, writeView } from "../device";
 import { type GridIndexCtx, getGridIndexCtx } from "./gridIndex";
 import { cellCoord, cellRange, encodeQueryIndex, type IndexedQueryOptions, LATTICE_BYTES, Lattice, StartArray } from "./gridIndexQuery";
 
@@ -240,7 +240,7 @@ export async function knnGpu(data: ArrayLike<number>, opts: KnnGpuOptions): Prom
   const p = ensurePool(root, n * dim, n * k);
 
   const flat = data instanceof Float32Array && data.length === n * dim ? data : Float32Array.from({ length: n * dim }, (_, t) => data[t]!);
-  device.queue.writeBuffer(root.unwrap(p.data), 0, flat as BufferSource);
+  writeView(device.queue, root.unwrap(p.data), flat);
 
   // The index is recorded into the first tile's command buffer and stays resident for the rest.
   let bind: GPUBindGroup;

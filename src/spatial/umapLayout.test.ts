@@ -1,6 +1,15 @@
 import { describe, expect, it } from "vitest";
 import { fuzzySimplicialSet, knnBruteForceCpu } from "./umapGraph";
-import { fitAB, initLayout, makeEpochsPerSample, mulberry32, optimizeLayout, optimizeLayoutStep, reheatLayout, trustworthiness } from "./umapLayout";
+import {
+  fitAB,
+  initLayout,
+  makeEpochsPerSample,
+  mulberry32,
+  optimizeLayout,
+  optimizeLayoutStep,
+  reheatLayout,
+  trustworthiness,
+} from "./umapLayout";
 
 function twoBlobs(nPer: number, dim: number, seed = 7): { data: Float64Array; label: Uint8Array } {
   const rnd = mulberry32(seed);

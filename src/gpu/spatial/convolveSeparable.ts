@@ -11,7 +11,7 @@
 import tgpu from "typegpu";
 import * as d from "typegpu/data";
 import * as std from "typegpu/std";
-import { getDevice } from "../device";
+import { getDevice, writeView } from "../device";
 import { type BindEntry, rawBindGroup } from "../graph/residentBind";
 
 const WG = 64;
@@ -128,8 +128,8 @@ export async function convolveSeparableGpu(
   const { device, root, pipeline } = await getPipe();
   const p = ensurePool(root, cells, kernel.length);
 
-  device.queue.writeBuffer(root.unwrap(p.a), 0, Float32Array.from(grid) as BufferSource);
-  device.queue.writeBuffer(root.unwrap(p.w), 0, Float32Array.from(kernel) as BufferSource);
+  writeView(device.queue, root.unwrap(p.a), Float32Array.from(grid));
+  writeView(device.queue, root.unwrap(p.w), Float32Array.from(kernel));
 
   const groups = Math.ceil(cells / WG);
   const run = (src: typeof p.a, dst: typeof p.a, stepX: number, stepY: number) => {
@@ -172,7 +172,7 @@ export async function convolveSeparableResident(
 
   const { device, root, pipeline } = await getPipe();
   const p = ensurePool(root, cells, kernel.length);
-  device.queue.writeBuffer(root.unwrap(p.w), 0, Float32Array.from(kernel) as BufferSource);
+  writeView(device.queue, root.unwrap(p.w), Float32Array.from(kernel));
 
   const groups = Math.ceil(cells / WG);
   // Raw bind groups over the pooled buffers — see residentBind.ts for why these are not wrapped

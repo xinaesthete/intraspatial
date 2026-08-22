@@ -328,11 +328,11 @@ export function encodeCompact(
  *  the u8 path) and its 1-3 byte tail separately. */
 export function uploadMask(device: GPUDevice, buf: GPUBuffer, mask: MaskArray): void {
   if (!(mask instanceof Uint8Array)) {
-    device.queue.writeBuffer(buf, 0, mask as unknown as BufferSource, 0, mask.length);
+    device.queue.writeBuffer(buf, 0, mask.buffer, mask.byteOffset, mask.byteLength);
     return;
   }
   const aligned = mask.length & ~3;
-  if (aligned > 0) device.queue.writeBuffer(buf, 0, mask as unknown as BufferSource, 0, aligned);
+  if (aligned > 0) device.queue.writeBuffer(buf, 0, mask.buffer, mask.byteOffset, aligned);
   if (aligned < mask.length) {
     const tail = new Uint8Array(4);
     tail.set(mask.subarray(aligned));

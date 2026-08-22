@@ -336,8 +336,7 @@ export function pickKnn(
   } = {},
 ): (data: ArrayLike<number>, n: number, dim: number, k: number) => Promise<KnnResult> | KnnResult {
   const crossover = opts.crossover ?? 5000;
-  const approx =
-    opts.approx ?? ((data, n, dim, k) => knnDescentCpu(data, n, dim, { k, seed: opts.seed, maxIters: opts.maxIters }));
+  const approx = opts.approx ?? ((data, n, dim, k) => knnDescentCpu(data, n, dim, { k, seed: opts.seed, maxIters: opts.maxIters }));
   return (data, n, dim, k) => (n < crossover ? exact(data, n, dim, k) : approx(data, n, dim, k));
 }
 

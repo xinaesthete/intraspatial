@@ -15,7 +15,7 @@
 import tgpu from "typegpu";
 import * as d from "typegpu/data";
 import * as std from "typegpu/std";
-import { getDevice } from "../device";
+import { getDevice, writeView } from "../device";
 import { type BindEntry, rawBindGroup } from "../graph/residentBind";
 
 const WG = 64;
@@ -187,7 +187,7 @@ export async function morphologyGpu(
   const { device, root } = pipe;
   // Host form needs its own in/out pair distinct from the scratch pool the resident path uses.
   const io = ensureIo(root, cells);
-  device.queue.writeBuffer(root.unwrap(io.src), 0, Float32Array.from(grid) as BufferSource);
+  writeView(device.queue, root.unwrap(io.src), Float32Array.from(grid));
   await morphologyResident(root.unwrap(io.src), root.unwrap(io.dst), width, height, radius, op);
   const got = (await io.dst.read()) as ArrayLike<number>;
   return Float32Array.from({ length: cells }, (_, i) => got[i]!);

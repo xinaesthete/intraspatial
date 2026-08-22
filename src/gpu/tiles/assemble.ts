@@ -27,6 +27,7 @@
 // threads, which is over the cap and fails SILENTLY as a no-op), and `copyBufferToTexture`'s
 // 256-byte `bytesPerRow` alignment.
 
+import { writeView } from "../device";
 import type { LeaseToken, ResidentBuffer, ResidentTexture } from "../graph/handle";
 
 /** Bit width of one stored sample in the source planes. Unsigned integers only — the dtypes
@@ -224,7 +225,7 @@ export function uploadPlane(device: GPUDevice, samples: ArrayBufferView): GPUBuf
   const size = Math.ceil(bytes / 4) * 4;
   const buffer = device.createBuffer({ size, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
   if (size === bytes) {
-    device.queue.writeBuffer(buffer, 0, samples as BufferSource);
+    writeView(device.queue, buffer, samples);
   } else {
     // `writeBuffer` requires the SOURCE size to be a multiple of 4, not just the destination —
     // so an odd-length 8/16-bit plane (only ever a tiny edge chunk) needs one padded copy. Real

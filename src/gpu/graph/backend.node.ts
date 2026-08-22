@@ -4,7 +4,7 @@
 // vitest worker on teardown (ADR-0003 / splatDensity notes).
 import tgpu from "typegpu";
 import * as d from "typegpu/data";
-import { getDevice } from "../device";
+import { getDevice, writeView } from "../device";
 import type { GpuBackend, Root } from "./backend";
 import type { ResidentBuffer, ResidentTexture } from "./handle";
 import { BufferPool, type PoolStats, residentTextureUsage, residentUsage, TexturePool } from "./pool";
@@ -87,7 +87,7 @@ export const nodeBackend: GpuBackend = {
     const res = pool.lease(data.byteLength, usage);
     // Whole-view write: `writeBuffer`'s dataOffset/size are counted in the view's *elements*,
     // not bytes, so passing byte counts there overruns. Omitting them writes exactly the view.
-    device.queue.writeBuffer(res.buffer, 0, data as BufferSource);
+    writeView(device.queue, res.buffer, data);
     return res;
   },
 

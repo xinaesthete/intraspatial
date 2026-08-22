@@ -14,7 +14,7 @@
 import tgpu from "typegpu";
 import * as d from "typegpu/data";
 import * as std from "typegpu/std";
-import { dispatchGrid, getDevice } from "../device";
+import { dispatchGrid, getDevice, writeView } from "../device";
 import { rawBindGroup } from "../graph/residentBind";
 
 const WG = 64;
@@ -174,7 +174,7 @@ export async function decimateGpu(
   const pipe = await getPipe();
   const { device, root } = pipe;
   const io = ensureIo(root, cells, ow * oh);
-  device.queue.writeBuffer(root.unwrap(io.src), 0, Float32Array.from(grid) as BufferSource);
+  writeView(device.queue, root.unwrap(io.src), Float32Array.from(grid));
   await decimateResident(root.unwrap(io.src), root.unwrap(io.dst), width, height, factor, mode);
   const got = (await io.dst.read()) as ArrayLike<number>;
   return Float32Array.from({ length: ow * oh }, (_, i) => got[i]!);

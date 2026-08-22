@@ -235,11 +235,7 @@ export interface RegionCellsOptions {
 /** Split a cell table into per-region labelled point clouds.
  *
  *  One pass over the coordinate and code columns, so the cost is the read, not the split. */
-export async function readRegionCells(
-  store: MdvStore,
-  dsName: string,
-  opts: RegionCellsOptions,
-): Promise<Map<string, RegionCells>> {
+export async function readRegionCells(store: MdvStore, dsName: string, opts: RegionCellsOptions): Promise<Map<string, RegionCells>> {
   const xs = await store.readF64(dsName, opts.xField ?? "x");
   const ys = await store.readF64(dsName, opts.yField ?? "y");
   const type = await store.readCategorical(dsName, opts.typeField);

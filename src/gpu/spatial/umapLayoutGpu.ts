@@ -29,7 +29,7 @@ import tgpu from "typegpu";
 import * as d from "typegpu/data";
 import type { AbParams, LayoutOptions } from "../../spatial/umapLayout";
 import { fitAB, makeEpochsPerSample, mulberry32 } from "../../spatial/umapLayout";
-import { getDevice } from "../device";
+import { getDevice, writeView } from "../device";
 
 const WG = 64;
 /** WebGPU's floor guarantee for `maxComputeWorkgroupsPerDimension`. Used rather than the
@@ -275,14 +275,14 @@ export class GpuUmapLayout {
     const buffers = makeBuffers(pipe.root, graph.n * dim, graph.nEdges);
     const q = pipe.device.queue;
     const unwrap = pipe.root.unwrap.bind(pipe.root);
-    q.writeBuffer(unwrap(buffers.emb), 0, emb as BufferSource);
-    q.writeBuffer(unwrap(buffers.head), 0, graph.head as BufferSource);
-    q.writeBuffer(unwrap(buffers.tail), 0, graph.tail as BufferSource);
-    q.writeBuffer(unwrap(buffers.epochsPerSample), 0, epochsPerSample as BufferSource);
-    q.writeBuffer(unwrap(buffers.epochsPerNeg), 0, epochsPerNeg as BufferSource);
+    writeView(q, unwrap(buffers.emb), emb);
+    writeView(q, unwrap(buffers.head), graph.head);
+    writeView(q, unwrap(buffers.tail), graph.tail);
+    writeView(q, unwrap(buffers.epochsPerSample), epochsPerSample);
+    writeView(q, unwrap(buffers.epochsPerNeg), epochsPerNeg);
     // First due epoch = the period itself, matching `initLayout`.
-    q.writeBuffer(unwrap(buffers.nextSample), 0, epochsPerSample as BufferSource);
-    q.writeBuffer(unwrap(buffers.nextNeg), 0, epochsPerNeg as BufferSource);
+    writeView(q, unwrap(buffers.nextSample), epochsPerSample);
+    writeView(q, unwrap(buffers.nextNeg), epochsPerNeg);
 
     return new GpuUmapLayout(
       pipe,
@@ -379,8 +379,8 @@ export class GpuUmapLayout {
     // Re-based host-side: `nEdges` floats, not worth a kernel.
     const nextSample = Float32Array.from(this.epochsPerSample, (v) => this.epoch + v);
     const nextNeg = Float32Array.from(this.epochsPerNeg, (v) => this.epoch + v);
-    q.writeBuffer(unwrap(this.buffers.nextSample), 0, nextSample as BufferSource);
-    q.writeBuffer(unwrap(this.buffers.nextNeg), 0, nextNeg as BufferSource);
+    writeView(q, unwrap(this.buffers.nextSample), nextSample);
+    writeView(q, unwrap(this.buffers.nextNeg), nextNeg);
   }
 
   destroy(): void {

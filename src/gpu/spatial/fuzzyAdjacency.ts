@@ -20,7 +20,7 @@
 import tgpu from "typegpu";
 import * as d from "typegpu/data";
 import * as std from "typegpu/std";
-import { getDevice } from "../device";
+import { getDevice, writeView } from "../device";
 
 const WG = 64;
 
@@ -129,7 +129,7 @@ export async function fuzzyAdjacencyGpu(
     flat[2 * i] = xs[i]!;
     flat[2 * i + 1] = ys[i]!;
   }
-  device.queue.writeBuffer(root.unwrap(p.pts), 0, flat as BufferSource);
+  writeView(device.queue, root.unwrap(p.pts), flat);
   const support = radiusSigma * opts.sigma;
   p.params.write({ n, inv2s2: 1 / (2 * opts.sigma * opts.sigma), maxD2: support * support });
 

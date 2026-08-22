@@ -30,7 +30,7 @@ import * as d from "typegpu/data";
 import { buildCandidates, type DescentOptions, finalise, initialiseHeap } from "../../spatial/knnDescent";
 import type { KnnResult } from "../../spatial/umapGraph";
 import { mulberry32 } from "../../spatial/umapLayout";
-import { getDevice } from "../device";
+import { getDevice, writeView } from "../device";
 
 const WG = 64;
 /** Compile-time bound on the private heap, matching `knn.ts`. */
@@ -203,14 +203,14 @@ export async function knnDescentGpu(data: ArrayLike<number>, n: number, dim: num
   const width = k + maxReverse;
   const buf = makeBuffers(root, n * dim, n * width, n, n * k);
   const bind = root.unwrap(root.createBindGroup(layout, buf));
-  device.queue.writeBuffer(root.unwrap(buf.data), 0, flat as BufferSource);
+  writeView(device.queue, root.unwrap(buf.data), flat);
 
   // The heap lives on the device across passes; only the candidate lists go up each pass
   // and only the indices come back at the end. Squared distances on the device, rooted on
   // the way out — the host heap arrives with real distances, so square them going in.
   const squared = Float32Array.from(heap.distances, (v) => (Number.isFinite(v) ? v * v : 3.4e38));
-  device.queue.writeBuffer(root.unwrap(buf.heapIdx), 0, heap.indices as BufferSource);
-  device.queue.writeBuffer(root.unwrap(buf.heapDist), 0, squared as BufferSource);
+  writeView(device.queue, root.unwrap(buf.heapIdx), heap.indices);
+  writeView(device.queue, root.unwrap(buf.heapDist), squared);
 
   const rowsPerTile = Math.max(
     WG,
@@ -221,8 +221,8 @@ export async function knnDescentGpu(data: ArrayLike<number>, n: number, dim: num
   const hostDist = heap.distances;
   for (let iter = 0; iter < maxIters; iter++) {
     const built = buildCandidates({ n, k, indices: hostIdx, distances: hostDist }, maxReverse, rnd);
-    device.queue.writeBuffer(root.unwrap(buf.candidates), 0, built.candidates as BufferSource);
-    device.queue.writeBuffer(root.unwrap(buf.counts), 0, built.counts as BufferSource);
+    writeView(device.queue, root.unwrap(buf.candidates), built.candidates);
+    writeView(device.queue, root.unwrap(buf.counts), built.counts);
 
     for (let start = 0; start < n; start += rowsPerTile) {
       const count = Math.min(rowsPerTile, n - start);

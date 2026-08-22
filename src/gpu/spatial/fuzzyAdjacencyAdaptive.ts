@@ -19,7 +19,7 @@
 import tgpu from "typegpu";
 import * as d from "typegpu/data";
 import * as std from "typegpu/std";
-import { getDevice } from "../device";
+import { getDevice, writeView } from "../device";
 import { kthNeighborDistanceGpu } from "./kthNeighborDistance";
 
 const WG = 64;
@@ -134,8 +134,8 @@ export async function fuzzyAdjacencyAdaptiveFromRhoGpu(
     flat[2 * i] = xs[i]!;
     flat[2 * i + 1] = ys[i]!;
   }
-  device.queue.writeBuffer(root.unwrap(p.pts), 0, flat as BufferSource);
-  device.queue.writeBuffer(root.unwrap(p.rho), 0, Float32Array.from(rho) as BufferSource);
+  writeView(device.queue, root.unwrap(p.pts), flat);
+  writeView(device.queue, root.unwrap(p.rho), Float32Array.from(rho));
   p.params.write({ n, scale: opts.scale ?? 1, minSigma: opts.minSigma ?? 1e-6 });
 
   const bind = root.unwrap(root.createBindGroup(layout, { params: p.params, pts: p.pts, rho: p.rho, out: p.out }));

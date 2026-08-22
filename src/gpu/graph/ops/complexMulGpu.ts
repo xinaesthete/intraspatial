@@ -4,8 +4,10 @@
 // back via TypeGPU `.read()`. A complex field packs interleaved [re0,im0,re1,im1,...],
 // so sample `i` lives at lanes 2i, 2i+1; the kernel is the lane-for-lane image of
 // `mulFields({kind:"complex"}, …)` in elementMath.ts.
+
 import tgpu from "typegpu";
 import * as d from "typegpu/data";
+import { writeView } from "../../device";
 import type { Root } from "../backend";
 
 const WG = 64;
@@ -83,8 +85,8 @@ export async function complexMulGpu(device: GPUDevice, root: Root, a: Float32Arr
   const pipe = await getPipe(device, root);
   const pool = ensurePool(root, pipe, len);
 
-  device.queue.writeBuffer(root.unwrap(pool.a), 0, a as BufferSource);
-  device.queue.writeBuffer(root.unwrap(pool.b), 0, b as BufferSource);
+  writeView(device.queue, root.unwrap(pool.a), a);
+  writeView(device.queue, root.unwrap(pool.b), b);
   pool.params.write({ n });
 
   const bind = root.unwrap(root.createBindGroup(layout, { params: pool.params, a: pool.a, b: pool.b, dst: pool.dst }));
