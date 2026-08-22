@@ -209,3 +209,17 @@ export async function compileShader(device: GPUDevice, code: string, label: stri
   }
   return module;
 }
+
+/**
+ * `queue.writeBuffer` from a typed-array view, by way of the view's own buffer.
+ *
+ * Under TypeScript 5.9's lib a `Float32Array` is `Float32Array<ArrayBufferLike>` — it may sit
+ * on a `SharedArrayBuffer` — and `@webgpu/types`' `BufferSource` only admits views over a plain
+ * `ArrayBuffer`, so passing the view needs a cast that hides the question. `writeBuffer` itself
+ * accepts `ArrayBuffer | SharedArrayBuffer`, so the view's `buffer` + `byteOffset` + `byteLength`
+ * says exactly what is meant with no cast. Partial writes spell the byte range out at the call
+ * site instead of using this.
+ */
+export function writeView(queue: GPUQueue, dst: GPUBuffer, view: ArrayBufferView, dstOffset = 0): void {
+  queue.writeBuffer(dst, dstOffset, view.buffer, view.byteOffset, view.byteLength);
+}

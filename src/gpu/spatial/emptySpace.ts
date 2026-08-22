@@ -10,7 +10,7 @@
 import tgpu from "typegpu";
 import * as d from "typegpu/data";
 import * as std from "typegpu/std";
-import { getDevice } from "../device";
+import { getDevice, writeView } from "../device";
 
 const WG = 64;
 const FAR = 3.4e38;
@@ -143,8 +143,8 @@ export async function emptySpaceGpu(xs: ArrayLike<number>, ys: ArrayLike<number>
 
   const { device, root, pipeline } = await getPipe();
   const p = ensurePool(root, n, m);
-  device.queue.writeBuffer(root.unwrap(p.data), 0, data as BufferSource);
-  device.queue.writeBuffer(root.unwrap(p.query), 0, query as BufferSource);
+  writeView(device.queue, root.unwrap(p.data), data);
+  writeView(device.queue, root.unwrap(p.query), query);
   p.params.write({ n, m });
 
   const bind = root.unwrap(root.createBindGroup(layout, { params: p.params, data: p.data, query: p.query, out: p.out }));

@@ -27,7 +27,7 @@ import * as d from "typegpu/data";
 import { type KernelSpec, kernelCode, TOPHAT } from "../../spatial/kernels";
 import type { CellCloud } from "../../spatial/tcm";
 import type { TcmKernelParams } from "../../spatial/tcmKernel";
-import { getDevice, sized } from "../device";
+import { getDevice, sized, writeView } from "../device";
 import { KERNEL_WGSL } from "./kernelWgsl";
 
 // Uniform block shared by both passes: one flat Float32Array, no std140 padding puzzles.
@@ -368,10 +368,10 @@ function drawKernel(
   const uni = new Float32Array(UNI_FLOATS);
   uni.set([minX, minY, 1 / (maxX - minX || 1), 1 / (maxY - minY || 1), radius, kernelCode(kernel)]);
   const ub = ensureUni(device);
-  device.queue.writeBuffer(ub, 0, uni as BufferSource);
+  writeView(device.queue, ub, uni);
   const ptFloats = 2 * Math.max(xs.length, 1);
   const pb = ensurePts(device, ptFloats);
-  device.queue.writeBuffer(pb, 0, packXY(xs, ys) as BufferSource);
+  writeView(device.queue, pb, packXY(xs, ys));
 
   const pass = enc.beginRenderPass({
     colorAttachments: [{ view: target.view, clearValue: { r: 0, g: 0, b: 0, a: 0 }, loadOp: "clear", storeOp: "store" }],
@@ -454,10 +454,10 @@ export async function renderTcm(a: CellCloud, b: CellCloud, p: TcmRenderParams):
     mh,
   ]);
   const ub = ensureUni(device);
-  device.queue.writeBuffer(ub, 0, uni as BufferSource);
+  writeView(device.queue, ub, uni);
   const ptFloats = 2 * Math.max(a.xs.length, 1);
   const pb = ensurePts(device, ptFloats);
-  device.queue.writeBuffer(pb, 0, packXY(a.xs, a.ys) as BufferSource);
+  writeView(device.queue, pb, packXY(a.xs, a.ys));
 
   const enc2 = device.createCommandEncoder();
   const pass = enc2.beginRenderPass({

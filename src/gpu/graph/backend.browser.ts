@@ -5,7 +5,7 @@
 // from the Node backend; the op definitions and executor are imported verbatim.
 import tgpu from "typegpu";
 import * as d from "typegpu/data";
-import { getDevice } from "../device";
+import { getDevice, writeView } from "../device";
 import type { GpuBackend, Root } from "./backend";
 import type { ResidentBuffer, ResidentTexture } from "./handle";
 import { BufferPool, type PoolStats, residentTextureUsage, residentUsage, TexturePool } from "./pool";
@@ -76,7 +76,7 @@ export const browserBackend: GpuBackend = {
     poolRef = pool;
     const res = pool.lease(data.byteLength, usage);
     // dataOffset/size are in view *elements*, not bytes — omit them and write the whole view.
-    device.queue.writeBuffer(res.buffer, 0, data as BufferSource);
+    writeView(device.queue, res.buffer, data);
     return res;
   },
 

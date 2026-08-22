@@ -14,7 +14,7 @@
 import tgpu from "typegpu";
 import * as d from "typegpu/data";
 import * as std from "typegpu/std";
-import { getDevice } from "../device";
+import { getDevice, writeView } from "../device";
 
 const WG = 64;
 
@@ -141,8 +141,8 @@ export async function grayScottStepsGpu(state: GrayScottState, steps: number, pa
   const { device, root, pipeline } = await getPipe();
   const pool = ensurePool(root, n);
 
-  device.queue.writeBuffer(root.unwrap(pool.uA), 0, Float32Array.from(state.u) as BufferSource);
-  device.queue.writeBuffer(root.unwrap(pool.vA), 0, Float32Array.from(state.v) as BufferSource);
+  writeView(device.queue, root.unwrap(pool.uA), Float32Array.from(state.u));
+  writeView(device.queue, root.unwrap(pool.vA), Float32Array.from(state.v));
   pool.params.write({ w, h, du: p.du, dv: p.dv, feed: p.feed, kill: p.kill, dt: p.dt });
 
   const groups = Math.ceil(n / WG);

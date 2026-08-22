@@ -11,8 +11,10 @@
 // Pure WebGPU + TypeGPU — no three.js/deck.gl import here, so it stays in the tested `src`
 // library and works under Node (Dawn) too. The renderer-specific buffer bridging lives
 // alongside the host (e.g. the dancer's three.js bridge), built on top of this.
+
 import tgpu from "typegpu";
 import * as d from "typegpu/data";
+import { writeView } from "../device";
 import type { GpuBackend, Root } from "../graph/backend";
 import type { ResidentBuffer, ResidentTexture } from "../graph/handle";
 import { BufferPool, type PoolStats, residentTextureUsage, residentUsage, TexturePool } from "../graph/pool";
@@ -55,7 +57,7 @@ export function adoptDevice(device: GPUDevice, kind = "adopted"): GpuBackend {
     async upload(data: ArrayBufferView, usage: number = residentUsage()): Promise<ResidentBuffer> {
       const res = pool.lease(data.byteLength, usage);
       // dataOffset/size are in view *elements*, not bytes — omit them and write the whole view.
-      device.queue.writeBuffer(res.buffer, 0, data as BufferSource);
+      writeView(device.queue, res.buffer, data);
       return res;
     },
     async leaseTexture(

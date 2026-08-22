@@ -12,8 +12,10 @@
 // State layout: `pfsa` is a flat f32 array of 5 layers × width × height, layer-major
 // (`layer*n + cell`). Layers 0..3 are the genotype vector [--, -+, +-, ++]; layer 4 is LD `r`.
 // Ocean/missing cells carry a negative sentinel in every layer.
+
 import tgpu from "typegpu";
 import * as d from "typegpu/data";
+import { writeView } from "../../device";
 import { DEFAULT_FITNESS, type FitnessMatrix, ld, OFFSPRING, type Vec4 } from "./math";
 import type { Neighbourhood } from "./neighbourhood";
 
@@ -292,7 +294,7 @@ export class HspfSim {
     const sto = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST;
     const mk = (data: ArrayBufferView, use: number) => {
       const buf = device.createBuffer({ size: data.byteLength, usage: use });
-      device.queue.writeBuffer(buf, 0, data as BufferSource);
+      writeView(device.queue, buf, data);
       return buf;
     };
 
@@ -308,7 +310,7 @@ export class HspfSim {
     // `mapAsync` here trips Dawn-on-Node's exit-teardown segfault (see splatDensity notes).
     const a = root.createBuffer(d.arrayOf(d.f32, NUM_LAYERS * n)).$usage("storage");
     const b = root.createBuffer(d.arrayOf(d.f32, NUM_LAYERS * n)).$usage("storage");
-    device.queue.writeBuffer(root.unwrap(a), 0, pfsa as BufferSource);
+    writeView(device.queue, root.unwrap(a), pfsa);
 
     return new HspfSim(
       w,
@@ -387,7 +389,7 @@ export class HspfSim {
   /** Reset the field to a fresh `pfsa` (5 layers × n) and restart the iteration count. */
   reset(pfsa: Float32Array): void {
     if (pfsa.length !== NUM_LAYERS * this.n) throw new Error("hspf: pfsa length != 5*w*h");
-    this.device.queue.writeBuffer(this.root.unwrap(this.a), 0, pfsa as BufferSource);
+    writeView(this.device.queue, this.root.unwrap(this.a), pfsa);
     this.src = this.a;
     this.dst = this.b;
     this.iteration = 0;
@@ -399,8 +401,8 @@ export class HspfSim {
     const { numBarriers } = clampBarriers(params);
     const tbr = Math.min(1, Math.max(0, params.twoBiteRate ?? 0));
     this.numBarriers = numBarriers;
-    this.device.queue.writeBuffer(this.fitnessBuf, 0, new Float32Array([...fit.A, ...fit.S]) as BufferSource);
-    this.device.queue.writeBuffer(this.barriersBuf, 0, packVec4Array(params.barriers ?? [], MAX_BARRIERS) as BufferSource);
+    writeView(this.device.queue, this.fitnessBuf, new Float32Array([...fit.A, ...fit.S]));
+    writeView(this.device.queue, this.barriersBuf, packVec4Array(params.barriers ?? [], MAX_BARRIERS));
     this.device.queue.writeBuffer(this.paramsBuf, 0, packParams(this.width, this.height, this.nbhdCount, numBarriers, tbr));
   }
 
@@ -411,7 +413,7 @@ export class HspfSim {
       size: neighbourhood.data.byteLength,
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
     });
-    this.device.queue.writeBuffer(this.nbhdBuf, 0, neighbourhood.data as BufferSource);
+    writeView(this.device.queue, this.nbhdBuf, neighbourhood.data);
     this.nbhdCount = neighbourhood.count;
     const tbr = Math.min(1, Math.max(0, params.twoBiteRate ?? 0));
     this.device.queue.writeBuffer(this.paramsBuf, 0, packParams(this.width, this.height, this.nbhdCount, this.numBarriers, tbr));

@@ -381,7 +381,7 @@ export async function exclusiveScanGpu(
   const ctx = await getScanCtx();
   const { device } = ctx;
   const input = ensureBuf(device, `scan:${elem}:in`, n * 4, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST);
-  device.queue.writeBuffer(input, 0, values as unknown as BufferSource, 0, n);
+  device.queue.writeBuffer(input, 0, values.buffer, values.byteOffset, n * 4);
 
   const enc = device.createCommandEncoder();
   const { dst, totalBuf } = encodeScan(ctx, elem, input, n, enc, opts.maxWorkgroupsPerDim);

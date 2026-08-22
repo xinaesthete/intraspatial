@@ -23,7 +23,7 @@
 import tgpu from "typegpu";
 import * as d from "typegpu/data";
 import * as std from "typegpu/std";
-import { getDevice, sized } from "../device";
+import { getDevice, sized, writeView } from "../device";
 import { type GridIndexCtx, getGridIndexCtx } from "./gridIndex";
 import { cellCoord, cellRange, encodeQueryIndex, type IndexedQueryOptions, LATTICE_BYTES, Lattice, StartArray } from "./gridIndexQuery";
 
@@ -172,7 +172,7 @@ export async function nearestNeighborDistancesGpu(
     flat[2 * i] = xs[i]!;
     flat[2 * i + 1] = ys[i]!;
   }
-  device.queue.writeBuffer(root.unwrap(p.pts), 0, flat as BufferSource);
+  writeView(device.queue, root.unwrap(p.pts), flat);
   p.params.write({ n });
 
   const enc = device.createCommandEncoder();

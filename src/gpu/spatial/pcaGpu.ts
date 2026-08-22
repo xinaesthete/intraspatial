@@ -49,7 +49,7 @@ import {
   pcaBasis,
   pcaComponentCount,
 } from "../../spatial/pca";
-import { getDevice } from "../device";
+import { getDevice, writeView } from "../device";
 
 /** Output tile edge, and the row block staged in workgroup memory. 16x16 = 256 threads,
  *  the same shape as a textbook shared-memory matmul; 16 f32 is also one 64-byte burst per
@@ -321,11 +321,11 @@ export async function covarianceGpu(
   const scaleBuf = ensure(root, "scale", dim);
   const covBuf = ensure(root, "cov", dim * dim);
   const params = ensureParams(root);
-  device.queue.writeBuffer(root.unwrap(meanBuf), 0, Float32Array.from(stats.mean) as BufferSource);
-  device.queue.writeBuffer(root.unwrap(scaleBuf), 0, Float32Array.from(stats.scale) as BufferSource);
+  writeView(device.queue, root.unwrap(meanBuf), Float32Array.from(stats.mean));
+  writeView(device.queue, root.unwrap(scaleBuf), Float32Array.from(stats.scale));
   // The pool is grow-only and shared across calls, so the accumulator must be cleared
   // explicitly — a stale covariance from a previous call would otherwise be added to.
-  device.queue.writeBuffer(root.unwrap(covBuf), 0, new Float32Array(dim * dim) as BufferSource);
+  writeView(device.queue, root.unwrap(covBuf), new Float32Array(dim * dim));
 
   const bind = root.unwrap(root.createBindGroup(covLayout, { params, data: dataBuf, mean: meanBuf, scale: scaleBuf, cov: covBuf }));
   const tiles = Math.ceil(dim / TILE);
@@ -380,9 +380,9 @@ export async function projectScoresGpu(
   for (let c = 0; c < nComp; c++) {
     for (let t = 0; t < dim; t++) compT[t * nComp + c] = basis.components[c * dim + t]!;
   }
-  device.queue.writeBuffer(root.unwrap(meanBuf), 0, Float32Array.from(stats.mean) as BufferSource);
-  device.queue.writeBuffer(root.unwrap(scaleBuf), 0, Float32Array.from(stats.scale) as BufferSource);
-  device.queue.writeBuffer(root.unwrap(compBuf), 0, compT as BufferSource);
+  writeView(device.queue, root.unwrap(meanBuf), Float32Array.from(stats.mean));
+  writeView(device.queue, root.unwrap(scaleBuf), Float32Array.from(stats.scale));
+  writeView(device.queue, root.unwrap(compBuf), compT);
 
   const bind = root.unwrap(
     root.createBindGroup(projectLayout, {
