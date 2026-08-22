@@ -62,8 +62,8 @@ importers:
         version: 4.1.10(@types/node@22.20.1)(vite@8.1.4(@types/node@22.20.1)(esbuild@0.28.1)(tsx@4.23.1))
     optionalDependencies:
       openjph-wasm:
-        specifier: file:../openjph-wasm
-        version: file:../openjph-wasm
+        specifier: file:../codecs/openjph-wasm
+        version: file:../codecs/openjph-wasm
 
   docs-site:
     dependencies:
@@ -2882,8 +2882,8 @@ packages:
   openjph-wasm@0.1.0:
     resolution: {integrity: sha512-0AD6EYf6yt762Q3Pu6g0xVGOeK4XRyZ39zIf2YpfzZUBblHVv3hwJsaxpnLWvSmZLXRp61GA7hg2vQ+ssZngRw==}
 
-  openjph-wasm@file:../openjph-wasm:
-    resolution: {directory: ../openjph-wasm, type: directory}
+  openjph-wasm@file:../codecs/openjph-wasm:
+    resolution: {directory: ../codecs/openjph-wasm, type: directory}
 
   p-limit@7.3.0:
     resolution: {integrity: sha512-7cIXg/Z0M5WZRblrsOla88S4wAK+zOQQWeBYfV3qJuJXMr+LnbYjaadrFaS0JILfEDPVqHyKnZ1Z/1d6J9VVUw==}
@@ -6783,7 +6783,7 @@ snapshots:
 
   openjph-wasm@0.1.0: {}
 
-  openjph-wasm@file:../openjph-wasm:
+  openjph-wasm@file:../codecs/openjph-wasm:
     optional: true
 
   p-limit@7.3.0:
