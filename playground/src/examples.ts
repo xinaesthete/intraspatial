@@ -257,7 +257,30 @@ export function tableFilterExample(): Example {
   return { label: "Table filter (mask graph)", nodes, edges, sink: { node: "kde", port: "density" } };
 }
 
+// The uniform grid index (ADR-0022) as a graph node. Three blob clusters are bucketed into a
+// 2-unit lattice — the cell size a neighbourhood query would use, so each point's 3×3 cell
+// neighbourhood holds everything within 2 units of it.
+//
+// The bounds are PARAMS, not measured from the cloud: `inferShapes` has to size `start` at
+// graph-build time, before any value exists. They are set to the clusters' extent here; a point
+// outside them clamps into the edge cell.
+//
+// Preview the `lattice` port — it reports the lattice the two buffers describe. `start` and
+// `items` are u32 and stay on the device: a host pull of them fails by design (the executor's
+// bridge is f32-only, ADR-0017 stage 1), which is the point of the op. The `kde` node is here as
+// a visual of the same cloud the index buckets.
+export function gridIndexExample(): Example {
+  const nodes: Node[] = [
+    node("pts", "blobPoints", 20, 180, { perCluster: 40, clusters: 3, spread: 1.4 }),
+    node("idx", "gridIndex", 250, 120, { cell: 2, minX: -2, minY: -2, maxX: 18, maxY: 18 }),
+    node("kde", "splatDensity", 250, 300, { width: 96, height: 96, sigma: 0.6 }),
+  ];
+  const edges: Edge[] = [e("gi-p", "pts", "points", "idx", "points"), e("gi-k", "pts", "points", "kde", "points")];
+  return { label: "Uniform grid index", nodes, edges, sink: { node: "idx", port: "lattice" } };
+}
+
 export const EXAMPLES: Example[] = [
+  gridIndexExample(),
   tableFilterExample(),
   ceilidhExample(),
   reactionDiffusionExample(),

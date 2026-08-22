@@ -113,6 +113,29 @@ function drawPersistence(canvas: HTMLCanvasElement, pairs: PersistencePair[]) {
   ctx.restore();
 }
 
+/** A persistence diagram, or null for any other opaque payload. `vietorisRips` is not the only
+ *  op that emits `opaque` any more — `gridIndex` emits a lattice descriptor — so the diagram
+ *  renderer has to ask rather than assume. */
+function persistencePairs(value: FieldValue): PersistencePair[] | null {
+  const pairs = (value.payload as { pairs?: PersistencePair[] } | undefined)?.pairs;
+  return Array.isArray(pairs) ? pairs : null;
+}
+
+/** One line of scalar fields from an arbitrary opaque payload, so a new payload type reads as
+ *  itself without the preview needing to know it. Nested objects/arrays are summarised, not
+ *  expanded. */
+function payloadSummary(payload: unknown): string {
+  if (payload === null || typeof payload !== "object") return "";
+  const parts: string[] = [];
+  for (const [k, v] of Object.entries(payload as Record<string, unknown>)) {
+    if (typeof v === "number") parts.push(`${k} ${Number.isInteger(v) ? v : v.toFixed(3)}`);
+    else if (typeof v === "string" || typeof v === "boolean") parts.push(`${k} ${v}`);
+    else if (Array.isArray(v)) parts.push(`${k} ×${v.length}`);
+    if (parts.length >= 8) break;
+  }
+  return parts.length ? ` — ${parts.join(" · ")}` : "";
+}
+
 export function Preview({ value, error, stale }: { value: FieldValue | null; error?: string | null; stale?: boolean }) {
   const ref = useRef<HTMLCanvasElement>(null);
   // -1 = magnitude; 0..lanes-1 = a specific lane (re/im, x/y/z…).
@@ -125,15 +148,17 @@ export function Preview({ value, error, stale }: { value: FieldValue | null; err
     const s = value.shape;
     if (s.kind === "grid" && value.data) drawHeatmap(canvas, project(value.data, s.width * s.height, lanes, lane), s.width, s.height);
     else if (s.kind === "matrix" && value.data) drawHeatmap(canvas, value.data, s.cols, s.rows);
-    else if (s.kind === "opaque") {
-      const pairs = (value.payload as { pairs?: PersistencePair[] })?.pairs ?? [];
-      drawPersistence(canvas, pairs);
+    else if (s.kind === "opaque" && persistencePairs(value)) {
+      drawPersistence(canvas, persistencePairs(value)!);
     }
   }, [value, lane, lanes]);
 
   const s = value?.shape;
   const summary = value && s ? describe(value, s, lanes) : "";
-  const showCanvas = s ? s.kind === "grid" || s.kind === "matrix" || s.kind === "opaque" : false;
+  // An opaque value only gets the canvas if it is actually a persistence diagram — every other
+  // payload (a grid-index lattice, say) would otherwise render as an empty birth/death plot,
+  // which reads as "computed nothing" rather than "not a diagram".
+  const showCanvas = s ? s.kind === "grid" || s.kind === "matrix" || (s.kind === "opaque" && !!value && !!persistencePairs(value)) : false;
 
   return (
     <div className="preview">
@@ -177,9 +202,12 @@ function describe(value: FieldValue, s: NonNullable<FieldValue["shape"]>, lanes:
   if (s.kind === "points") return `points ×${s.n}`;
   if (s.kind === "scalar") return `scalar ${value.data?.[0]?.toFixed(4) ?? "?"}`;
   if (s.kind === "opaque") {
-    const pairs = (value.payload as { pairs?: PersistencePair[] })?.pairs ?? [];
-    const h1 = pairs.filter((p) => p.dim === 1 && Number.isFinite(p.death)).length;
-    return `${s.name} — ${pairs.length} features, ${h1} loops (H₁)`;
+    const pairs = persistencePairs(value);
+    if (pairs) {
+      const h1 = pairs.filter((p) => p.dim === 1 && Number.isFinite(p.death)).length;
+      return `${s.name} — ${pairs.length} features, ${h1} loops (H₁)`;
+    }
+    return `${s.name}${payloadSummary(value.payload)}`;
   }
   return "value";
 }
