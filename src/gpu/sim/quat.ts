@@ -4,9 +4,9 @@
 // matrix machinery (the script's "should be tensor" inertia is left isotropic for now).
 //
 // wgpu-matrix stores a quaternion as (x, y, z, w) — w LAST, not first like the original
-// hand-rolled version. Nothing outside this module depended on the old (w, x, y, z) wire
-// order (the only other user, `jet.ts`, has since been deleted), so this migration adopts
-// the library's layout outright rather than translating at the boundary.
+// hand-rolled version. Nothing outside this module and `jet.ts` (which has no other
+// consumers — see its own comment) depended on the old (w, x, y, z) wire order, so this
+// migration adopts the library's layout outright rather than translating at the boundary.
 import { quat as Q, vec3 as V3 } from "wgpu-matrix";
 import { unpack, type Vec3In } from "./vec3";
 

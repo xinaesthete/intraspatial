@@ -4,6 +4,7 @@ export * from "./body";
 export * from "./dancerGpu";
 export * from "./figures";
 export * from "./forces";
+export * from "./jet";
 export * from "./quat";
 export * from "./reactionDiffusion";
 export * from "./splines";
