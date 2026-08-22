@@ -1,14 +1,23 @@
-# tgpu-htj2k
+# IntraSpatial
 
-WebGPU **HTJ2K** (JPEG 2000 Part 15 / High-Throughput JPEG 2000) codec work, plus a
-growing **in-GPU operation-graph runtime** and spatial-analysis toolbox built on
-[TypeGPU](https://typegpu.com). A Rust/wasm CPU core handles the bitstream; a
-TypeScript/TypeGPU layer runs the DWT, reaction–diffusion, and spatial primitives on the
-GPU.
+An **in-GPU operation-graph runtime** for spatial data, with domain catalogues of ops and
+sources built on it — spatial statistics, geometry, simulation, evolutionary form, colour,
+and tiled/multiscale datasources — all on [TypeGPU](https://typegpu.com) / WebGPU.
+
+"Intra-spatial": one substrate that lives *inside* many disciplines (spatial biology, GIS
+and terrain, generative art) rather than a bridge between two. The engine's job is to make
+crossings between those domains cheap and expressive; the catalogues are where each domain's
+primitives live.
 
 > **Runtime: Node + pnpm + vitest, not Bun.** The Dawn `webgpu` native binding segfaults
 > under Bun on the compute path, so the toolchain matches the sibling `psychogeo` project.
 > Use `pnpm`, not `bun`. See [`docs/decisions/0002-runtime-node-not-bun.md`](docs/decisions/0002-runtime-node-not-bun.md).
+
+> **Lineage.** This repo was split out of `tgpu-htj2k` on 2026-08-22 with history preserved.
+> The HTJ2K codec (Rust/wasm core + GPU DWT kernels) stays in
+> [`tgpu-htj2k`](https://github.com/xinaesthete/tgpu-htj2k) under BSD-2-Clause; this repo is
+> pure MIT and has no dependency on it. Older design notes under `docs/` still mention the
+> codec where it was historically relevant.
 
 ## FAIR by design
 
@@ -21,41 +30,43 @@ afterthought:
   category, rendered maths) in a discoverable catalogue; the executor is content-addressed
   so intermediate results have stable identities.
 - **Accessible** — runs in any WebGPU browser over standard `navigator.gpu`, no
-  proprietary runtime or install; imagery uses open HTJ2K / JPEG 2000, and composed graphs
+  proprietary runtime or install; imagery comes in through open formats (OME-Zarr /
+  SpatialData, GeoTIFF, HTJ2K via the external `openjph-wasm`), and composed graphs
   serialise to plain JSON.
 - **Interoperable** — primitives take and return plain typed arrays with an explicit
   shape/element/basis schema, so kernels port to deck.gl / MDV / SpatialData.js instead of
   locking analysis in.
 - **Reusable** — a declarative operation graph *is* its own provenance; runs are
   reproducible (seeded RNG, CPU goldens with bit-exact/bounded-error GPU tests), and named
-  subgraphs make reuse first-class.
+  subgraphs make reuse first-class. Code is MIT-licensed.
 
-The remaining gap is an explicit data/usage licence (the last piece of *Reusable*). See
-[FAIR by design](docs-site/src/content/docs/concepts/fair.md) for the full treatment.
+See [FAIR by design](docs-site/src/content/docs/concepts/fair.md) for the full treatment.
 
 ## Layout
 
 | Path | What |
 | :--- | :--- |
-| [`src/`](src/) | The TypeScript GPU layer. `src/gpu/` holds the DWT kernels (5/3, 9/7), the [operation-graph runtime](src/gpu/graph/) (`graph/`), the reaction–diffusion sim, and spatial index. `src/wasm/` wraps the Rust core. |
-| [`rust/htj2k-core/`](rust/htj2k-core/) | The Rust/wasm codec core (bitstream, block coder), built with `wasm-pack`. |
-| [`playground/`](playground/) | The **operation-graph composer** — a React Flow app to wire ops on a canvas and run them in the browser via WebGPU. See [`playground/README.md`](playground/README.md). |
-| [`docs-site/`](docs-site/) | The **Astro/Starlight docs site**, including interactive React-island demos (DWT drawing, filtration). See [`docs-site/README.md`](docs-site/README.md). |
-| [`docs/`](docs/) | Design notes and [Architecture Decision Records](docs/decisions/) (`docs/decisions/`). |
+| [`src/gpu/graph/`](src/gpu/graph/) | The **engine**: lazy-pull operation-graph runtime (executor, memo/pool, resident buffers, placement, browser + Node backends). |
+| [`src/gpu/spatial/`](src/gpu/spatial/) | Spatial-statistics catalogue — neighbour distances, KDE splat, Getis-Ord, ANNI, cKNN, fuzzy adjacency, separable convolution, … each with a CPU golden. |
+| [`src/gpu/sim/`](src/gpu/sim/) | Simulation catalogue — reaction–diffusion, force/body/spline dynamics, the HsPf figure sim. |
+| [`src/gpu/fields/`](src/gpu/fields/), [`src/gpu/interop/`](src/gpu/interop/) | Field types and the three.js / canvas interop seams (no `three` import inside `src/`). |
+| [`src/geometry/`](src/geometry/), [`src/evo/`](src/evo/) | Swept/superellipsoid geometry and the Mutator-lineage evolutionary catalogue (ParamSpec, pedigree, trait space). |
+| [`src/datasource/`](src/datasource/) | Tiled / multiscale sources: view-driven tile-to-field, caches, synthetic and SpatialData-backed loaders. |
+| [`src/spatial/`](src/spatial/), [`src/color/`](src/color/), [`src/coords.ts`](src/coords.ts) | CPU-side spatial utilities, colour spaces, coordinate systems (ADR-0015). |
+| [`playground/`](playground/) | The **operation-graph composer** and viewer prototypes — React Flow + three.js apps that run the engine in the browser. See [`playground/README.md`](playground/README.md). |
+| [`docs-site/`](docs-site/) | The **Astro/Starlight docs site** with interactive React-island demos. See [`docs-site/README.md`](docs-site/README.md). |
+| [`docs/`](docs/) | Design notes, the [gap analysis](docs/gap-analysis.md), the [packaging plan](docs/packaging-and-consumers.md), and [Architecture Decision Records](docs/decisions/). |
 | [`viz/`](viz/) | A standalone, dependency-free DWT primer (open `viz/index.html`). See [`viz/README.md`](viz/README.md). |
 | [`test/`](test/) | GPU integration/bench tests (run under the separate `vitest.gpu` config). |
 
 ## Prerequisites
 
-- **Node 22** — pinned via [Volta](https://volta.sh) (`"volta": { "node": "22.23.1" }`).
-  Volta switches automatically inside the repo; otherwise use Node 22 yourself.
-  The pin existed because Dawn crashed at exit on Node 24/26. That cause is gone —
-  it was our own Instance-lifetime bug, fixed 2026-07-29 — and **24.18.0 and 26.5.0
-  both pass the full suite and the GPU benches** (re-tested 2026-08-01, see
-  `docs/umap-on-anndata.md` §5). The pin is now conservatism, not a requirement.
+- **Node 22+** — pinned via [Volta](https://volta.sh). The pin is conservatism: Node 24
+  and 26 also pass the full suite (see `docs/umap-on-anndata.md` §5).
 - **pnpm 11** (`packageManager` is pinned). This is a pnpm **workspace** — one
   `pnpm install` at the root installs the root package, `playground`, and `docs-site`.
-- **Rust + `wasm-pack`** — only needed to rebuild the wasm codec core.
+- A **WebGPU** device: the GPU test suite runs headless through Dawn (`webgpu` npm
+  package); the apps need a WebGPU-capable browser.
 
 ## Install
 
@@ -63,9 +74,10 @@ The remaining gap is an explicit data/usage licence (the last piece of *Reusable
 pnpm install
 ```
 
-The external `openjph-wasm` sibling (a test-only reference fixture) is an
-`optionalDependency`; it is skipped cleanly in worktrees and CI where the sibling
-checkout isn't present.
+The external `openjph-wasm` sibling (`../codecs/openjph-wasm`, a test-only reference
+fixture) is an `optionalDependency`; it is skipped cleanly in worktrees and CI where the
+sibling checkout isn't present. The playground depends on the *published* `openjph-wasm`
+for its volume viewer.
 
 ## Common tasks
 
@@ -82,10 +94,8 @@ All run from the repo root.
 | `pnpm test:cpu` | CPU vitest suite only |
 | `pnpm test:gpu` | GPU vitest suite only (Dawn `webgpu`; one fork per file) |
 | `pnpm test:watch` | Watch-mode CPU tests |
-| `pnpm test:rust` | `cargo test` for the Rust core |
-| `pnpm typecheck` | `tsc --noEmit` over the TS layer |
-| `pnpm build:wasm` | Build the Rust core to wasm (`build:wasm:dev` for a debug build) |
-| `pnpm bench:gpu` | IDWT GPU microbenchmark |
+| `pnpm typecheck` | `tsc --noEmit` over core and playground |
+| `pnpm lint` | Biome check |
 
 The two front-end apps also have their own `pnpm dev` / `pnpm build` if you prefer to run
 them from inside `playground/` or `docs-site/`.
@@ -94,7 +104,13 @@ them from inside `playground/` or `docs-site/`.
 
 Start with the toolbox overviews in [`docs/`](docs/) (e.g.
 [`gpu-primitives-toolbox.md`](docs/gpu-primitives-toolbox.md),
-[`gpu-resource-sync.md`](docs/gpu-resource-sync.md)) and the ADRs in
-[`docs/decisions/`](docs/decisions/) — notably the Node-not-Bun runtime decision, the
-`"use gpu"`/TGSL kernel approach (0003), and the field-type / wavelet-domain model
-(0004, 0006) that the operation graph is built on.
+[`gpu-resource-sync.md`](docs/gpu-resource-sync.md)), the
+[gap analysis](docs/gap-analysis.md) for what is planned, and the ADRs in
+[`docs/decisions/`](docs/decisions/) — notably the Node-not-Bun runtime decision (0002),
+the `"use gpu"`/TGSL kernel approach (0003), and the field-type / wavelet-domain model
+(0004, 0006) that the operation graph is built on. ADRs are written only for work in
+flight; speculative directions live as design notes in `docs/*.md`.
+
+## License
+
+[MIT](LICENSE).

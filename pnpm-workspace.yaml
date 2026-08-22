@@ -1,4 +1,4 @@
-# pnpm workspace: the root codec/runtime package plus the two front-end apps that
+# pnpm workspace: the root engine package (`intraspatial`) plus the two front-end apps that
 # reuse it (the React Flow composer and the Astro docs site). One lockfile, one
 # `pnpm install`, shared deps hoisted — and worktrees install cleanly instead of
 # each package needing its own install. The external `openjph-wasm` sibling is kept

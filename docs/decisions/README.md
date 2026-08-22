@@ -45,7 +45,7 @@ Numbers 0019–0021 are **retired, not reused**, so commit history keeps pointin
 
 | # | Title | Claimed | Actual | What's in the code |
 |---|---|---|---|---|
-| [0001](0001-language-split.md) | Rust/wasm CPU core + TS/TypeGPU GPU | accepted | **landed** | `rust/htj2k-core`, `src/gpu` |
+| [0001](0001-language-split.md) | Rust/wasm CPU core + TS/TypeGPU GPU | accepted | **landed** (moved to `tgpu-htj2k` repo) | `src/gpu`; Rust core now in the codec repo |
 | [0002](0002-runtime-node-not-bun.md) | Node toolchain, not Bun | accepted | **landed** | vitest configs, CLAUDE.md override |
 | [0003](0003-use-gpu-tgsl-kernels.md) | `"use gpu"` TGSL kernels | accepted | **landed** | used throughout `src/gpu` |
 | [0004](0004-field-type-model-and-volumetric-splat.md) | Field type model + volumetric splat | proposed | **partial** | element algebra + `axes` (via 0015) landed; `splatDensity.ts` exists |
@@ -86,7 +86,7 @@ three documents written on audit day all became design notes.
   now `placement` are real; `support`, `extent`, and the 3D domain are not, and the `basis` facet
   has consumers (`inferBasis` + wavelet ops) but no `fourier` variant.
 - **Wavelet on GPU is easy to mis-state** (0006). The **codec** DWT is GPU and benchmarked
-  (`src/gpu/idwt53.ts` etc.); only the op-graph wavelet *nodes* (`ops/waveletOps.ts`) are CPU. The
+  (`src/gpu/idwt53.ts` etc. — now in the `tgpu-htj2k` repo since the 2026-08-22 split); only the op-graph wavelet *nodes* (`ops/waveletOps.ts`) are CPU. The
   gap is the layout bridge between them, not a missing kernel — see [`../gap-analysis.md`](../gap-analysis.md).
 - **`src/` is entirely three.js-free** — verified, zero `from "three"` outside `playground/`. The
   renderer-agnostic boundary 0008 asserted actually holds, which is what makes a published core

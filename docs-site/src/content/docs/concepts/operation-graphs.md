@@ -43,7 +43,7 @@ validate-or-fall-back-to-CPU.
 Programmatically the same graph is a fluent builder:
 
 ```ts
-import { Graph, pullData } from "tgpu-htj2k/gpu/graph";
+import { Graph, pullData } from "intraspatial/gpu/graph";
 
 const g = new Graph();
 const pts = g.points(xs, ys);

@@ -16,20 +16,19 @@ gate large downstream cascades, a set of **science/application slices**, and the
 
 "Wavelet ops are CPU" is easy to mis-state, so pin it down:
 
-- **The codec's DWT is on the GPU** — [`src/gpu/idwt53.ts`](../src/gpu/idwt53.ts),
+- **The codec's DWT is on the GPU — but it no longer lives in this repo.** `idwt53`,
   `fdwt53`, `fdwt97`, `idwt97` are TypeGPU/WebGPU compute kernels (one workgroup per DWT
-  line, lifting in workgroup shared memory, bit-exact vs the Rust CPU golden). The decode
-  path runs inverse DWT + dequant + DC-shift on the GPU. These are what the benches
-  (`pnpm bench:gpu`, [`test/bench_idwt.gpu.test.ts`](../test/bench_idwt.gpu.test.ts)) and
-  [`dwt-gpu-and-high-bit-depth.md`](dwt-gpu-and-high-bit-depth.md) measure. **Not a gap.**
+  line, lifting in workgroup shared memory, bit-exact vs the Rust CPU golden). Since the
+  2026-08-22 split they, their benches, and `dwt-gpu-and-high-bit-depth.md`'s subject are in
+  the **`tgpu-htj2k`** codec repo (BSD-2-Clause). **Not a gap here.**
 - **The op-graph wavelet *nodes* are CPU** — [`ops/waveletOps.ts`](../src/gpu/graph/ops/waveletOps.ts)
   (`fdwt`/`idwt`/`thresholdDetail`) call the CPU `fdwt2d`/`idwt2d` in
   [`graph/dwt.ts`](../src/gpu/graph/dwt.ts), a Float32 reference kept numerically identical
   to the docs "Draw in the DWT domain" demo (`execute` == `cpuGolden`).
-- **The actual gap is the layout bridge**, not a missing kernel. The graph node uses the
-  packed-Mallat Float32 layout; the codec kernels use the per-line subband high-bit-depth
-  layout. Nothing yet reconciles them so a graph `fdwt`/`idwt` node can dispatch the
-  existing GPU kernel. (ADR-0006 open item.)
+- **The actual gap is a GPU wavelet op for the graph**, not a missing kernel somewhere else.
+  The graph node uses the packed-Mallat Float32 layout; the codec kernels use a per-line
+  subband high-bit-depth layout. Now that the two are in separate repos, the realistic path
+  is a graph-native separable lifting kernel (ADR-0006 open item), not a bridge to the codec's.
 
 ---
 

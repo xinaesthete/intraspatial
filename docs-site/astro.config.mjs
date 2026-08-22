@@ -10,10 +10,10 @@ import remarkMath from "remark-math";
 import typegpu from "unplugin-typegpu/vite";
 
 // Deployed to GitHub Pages as a *project* site, so it lives under a sub-path
-// (https://xinaesthete.github.io/tgpu-htj2k/). `site` + `base` must match the repo
+// (https://xinaesthete.github.io/intraspatial/). `site` + `base` must match the repo
 // name; Starlight prepends `base` to all its generated nav/asset links for us.
 const SITE = "https://xinaesthete.github.io";
-const BASE = "/tgpu-htj2k";
+const BASE = "/intraspatial";
 
 // Author-written root-absolute links in Markdown/MDX bodies (e.g. `](/primitives/anni/)`)
 // are NOT base-prefixed by Astro — only Starlight's own nav is. Without this they 404 on
@@ -55,7 +55,7 @@ export default defineConfig({
       title: "GPU Spatial Primitives",
       description: "Composable, interpretable GPU primitives for discrete-cell spatial analysis (TypeGPU / WebGPU).",
       customCss: ["katex/dist/katex.min.css"],
-      social: [{ icon: "github", label: "GitHub", href: "https://github.com/xinaesthete/tgpu-htj2k" }],
+      social: [{ icon: "github", label: "GitHub", href: "https://github.com/xinaesthete/intraspatial" }],
       sidebar: [
         {
           label: "Start here",

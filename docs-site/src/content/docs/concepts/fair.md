@@ -58,7 +58,7 @@ remains.
   *trustworthy* result.
 - **Reuse is a first-class mechanism.** Named subgraphs are defined once and instantiated
   many times (live-linked, so editing the definition updates every use). The decision
-  records ([ADRs](https://github.com/xinaesthete/tgpu-htj2k/tree/main/docs/decisions))
+  records ([ADRs](https://github.com/xinaesthete/intraspatial/tree/main/docs/decisions))
   capture the rationale behind the contracts so future users inherit the *why*.
 - *Still to do:* a clear, explicit data/usage licence — the remaining piece of the
   Reusable pillar.

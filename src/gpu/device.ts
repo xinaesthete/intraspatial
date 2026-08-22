@@ -39,7 +39,7 @@ export function getDevice(): Promise<GPUDevice> {
     const gpu: GPU = (globalThis as { navigator?: { gpu?: GPU } }).navigator?.gpu ?? create([]);
     instanceRef = gpu;
     const adapter = await gpu.requestAdapter();
-    if (!adapter) throw new Error("tgpu-htj2k: no WebGPU adapter available");
+    if (!adapter) throw new Error("intraspatial: no WebGPU adapter available");
     adapterRef = adapter;
     // Request float32-blendable when available so the spatial front can additively
     // blend density into an r32float render target (the no-atomics splat path).

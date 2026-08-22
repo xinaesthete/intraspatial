@@ -20,8 +20,8 @@ import { defineConfig } from "vitest/config";
 //                                           strictness as the CPU one, and a genuine
 //                                           worker crash will fail the run again
 //                                           instead of being silently tolerated.
-//   • 93 tests pass deterministically. The only failing files are the ones that import
-//     `rust/htj2k-core/pkg` and need `pnpm build:wasm` first — not a GPU issue.
+//   • 93 tests passed deterministically at the time (139 after the 2026-08-22 repo split;
+//     the HTJ2K codec kernels and their wasm dependency now live in the `tgpu-htj2k` repo).
 //
 // One historical note is kept, because it remains the reason for a choice:
 //   • **Forks, not worker threads.** Keeps the native GPU handle out of a shared thread.
