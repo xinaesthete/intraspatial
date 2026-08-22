@@ -257,7 +257,34 @@ export function tableFilterExample(): Example {
   return { label: "Table filter (mask graph)", nodes, edges, sink: { node: "kde", port: "density" } };
 }
 
+// What a spatial index is FOR, in one graph: bucket a cloud into cells so neighbourhood work
+// stops being all-pairs, then look at what the bucketing produced.
+//
+// `gridIndex` emits ONE value — a bundle of `start`, `items` and `lattice` (ADR-0023) — so its
+// parts cannot be wired from different producers. `cellCounts` consumes the whole bundle and
+// differences the offsets into a per-cell count: a quadrat raster at the index's own resolution,
+// beside a KDE of the same points at full resolution. Coarse and blocky next to smooth is the
+// point — the cell size is the query radius a neighbourhood search would use.
+//
+// The bounds are PARAMS, not measured: `inferShapes` sizes `start` at graph-build time, before
+// any value exists. Points outside them clamp into the edge cells.
+export function gridIndexExample(): Example {
+  const nodes: Node[] = [
+    node("pts", "blobPoints", 20, 200, { perCluster: 60, clusters: 3, spread: 1.4 }),
+    node("idx", "gridIndex", 250, 120, { cell: 1.5, minX: -2, minY: -2, maxX: 18, maxY: 18 }),
+    node("counts", "cellCounts", 470, 120),
+    node("kde", "splatDensity", 250, 320, { width: 96, height: 96, sigma: 0.6 }),
+  ];
+  const edges: Edge[] = [
+    e("gi-p", "pts", "points", "idx", "points"),
+    e("gi-c", "idx", "buckets", "counts", "buckets"),
+    e("gi-k", "pts", "points", "kde", "points"),
+  ];
+  return { label: "Points → cells (spatial index)", nodes, edges, sink: { node: "counts", port: "counts" } };
+}
+
 export const EXAMPLES: Example[] = [
+  gridIndexExample(),
   tableFilterExample(),
   ceilidhExample(),
   reactionDiffusionExample(),

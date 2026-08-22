@@ -326,6 +326,11 @@ body {
   align-items: center;
   gap: 6px;
 }
+/* No declared range means no slider (see ParamControl): let the number box take the space the
+   slider would have had, so the row does not look truncated. */
+.row .num-unbounded input[type="number"] {
+  width: 110px;
+}
 .row input[type="number"] {
   width: 56px;
   background: var(--bg);
@@ -726,6 +731,26 @@ body {
   font-size: 14px;
   font-family: ui-monospace, monospace;
   color: var(--text);
+}
+.field-tip-parts {
+  margin-top: 6px;
+  border-top: 1px solid var(--line);
+  padding-top: 5px;
+  display: grid;
+  gap: 2px;
+}
+.field-tip-part {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 11px;
+  font-family: ui-monospace, monospace;
+}
+.field-tip-part-name {
+  color: var(--text);
+}
+.field-tip-part-type {
+  color: var(--muted);
 }
 .field-tip-note {
   margin-top: 6px;
