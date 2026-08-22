@@ -32,6 +32,15 @@ gate large downstream cascades, a set of **science/application slices**, and the
 
 ---
 
+## Terrain-derivation primitives (from the LIDAR foliage/architecture handoff, 2026-08-22)
+
+Four generic engine ops the psychogeo/TerraCognita terrain work forces, all house-style
+(`ops/` + `cpuGolden`): **(1) separable min/max morphology — landed** (`src/gpu/spatial/morphology.ts`,
+graph op `morphology`, bit-exact vs a square-window oracle; erode/dilate/open/close);
+(2) a decimating N×N→1 reduction — the first op to *change grid size*, must propagate placement per
+ADR-0018; (3) a nodata/validity facet — unify with the ADR-0005 `support` facet below, one mask facet
+not two; (4) halo/apron on tile `getChunk` — cross-repo decision, grill before building.
+
 ## Tier 1 — Load-bearing primitives (gate cascades)
 
 Two of these share one substrate: a **GPU prefix-sum / scan / stream-compaction kernel**.
