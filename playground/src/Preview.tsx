@@ -201,6 +201,16 @@ export function Preview({ value, error, stale }: { value: FieldValue | null; err
   );
 }
 
+/** One-line shape, for listing a bundle's parts. */
+function shapeLabel(s: NonNullable<FieldValue["shape"]>): string {
+  if (s.kind === "grid") return `${s.width}×${s.height}`;
+  if (s.kind === "points") return `×${s.n}`;
+  if (s.kind === "matrix") return `${s.rows}×${s.cols}`;
+  if (s.kind === "opaque") return s.name;
+  if (s.kind === "bundle") return s.name;
+  return s.kind;
+}
+
 function describe(value: FieldValue, s: NonNullable<FieldValue["shape"]>, lanes: number): string {
   const el = lanes > 1 && value.element ? `${value.element.kind === "vec" ? `vec${value.element.n}` : value.element.kind} ` : "";
   const b = basisOf(value);
@@ -209,6 +219,12 @@ function describe(value: FieldValue, s: NonNullable<FieldValue["shape"]>, lanes:
   if (s.kind === "matrix") return `matrix ${s.rows}×${s.cols}`;
   if (s.kind === "points") return `points ×${s.n}`;
   if (s.kind === "scalar") return `scalar ${value.data?.[0]?.toFixed(4) ?? "?"}`;
+  if (s.kind === "bundle") {
+    // Several values that are one value (ADR-0023): say what is in it, since no single canvas
+    // can show a bucket grid's offsets, ids and lattice at once.
+    const parts = Object.entries(s.parts).map(([name, ps]) => `${name} ${shapeLabel(ps)}`);
+    return `${s.name} — ${parts.join(" · ")}`;
+  }
   if (s.kind === "opaque") {
     const pairs = persistencePairs(value);
     if (pairs) {

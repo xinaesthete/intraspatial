@@ -37,10 +37,10 @@ describe("gridIndexOp — shapes", () => {
     const cpu = buildBucketGrid([1, 2, 3], [4, 5, 6], 10, [BOUNDS.minX, BOUNDS.minY, BOUNDS.maxX, BOUNDS.maxY]);
     expect(bundleParts({ cell: 10, ...BOUNDS })).toEqual({
       kind: "bundle",
-      name: "gridIndex",
+      name: "bucketGrid",
       parts: {
-        start: { kind: "points", n: cpu.cols * cpu.rows + 1 },
-        items: { kind: "points", n: 3 },
+        cellOffsets: { kind: "points", n: cpu.cols * cpu.rows + 1 },
+        pointIds: { kind: "points", n: 3 },
         // The lattice part IS the cell grid, which is what makes a consumer's extent inferable.
         lattice: { kind: "grid", width: cpu.cols, height: cpu.rows },
       },
@@ -48,7 +48,7 @@ describe("gridIndexOp — shapes", () => {
   });
 
   it("keeps items bindable for an empty cloud", () => {
-    expect(bundleParts({ cell: 10, ...BOUNDS }, 0).parts.items).toEqual({ kind: "points", n: 1 });
+    expect(bundleParts({ cell: 10, ...BOUNDS }, 0).parts.pointIds).toEqual({ kind: "points", n: 1 });
   });
 
   it("rejects a non-points input and bad params", () => {
@@ -128,8 +128,8 @@ describe("gridIndex parts — extract and combine", () => {
 
   it("hands back the very same part value, not a copy", () => {
     const bundle = bundleOf();
-    for (const part of ["start", "items", "lattice"] as const) {
-      const extract = getOp(`gridIndex.${part}`);
+    for (const part of ["cellOffsets", "pointIds", "lattice"] as const) {
+      const extract = getOp(`bucketGrid.${part}`);
       expect(extract.inferShapes([bundle.shape], {})).toEqual([bundle.parts![part]!.shape]);
       // Identity, not equality: extraction BORROWS (ADR-0023), so a copy here would be the bug.
       expect(extract.cpuGolden!([bundle], {})[0]).toBe(bundle.parts![part]);
@@ -138,15 +138,15 @@ describe("gridIndex parts — extract and combine", () => {
 
   it("rejects a bundle of the wrong type", () => {
     const wrong = { kind: "bundle", name: "knn", parts: {} } as const;
-    expect(() => getOp("gridIndex.start").inferShapes([wrong], {})).toThrow(/expected a "gridIndex" bundle/);
-    expect(() => getOp("gridIndex.start").inferShapes([{ kind: "points", n: 3 }], {})).toThrow(/expected a "gridIndex" bundle/);
+    expect(() => getOp("bucketGrid.cellOffsets").inferShapes([wrong], {})).toThrow(/expected a "bucketGrid" bundle/);
+    expect(() => getOp("bucketGrid.cellOffsets").inferShapes([{ kind: "points", n: 3 }], {})).toThrow(/expected a "bucketGrid" bundle/);
   });
 
   it("round-trips through combine", () => {
     const bundle = bundleOf();
-    const parts = ["start", "items", "lattice"].map((p) => bundle.parts![p]!);
-    const combined = getOp("gridIndex.bundle").cpuGolden!(parts, {})[0]!;
+    const parts = ["cellOffsets", "pointIds", "lattice"].map((p) => bundle.parts![p]!);
+    const combined = getOp("bucketGrid.bundle").cpuGolden!(parts, {})[0]!;
     expect(combined.shape).toEqual(bundle.shape);
-    for (const p of ["start", "items", "lattice"]) expect(combined.parts![p]).toBe(bundle.parts![p]);
+    for (const p of ["cellOffsets", "pointIds", "lattice"]) expect(combined.parts![p]).toBe(bundle.parts![p]);
   });
 });

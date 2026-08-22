@@ -145,16 +145,38 @@ interface TickOptions {
   onBridge?: (key: string, direction: "download" | "upload" | "detexture") => void;
 }
 
-/** Bytes → f32 count. The bridge is f32-only for now: `readbackF32` converts element-wise
- *  rather than reinterpreting bits, so an i32/u32 resident value would come back mangled.
- *  Guarded explicitly rather than left to produce silently wrong numbers. */
+/** Bytes → f32 count, for the TEXTURE path only: a texture's readback goes through its render
+ *  format, so it stays f32. Resident *buffers* of any dtype are handled by `downloadBuffer`. */
 function residentF32Count(v: FieldValue): number {
   if (v.dtype !== "f32") {
-    throw new Error(`executor: resident bridging is f32-only; got dtype "${v.dtype}" (ADR-0017 stage 1)`);
+    throw new Error(`executor: texture bridging is f32-only; got dtype "${v.dtype}" (ADR-0017 stage 1)`);
   }
   if (v.buffer) return v.buffer.byteLength / 4;
   // A texture-resident value's logical count is its extent — it has no byteLength of its own.
   return v.texture ? v.texture.width * v.texture.height : 0;
+}
+
+/** Strip the resident handles from a value whose leases have gone back to the pool, keeping
+ *  whatever host representation it has. A stale reader then fails loudly instead of reading a
+ *  buffer the pool has already handed to someone else — but a bundle keeps its `parts`, because
+ *  after a host pull those parts carry the downloaded `data` and are the answer. */
+function withoutResidentHandles(v: FieldValue): FieldValue {
+  const parts = v.parts
+    ? Object.fromEntries(Object.entries(v.parts).map(([name, part]) => [name, withoutResidentHandles(part)]))
+    : undefined;
+  return { ...v, buffer: undefined, texture: undefined, ...(parts ? { parts } : {}) };
+}
+
+/** Download a resident BUFFER as the typed array its dtype names.
+ *
+ *  f32 keeps the cached-wrapper `readbackF32` path (proven, and the common case); u32/i32 go
+ *  through the raw byte readback, because decoding their words as floats would mangle them —
+ *  `readBackBytes` in `device.ts` says why that is a separate path rather than a second wrapper. */
+async function downloadBuffer(ctx: ExecCtx, v: FieldValue): Promise<Float32Array | Uint32Array | Int32Array> {
+  const buf = v.buffer!;
+  if (v.dtype === "f32") return ctx.backend.readbackF32(buf.buffer, buf.byteLength / 4);
+  const bytes = await ctx.backend.readbackBytes(buf.buffer, buf.byteLength);
+  return v.dtype === "u32" ? new Uint32Array(bytes) : new Int32Array(bytes);
 }
 
 /** Run one tick: execute the cut-DAG, then commit feedback `next` values into the
@@ -251,7 +273,7 @@ async function runTick(graph: Graph, field: GpuField, o: TickOptions): Promise<M
       // Drop the handles so a stale reader fails loudly instead of silently reading a resource the
       // pool has already handed to someone else.
       const v = pulled.get(k);
-      if (v) pulled.set(k, { ...v, buffer: undefined, texture: undefined, parts: undefined });
+      if (v) pulled.set(k, withoutResidentHandles(v));
     }
     // This port is finished with whatever it borrowed; a lender whose last borrower just went
     // may now be releasable itself.
@@ -288,9 +310,10 @@ async function runTick(graph: Graph, field: GpuField, o: TickOptions): Promise<M
     for (const p of list) own(to, p);
   };
 
-  /** Download one bundle part (ADR-0023 decision 3). Parts are values, not ports, so they do not
-   *  go through `hostAt`'s per-key cache — and a part that cannot cross the f32-only bridge names
-   *  itself, rather than leaving the bundle host-side with a hole in it. */
+  /** Download one bundle part (ADR-0023 decision 3), by dtype: the index's u32 parts come back
+   *  as `Uint32Array`, not as floats decoded from their bits. Parts are values, not ports, so they
+   *  do not go through `hostAt`'s per-key cache. A texture-resident part still cannot cross, and
+   *  names itself rather than leaving the bundle host-side with a hole in it. */
   const hostPart = async (v: FieldValue, label: string): Promise<FieldValue> => {
     if (v.parts) {
       const parts: Record<string, FieldValue> = {};
@@ -300,12 +323,7 @@ async function runTick(graph: Graph, field: GpuField, o: TickOptions): Promise<M
     if (v.data || v.payload !== undefined || (!v.buffer && !v.texture)) return v;
     if (v.texture)
       throw new Error(`executor: bundle part "${label}" is texture-resident, which the bundle bridge does not handle (ADR-0023)`);
-    if (v.dtype !== "f32") {
-      throw new Error(
-        `executor: cannot download bundle part "${label}" — resident bridging is f32-only, and it is "${v.dtype}" (ADR-0017 stage 1). Use pullResident, or mode "cpu".`,
-      );
-    }
-    return { ...v, data: await o.ctx.backend.readbackF32(v.buffer!.buffer, v.buffer!.byteLength / 4) };
+    return { ...v, data: await downloadBuffer(o.ctx, v) };
   };
 
   /** Ensure the value at `k` has host `data`, downloading it if resident-only. */
@@ -323,7 +341,7 @@ async function runTick(graph: Graph, field: GpuField, o: TickOptions): Promise<M
     // A texture cannot be read back directly by the f32 path; adapt first, then download once.
     const res = v.buffer ? v : await residentAt(k);
     o.onBridge?.(k, "download");
-    const data = await o.ctx.backend.readbackF32(res.buffer!.buffer, residentF32Count(res));
+    const data = res.buffer ? await downloadBuffer(o.ctx, res) : await o.ctx.backend.readbackF32(res.buffer!.buffer, residentF32Count(res));
     const bridged: FieldValue = { ...res, data };
     pulled.set(k, bridged); // cache: a second consumer reuses the download
     return bridged;

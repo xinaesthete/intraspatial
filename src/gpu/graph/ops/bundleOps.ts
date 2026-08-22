@@ -55,7 +55,7 @@ export function extractOp(spec: BundleSpec, part: string, opts: { label?: string
     label: `${spec.label} → ${opts.label ?? part}`,
     category: spec.label,
     describe: opts.describe ?? `Take the \`${part}\` part out of a ${spec.label.toLowerCase()}.`,
-    inputs: [{ name: "bundle", kind: "bundle" }],
+    inputs: [{ name: "bundle", kind: "bundle", bundle: { name: spec.name, parts: spec.parts } }],
     // The part's own shape is only known from the input, so the port is declared `any` and
     // `inferShapes` narrows it — the same thing `complexOps`' lane ops do.
     outputs: [{ name: part, kind: "any" }],
@@ -93,7 +93,7 @@ export function combineOp(spec: BundleSpec, portKinds: Record<string, Shape["kin
     category: spec.label,
     describe: `Assemble a ${spec.label.toLowerCase()} from its ${spec.parts.length} parts.`,
     inputs: spec.parts.map((p) => ({ name: p, kind: portKinds[p] ?? ("any" as const) })),
-    outputs: [{ name: "bundle", kind: "bundle" }],
+    outputs: [{ name: "bundle", kind: "bundle", bundle: { name: spec.name, parts: spec.parts } }],
     params: [],
     inferShapes(inputs) {
       const parts: Record<string, Shape> = {};

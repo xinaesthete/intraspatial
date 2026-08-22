@@ -7,9 +7,9 @@
 // count. (`src/spatial/tcm.ts` and `pcf.ts` build the same structure inline as `number[][]`; this
 // is the flat form, which is what a GPU kernel can actually bind.)
 //
-// CSR layout, two Int32Arrays, no per-bucket allocation:
-//   start[b] .. start[b+1]   — the slice of `items` holding bucket b's point indices
-//   items[k]                 — a point index
+// Offset-list layout, two Int32Arrays, no per-bucket allocation:
+//   cellOffsets[b] .. cellOffsets[b+1]   — the slice of `pointIds` holding bucket b's points
+//   pointIds[k]                          — one point id
 // Built by counting sort: one pass to count, a prefix sum, one pass to place. O(N), typed arrays
 // throughout, so the build stays negligible next to the pair work it accelerates.
 //
@@ -42,10 +42,12 @@ export type Bounds2 = readonly [number, number, number, number];
 export type Bounds3 = readonly [number, number, number, number, number, number];
 
 export interface BucketGrid extends GridLattice {
-  /** `numCells(lattice) + 1` prefix offsets into `items`. */
-  readonly start: Int32Array;
-  /** Point indices grouped by bucket; `items[start[b] .. start[b+1])` is bucket b. */
-  readonly items: Int32Array;
+  /** `numCells(lattice) + 1` prefix offsets into `pointIds`: bucket b owns
+   *  `pointIds[cellOffsets[b] .. cellOffsets[b+1])`. */
+  readonly cellOffsets: Int32Array;
+  /** Point ids grouped by bucket. (These are array indices — which is why the STRUCTURE is
+   *  called a bucket grid rather than an "index": that word is taken.) */
+  readonly pointIds: Int32Array;
 }
 
 /** `[min, max]` of one coordinate array; `[0, 0]` for no points. */
@@ -109,8 +111,8 @@ export function buildBucketGrid(
   const minZ = lattice.minZ ?? 0;
   const nb = cols * rows * depth;
 
-  const start = new Int32Array(nb + 1);
-  const items = new Int32Array(n);
+  const cellOffsets = new Int32Array(nb + 1);
+  const pointIds = new Int32Array(n);
   const bucketOf = (i: number) => {
     const col = Math.min(cols - 1, Math.max(0, Math.floor((xs[i]! - minX) / c)));
     const row = Math.min(rows - 1, Math.max(0, Math.floor((ys[i]! - minY) / c)));
@@ -118,12 +120,12 @@ export function buildBucketGrid(
     return col + cols * (row + rows * lay);
   };
 
-  for (let i = 0; i < n; i++) start[bucketOf(i) + 1]!++;
-  for (let b = 0; b < nb; b++) start[b + 1]! += start[b]!;
-  const cursor = start.slice(0, nb); // running write head per bucket
+  for (let i = 0; i < n; i++) cellOffsets[bucketOf(i) + 1]!++;
+  for (let b = 0; b < nb; b++) cellOffsets[b + 1]! += cellOffsets[b]!;
+  const cursor = cellOffsets.slice(0, nb); // running write head per bucket
   for (let i = 0; i < n; i++) {
     const b = bucketOf(i);
-    items[cursor[b]!++] = i;
+    pointIds[cursor[b]!++] = i;
   }
-  return { ...lattice, start, items };
+  return { ...lattice, cellOffsets, pointIds };
 }

@@ -39,14 +39,14 @@ function compare(gpu: BucketGrid, cpu: BucketGrid) {
     gpu.depth === cpu.depth &&
     gpu.minZ === cpu.minZ;
   let startMismatch = 0;
-  for (let b = 0; b < cpu.start.length; b++) if (gpu.start[b] !== cpu.start[b]) startMismatch++;
+  for (let b = 0; b < cpu.cellOffsets.length; b++) if (gpu.cellOffsets[b] !== cpu.cellOffsets[b]) startMismatch++;
   let cellMismatch = 0;
   const M = numCells(cpu);
   for (let b = 0; b < M; b++) {
-    const lo = cpu.start[b]!;
-    const hi = cpu.start[b + 1]!;
-    const a = Array.from(cpu.items.subarray(lo, hi)).sort((p, q) => p - q);
-    const g = Array.from(gpu.items.subarray(lo, hi)).sort((p, q) => p - q);
+    const lo = cpu.cellOffsets[b]!;
+    const hi = cpu.cellOffsets[b + 1]!;
+    const a = Array.from(cpu.pointIds.subarray(lo, hi)).sort((p, q) => p - q);
+    const g = Array.from(gpu.pointIds.subarray(lo, hi)).sort((p, q) => p - q);
     if (a.length !== g.length || a.some((v, k) => v !== g[k])) cellMismatch++;
   }
   return { lattice, startMismatch, cellMismatch, cells: M };
@@ -62,15 +62,15 @@ function invariants(g: BucketGrid, n: number, xs: number[], ys: number[], zs?: n
     const l = zs ? at(zs[i]!, g.minZ!, g.depth!) : 0;
     return c + g.cols * (r + g.rows * l);
   };
-  let monotone = g.start[0] === 0 && g.start[M] === n;
-  for (let b = 0; b < M; b++) if (g.start[b + 1]! < g.start[b]!) monotone = false;
+  let monotone = g.cellOffsets[0] === 0 && g.cellOffsets[M] === n;
+  for (let b = 0; b < M; b++) if (g.cellOffsets[b + 1]! < g.cellOffsets[b]!) monotone = false;
   // every item lands in the cell its position implies, and every index appears exactly once
   const seen = new Uint8Array(n);
   let misplaced = 0;
   let dup = 0;
   for (let b = 0; b < M; b++) {
-    for (let k = g.start[b]!; k < g.start[b + 1]!; k++) {
-      const i = g.items[k]!;
+    for (let k = g.cellOffsets[b]!; k < g.cellOffsets[b + 1]!; k++) {
+      const i = g.pointIds[k]!;
       if (cellOf(i) !== b) misplaced++;
       if (seen[i]) dup++;
       seen[i] = 1;
@@ -126,7 +126,7 @@ describe("buildGridIndexGpu", () => {
     expect(c).toEqual({ lattice: true, startMismatch: 0, cellMismatch: 0, cells: cpu.cols * cpu.rows });
     expect(invariants(gpu, xs.length, fx, fy)).toEqual({ monotone: true, misplaced: 0, dup: 0, covered: xs.length });
     // a scan of zeros is zeros: make sure something actually ran
-    expect(gpu.start[cpu.cols * cpu.rows]).toBe(xs.length);
+    expect(gpu.cellOffsets[cpu.cols * cpu.rows]).toBe(xs.length);
   });
 
   it("puts exactly one point in every cell, in lattice order", async () => {
@@ -146,7 +146,7 @@ describe("buildGridIndexGpu", () => {
     expect(gpu.rows).toBe(rows);
     expect(compare(gpu, cpu).cellMismatch).toBe(0);
     let wrong = 0;
-    for (let b = 0; b < cols * rows; b++) if (gpu.start[b] !== b) wrong++;
+    for (let b = 0; b < cols * rows; b++) if (gpu.cellOffsets[b] !== b) wrong++;
     expect(wrong).toBe(0);
   });
 
@@ -172,7 +172,7 @@ describe("buildGridIndexGpu", () => {
     for (let r = 0; r < gpu.rows; r++) {
       for (let c = 6; c < gpu.cols; c++) {
         const b = r * gpu.cols + c;
-        if (gpu.start[b + 1] !== gpu.start[b]) flat = false;
+        if (gpu.cellOffsets[b + 1] !== gpu.cellOffsets[b]) flat = false;
       }
     }
     expect(flat).toBe(true);
@@ -180,9 +180,9 @@ describe("buildGridIndexGpu", () => {
 
   it("builds an empty index for n = 0", async () => {
     const gpu = await buildGridIndexGpu(new Float32Array(0), { cell: 5, bounds: [0, 0, 20, 20] });
-    expect(gpu.items.length).toBe(0);
-    expect(gpu.start.length).toBe(gpu.cols * gpu.rows + 1);
-    expect(gpu.start.every((v) => v === 0)).toBe(true);
+    expect(gpu.pointIds.length).toBe(0);
+    expect(gpu.cellOffsets.length).toBe(gpu.cols * gpu.rows + 1);
+    expect(gpu.cellOffsets.every((v) => v === 0)).toBe(true);
   });
 
   it("indexes the xy of xyz points with stride 3", async () => {
@@ -213,7 +213,7 @@ describe("buildGridIndexGpu", () => {
     }
     const { cpu, gpu } = await both(xs, ys, 8, { maxWorkgroupsPerDim: 3 });
     expect(compare(gpu, cpu)).toEqual({ lattice: true, startMismatch: 0, cellMismatch: 0, cells: cpu.cols * cpu.rows });
-    expect(gpu.start[cpu.cols * cpu.rows]).toBe(n);
+    expect(gpu.cellOffsets[cpu.cols * cpu.rows]).toBe(n);
   });
 
   describe("dims: 3", () => {
@@ -231,7 +231,7 @@ describe("buildGridIndexGpu", () => {
       expect(gpu.depth).toBeGreaterThan(1);
       expect(compare(gpu, cpu)).toEqual({ lattice: true, startMismatch: 0, cellMismatch: 0, cells: numCells(cpu) });
       expect(invariants(gpu, xs.length, fx, fy, fz)).toEqual({ monotone: true, misplaced: 0, dup: 0, covered: xs.length });
-      expect(gpu.start[numCells(cpu)]).toBe(xs.length);
+      expect(gpu.cellOffsets[numCells(cpu)]).toBe(xs.length);
     });
 
     it("puts one point per cell of a 4×3×5 lattice, x-fastest", async () => {
@@ -255,8 +255,8 @@ describe("buildGridIndexGpu", () => {
       // cell b holds the point visited at step k where (k*7) % M == b, i.e. items[b] == k
       let wrong = 0;
       for (let b = 0; b < M; b++) {
-        if (gpu.start[b] !== b) wrong++;
-        const k = gpu.items[b]!;
+        if (gpu.cellOffsets[b] !== b) wrong++;
+        const k = gpu.pointIds[b]!;
         if ((k * 7) % M !== b) wrong++;
       }
       expect(wrong).toBe(0);
@@ -285,17 +285,17 @@ describe("buildGridIndexGpu", () => {
       expect(compare(gpu, cpu).cellMismatch).toBe(0);
       const plane = gpu.cols * gpu.rows;
       let flat = true;
-      for (let b = 3 * plane; b < numCells(gpu); b++) if (gpu.start[b + 1] !== gpu.start[b]) flat = false;
+      for (let b = 3 * plane; b < numCells(gpu); b++) if (gpu.cellOffsets[b + 1] !== gpu.cellOffsets[b]) flat = false;
       expect(flat).toBe(true);
-      expect(gpu.start[3 * plane]).toBe(xs.length);
+      expect(gpu.cellOffsets[3 * plane]).toBe(xs.length);
     });
 
     it("builds an empty index for n = 0", async () => {
       const gpu = await buildGridIndexGpu(new Float32Array(0), { cell: 5, dims: 3, stride: 3, bounds: [0, 0, 0, 20, 20, 10] });
       expect([gpu.cols, gpu.rows, gpu.depth]).toEqual([5, 5, 3]);
-      expect(gpu.items.length).toBe(0);
-      expect(gpu.start.length).toBe(numCells(gpu) + 1);
-      expect(gpu.start.every((v) => v === 0)).toBe(true);
+      expect(gpu.pointIds.length).toBe(0);
+      expect(gpu.cellOffsets.length).toBe(numCells(gpu) + 1);
+      expect(gpu.cellOffsets.every((v) => v === 0)).toBe(true);
     });
 
     it("refuses a 3D lattice without stride 3", async () => {

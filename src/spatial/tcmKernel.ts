@@ -64,8 +64,8 @@ export function kernelMarks(a: CellCloud, b: CellCloud, p: TcmKernelParams): Flo
         const cc = c0 + dCol;
         if (cc < 0 || cc >= grid.cols) continue;
         const bucket = rr * grid.cols + cc;
-        for (let k = grid.start[bucket]!; k < grid.start[bucket + 1]!; k++) {
-          const j = grid.items[k]!;
+        for (let k = grid.cellOffsets[bucket]!; k < grid.cellOffsets[bucket + 1]!; k++) {
+          const j = grid.pointIds[k]!;
           const dx = b.xs[j]! - ax;
           const dy = b.ys[j]! - ay;
           const d2 = dx * dx + dy * dy;

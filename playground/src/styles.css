@@ -727,6 +727,26 @@ body {
   font-family: ui-monospace, monospace;
   color: var(--text);
 }
+.field-tip-parts {
+  margin-top: 6px;
+  border-top: 1px solid var(--line);
+  padding-top: 5px;
+  display: grid;
+  gap: 2px;
+}
+.field-tip-part {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 11px;
+  font-family: ui-monospace, monospace;
+}
+.field-tip-part-name {
+  color: var(--text);
+}
+.field-tip-part-type {
+  color: var(--muted);
+}
 .field-tip-note {
   margin-top: 6px;
   font-size: 11px;

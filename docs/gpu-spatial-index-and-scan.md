@@ -50,7 +50,7 @@ export interface BucketGrid {
 export function buildBucketGrid(xs, ys, cell, bounds?): BucketGrid;
 ```
 
-This is an offset list (`start[M+1]` / `items[n]`): the structure `bucketGrid.ts` builds,
+This is an offset list (`cellOffsets[M+1]` / `pointIds[n]`): the structure `bucketGrid.ts` builds,
 oriented cell→points because every query iterates the points of a cell; it is not a sparse
 feature matrix, so the CSR-vs-CSC question that matters for MDV/AnnData column access does
 not arise here — the point→cell direction is just the dense `cellOf[n]` array.

@@ -197,8 +197,8 @@ export async function kthNeighborDistanceGpu(
         { binding: 0, resource: { buffer: root.unwrap(p.params) } },
         { binding: 1, resource: sized(q.lat, LATTICE_BYTES) },
         { binding: 2, resource: sized(root.unwrap(p.pts), 2 * n * 4) },
-        { binding: 3, resource: sized(q.index.start, (q.index.M + 1) * 4) },
-        { binding: 4, resource: sized(q.index.items, n * 4) },
+        { binding: 3, resource: sized(q.index.cellOffsets, (q.index.M + 1) * 4) },
+        { binding: 4, resource: sized(q.index.pointIds, n * 4) },
         { binding: 5, resource: sized(root.unwrap(p.out), n * 4) },
       ],
     });

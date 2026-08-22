@@ -1,12 +1,12 @@
 // `gridIndex` bundle -> grid of per-cell point counts (ADR-0023's first consumer).
 //
-// The count of cell b is `start[b+1] - start[b]` — the offset list already holds it, so this is a
+// The count of cell b is `cellOffsets[b+1] - cellOffsets[b]` — the offset list already holds it, so this is a
 // one-line kernel over `cols*rows` threads and no second pass over the points. Statistically it
 // is the quadrat count the spatial-stats front keeps reaching for (`quadratCorrelationGpu`,
 // `getisOrd`'s input, a null model's expected density); visually it is what makes an index
 // legible, which is why the composer example ends here rather than at a dangling port.
 //
-// It reads the bundle whole rather than taking a `start` port, which is the point of ADR-0023: a
+// It reads the bundle whole rather than taking a `cellOffsets` port, which is the point of ADR-0023: a
 // consumer cannot be handed one index's offsets and another's lattice.
 //
 // The output grid inherits the LATTICE's placement, not the points': one cell of this grid is one
@@ -24,15 +24,15 @@ const WG = 64;
 const SHADER = /* wgsl */ `
 struct Uni { cells: u32, gridX: u32, pad0: u32, pad1: u32 };
 @group(0) @binding(0) var<uniform> U: Uni;
-@group(0) @binding(1) var<storage, read> start: array<u32>;
+@group(0) @binding(1) var<storage, read> cellOffsets: array<u32>;
 @group(0) @binding(2) var<storage, read_write> counts: array<f32>;
 
 @compute @workgroup_size(${WG})
 fn cellCounts(@builtin(local_invocation_id) lid: vec3u, @builtin(workgroup_id) wid: vec3u) {
   let b = (wid.x + wid.y * U.gridX) * ${WG}u + lid.x;
   if (b >= U.cells) { return; }
-  // start is M+1 long, so start[b + 1] is always in range for b < M.
-  counts[b] = f32(start[b + 1u] - start[b]);
+  // cellOffsets is M+1 long, so [b + 1] is always in range for b < M.
+  counts[b] = f32(cellOffsets[b + 1u] - cellOffsets[b]);
 }
 `;
 
@@ -90,12 +90,12 @@ export const cellCountsOp: OpType = {
   describe: "How many points fell in each cell of a bucket grid — a coarse density raster at the cell size.",
   help: {
     detail:
-      "Differences of the bucket grid's cell offsets: cell b holds `start[b+1] - start[b]` points. " +
+      "Differences of the bucket grid's cell offsets: cell b holds `cellOffsets[b+1] - cellOffsets[b]` points. " +
       "Statisticians call it a quadrat count; here it is also the cheapest way to SEE what the " +
       "bucketing did, since the counts are f32 and can come back to the host while the index itself " +
       "cannot.",
   },
-  inputs: [{ name: "buckets", kind: "bundle" }],
+  inputs: [{ name: "buckets", kind: "bundle", bundle: { name: GRID_INDEX_BUNDLE.name, parts: GRID_INDEX_BUNDLE.parts } }],
   outputs: [{ name: "counts", kind: "grid", dtype: "f32" }],
   params: [],
   inferShapes(inputs) {
@@ -110,9 +110,9 @@ export const cellCountsOp: OpType = {
   async execute(_ctx: ExecCtx, inputs: FieldValue[], _params: Params) {
     const bundle = inputs[0]!;
     const lat = latticeOf(bundle, "cellCounts");
-    const startPart = bundle.parts!.start!;
-    const src = startPart.buffer;
-    if (!src) throw new Error("cellCounts: the bundle's start part is not resident");
+    const offsetsPart = bundle.parts!.cellOffsets!;
+    const src = offsetsPart.buffer;
+    if (!src) throw new Error("cellCounts: the bundle's cellOffsets part is not resident");
 
     const { device, layout, pipeline } = await getCtx();
     const cells = lat.cells;
@@ -152,10 +152,10 @@ export const cellCountsOp: OpType = {
   cpuGolden(inputs) {
     const bundle = inputs[0]!;
     const lat = latticeOf(bundle, "cellCounts");
-    const start = bundle.parts!.start!.data as Uint32Array | Int32Array | undefined;
-    if (!start) throw new Error("cellCounts: the bundle's start part has no host data");
+    const offsets = bundle.parts!.cellOffsets!.data as Uint32Array | Int32Array | undefined;
+    if (!offsets) throw new Error("cellCounts: the bundle's cellOffsets part has no host data");
     const out = new Float32Array(lat.cells);
-    for (let b = 0; b < lat.cells; b++) out[b] = start[b + 1]! - start[b]!;
+    for (let b = 0; b < lat.cells; b++) out[b] = offsets[b + 1]! - offsets[b]!;
     return [{ shape: { kind: "grid", width: lat.cols, height: lat.rows }, dtype: "f32", data: out, placement: lat.placement }];
   },
 };

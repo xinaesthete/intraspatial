@@ -40,12 +40,12 @@ async function readU32(buffer: GPUBuffer, n: number): Promise<Uint32Array> {
 /** Per-cell SET comparison (order within a cell is not contractual) + `start` equality. */
 function compare(start: Uint32Array, items: Uint32Array, cpu: ReturnType<typeof buildBucketGrid>) {
   let startMismatch = 0;
-  for (let b = 0; b < cpu.start.length; b++) if (start[b] !== cpu.start[b]) startMismatch++;
+  for (let b = 0; b < cpu.cellOffsets.length; b++) if (start[b] !== cpu.cellOffsets[b]) startMismatch++;
   let cellMismatch = 0;
   for (let b = 0; b < cpu.cols * cpu.rows; b++) {
-    const lo = cpu.start[b]!;
-    const hi = cpu.start[b + 1]!;
-    const want = Array.from(cpu.items.subarray(lo, hi)).sort((p, q) => p - q);
+    const lo = cpu.cellOffsets[b]!;
+    const hi = cpu.cellOffsets[b + 1]!;
+    const want = Array.from(cpu.pointIds.subarray(lo, hi)).sort((p, q) => p - q);
     const got = Array.from(items.subarray(lo, hi)).sort((p, q) => p - q);
     if (want.length !== got.length || want.some((v, k) => v !== got[k])) cellMismatch++;
   }
@@ -61,8 +61,8 @@ describe("gridIndexOp", () => {
 
     const bridges: string[] = [];
     const bundle = await pullResident(g, idx, { onBridge: (_k: string, d: string) => bridges.push(d) });
-    const startV = bundle.parts!.start!;
-    const itemsV = bundle.parts!.items!;
+    const startV = bundle.parts!.cellOffsets!;
+    const itemsV = bundle.parts!.pointIds!;
     const lat = bundle.parts!.lattice!.payload as GridLatticePayload;
     const cpu = buildBucketGrid(xs, ys, 10, [BOUNDS.minX, BOUNDS.minY, BOUNDS.maxX, BOUNDS.maxY]);
     expect({ cols: lat.cols, rows: lat.rows, cell: lat.cell, minX: lat.minX, minY: lat.minY }).toEqual({
@@ -99,28 +99,28 @@ describe("gridIndexOp", () => {
     expect(v.shape).toEqual(idx.shape);
     expect(v.shape).toEqual({
       kind: "bundle",
-      name: "gridIndex",
+      name: "bucketGrid",
       parts: {
-        start: { kind: "points", n: cpu.cols * cpu.rows + 1 },
-        items: { kind: "points", n: 50 },
+        cellOffsets: { kind: "points", n: cpu.cols * cpu.rows + 1 },
+        pointIds: { kind: "points", n: 50 },
         lattice: { kind: "grid", width: cpu.cols, height: cpu.rows },
       },
     });
-    expect([v.parts!.start!.dtype, v.parts!.items!.dtype]).toEqual(["u32", "u32"]);
+    expect([v.parts!.cellOffsets!.dtype, v.parts!.pointIds!.dtype]).toEqual(["u32", "u32"]);
   });
 
   it("extracts a part by borrowing the very same buffer", async () => {
     const { xs, ys } = cloud(120, 3);
     const g = new Graph();
     const idx = g.op1("gridIndex", { points: g.points(xs, ys) }, { cell: 20, ...BOUNDS });
-    const startF = g.op1("gridIndex.start", { bundle: idx });
+    const startF = g.op1("bucketGrid.cellOffsets", { bundle: idx });
 
     const bundle = await pullResident(g, idx);
     const start = await pullResident(g, startF);
     // Same shape, and — the point of ADR-0023 — the extract copied nothing. It cannot be the
     // identical object across two pulls (each tick rebuilds), so compare the contents instead.
-    expect(start.shape).toEqual(bundle.parts!.start!.shape);
-    const viaBundle = await readU32(bundle.parts!.start!.buffer!.buffer, 8);
+    expect(start.shape).toEqual(bundle.parts!.cellOffsets!.shape);
+    const viaBundle = await readU32(bundle.parts!.cellOffsets!.buffer!.buffer, 8);
     const viaPart = await readU32(start.buffer!.buffer, 8);
     expect(Array.from(viaPart)).toEqual(Array.from(viaBundle));
   });
@@ -134,7 +134,7 @@ describe("gridIndexOp", () => {
     // everything else the tick leased (the uploaded points) comes back.
     const v = await pullResident(g, idx);
     const after = nodeBackend.poolStats();
-    expect(v.parts!.start!.buffer).toBeTruthy();
+    expect(v.parts!.cellOffsets!.buffer).toBeTruthy();
     expect(after.live - before.live).toBe(2);
   });
 
@@ -145,7 +145,7 @@ describe("gridIndexOp", () => {
     const { xs, ys } = cloud(200, 12);
     const g = new Graph();
     const idx = g.op1("gridIndex", { points: g.points(xs, ys) }, { cell: 25, ...BOUNDS });
-    const itemsF = g.op1("gridIndex.items", { bundle: idx });
+    const itemsF = g.op1("bucketGrid.pointIds", { bundle: idx });
     const before = nodeBackend.poolStats();
     const v = await pullResident(g, itemsF);
     const after = nodeBackend.poolStats();
@@ -157,16 +157,24 @@ describe("gridIndexOp", () => {
     expect(new Set(got).size).toBe(xs.length);
   });
 
-  it("refuses a host pull, because the bridge is f32-only", async () => {
-    // Not a defect to fix here: `residentF32Count` would reinterpret u32 as f32 element-wise and
-    // hand back mangled numbers, so ADR-0017 stage 1 throws instead. These ports feed resident
-    // consumers; `mode: "cpu"` is the host-shaped path.
+  it("downloads the u32 parts on a host pull, and agrees with the golden", async () => {
+    // This used to throw: the host bridge decoded every word as f32, which mangles a u32 index,
+    // so it refused rather than lie. It now reads those parts back as bytes (ADR-0023 + the
+    // dtype-aware download in `executor.ts`), which is what makes the composer able to inspect
+    // the node at all.
+    const { xs, ys } = cloud(120, 44);
     const g = new Graph();
-    const idx = g.op1("gridIndex", { points: g.points([1, 2], [3, 4]) }, { cell: 10, ...BOUNDS });
-    // The message names the part, so it is obvious WHICH member of the bundle cannot cross.
-    await expect(pull(g, idx)).rejects.toThrow(/bundle part ".*\.start" .*f32-only.*u32/);
+    const idx = g.op1("gridIndex", { points: g.points(xs, ys) }, { cell: 20, ...BOUNDS });
+    const host = await pull(g, idx);
     const golden = await pull(g, idx, { mode: "cpu" });
-    expect(golden.parts!.start!.data).toBeInstanceOf(Uint32Array);
+
+    const gotOffsets = host.parts!.cellOffsets!.data as Uint32Array;
+    const wantOffsets = golden.parts!.cellOffsets!.data as Uint32Array;
+    expect(gotOffsets).toBeInstanceOf(Uint32Array);
+    let mismatch = 0;
+    for (let i = 0; i < wantOffsets.length; i++) if (gotOffsets[i] !== wantOffsets[i]) mismatch++;
+    // The last offset is n, so a mangled decode could not pass this by accident.
+    expect({ mismatch, last: gotOffsets[wantOffsets.length - 1] }).toEqual({ mismatch: 0, last: xs.length });
   });
 
   it("agrees with its own cpuGolden", async () => {
@@ -177,15 +185,15 @@ describe("gridIndexOp", () => {
     const lat = gpu.parts!.lattice!.payload as GridLatticePayload;
     const goldenBundle = await pullResident(g, idx, { mode: "cpu" });
 
-    const start = await readU32(gpu.parts!.start!.buffer!.buffer, lat.cells + 1);
-    const items = await readU32(gpu.parts!.items!.buffer!.buffer, xs.length);
+    const start = await readU32(gpu.parts!.cellOffsets!.buffer!.buffer, lat.cells + 1);
+    const items = await readU32(gpu.parts!.pointIds!.buffer!.buffer, xs.length);
 
     let startMismatch = 0;
-    const gs = goldenBundle.parts!.start!.data as Uint32Array;
+    const gs = goldenBundle.parts!.cellOffsets!.data as Uint32Array;
     for (let i = 0; i < gs.length; i++) if (gs[i] !== start[i]) startMismatch++;
     expect({ startMismatch, len: gs.length }).toEqual({ startMismatch: 0, len: lat.cells + 1 });
     // Cell sets, not order.
-    const gi = goldenBundle.parts!.items!.data as Uint32Array;
+    const gi = goldenBundle.parts!.pointIds!.data as Uint32Array;
     let cellMismatch = 0;
     for (let b = 0; b < lat.cells; b++) {
       const want = Array.from(gi.subarray(gs[b]!, gs[b + 1]!)).sort((p, q) => p - q);
@@ -199,7 +207,7 @@ describe("gridIndexOp", () => {
     const g = new Graph();
     const v = await pullResident(g, g.op1("gridIndex", { points: g.points([], []) }, { cell: 10, ...BOUNDS }));
     const lat = v.parts!.lattice!.payload as GridLatticePayload;
-    const start = await readU32(v.parts!.start!.buffer!.buffer, lat.cells + 1);
+    const start = await readU32(v.parts!.cellOffsets!.buffer!.buffer, lat.cells + 1);
     expect(lat.n).toBe(0);
     expect(start.every((v) => v === 0)).toBe(true);
   });

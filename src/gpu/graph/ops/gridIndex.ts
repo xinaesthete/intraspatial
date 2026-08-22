@@ -1,15 +1,15 @@
 // Tier-2 graph node wrapping `encodeGridIndex` (points -> offset list) — ADR-0022's index as a
 // node, design note `docs/gpu-spatial-index-and-scan.md` §3.3.
 //
-// ONE output: a `gridIndex` **bundle** (ADR-0023) whose parts are `start`, `items` and `lattice`.
-// Three sibling ports was the first shape (ADR-0022), and it let a graph wire `start` from one
-// index and `items` from another — both are `points`/u32, so the mistake typechecks and returns a
-// plausible wrong neighbourhood. A bundle makes that unrepresentable. `gridIndex.start` and its
+// ONE output: a `gridIndex` **bundle** (ADR-0023) whose parts are `cellOffsets`, `pointIds` and `lattice`.
+// Three sibling ports was the first shape (ADR-0022), and it let a graph wire the offsets from one
+// index and the ids from another — both are `points`/u32, so the mistake typechecks and returns a
+// plausible wrong neighbourhood. A bundle makes that unrepresentable. `bucketGrid.cellOffsets` and its
 // siblings (from `extractOp`) take a part out, borrowing the buffer rather than copying it.
 //
 // ## What a consumer must know
 //
-// **`start` and `items` are u32, and the host bridge is f32-only** (ADR-0017 stage 1), so a
+// **`cellOffsets` and `pointIds` are u32, and the host bridge is f32-only** (ADR-0017 stage 1), so a
 // `pull()` of the bundle throws naming the offending part. They feed *resident* consumers
 // (`cellCounts` is the first); `pullResident` hands the bundle over whole, and `mode: "cpu"` runs
 // `cpuGolden`, which produces host arrays instead.
@@ -27,7 +27,11 @@ import type { ExecCtx, OpType, Params } from "../op";
 import { type BundleSpec, bundleValue, combineOp, extractOp } from "./bundleOps";
 
 /** The bundle this op produces; `extractOp`/`combineOp` generate its accessors from it. */
-export const GRID_INDEX_BUNDLE: BundleSpec = { name: "gridIndex", label: "Bucket grid", parts: ["start", "items", "lattice"] };
+// The TYPE tag is `bucketGrid`, not `gridIndex`: it surfaces in error messages and in the
+// composer's value summary, so it reads as the structure ("a bucket grid") rather than as the op
+// that happens to build it. The producing op keeps `gridIndex` — that is the name of the
+// algorithm, and of ADR-0022.
+export const GRID_INDEX_BUNDLE: BundleSpec = { name: "bucketGrid", label: "Bucket grid", parts: ["cellOffsets", "pointIds", "lattice"] };
 
 /** What the `lattice` port carries. Shaped so a consumer can rebuild the cell arithmetic without
  *  reading either buffer, and so a readback can be compared against `buildBucketGrid`. */
@@ -100,13 +104,12 @@ export const gridIndexOp: OpType = {
       "Set the cell size to the radius you will query at, and every point within that radius of a " +
       "given point lies in its own cell or the 8 around it — so a neighbour search reads 9 cells " +
       "rather than the whole cloud. The result (a *bucket grid*, or uniform grid index) is one value " +
-      "with three parts: `start`, the offset where each cell's points begin; `items`, the point ids " +
-      "grouped by cell; and `lattice`, the cell geometry. They travel together so two cannot come " +
-      "from different clouds. Both buffers are u32 and stay on the device — `Points per cell` is the " +
-      "way to see what the bucketing did.",
+      "with three parts: `cellOffsets`, where each cell's run of points begins; `pointIds`, the ids " +
+      "grouped by cell; and `lattice`, the cell geometry. They travel together, so two cannot come " +
+      "from different clouds. `Points per cell` turns one into a picture.",
   },
   inputs: [{ name: "points", kind: "points", dtype: "f32" }],
-  outputs: [{ name: "buckets", kind: "bundle" }],
+  outputs: [{ name: "buckets", kind: "bundle", bundle: { name: GRID_INDEX_BUNDLE.name, parts: GRID_INDEX_BUNDLE.parts } }],
   params: [
     { name: "cell", type: "number", default: 1, min: 1e-6, describe: "Cell side in world units — set it to the query radius." },
     { name: "minX", type: "number", default: 0, describe: "Lattice origin x." },
@@ -122,8 +125,8 @@ export const gridIndexOp: OpType = {
         kind: "bundle",
         name: GRID_INDEX_BUNDLE.name,
         parts: {
-          start: { kind: "points", n: numCells(lattice) + 1 },
-          items: { kind: "points", n: Math.max(n, 1) },
+          cellOffsets: { kind: "points", n: numCells(lattice) + 1 },
+          pointIds: { kind: "points", n: Math.max(n, 1) },
           // The lattice part IS the cell grid, so its shape says so: `cols × rows`. That makes
           // a consumer's output extent (`cellCounts`) inferable at build time, and it is more
           // honest than `opaque` — the payload beside it carries cell size, origin and placement.
@@ -156,13 +159,13 @@ export const gridIndexOp: OpType = {
     // may not share a buffer). The index's own buffers are POOLED under a global key, so they are
     // copied into the leases in the same submit: a second `gridIndex` node in the same tick reuses
     // that pool, and only the copies are private to this node.
-    const startOut = await ctx.backend.lease((cells + 1) * 4);
-    const itemsOut = await ctx.backend.lease(Math.max(n, 1) * 4);
+    const offsetsOut = await ctx.backend.lease((cells + 1) * 4);
+    const idsOut = await ctx.backend.lease(Math.max(n, 1) * 4);
 
     const enc = device.createCommandEncoder({ label: "gridIndexOp" });
     const idx = encodeGridIndex(gridCtx, src.buffer, n, lattice, enc);
-    enc.copyBufferToBuffer(idx.start, 0, startOut.buffer, 0, (cells + 1) * 4);
-    if (n > 0) enc.copyBufferToBuffer(idx.items, 0, itemsOut.buffer, 0, n * 4);
+    enc.copyBufferToBuffer(idx.cellOffsets, 0, offsetsOut.buffer, 0, (cells + 1) * 4);
+    if (n > 0) enc.copyBufferToBuffer(idx.pointIds, 0, idsOut.buffer, 0, n * 4);
     device.queue.submit([enc.finish()]);
 
     if (uploaded) ctx.backend.release(uploaded);
@@ -170,8 +173,8 @@ export const gridIndexOp: OpType = {
     const place = latticePlacement(pts.placement, lattice);
     return [
       bundleValue(GRID_INDEX_BUNDLE, [
-        { shape: { kind: "points", n: cells + 1 }, dtype: "u32", buffer: startOut },
-        { shape: { kind: "points", n: Math.max(n, 1) }, dtype: "u32", buffer: itemsOut },
+        { shape: { kind: "points", n: cells + 1 }, dtype: "u32", buffer: offsetsOut },
+        { shape: { kind: "points", n: Math.max(n, 1) }, dtype: "u32", buffer: idsOut },
         {
           shape: { kind: "grid", width: lattice.cols, height: lattice.rows },
           dtype: "f32",
@@ -198,13 +201,13 @@ export const gridIndexOp: OpType = {
       params.maxX as number,
       params.maxY as number,
     ]);
-    const items = new Uint32Array(Math.max(n, 1));
-    items.set(grid.items);
+    const ids = new Uint32Array(Math.max(n, 1));
+    ids.set(grid.pointIds);
     const place = latticePlacement(pts.placement, lattice);
     return [
       bundleValue(GRID_INDEX_BUNDLE, [
-        { shape: { kind: "points", n: grid.start.length }, dtype: "u32", data: new Uint32Array(grid.start) },
-        { shape: { kind: "points", n: Math.max(n, 1) }, dtype: "u32", data: items },
+        { shape: { kind: "points", n: grid.cellOffsets.length }, dtype: "u32", data: new Uint32Array(grid.cellOffsets) },
+        { shape: { kind: "points", n: Math.max(n, 1) }, dtype: "u32", data: ids },
         {
           shape: { kind: "grid", width: lattice.cols, height: lattice.rows },
           dtype: "f32",
@@ -219,13 +222,16 @@ export const gridIndexOp: OpType = {
 /** `gridIndex.start` / `.items` / `.lattice` — take one part out, borrowing the buffer rather
  *  than copying it (ADR-0023). */
 export const gridIndexPartOps: OpType[] = [
-  extractOp(GRID_INDEX_BUNDLE, "start", {
+  extractOp(GRID_INDEX_BUNDLE, "cellOffsets", {
     label: "cell offsets",
     describe: "Where each cell's run of point ids begins: cell b owns `items[start[b] .. start[b+1])`. u32, device-only.",
   }),
-  extractOp(GRID_INDEX_BUNDLE, "items", { label: "point ids", describe: "Point ids grouped by the cell they fell in. u32, device-only." }),
+  extractOp(GRID_INDEX_BUNDLE, "pointIds", {
+    label: "point ids",
+    describe: "Point ids grouped by the cell they fell in. u32, device-only.",
+  }),
   extractOp(GRID_INDEX_BUNDLE, "lattice", { label: "lattice", describe: "The cell geometry — columns, rows, cell size and origin." }),
 ];
 
 /** `gridIndex.bundle` — reassemble an index from parts, for a producer that builds them itself. */
-export const gridIndexCombineOp: OpType = combineOp(GRID_INDEX_BUNDLE, { start: "points", items: "points", lattice: "opaque" });
+export const gridIndexCombineOp: OpType = combineOp(GRID_INDEX_BUNDLE, { cellOffsets: "points", pointIds: "points", lattice: "grid" });

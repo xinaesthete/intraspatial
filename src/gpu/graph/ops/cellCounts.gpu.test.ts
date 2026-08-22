@@ -33,7 +33,7 @@ function cloud(n: number, seed: number) {
 function countsCpu(xs: number[], ys: number[], cell: number) {
   const g = buildBucketGrid(xs, ys, cell, [BOUNDS.minX, BOUNDS.minY, BOUNDS.maxX, BOUNDS.maxY]);
   const out = new Float32Array(g.cols * g.rows);
-  for (let b = 0; b < out.length; b++) out[b] = g.start[b + 1]! - g.start[b]!;
+  for (let b = 0; b < out.length; b++) out[b] = g.cellOffsets[b + 1]! - g.cellOffsets[b]!;
   return { out, cols: g.cols, rows: g.rows };
 }
 
@@ -118,6 +118,6 @@ describe("cellCountsOp", () => {
 
   it("rejects an input that is not a grid-index bundle", () => {
     const g = new Graph();
-    expect(() => g.op1("cellCounts", { buckets: g.grid(new Float32Array(16), 4, 4) })).toThrow(/expected a "gridIndex" bundle/);
+    expect(() => g.op1("cellCounts", { buckets: g.grid(new Float32Array(16), 4, 4) })).toThrow(/expected a "bucketGrid" bundle/);
   });
 });
