@@ -157,6 +157,12 @@ the migration PR is said to have recorded is not written anywhere in the repo. T
 as the range and re-run the bench before citing a number — and either way the dispatch is
 two orders of magnitude inside the watchdog.
 
+**Explainer candidate.** The recursive reduce-then-scan is a good subject for a docs-site
+interactive: blocks of numbers collapse to block totals, the totals get scanned (the same step, one
+level up), and the result is broadcast back down — three pictures, no jargon needed. Same family as
+the DWT-draw and filtration demos. Noted here so the "illustrative visualisation + lay description"
+pass finds it; not part of this design.
+
 ### 2.2 Stream compaction — `src/gpu/scan/streamCompact.ts`
 
 ```ts
