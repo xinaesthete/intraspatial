@@ -25,10 +25,17 @@
 // WGSL template rather than `"use gpu"`, for the reason recorded in ADR-0003 and hit
 // first by `kthNeighborDistance`: the per-thread k-smallest selection needs a local
 // mutable array, which this TypeGPU version cannot express in TGSL.
+//
+// With `cell` (2-D only; see `IndexedQueryOptions`) the uniform-grid index is built in the same
+// command buffer and the candidate loop is the 3×3 stencil — O(N·k) — calling
+// `gridIndexQuery.ts`'s TGSL helpers as template externals. Brute force stays the default and
+// the golden.
 import tgpu from "typegpu";
 import * as d from "typegpu/data";
 import type { KnnResult } from "../../spatial/umapGraph";
-import { getDevice } from "../device";
+import { getDevice, sized } from "../device";
+import { type GridIndexCtx, getGridIndexCtx } from "./gridIndex";
+import { cellCoord, cellRange, encodeQueryIndex, type IndexedQueryOptions, LATTICE_BYTES, Lattice, StartArray } from "./gridIndexQuery";
 
 const WG = 64;
 /** Compile-time bound on the private per-thread arrays. k is a uniform ≤ this. 32 is
@@ -45,24 +52,22 @@ const layout = tgpu.bindGroupLayout({
   outDist: { storage: (n: number) => d.arrayOf(d.f32, n), access: "mutable" }, // [n, k]
 });
 
-const TEMPLATE = /* wgsl */ `
-@compute @workgroup_size(${WG})
-fn knn(@builtin(global_invocation_id) gid: vec3u) {
-  // Query rows are processed in tiles; this dispatch owns [rowOffset, rowOffset + count).
-  let i = gid.x + params.rowOffset;
-  let n = params.n;
-  if (i >= n) { return; }
-  let dim = params.dim;
-  let k = min(params.k, ${MAX_K}u);
+const layoutIdx = tgpu.bindGroupLayout({
+  params: { uniform: Params },
+  lat: { uniform: Lattice },
+  data: { storage: (n: number) => d.arrayOf(d.f32, n), access: "readonly" },
+  start: { storage: StartArray, access: "readonly" },
+  items: { storage: StartArray, access: "readonly" },
+  outIdx: { storage: (n: number) => d.arrayOf(d.u32, n), access: "mutable" },
+  outDist: { storage: (n: number) => d.arrayOf(d.f32, n), access: "mutable" },
+});
 
-  // Ascending by construction: bd[0] is the nearest kept so far, bd[k-1] the furthest.
-  var bd: array<f32, ${MAX_K}u>;
-  var bi: array<u32, ${MAX_K}u>;
-  for (var t: u32 = 0u; t < k; t = t + 1u) { bd[t] = 3.4e38; bi[t] = 0u; }
+/** Index reported for a neighbour slot the indexed query could not fill. */
+export const KNN_NO_NEIGHBOUR = 0xffffffff;
 
-  let ibase = i * dim;
-  for (var j: u32 = 0u; j < n; j = j + 1u) {
-    if (j == i) { continue; }
+// Per-candidate body shared by both entry points: squared distance, early reject,
+// insertion into the ascending k-best arrays.
+const CONSIDER = /* wgsl */ `
     let jbase = j * dim;
     // Squared distance; the sqrt is paid once per kept neighbour, not per candidate.
     var acc: f32 = 0.0;
@@ -84,13 +89,63 @@ fn knn(@builtin(global_invocation_id) gid: vec3u) {
     }
     bd[p] = acc;
     bi[p] = j;
-  }
+`;
 
+// Slots never filled keep (FAR, 0xFFFFFFFF) — WGSL refuses a constant +Inf — and the host
+// reports them as (+Inf, KNN_NO_NEIGHBOUR). Only the indexed path can leave any, since brute
+// force requires k < n.
+const PROLOGUE = /* wgsl */ `
+  // Query rows are processed in tiles; this dispatch owns [rowOffset, rowOffset + count).
+  let i = gid.x + params.rowOffset;
+  let n = params.n;
+  if (i >= n) { return; }
+  let dim = params.dim;
+  let k = min(params.k, ${MAX_K}u);
+
+  // Ascending by construction: bd[0] is the nearest kept so far, bd[k-1] the furthest.
+  var bd: array<f32, ${MAX_K}u>;
+  var bi: array<u32, ${MAX_K}u>;
+  for (var t: u32 = 0u; t < k; t = t + 1u) { bd[t] = 3.4e38; bi[t] = ${KNN_NO_NEIGHBOUR}u; }
+  let ibase = i * dim;
+`;
+
+const EPILOGUE = /* wgsl */ `
   let obase = i * k;
   for (var t: u32 = 0u; t < k; t = t + 1u) {
     outIdx[obase + t] = bi[t];
     outDist[obase + t] = sqrt(bd[t]);
   }
+`;
+
+const TEMPLATE = /* wgsl */ `
+@compute @workgroup_size(${WG})
+fn knn(@builtin(global_invocation_id) gid: vec3u) {
+  ${PROLOGUE}
+  for (var j: u32 = 0u; j < n; j = j + 1u) {
+    if (j == i) { continue; }
+    ${CONSIDER}
+  }
+  ${EPILOGUE}
+}
+`;
+
+// dim == 2 by construction (checked on the host): the lattice is over the row's two values.
+const TEMPLATE_IDX = /* wgsl */ `
+@compute @workgroup_size(${WG})
+fn knnIdx(@builtin(global_invocation_id) gid: vec3u) {
+  ${PROLOGUE}
+  let cc = cellCoord(vec2f(data[ibase], data[ibase + 1u]), lat);
+  for (var dy = -1i; dy <= 1i; dy = dy + 1i) {
+    for (var dx = -1i; dx <= 1i; dx = dx + 1i) {
+      let r = cellRange(vec2i(cc.x + dx, cc.y + dy), lat, &start);
+      for (var s = r.x; s < r.y; s = s + 1u) {
+        let j = items[s];
+        if (j == i) { continue; }
+        ${CONSIDER}
+      }
+    }
+  }
+  ${EPILOGUE}
 }
 `;
 
@@ -98,21 +153,28 @@ interface Pipe {
   device: GPUDevice;
   root: ReturnType<typeof tgpu.initFromDevice>;
   pipeline: GPUComputePipeline;
+  pipelineIdx: GPUComputePipeline;
+  indexCtx: GridIndexCtx;
 }
 let pipeCache: Promise<Pipe> | undefined;
 function getPipe(): Promise<Pipe> {
   pipeCache ??= (async () => {
     const device = await getDevice();
     const root = tgpu.initFromDevice({ device });
-    const { code, usedBindGroupLayouts } = tgpu.resolveWithContext({
-      template: TEMPLATE,
-      externals: { ...layout.bound },
-      names: "strict",
-    });
-    const module = device.createShaderModule({ code });
-    const pipeLayout = device.createPipelineLayout({ bindGroupLayouts: usedBindGroupLayouts.map((l) => root.unwrap(l)) });
-    const pipeline = device.createComputePipeline({ layout: pipeLayout, compute: { module, entryPoint: "knn" } });
-    return { device, root, pipeline };
+    const build = (template: string, externals: Record<string, object>, entryPoint: string) => {
+      const { code, usedBindGroupLayouts } = tgpu.resolveWithContext({ template, externals, names: "strict" });
+      const module = device.createShaderModule({ code });
+      const pipeLayout = device.createPipelineLayout({ bindGroupLayouts: usedBindGroupLayouts.map((l) => root.unwrap(l)) });
+      return device.createComputePipeline({ layout: pipeLayout, compute: { module, entryPoint } });
+    };
+    const indexCtx = await getGridIndexCtx();
+    return {
+      device,
+      root,
+      pipeline: build(TEMPLATE, { ...layout.bound }, "knn"),
+      pipelineIdx: build(TEMPLATE_IDX, { ...layoutIdx.bound, cellCoord, cellRange }, "knnIdx"),
+      indexCtx,
+    };
   })();
   return pipeCache;
 }
@@ -146,10 +208,10 @@ export const KNN_MAX_K = MAX_K;
  *  all-zero result, so the margin is deliberate. */
 const TARGET_PAIRS_PER_DISPATCH = 4_000_000_000;
 
-export interface KnnGpuOptions {
+export interface KnnGpuOptions extends IndexedQueryOptions {
   /** Rows. */
   readonly n: number;
-  /** Columns (feature dimension). */
+  /** Columns (feature dimension). `cell` requires `dim === 2`. */
   readonly dim: number;
   /** Neighbours per row, excluding self. 1..32, and < n. */
   readonly k: number;
@@ -161,20 +223,48 @@ export interface KnnGpuOptions {
  * Returns the same `KnnResult` shape as `knnBruteForceCpu`, so the two are drop-in
  * substitutes and the GPU test can diff them directly. Rows come back sorted ascending
  * by distance with self excluded.
+ *
+ * With `cell` (2-D only) the query is indexed (see `IndexedQueryOptions`): a row is exact
+ * when its true k-th neighbour is within `cell`. Rows with fewer than k candidates in their
+ * 3×3 stencil are padded at the tail with index `KNN_NO_NEIGHBOUR` (`0xFFFFFFFF`) and
+ * distance `+Infinity`, still ascending.
  */
 export async function knnGpu(data: ArrayLike<number>, opts: KnnGpuOptions): Promise<KnnResult> {
-  const { n, dim, k } = opts;
+  const { n, dim, k, cell } = opts;
   if (data.length < n * dim) throw new Error(`knnGpu: data has ${data.length} values, need ${n * dim}`);
   if (k < 1 || k > MAX_K) throw new Error(`knnGpu: k must be in 1..${MAX_K}`);
   if (k >= n) throw new Error(`knnGpu: need k < n (k=${k}, n=${n})`);
+  if (cell !== undefined && dim !== 2) throw new Error(`knnGpu: the indexed query is 2-D only (dim=${dim})`);
 
-  const { device, root, pipeline } = await getPipe();
+  const { device, root, pipeline, pipelineIdx, indexCtx } = await getPipe();
   const p = ensurePool(root, n * dim, n * k);
 
   const flat = data instanceof Float32Array && data.length === n * dim ? data : Float32Array.from({ length: n * dim }, (_, t) => data[t]!);
   device.queue.writeBuffer(root.unwrap(p.data), 0, flat as BufferSource);
 
-  const bind = root.unwrap(root.createBindGroup(layout, { params: p.params, data: p.data, outIdx: p.outIdx, outDist: p.outDist }));
+  // The index is recorded into the first tile's command buffer and stays resident for the rest.
+  let bind: GPUBindGroup;
+  let indexEnc: GPUCommandEncoder | undefined;
+  if (cell === undefined) {
+    bind = root.unwrap(root.createBindGroup(layout, { params: p.params, data: p.data, outIdx: p.outIdx, outDist: p.outDist }));
+  } else {
+    const xs = Float32Array.from({ length: n }, (_, i) => flat[2 * i]!);
+    const ys = Float32Array.from({ length: n }, (_, i) => flat[2 * i + 1]!);
+    indexEnc = device.createCommandEncoder();
+    const q = encodeQueryIndex(indexCtx, root.unwrap(p.data), n, xs, ys, cell, opts.bounds, indexEnc, "knn:index");
+    bind = device.createBindGroup({
+      layout: root.unwrap(layoutIdx),
+      entries: [
+        { binding: 0, resource: { buffer: root.unwrap(p.params) } },
+        { binding: 1, resource: sized(q.lat, LATTICE_BYTES) },
+        { binding: 2, resource: sized(root.unwrap(p.data), n * dim * 4) },
+        { binding: 3, resource: sized(q.index.start, (q.index.M + 1) * 4) },
+        { binding: 4, resource: sized(q.index.items, n * 4) },
+        { binding: 5, resource: sized(root.unwrap(p.outIdx), n * k * 4) },
+        { binding: 6, resource: sized(root.unwrap(p.outDist), n * k * 4) },
+      ],
+    });
+  }
 
   // Tiled over query rows, and this is a correctness fix rather than a tuning knob.
   // One dispatch covering every row is O(n^2 * dim) of work in a single command, and past
@@ -192,9 +282,10 @@ export async function knnGpu(data: ArrayLike<number>, opts: KnnGpuOptions): Prom
   for (let start = 0; start < n; start += rowsPerTile) {
     const count = Math.min(rowsPerTile, n - start);
     p.params.write({ n, dim, k, rowOffset: start });
-    const enc = device.createCommandEncoder();
+    const enc = indexEnc ?? device.createCommandEncoder();
+    indexEnc = undefined;
     const pass = enc.beginComputePass();
-    pass.setPipeline(pipeline);
+    pass.setPipeline(cell === undefined ? pipeline : pipelineIdx);
     pass.setBindGroup(0, bind);
     pass.dispatchWorkgroups(Math.ceil(count / WG));
     pass.end();
@@ -211,7 +302,7 @@ export async function knnGpu(data: ArrayLike<number>, opts: KnnGpuOptions): Prom
   const distances = new Float32Array(n * k);
   for (let t = 0; t < n * k; t++) {
     indices[t] = gotIdx[t]!;
-    distances[t] = gotDist[t]!;
+    distances[t] = indices[t] === KNN_NO_NEIGHBOUR ? Number.POSITIVE_INFINITY : gotDist[t]!;
   }
   return { n, k, indices, distances };
 }

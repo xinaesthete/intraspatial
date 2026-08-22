@@ -320,9 +320,12 @@ compiles today's kernel and the morphology bit-exact test stays green.
 1. ~~**2D index, host-in/host-out, golden against `bucketGrid.ts`**; swap `crossPcf.ts` and
    `tcm.ts` onto it. Proves the build; adds `scripts/bench-grid-index.ts` (like `bench-scan`).~~
    **Done 2026-08-22 → [ADR-0022](decisions/0022-gpu-uniform-grid-index.md).**
-2. **Indexed `nnDistance` / `kthNeighborDistance` / `knn`** via `cellCoord`/`cellRange`,
+2. ~~**Indexed `nnDistance` / `kthNeighborDistance` / `knn`** via `cellCoord`/`cellRange`,
    brute force as golden. Unblocks O(N·k) point statistics past `knn.ts`'s O(N²) wall; CkNN
-   and fuzzy adjacency follow since they compose `kthNeighborDistanceGpu`.
+   and fuzzy adjacency follow since they compose `kthNeighborDistanceGpu`.~~
+   **Done 2026-08-22** — `src/gpu/spatial/gridIndexQuery.ts` (2D helpers, `vec2f`/`vec2i`
+   for now; the 3D signatures above wait on step 6) + an optional `cell` on all three
+   kernels; contract in `IndexedQueryOptions`. CkNN / fuzzy adjacency still call brute force.
 3. **Resident index op** (§3.3) and a resident `separate` / `spring` force op reading it.
    Unblocks force-directed layout at scale (TerraCognita's displacement-field terrain) and the first
    per-tick resident chain (ADR-0017 stage 3 feedback state).
