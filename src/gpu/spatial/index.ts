@@ -21,6 +21,7 @@ export * from "./knn";
 export * from "./knnDescentGpu";
 export * from "./kthNeighborDistance";
 export * from "./markerWgsl";
+export * from "./morphology";
 export * from "./nnDistance";
 export * from "./paintField";
 export * from "./pcaGpu";
