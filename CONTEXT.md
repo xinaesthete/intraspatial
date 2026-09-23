@@ -103,7 +103,7 @@ _Avoid_: fetcher, store, reader.
 
 **SpatialDataLoader**:
 The Milestone-2 `Loader` implementation, backed by published spatialdata.js
-(`@spatialdata/core@0.8.0` for element discovery + transforms, `zarrextra@0.4.0` — pinned exactly,
+(`@spatialdata/core@0.10.0` for element discovery + transforms, `zarrextra@0.5.0` — pinned exactly,
 matching core's pin — for the per-level `getTile` chunk seam and OpenJPH HTJ2K decode on its worker pool). An adapter, not a new abstraction: it maps a SpatialData
 multiscale **image** element onto our Multiscale/Tile model. The dependency is one-way
 (`intraspatial → sd.js`), lives in the playground (heavy deps out of the engine core), and does not

@@ -59,13 +59,19 @@ export default defineConfig({
   // `new URL("./wasm/libopenjph.mjs", import.meta.url)`, which pre-bundling would rewrite to a
   // `.vite/deps` path that never emits the sibling `.wasm`.
   // `@spatialdata/core` is excluded for a third variant of the same problem, and MDV excludes it too
-  // (`~/code/www/MDV/vite.config.mts`): core defers its vendored parquet-wasm behind
-  // `import(/* @vite-ignore */ "../vendor/parquet-wasm/parquet_wasm.js")`, a path relative to core's
-  // OWN dist. Pre-bundled, that module is served from `.vite/deps/`, where `../vendor/...` points at
-  // nothing — Vite fails the import analysis and the whole `@spatialdata_core.js` chunk 500s, so
-  // every page that touches sd.js dies on `Failed to fetch dynamically imported module` while the
-  // parquet path is named only in the SERVER log. Excluding it serves core from node_modules, where
-  // the relative path resolves.
+  // (`~/code/www/MDV/vite.config.mts`). Up to core 0.8.0 the cause was concrete: core deferred its
+  // vendored parquet-wasm behind `import(/* @vite-ignore */ "../vendor/parquet-wasm/parquet_wasm.js")`,
+  // a path relative to core's OWN dist. Pre-bundled, that module is served from `.vite/deps/`, where
+  // `../vendor/...` points at nothing — Vite failed the import analysis and the whole
+  // `@spatialdata_core.js` chunk 500'd, so every page touching sd.js died on `Failed to fetch
+  // dynamically imported module` while the parquet path was named only in the SERVER log.
+  // core 0.10.0 FIXED that upstream: the vendored wasm is now a real subpath export and is loaded as
+  // the bare specifier `import("@spatialdata/core/parquet-wasm")`, which resolves under pre-bundling
+  // too (verified in dev on 0.10.0 — both the core entry and the parquet-wasm subpath load clean).
+  // The exclude is kept because it is free (core is served from node_modules either way) and because
+  // core still reaches zarrextra, whose worker/`import.meta.url` reasons above are unchanged. It is
+  // now a retireable workaround rather than a load-bearing one — drop it when someone wants to
+  // re-test the sd.js pages against a real store.
   // NB MDV also excludes `zod`, because MDV is on Zod 3 while core wants Zod 4. That does not apply
   // here: `pnpm why zod` reports one version (4.x) across the workspace.
   optimizeDeps: { exclude: ["zarrextra", "zarrextra/workers", "openjph-wasm", "@spatialdata/core"] },

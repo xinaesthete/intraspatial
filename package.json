@@ -45,7 +45,7 @@
     "@zarrita/storage": "^0.2.0",
     "geotiff": "^3.0.5",
     "wgpu-matrix": "^3.4.2",
-    "zarrita": "^0.7.3"
+    "zarrita": "^0.7.5"
   },
   "optionalDependencies": {
     "openjph-wasm": "file:../codecs/openjph-wasm"
