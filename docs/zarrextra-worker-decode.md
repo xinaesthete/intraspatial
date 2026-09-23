@@ -76,11 +76,12 @@ Current versions: `@spatialdata/core@0.10.0`, `zarrextra@0.5.0`, and zarrextra's
    decode off-thread. Verified against 0.10.0: it references neither `enableWorkerChunkDecode` nor
    `registerExperimentalHtj2kCodec`.
 
-3. **Vite (v8): exclude the *whole* zarrextra package, plus `openjph-wasm` and `@spatialdata/core`,
-   from dep pre-bundling.**
+3. **Vite (v8): exclude the *whole* zarrextra package, plus `openjph-wasm`, from dep pre-bundling.**
    ```ts
-   optimizeDeps: { exclude: ['zarrextra', 'zarrextra/workers', 'openjph-wasm', '@spatialdata/core'] }
+   optimizeDeps: { exclude: ['zarrextra', 'zarrextra/workers', 'openjph-wasm'] }
    ```
+   `@spatialdata/core` was in this list up to core 0.8.0 and no longer needs to be — see the
+   failure-mode entry below. MDV still excludes it.
 
 4. **Read through `getTile`** — `readZarr(url)` → `sdata.images[name]` →
    `loadOmeZarrMultiscalesFromStore(img.getStore())` → `source.getTile({ x, y, selection })`.
@@ -107,8 +108,13 @@ Current versions: `@spatialdata/core@0.10.0`, `zarrextra@0.5.0`, and zarrextra's
   sd.js died on `Failed to fetch dynamically imported module` — with the parquet path named only in the
   *server* log, not the browser. MDV excludes core for this same reason. Core 0.10.0 made the vendored
   wasm a real `./parquet-wasm` subpath export and now imports it as a bare specifier, so this failure
-  mode is gone; we keep core in the exclude list anyway because it costs nothing (see
-  `playground/vite.config.ts` for why it is now retireable rather than load-bearing).
+  mode is gone and **core was removed from the exclude list on 2026-09-23**. Verified with the dep
+  cache cleared: core pre-bundles to `.vite/deps/@spatialdata_core.js` and the vendored wasm comes
+  along as `.vite/deps/parquet_wasm-*.js` — the module that used to 500 — after which the parquet
+  path really runs (`getParquetRowCount()` → 12,165,021 rows, `loadPolygonShapes()` → 162,254
+  polygons). Pre-bundling core is also what we want: it is a large dep with `apache-arrow` behind it.
+  Core reaching zarrextra is unaffected — the bare specifier still resolves to the one excluded,
+  node_modules-served zarrextra instance.
 - **Decode on the main thread at all** (no worker, or a read the worker can't see) →
   `CodecPipelineError: Failed to decode chunk via codec "experimental.openjph_htj2k"`, whose `cause`
   is `TypeError: Failed to resolve module specifier 'openjph-wasm'`. zarrextra's built-in decoder

@@ -157,7 +157,9 @@ make the bounded-working-set behaviour tangible).
     on image-only use. (`parquet-wasm` was a separate dependency at 0.2.x; from core 0.8.0 it is
     vendored into core's dist, loaded at 0.8.0 by a dist-relative dynamic import — which is why core
     had to be excluded from Vite's dep pre-bundling — and from core 0.10.0 by the bare specifier
-    `@spatialdata/core/parquet-wasm`, a real subpath export, which retires that requirement.)
+    `@spatialdata/core/parquet-wasm`, a real subpath export, which retired that requirement: core
+    left `optimizeDeps.exclude` on 2026-09-23. zarrextra and `openjph-wasm` stay excluded for their
+    own, unrelated `import.meta.url` reasons.)
   - The local dev server is **CORS-enabled**, so no vite proxy is required.
 - **Implementation status (2026-07-06): 1a landed and verified in the browser.** `he_image`
   (1.5 Gpx RGB HTJ2K) streams from the store, decodes per-chunk, and renders on the plane; zooming
