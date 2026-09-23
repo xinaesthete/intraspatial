@@ -12,8 +12,8 @@ recipe below is the full set of steps that were actually required.
 
 ## What we needed (the working recipe)
 
-Current versions: `@spatialdata/core@0.8.0`, `zarrextra@0.4.0`, and zarrextra's optional worker deps
-`@fideus-labs/fizarrita@1.4.1`, `@fideus-labs/worker-pool@1.0.0`. HTJ2K now decodes through
+Current versions: `@spatialdata/core@0.10.0`, `zarrextra@0.5.0`, and zarrextra's optional worker deps
+`@fideus-labs/fizarrita@2.1.0`, `@fideus-labs/worker-pool@2.1.0`. HTJ2K now decodes through
 `openjph-wasm@0.1.0`, inlined into `codec-worker.js` (base64 data URI) along with its wasm;
 `@cornerstonejs/codec-openjpeg@1.3.0` remains for legacy JPEG 2000 only.
 
@@ -24,12 +24,43 @@ Current versions: `@spatialdata/core@0.8.0`, `zarrextra@0.4.0`, and zarrextra's 
 > `apache-arrow` 17 → 21, and `parquet-wasm` drops out as a separate package because core vendors it.
 > This supersedes the version-specific parts of ADR-0010, which records the 0.2.x state it decided in.
 
+> **Upgraded 2026-09-23 (IntraSpatial), zarrextra 0.4.0 → 0.5.0 and core 0.8.0 → 0.10.0.** Same
+> lockstep rule: core 0.10.0 pins `zarrextra` exactly `0.5.0`, so the playground pins `0.5.0`.
+> No API we use changed — `openExtraConsolidated`, `loadOmeZarrMultiscalesFromStore`,
+> `registerExperimentalHtj2kCodec`, `unwrap`, `enableWorkerChunkDecode` and `readZarr` are all
+> present and unchanged. Three things did move: (a) zarrextra's optional worker deps went
+> `@fideus-labs/fizarrita` 1.4.1 → 2.1.0 and `worker-pool` 1.0.0 → 2.1.0, both pulled automatically;
+> (b) core renamed its points worker to a **parquet** worker — the `./points-worker` subpath export
+> and every `*PointsWorker*` symbol became `./parquet-worker` / `*ParquetWorker*`. We call none of
+> them, so this is documentation-only for us; (c) core's vendored parquet-wasm became a real
+> `./parquet-wasm` subpath export, retiring the dist-relative import that forced the
+> `optimizeDeps.exclude` on `@spatialdata/core` (see `playground/vite.config.ts`).
+>
+> **Verified end-to-end against `localhost:8080`, not just by typecheck** — this stack fails
+> *silently*, so a green build proves nothing:
+> - `spatialdata.html` → `xenium_2.q0.001.htj2k.index-permutations.zarr` renders the H&E tissue, and
+>   the network log shows `zarrextra@0.5.0/dist/codec-worker.js` instances plus
+>   `@fideus-labs/worker-pool@2.1.0` — i.e. decode really is on the worker, not silently back on the
+>   main thread. The loaded path reads `fizarrita@2.1.0_zarrita@0.7.5`, confirming the dedupe holds
+>   *inside* the worker too.
+> - `spatialvolume.html` → `8090_13_Punch1_fused_htj2k_lossy.zarr`, the multi-component case:
+>   a coarsest-level brick is `[97,75,32]`, and of its 32 z planes **0 are bit-identical to plane 0**,
+>   with 32 distinct plane means spanning 0.00160–0.00887. That is the numeric check this doc asks
+>   for — the replicated-component-0 bug renders as a plausible volume, so eyeballing it is not
+>   evidence.
+> - `cellmodes.html` reads `table — 162254 cells`, `377 vars × 162254 stored CSC`, loads centroids
+>   from `obsm/spatial`, and computes 31 selected vars in ~1.1 s; `spatialscene.html` places the
+>   image via the element transform. Between them these cover `readZarr`, the `rootStore.tree`
+>   reach-in, the AnnData CSC path and the transform path.
+
 1. **Install** — `pnpm add @spatialdata/core zarrextra`. The worker deps above are
    `optionalDependencies` of zarrextra and pnpm pulls them automatically. (They link *under
    zarrextra's own* `node_modules`, so a `require.resolve(...)` from the app root reports "missing"
    even though the worker resolves them fine — a red herring.) Check `pnpm why zarrextra` reports
-   **one** version: adding 0.4.0 while core still pins an older one puts two in the graph, and the
-   read goes through whichever instance the bundler happened to give the reader.
+   **one** version: adding a zarrextra newer than core's exact pin puts two in the graph, and the
+   read goes through whichever instance the bundler happened to give the reader. Worth also checking
+   `pnpm why zarrita` reports one 0.7.x — core, zarrextra and fizarrita all resolve `^0.7.x`, so a
+   direct root dependency on a *newer* 0.7 patch splits the tree until you `pnpm dedupe`.
 
 2. **Two calls, once, before any read** — registration and worker enablement are *separate*
    concerns and **both** are required:
@@ -39,15 +70,18 @@ Current versions: `@spatialdata/core@0.8.0`, `zarrextra@0.4.0`, and zarrextra's 
    registerExperimentalHtj2kCodec(); // says WHAT the codec is (id → decoder).
    enableWorkerChunkDecode();        // says WHERE decode runs (a worker pool bundling the codec+wasm).
    ```
-   `@spatialdata/core@0.8.0` does **not** do either for you — its `enablePointsWorker` is an
-   unrelated, points-only worker — so MDV's comment that its `ensureChunkWorker` call "is currently
-   redundant" is wrong: without it, nothing routes chunk decode off-thread.
+   `@spatialdata/core@0.10.0` does **not** do either for you — its `enableParquetWorker` (named
+   `enablePointsWorker` up to 0.8.0) is an unrelated, parquet-only worker — so MDV's comment that its
+   `ensureChunkWorker` call "is currently redundant" is wrong: without it, nothing routes chunk
+   decode off-thread. Verified against 0.10.0: it references neither `enableWorkerChunkDecode` nor
+   `registerExperimentalHtj2kCodec`.
 
-3. **Vite (v8): exclude the *whole* zarrextra package, plus `openjph-wasm` and `@spatialdata/core`,
-   from dep pre-bundling.**
+3. **Vite (v8): exclude the *whole* zarrextra package, plus `openjph-wasm`, from dep pre-bundling.**
    ```ts
-   optimizeDeps: { exclude: ['zarrextra', 'zarrextra/workers', 'openjph-wasm', '@spatialdata/core'] }
+   optimizeDeps: { exclude: ['zarrextra', 'zarrextra/workers', 'openjph-wasm'] }
    ```
+   `@spatialdata/core` was in this list up to core 0.8.0 and no longer needs to be — see the
+   failure-mode entry below. MDV still excludes it.
 
 4. **Read through `getTile`** — `readZarr(url)` → `sdata.images[name]` →
    `loadOmeZarrMultiscalesFromStore(img.getStore())` → `source.getTile({ x, y, selection })`.
@@ -67,12 +101,20 @@ Current versions: `@spatialdata/core@0.8.0`, `zarrextra@0.4.0`, and zarrextra's 
   instance, still `inline` → **silent fall back to main-thread decode**, which then fails to resolve
   the codec package as a bare specifier. The symptom (a module-resolution error) points nowhere near
   the real cause (a duplicated module). Excluding the whole package gives one shared instance.
-- **Pre-bundle `@spatialdata/core`** → core defers its vendored parquet-wasm behind
-  `import(/* @vite-ignore */ '../vendor/parquet-wasm/parquet_wasm.js')`, a path relative to core's
-  own `dist`. Served from `.vite/deps/`, `../vendor/…` points at nothing; Vite fails import analysis
-  and the whole `@spatialdata_core.js` chunk 500s, so every page touching sd.js dies on
-  `Failed to fetch dynamically imported module` — with the parquet path named only in the *server*
-  log, not the browser. MDV excludes core for this same reason.
+- **Pre-bundle `@spatialdata/core`** (**fixed upstream in core 0.10.0**) → up to 0.8.0 core deferred
+  its vendored parquet-wasm behind `import(/* @vite-ignore */ '../vendor/parquet-wasm/parquet_wasm.js')`,
+  a path relative to core's own `dist`. Served from `.vite/deps/`, `../vendor/…` pointed at nothing;
+  Vite failed import analysis and the whole `@spatialdata_core.js` chunk 500'd, so every page touching
+  sd.js died on `Failed to fetch dynamically imported module` — with the parquet path named only in the
+  *server* log, not the browser. MDV excludes core for this same reason. Core 0.10.0 made the vendored
+  wasm a real `./parquet-wasm` subpath export and now imports it as a bare specifier, so this failure
+  mode is gone and **core was removed from the exclude list on 2026-09-23**. Verified with the dep
+  cache cleared: core pre-bundles to `.vite/deps/@spatialdata_core.js` and the vendored wasm comes
+  along as `.vite/deps/parquet_wasm-*.js` — the module that used to 500 — after which the parquet
+  path really runs (`getParquetRowCount()` → 12,165,021 rows, `loadPolygonShapes()` → 162,254
+  polygons). Pre-bundling core is also what we want: it is a large dep with `apache-arrow` behind it.
+  Core reaching zarrextra is unaffected — the bare specifier still resolves to the one excluded,
+  node_modules-served zarrextra instance.
 - **Decode on the main thread at all** (no worker, or a read the worker can't see) →
   `CodecPipelineError: Failed to decode chunk via codec "experimental.openjph_htj2k"`, whose `cause`
   is `TypeError: Failed to resolve module specifier 'openjph-wasm'`. zarrextra's built-in decoder
