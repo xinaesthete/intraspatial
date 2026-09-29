@@ -129,8 +129,8 @@ importers:
         specifier: ^9.6.1
         version: 9.6.1(@types/react@19.2.17)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)(three@0.185.0)
       '@spatialdata/core':
-        specifier: ^0.11.0
-        version: 0.11.0
+        specifier: ^0.11.1
+        version: 0.11.1
       '@types/katex':
         specifier: ^0.16.8
         version: 0.16.8
@@ -1302,8 +1302,8 @@ packages:
   '@shikijs/vscode-textmate@10.0.2':
     resolution: {integrity: sha512-83yeghZ2xxin3Nj8z1NMd/NCuca+gsYXswywDy5bHvwlWL8tpTQmzGeUuHd9FC3E/SBEMvzJRwWEOz5gGes9Qg==}
 
-  '@spatialdata/core@0.11.0':
-    resolution: {integrity: sha512-C/TBgnAvyp6yfLdfpYuKWJxUulLr1HlvehR6qfmA60sM7+Dzgfax3YPjC0F3Y9b4m/Ebx4krtxQXgVIsck5Lnw==}
+  '@spatialdata/core@0.11.1':
+    resolution: {integrity: sha512-RTjHsz2dwNWz7hB6DaMu2P5L142+3/vXfBPMZOeufG9iDO3OO0NK9U/b8L2Y81AmFhlvn67uCdyJRbPFRIoCTg==}
 
   '@standard-schema/spec@1.1.0':
     resolution: {integrity: sha512-l2aFy5jALhniG5HgqrD6jXLi/rUWrKvqN/qJx6yoJsgKhblVd+iqqU4RCXavm/jPityDo5TCvKMnpjKnOriy0w==}
@@ -4592,7 +4592,7 @@ snapshots:
 
   '@shikijs/vscode-textmate@10.0.2': {}
 
-  '@spatialdata/core@0.11.0':
+  '@spatialdata/core@0.11.1':
     dependencies:
       '@math.gl/core': 4.1.0
       '@zarrita/storage': 0.2.0
