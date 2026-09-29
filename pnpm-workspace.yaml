@@ -21,3 +21,6 @@ catalog:
   typegpu: ^0.11.9
   unplugin-typegpu: 0.11.6
   typescript: ^7.0.0
+# Exact-version exemption from pnpm 11's minimum release age; drop once the release has aged.
+minimumReleaseAgeExclude:
+  - '@spatialdata/core@0.11.0'
