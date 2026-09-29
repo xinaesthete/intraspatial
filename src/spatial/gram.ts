@@ -179,6 +179,26 @@ export interface GramResult {
 /** Support radius of the *effective* pair kernel `J ⊛ J` — twice the splat radius. Two cells this
  *  far apart contribute nothing to `C`, which is the honest answer to "what radius is this?" and
  *  is not the `radius` parameter. */
+/**
+ * Raster size for a splat of support `radius` over `bbox`. The field is band-limited by the kernel,
+ * so ~3 pixels per radius samples it well and finer pixels add cost without information. The longer
+ * side follows from that; the other keeps pixels square. `clamped` reports a hit on `min`/`maxSide`.
+ */
+export function rasterSizeForRadius(
+  bbox: readonly [number, number, number, number],
+  radius: number,
+  opts: { pxPerRadius?: number; minSide?: number; maxSide?: number } = {},
+): { width: number; height: number; clamped: boolean } {
+  const { pxPerRadius = 3, minSide = 16, maxSide = 2048 } = opts;
+  const spanX = bbox[2] - bbox[0];
+  const spanY = bbox[3] - bbox[1];
+  const long = Math.max(spanX, spanY);
+  const want = Math.ceil((pxPerRadius * long) / radius);
+  const side = Math.min(maxSide, Math.max(minSide, want));
+  const short = Math.max(1, Math.round((side * Math.min(spanX, spanY)) / long));
+  return { width: spanX >= spanY ? side : short, height: spanX >= spanY ? short : side, clamped: side !== want };
+}
+
 export function effectiveRadius(p: GramParams): number {
   return 2 * p.radius;
 }
