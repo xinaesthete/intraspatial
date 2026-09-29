@@ -3,6 +3,7 @@
 
 import { type PointerEvent, useEffect, useRef } from "react";
 import type { Rect } from "../../../src/datasource/points";
+import { devicePixelRatio } from "../hooks/useElementSize";
 
 export interface Overview {
   readonly bitmap: ImageBitmap;
@@ -17,11 +18,13 @@ interface Props {
   readonly overview?: Overview;
   /** Tile outlines to show, e.g. the ones the current window needs. */
   readonly tiles?: readonly Rect[];
+  /** Backing-store width in device pixels — the canvas's on-screen width × devicePixelRatio. */
+  readonly pixelWidth: number;
 }
 
-const WIDTH = 1200;
-
-export function WindowPicker({ extent, window, onChange, overview, tiles }: Props) {
+export function WindowPicker({ extent, window, onChange, overview, tiles, pixelWidth }: Props) {
+  const WIDTH = Math.max(1, Math.round(pixelWidth)) || 1200;
+  const dpr = devicePixelRatio();
   const canvas = useRef<HTMLCanvasElement>(null);
   const drag = useRef<{ dx: number; dy: number } | null>(null);
   const spanX = extent.maxX - extent.minX;
@@ -39,6 +42,7 @@ export function WindowPicker({ extent, window, onChange, overview, tiles }: Prop
       const m = (i: number) => overview.localFromPixel[i] ?? 0;
       // canvas = s · (local − extent.min), local = M · pixel
       ctx.setTransform(s * m(0), s * m(3), s * m(1), s * m(4), s * (m(2) - extent.minX), s * (m(5) - extent.minY));
+      ctx.imageSmoothingQuality = "high";
       ctx.drawImage(overview.bitmap, 0, 0);
       ctx.resetTransform();
     }
@@ -51,14 +55,14 @@ export function WindowPicker({ extent, window, onChange, overview, tiles }: Prop
     ctx.fillRect(0, wy0, wx0, wy1 - wy0);
     ctx.fillRect(wx1, wy0, WIDTH - wx1, wy1 - wy0);
     ctx.strokeStyle = "rgba(148, 163, 184, 0.45)";
-    ctx.lineWidth = 1;
+    ctx.lineWidth = dpr;
     for (const t of tiles ?? []) {
       const [a, b] = toPx(t.minX, t.minY);
       const [c, d] = toPx(t.maxX, t.maxY);
-      ctx.strokeRect(a + 0.5, b + 0.5, c - a, d - b);
+      ctx.strokeRect(a, b, c - a, d - b);
     }
     ctx.strokeStyle = "#fbbf24";
-    ctx.lineWidth = 2;
+    ctx.lineWidth = 2 * dpr;
     ctx.strokeRect(wx0, wy0, wx1 - wx0, wy1 - wy0);
   });
 

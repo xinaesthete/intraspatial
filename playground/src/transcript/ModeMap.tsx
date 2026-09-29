@@ -13,9 +13,11 @@ interface Props {
   readonly image?: ImageOverlay;
   readonly saturate: number;
   readonly chromaWeight: number;
+  /** Backing-store width in device pixels; the image is drawn at this resolution, not the raster's. */
+  readonly pixelWidth: number;
 }
 
-export function ModeMap({ gram, image, saturate, chromaWeight }: Props) {
+export function ModeMap({ gram, image, saturate, chromaWeight, pixelWidth }: Props) {
   const canvas = useRef<HTMLCanvasElement>(null);
   const [error, setError] = useState<string>();
   useEffect(() => {
@@ -23,12 +25,14 @@ export function ModeMap({ gram, image, saturate, chromaWeight }: Props) {
     if (!c) return;
     void onGpu(async () => {
       if (!isLatest(gram.generation)) return; // its rasters have been overwritten
-      await paintGramModes(c, gram.res, { vectors: gram.modes.vectors, saturate, chromaWeight, image });
+      const width = Math.max(gram.raster.width, Math.round(pixelWidth));
+      const outputSize = { width, height: Math.round((width * gram.raster.height) / gram.raster.width) };
+      await paintGramModes(c, gram.res, { vectors: gram.modes.vectors, saturate, chromaWeight, image, outputSize });
     }).then(
       () => setError(undefined),
       (e: unknown) => setError(String(e)),
     );
-  }, [gram, image, saturate, chromaWeight]);
+  }, [gram, image, saturate, chromaWeight, pixelWidth]);
 
   return (
     <div>

@@ -111,12 +111,24 @@ fn vs(@builtin(vertex_index) vi: u32) -> VOut {
 
 @fragment
 fn fs(in: VOut) -> @location(0) vec4f {
-  let col = min(u32(U.width) - 1u, u32(in.uv.x * U.width));
-  let row = min(u32(U.height) - 1u, u32(in.uv.y * U.height));
+  // Continuous raster coordinates, pixel centres at +0.5. The canvas may be larger than the raster
+  // (drawn at screen resolution), so the modes are reconstructed bilinearly between pixel centres —
+  // the field is band-limited by the kernel, so this is its proper reconstruction — and the image
+  // is sampled at the fragment itself rather than at a raster pixel. At raster size, every fragment
+  // lands on a centre and this reduces exactly to the per-pixel lookup.
+  let p = in.uv * vec2f(U.width, U.height);
+  let q = clamp(p - vec2f(0.5), vec2f(0.0), vec2f(U.width - 1.0, U.height - 1.0));
+  let c0 = vec2u(floor(q));
+  let c1 = min(c0 + vec2u(1u), vec2u(u32(U.width) - 1u, u32(U.height) - 1u));
+  let f = q - vec2f(c0);
 
-  // Mode coordinates and the wand distance in one pass — the SAME function the terrain uses, so
-  // the outline below cannot enclose a region the terrain colours differently.
-  let s = sampleWhitened(col, row);
+  // Mode coordinates and the wand distance — the SAME function the terrain uses, so the outline
+  // below cannot enclose a region the terrain colours differently.
+  let s = mix(
+    mix(sampleWhitened(c0.x, c0.y), sampleWhitened(c1.x, c0.y), f.x),
+    mix(sampleWhitened(c0.x, c1.y), sampleWhitened(c1.x, c1.y), f.x),
+    f.y,
+  );
 
   // Each mode is scaled by its OWN robust spread: eigenvalues fall off fast, so a shared scale
   // would flatten modes 2-3 to grey.
@@ -126,7 +138,7 @@ fn fs(in: VOut) -> @location(0) vec4f {
   // Blend the context image in OKLab, before the sRGB conversion — see imageOverlayWgsl. The
   // sample is unconditional and the weight carries the "is it on the image" test, because
   // textureSample may not appear in non-uniform control flow.
-  let uv = uvAt(U.uv0, U.uv1, vec2f(f32(col) + 0.5, f32(row) + 0.5));
+  let uv = uvAt(U.uv0, U.uv1, p);
   let ctxRgb = textureSample(ctxImage, ctxSampler, uv).rgb;
   lab = mix(lab, srgbToOklab(ctxRgb), uvWeight(uv, U.imageMix));
 
@@ -138,7 +150,7 @@ fn fs(in: VOut) -> @location(0) vec4f {
   // are composited last so the sample point stays legible where it sits on its own boundary.
   let rgb = selectionOver(oklabToSrgb(lab), s.w, U.selTol, U.selOn);
 
-  let mp = vec2f(f32(col) - U.markerX, f32(row) - U.markerY);
+  let mp = q - vec2f(U.markerX, U.markerY);
   return vec4f(markerOver(rgb, mp, vec2f(U.lineW), U.markerOn), 1.0);
 }
 `;
@@ -195,6 +207,9 @@ export interface ModePaintOptions {
   readonly marker?: { readonly col: number; readonly row: number };
   /** Context image to blend under the modes. `uv` maps **raster pixel centres** to image UV. */
   readonly image?: ImageOverlay;
+  /** Canvas size in device pixels. Defaults to the raster's; larger draws the image at that
+   *  resolution and reconstructs the modes bilinearly. */
+  readonly outputSize?: { readonly width: number; readonly height: number };
   /** The wand's standardised channel vector. Present ⇒ the selection boundary is outlined. */
   readonly reference?: Float64Array;
   /** How many leading modes the metric keeps; defaults to 3. See `similarityWgsl`. */
@@ -281,8 +296,8 @@ export async function paintGramModes(canvas: HTMLCanvasElement, res: GramMatrixG
     ctx.configure({ device, format, alphaMode: "opaque" });
     surfaces.set(canvas, ctx);
   }
-  canvas.width = res.width;
-  canvas.height = res.height;
+  canvas.width = Math.max(1, Math.round(opts.outputSize?.width ?? res.width));
+  canvas.height = Math.max(1, Math.round(opts.outputSize?.height ?? res.height));
   ctx.configure({ device, format, alphaMode: "opaque" });
 
   // Raster pixel centre -> world. The shader passes (col + 0.5, row + 0.5), and row 0 is the TOP of

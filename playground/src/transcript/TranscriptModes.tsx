@@ -1,19 +1,20 @@
 // Transcript co-location modes: the Gram form over transcript density, for a window you can drag
 // across the slide (docs/cell-stats.md §4, §12; ADR-0008 points amendment).
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { type Rect, selectPointsTiles, tileRect } from "../../../src/datasource/points";
 import { composeUv, type ImageOverlay } from "../../../src/gpu/spatial/imageOverlayWgsl";
 import { listImageElements, loadContextImage, uvFromWorld } from "../datasource/imageContext";
 import { listPointsElements } from "../datasource/pointsTileLoader";
 import { useAsync, useSettled } from "../hooks/useAsync";
+import { devicePixelRatio, useElementSize } from "../hooks/useElementSize";
 import { usePointsSource, usePointsTiles, useSpatialData } from "../hooks/useSpatialData";
 import { ChannelPicker } from "./ChannelPicker";
 import { buildChannels, NEGATIVE_CONTROLS, type Selection, STARTER_SETS } from "./channelModel";
 import { Explain } from "./Explain";
 import { MatrixView } from "./MatrixView";
 import { ModeLegend, ModeMap } from "./ModeMap";
-import { useTranscriptGram } from "./useTranscriptGram";
+import { onGpu, useTranscriptGram } from "./useTranscriptGram";
 import { type Overview, WindowPicker } from "./WindowPicker";
 
 const DEFAULT_STORE = "http://localhost:8080/xenium_2.q0.001.htj2k.index-permutations.zarr/";
@@ -72,26 +73,33 @@ export function TranscriptModes() {
   );
   const gram = useTranscriptGram(tiles.value, built.channels, { radius, qvMin, rasterSide });
 
-  // The image, placed in the transcripts' own coordinates: uv ← world ← local.
-  const image = useAsync(async () => {
-    if (!sd.value || !imageEl || !source.value?.space) return undefined;
-    const img = await loadContextImage(sd.value, imageEl, { keepPixels: true });
+  // Both views span the full width of this column; their canvases are sized to it in device pixels.
+  const viewsRef = useRef<HTMLElement>(null);
+  const cssWidth = useElementSize(viewsRef).width;
+  const devWidth = Math.round(cssWidth * devicePixelRatio());
+  const space = source.value?.space;
+  const worldFromLocal = useMemo(
+    () =>
+      space ? ([space.affine.a, space.affine.c, space.affine.tx, space.affine.b, space.affine.d, space.affine.ty] as const) : undefined,
+    [space],
+  );
+
+  // Overview: the whole slide, at the level that fills the overview's width (a power-of-two budget,
+  // so resizing the window does not reload it). Only its pixels are kept.
+  const overviewBudget = devWidth > 0 ? 2 ** Math.ceil(Math.log2(devWidth)) : 0;
+  const overview = useAsync(async () => {
+    if (!sd.value || !imageEl || !worldFromLocal || !overviewBudget) return undefined;
+    const img = await loadContextImage(sd.value, imageEl, { maxSide: overviewBudget, keepPixels: true });
+    img.texture.destroy(); // never drawn on the GPU
     const uvWorld = uvFromWorld(img);
-    if (!uvWorld || !img.pixels) return { img, note: "The image carries no usable transform, so it cannot be aligned." };
-    const { a, b, c, d, tx, ty } = source.value.space.affine;
-    const uvLocal = composeUv(uvWorld, [a, c, tx, b, d, ty]);
+    const localFromUv = uvWorld && invert2x3(composeUv(uvWorld, worldFromLocal));
+    if (!localFromUv || !img.pixels) return { note: "The image carries no usable transform, so it cannot be aligned." };
     const bitmap = await createImageBitmap(new ImageData(new Uint8ClampedArray(img.pixels), img.width, img.height));
-    const localFromUv = invert2x3(uvLocal);
-    if (!localFromUv) return { img, uvLocal };
     const [p0 = 0, p1 = 0, p2 = 0, p3 = 0, p4 = 0, p5 = 0] = localFromUv;
-    // pixel → uv is a scale by the texture size; fold it in.
-    const overview: Overview = { bitmap, localFromPixel: [p0 / img.width, p1 / img.height, p2, p3 / img.width, p4 / img.height, p5] };
-    return { img, uvLocal, overview };
-  }, [sd.value, imageEl, source.value]);
-  const overlay = useMemo<ImageOverlay | undefined>(() => {
-    const v = image.value;
-    return v && "uvLocal" in v && v.uvLocal && mix > 0 ? { texture: v.img.texture, uvFromWorld: v.uvLocal, mix } : undefined;
-  }, [image.value, mix]);
+    // pixel → uv is a scale by the image size; fold it in.
+    const view: Overview = { bitmap, localFromPixel: [p0 / img.width, p1 / img.height, p2, p3 / img.width, p4 / img.height, p5] };
+    return { view, label: img.label };
+  }, [sd.value, imageEl, worldFromLocal, overviewBudget]);
 
   const grid = source.value?.grid;
   const needTiles = useMemo(
@@ -100,6 +108,34 @@ export function TranscriptModes() {
   );
 
   const g = gram.value;
+
+  // Mode map: only the analysed window, at the level that matches the map's on-screen resolution.
+  const mapWindow = g?.window;
+  const mapPx =
+    mapWindow && devWidth > 0
+      ? Math.ceil((devWidth * Math.max(1, (mapWindow.maxY - mapWindow.minY) / (mapWindow.maxX - mapWindow.minX))) / 128) * 128
+      : 0;
+  const mapImage = useAsync(async () => {
+    if (!sd.value || !imageEl || !worldFromLocal || !mapWindow || !mapPx) return undefined;
+    const [a, c, tx, b, d, ty] = worldFromLocal;
+    const toWorld = (x: number, y: number) => [a * x + c * y + tx, b * x + d * y + ty] as const;
+    const w = mapWindow;
+    const world = [toWorld(w.minX, w.minY), toWorld(w.maxX, w.minY), toWorld(w.maxX, w.maxY), toWorld(w.minX, w.maxY)];
+    const img = await loadContextImage(sd.value, imageEl, { region: { world, screenPx: mapPx } });
+    const uvWorld = uvFromWorld(img);
+    return uvWorld ? { texture: img.texture, uvLocal: composeUv(uvWorld, worldFromLocal), label: img.label } : undefined;
+  }, [sd.value, imageEl, worldFromLocal, mapWindow, mapPx]);
+  // Release a replaced region texture — through the GPU queue, so paints already queued keep it.
+  useEffect(() => {
+    const t = mapImage.value?.texture;
+    return () => {
+      if (t) void onGpu(async () => t.destroy());
+    };
+  }, [mapImage.value]);
+  const overlay = useMemo<ImageOverlay | undefined>(() => {
+    const v = mapImage.value;
+    return v && mix > 0 ? { texture: v.texture, uvFromWorld: v.uvLocal, mix } : undefined;
+  }, [mapImage.value, mix]);
   const error = sd.error ?? source.error ?? tiles.error ?? gram.error;
   const busy = tiles.progress ? `loading tiles ${tiles.progress.done}/${tiles.progress.total}…` : gram.loading ? "computing…" : "";
 
@@ -211,13 +247,14 @@ export function TranscriptModes() {
           <p className="hint">µm*: the store does not declare a unit; Xenium writes transcript coordinates in micrometres.</p>
         </aside>
 
-        <main className="views">
+        <main className="views" ref={viewsRef}>
           {extent && window && (
             <WindowPicker
               extent={extent}
               window={window}
               onChange={setWin}
-              overview={image.value && "overview" in image.value ? image.value.overview : undefined}
+              overview={overview.value && "view" in overview.value ? overview.value.view : undefined}
+              pixelWidth={devWidth}
               tiles={needTiles}
             />
           )}
@@ -231,11 +268,16 @@ export function TranscriptModes() {
                 channels {g.ms.channels.toFixed(0)} ms · Gram {g.ms.gram.toFixed(0)} ms
               </>
             )}
-            {image.value && "note" in image.value && image.value.note && <span className="hint"> · {image.value.note}</span>}
+            {overview.value && "note" in overview.value && <span className="hint"> · {overview.value.note}</span>}
+          </p>
+          <p className="hint">
+            {overview.value && "label" in overview.value && `Overview image: ${overview.value.label}. `}
+            {mapImage.value && `Map image: ${mapImage.value.label}.`}
+            {mapImage.error && <span className="error"> Map image: {mapImage.error.message}</span>}
           </p>
           {g && (
             <>
-              <ModeMap gram={g} image={overlay} saturate={saturate} chromaWeight={chromaWeight} />
+              <ModeMap gram={g} image={overlay} saturate={saturate} chromaWeight={chromaWeight} pixelWidth={devWidth} />
               <ModeLegend gram={g} />
               <h3>How often each pair turns up together, compared with chance</h3>
               <MatrixView gram={g} />
