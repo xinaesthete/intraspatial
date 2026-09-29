@@ -1,0 +1,13 @@
+{
+  "note": "Starter marker panels. Disjoint on purpose: a gene may sit in only one channel. Genes absent from a store's panel are skipped and reported.",
+  "sets": [
+    { "name": "T cells", "genes": ["CD3E", "CD3D", "CD2", "CD247", "CD28", "IL7R", "CD4", "CD8A", "GZMK", "CTLA4", "FOXP3"] },
+    { "name": "B & plasma cells", "genes": ["MS4A1", "CD19", "CD79A", "BANK1", "MZB1"] },
+    { "name": "Myeloid", "genes": ["CD68", "CD163", "CD14", "FCGR3A", "MRC1", "MARCO", "AIF1", "MPEG1", "MS4A6A"] },
+    { "name": "Epithelial", "genes": ["EPCAM", "KRT7", "ELF5", "EHF", "MLPH", "FOXA1", "ESR1", "PGR", "ERBB2"] },
+    { "name": "Endothelial", "genes": ["PECAM1", "CD34", "CLEC14A", "EGFL7", "ECSCR", "MMRN2", "ADGRL4"] },
+    { "name": "Fibroblasts", "genes": ["PDGFRA", "DPT", "FBLN1", "FBN1", "MFAP5", "OGN", "COL5A2", "PCOLCE", "MEDAG"] },
+    { "name": "Smooth muscle", "genes": ["ACTA2", "MYH11", "CNN1", "DES", "MYLK", "ACTG2", "PDGFRB"] },
+    { "name": "Proliferating", "genes": ["MKI67", "CDK1", "PCNA", "CCNB2", "CENPF"] }
+  ]
+}

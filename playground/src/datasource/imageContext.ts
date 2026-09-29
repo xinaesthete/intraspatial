@@ -50,6 +50,8 @@ export interface ContextImage {
   readonly dims0: readonly [number, number];
   readonly label: string;
   readonly channels: readonly ChannelSettings[];
+  /** The composited RGBA (`width × height × 4`), kept only when `keepPixels` asked for it. */
+  readonly pixels?: Uint8Array;
 }
 
 /** Names of the image elements in a store, for a dropdown. Takes the shared `SpatialData`. */
@@ -76,7 +78,11 @@ function pickLevel(img: SpatialDataImage, maxSide: number): number {
  * being explored, so folding them in once costs one pass over the level and saves carrying N
  * channel planes and their settings into two more shaders.
  */
-export async function loadContextImage(sdata: SpatialData, element: string, opts: { maxSide?: number } = {}): Promise<ContextImage> {
+export async function loadContextImage(
+  sdata: SpatialData,
+  element: string,
+  opts: { maxSide?: number; keepPixels?: boolean } = {},
+): Promise<ContextImage> {
   const device = await getDevice();
   const img = await (await imageHandle(sdata)).image(element);
   const maxSide = opts.maxSide ?? DEFAULT_MAX_SIDE;
@@ -154,6 +160,7 @@ export async function loadContextImage(sdata: SpatialData, element: string, opts
     dims0: [img.ms.voxelDims0[0], img.ms.voxelDims0[1]],
     label: `${element} · level ${level}/${img.ms.levelCount - 1} · ${W}×${H}`,
     channels: img.channels,
+    ...(opts.keepPixels ? { pixels: rgba } : {}),
   };
 }
 

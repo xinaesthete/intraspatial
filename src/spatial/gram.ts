@@ -460,6 +460,26 @@ export function coLocationModes(
 }
 
 /**
+ * Flip mode signs to agree with a previous decomposition over the same channels.
+ *
+ * An eigenvector's sign is arbitrary, so a recompute (a moved window, a new radius) can negate a
+ * mode and swap its colours for no reason in the data. Each mode keeps the sign whose loadings best
+ * match the same-index mode in `prev`. Order is NOT changed: when two eigenvalues cross, the modes
+ * really do trade places, and the colours should show it. Returns `next` when the labels differ.
+ */
+export function alignModeSigns(next: CoLocationModes, prev: CoLocationModes | null | undefined): CoLocationModes {
+  const K = next.labels.length;
+  if (!prev || prev.labels.length !== K || prev.labels.some((l, a) => l !== next.labels[a])) return next;
+  const vectors = new Float64Array(next.vectors);
+  for (let k = 0; k < K; k++) {
+    let dot = 0;
+    for (let a = 0; a < K; a++) dot += (vectors[k * K + a] ?? 0) * (prev.vectors[k * K + a] ?? 0);
+    if (dot < 0) for (let a = 0; a < K; a++) vectors[k * K + a] = -(vectors[k * K + a] ?? 0);
+  }
+  return { ...next, vectors };
+}
+
+/**
  * Render mode `k` as a pixel field: `y_k(p) = Σ_a v_ka · (M_a(p) − μ_a)/σ_a`.
  *
  * This is the "spatial map coloured by dominant co-location mode". Note it costs one pass over the
