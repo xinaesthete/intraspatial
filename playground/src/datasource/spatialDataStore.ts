@@ -6,6 +6,9 @@
 // image loader) must not drag cell-table ingestion into an image-only bundle.
 
 import type { SpatialData } from "@spatialdata/core";
+// The URL of core's parquet worker, as Vite builds it. Importing it is what puts the worker (and the
+// parquet-wasm it loads on its own side) into the build.
+import parquetWorkerUrl from "@spatialdata/core/parquet-worker?worker&url";
 
 const storeCache = new Map<string, Promise<SpatialData>>();
 
@@ -21,6 +24,11 @@ export function openSpatialData(url: string): Promise<SpatialData> {
   if (!cached) {
     cached = (async () => {
       const sd = await import("@spatialdata/core");
+      // Parquet decodes — points tiles, shapes, feature scans — run in core's worker, not on the
+      // main thread. Core does not start it itself (`ensureParquetWorker` only starts it when the
+      // default is on, and it is off), and a bundled app must supply its URL. Guarded because
+      // `enableParquetWorker` restarts a running worker, failing whatever it has in flight.
+      if (!sd.isParquetWorkerEnabled()) sd.enableParquetWorker({ workerUrl: parquetWorkerUrl });
       return sd.readZarr(url);
     })();
     storeCache.set(url, cached);
