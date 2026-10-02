@@ -10,6 +10,8 @@ import { PathLayer } from "@deck.gl/layers";
 import { Matrix4 } from "@math.gl/core";
 import { useCallback, useMemo, useState } from "react";
 import { clampWindow, type Rect } from "../../../src/datasource/points";
+import { type ModeBasis, modeBasis } from "../../../src/gpu/spatial/gramModes";
+import type { CoLocationModes } from "../../../src/spatial/gram";
 import { invert2, rectThrough2 } from "../../../src/spatial/ngffTransform";
 import { listImageElements } from "../datasource/imageContext";
 import { listPointsElements } from "../datasource/pointsTileLoader";
@@ -31,6 +33,18 @@ const DEFAULT_SELECTION: Selection = { sets: [...STARTER_SETS.map((s) => s.name)
 const SETTLE_MS = 300;
 /** `imageName` for "no image". `undefined` means "pick one". */
 const NO_IMAGE = "";
+
+/** Modes fixed from one window, to paint every later window with. Valid only for rasters made the
+ *  same way: same channels, radius and quality filter. */
+interface ModeLock {
+  readonly basis: ModeBasis;
+  readonly modes: CoLocationModes;
+  readonly window: Rect;
+  readonly radius: number;
+  readonly qvMin: number;
+}
+
+const sameLabels = (a: readonly string[], b: readonly string[]) => a.length === b.length && a.every((l, i) => l === b[i]);
 
 const span = (r: Rect): string => `${Math.round(r.maxX - r.minX)}×${Math.round(r.maxY - r.minY)}`;
 const outline = (r: Rect): [number, number][] => [
@@ -56,6 +70,7 @@ export function TranscriptModes() {
   const [saturate, setSaturate] = useState(2.5);
   const [chromaWeight, setChromaWeight] = useState(0.5);
   const [opacity, setOpacity] = useState(0.75);
+  const [lock, setLock] = useState<ModeLock>();
 
   const device = useSharedDevice();
   const deckProps = useMemo(
@@ -109,6 +124,13 @@ export function TranscriptModes() {
   const gram = useTranscriptGram(tiles.value, channels, { radius, qvMin, rasterSide });
   const g = gram.value;
 
+  // A lock applies only while the rasters are made the same way; otherwise this window's own modes.
+  const locked =
+    lock && g && sameLabels(lock.basis.labels, g.modes.labels) && lock.radius === radius && lock.qvMin === qvMin ? lock : undefined;
+  const modes = locked?.modes ?? g?.modes;
+  const toggleLock = (on: boolean) =>
+    setLock(on && g ? { basis: modeBasis(g.res), modes: g.modes, window: g.window, radius, qvMin } : undefined);
+
   const layers = useMemo(
     () =>
       g && modelMatrix
@@ -117,7 +139,8 @@ export function TranscriptModes() {
               id: "gram-modes",
               res: g.res,
               rasters: g.rasters,
-              vectors: g.modes.vectors,
+              vectors: (locked?.modes ?? g.modes).vectors,
+              basis: locked?.basis ?? null,
               saturate,
               chromaWeight,
               opacity,
@@ -134,9 +157,24 @@ export function TranscriptModes() {
               modelMatrix,
               pickable: false,
             }),
+            // Where the locked modes were taken from, when that is not the window shown.
+            ...(locked && locked.window !== g.window
+              ? [
+                  new PathLayer<{ path: [number, number][] }>({
+                    id: "gram-lock-window",
+                    data: [{ path: outline(locked.window) }],
+                    getPath: (d) => d.path,
+                    getColor: [251, 191, 36, 220],
+                    getWidth: 1.5,
+                    widthUnits: "pixels",
+                    modelMatrix,
+                    pickable: false,
+                  }),
+                ]
+              : []),
           ]
         : [],
-    [g, modelMatrix, saturate, chromaWeight, opacity],
+    [g, locked, modelMatrix, saturate, chromaWeight, opacity],
   );
 
   const error = sd.error ?? source.error ?? tiles.error ?? gram.error;
@@ -204,6 +242,10 @@ export function TranscriptModes() {
             <input type="checkbox" checked={follow} onChange={(e) => togglePin(e.target.checked)} />
             Follow the view (off: keep the current window)
           </label>
+          <label className="check">
+            <input type="checkbox" checked={!!lock} disabled={!g && !lock} onChange={(e) => toggleLock(e.target.checked)} />
+            Lock the modes (off: recompute them for each window)
+          </label>
           <label>
             Largest window (mm²*)
             <input
@@ -269,7 +311,21 @@ export function TranscriptModes() {
           <p className="hint">GPU: {device.status}</p>
           {g && (
             <>
-              <ModeLegend gram={g} />
+              {lock && !locked && (
+                <p className="hint">
+                  The locked modes were for other channels, radius or quality filter, so these are this window's own.{" "}
+                  <button type="button" onClick={() => toggleLock(true)}>
+                    lock these instead
+                  </button>
+                </p>
+              )}
+              {locked && (
+                <p className="hint">
+                  Modes locked to the {span(locked.window)} µm* window outlined in amber: a colour means the same mixture everywhere, and
+                  the percentages are of that window's variation.
+                </p>
+              )}
+              {modes && <ModeLegend modes={modes} />}
               <h3>How often each pair turns up together, compared with chance</h3>
               <MatrixView gram={g} />
             </>
@@ -298,6 +354,13 @@ export function TranscriptModes() {
               The channels' maps are summarised by a few <b>modes</b>: patterns of channels that rise and fall together across the window.
               Mode 1 sets brightness and modes 2 and 3 set hue, so places with similar colours have similar mixtures of genes. The legend
               says which channels push each mode each way, and how much of the variation it carries.
+            </Explain>
+            <Explain title="Locking the modes">
+              Normally each window gets its own modes, and each place is compared with the rest of its window: the same colour in two
+              windows can mean different mixtures, and the strongest contrast in a window always gets the strongest colours. Locked, every
+              window is measured against the window where you locked — same averages, same modes, same scale — so a colour means the same
+              mixture wherever you look, and a window with little going on looks muted. The lock holds only while the channels, radius and
+              quality filter stay as they were.
             </Explain>
             <Explain title="Why does the radius set the resolution?">
               r is the neighbourhood each molecule is smoothed over. Anything smaller than r is blurred away, so the map is computed at

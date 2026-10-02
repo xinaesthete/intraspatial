@@ -33,7 +33,7 @@
 
 import type { Oklab } from "../../color/oklab";
 import { compileShader, getDevice } from "../device";
-import type { GramMatrixGpuResult } from "./gramMatrix";
+import type { GramMatrixGpuResult, ResidentRasters } from "./gramMatrix";
 import { whiteningMatrix } from "./gramTerrain";
 import { IMAGE_OVERLAY_WGSL, type ImageOverlay, overlayResources } from "./imageOverlayWgsl";
 import { MARKER_WGSL } from "./markerWgsl";
@@ -223,6 +223,39 @@ export interface ModePaintOptions {
   /** Whitened distance at the boundary — the same number the terrain's similarity ramp reaches 0
    *  at, so the outline and the shading are two readings of one setting. */
   readonly tolerance?: number;
+  /** Paint with another window's projection instead of this one's — see `ModeBasis`. `vectors`
+   *  should then be that window's modes too. */
+  readonly basis?: ModeBasis;
+}
+
+/**
+ * The projection a mode map is painted with, fixed from one window so others can be painted with
+ * it: each channel's mean and spread (the standardisation), and `corr`, which sets each mode's scale.
+ *
+ * By default every window is standardised against itself and gets its own modes, so a colour means
+ * "how this place differs from the rest of this window". Painted with a fixed basis, a colour means
+ * the same mixture in every window — what a comparison across the slide needs. The rasters must be
+ * comparable for that: same channels, same radius, same molecule filter (pixel size does not matter;
+ * raster values are kernel sums at pixel centres).
+ */
+export interface ModeBasis {
+  readonly labels: readonly string[];
+  readonly mean: ArrayLike<number>;
+  readonly sd: ArrayLike<number>;
+  readonly corr: ArrayLike<number>;
+}
+
+/** What `modeParams` reads of a Gram result. */
+export type ModeSource = Pick<GramMatrixGpuResult, "labels" | "corr"> & { readonly resident: Pick<ResidentRasters, "mean" | "sd"> };
+
+/** `res`'s own projection, copied so it outlives the result (whose arrays a later compute may reuse). */
+export function modeBasis(res: ModeSource): ModeBasis {
+  return {
+    labels: [...res.labels],
+    mean: Float64Array.from(res.resident.mean),
+    sd: Float64Array.from(res.resident.sd),
+    corr: Float64Array.from(res.corr),
+  };
 }
 
 /** What the map is showing, for a legend that states the mapping rather than leaving it implicit. */
@@ -249,9 +282,14 @@ export interface ModeParams extends ModePaintInfo {
  * wand's whitening. Shared by `paintGramModes` and any other renderer (the deck layer), so the two
  * cannot disagree about what a colour means.
  */
-export function modeParams(res: GramMatrixGpuResult, opts: Omit<ModePaintOptions, "marker" | "image" | "outputSize">): ModeParams {
+export function modeParams(res: ModeSource, opts: Omit<ModePaintOptions, "marker" | "image" | "outputSize">): ModeParams {
   const K = res.labels.length;
-  const { mean, sd } = res.resident;
+  const basis = opts.basis;
+  if (basis && (basis.labels.length !== K || basis.labels.some((l, a) => l !== res.labels[a]))) {
+    throw new Error(`mode basis is for channels [${basis.labels.join(", ")}], not [${res.labels.join(", ")}]`);
+  }
+  const { mean, sd } = basis ?? res.resident;
+  const corr = basis?.corr ?? res.corr;
   const saturate = opts.saturate ?? 2.5;
 
   // Interleaved per channel: mean, 1/sd, and the three mode loadings.
@@ -269,7 +307,7 @@ export function modeParams(res: GramMatrixGpuResult, opts: Omit<ModePaintOptions
   for (let k = 0; k < 3 && k < K; k++) {
     let q = 0;
     for (let a = 0; a < K; a++) {
-      for (let b = 0; b < K; b++) q += (opts.vectors[k * K + a] ?? 0) * res.corr[a * K + b]! * (opts.vectors[k * K + b] ?? 0);
+      for (let b = 0; b < K; b++) q += (opts.vectors[k * K + a] ?? 0) * corr[a * K + b]! * (opts.vectors[k * K + b] ?? 0);
     }
     sigmas[k] = Math.sqrt(Math.max(q, 0));
   }
@@ -294,7 +332,7 @@ export function modeParams(res: GramMatrixGpuResult, opts: Omit<ModePaintOptions
     for (let k = 0; k < K; k++) {
       let q = 0;
       for (let a = 0; a < K; a++) {
-        for (let b = 0; b < K; b++) q += (opts.vectors[k * K + a] ?? 0) * res.corr[a * K + b]! * (opts.vectors[k * K + b] ?? 0);
+        for (let b = 0; b < K; b++) q += (opts.vectors[k * K + a] ?? 0) * corr[a * K + b]! * (opts.vectors[k * K + b] ?? 0);
       }
       lambda[k] = Math.max(q, 0);
     }

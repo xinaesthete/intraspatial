@@ -16,7 +16,7 @@ import { Buffer } from "@luma.gl/core";
 import { Model } from "@luma.gl/engine";
 import type { ShaderModule } from "@luma.gl/shadertools";
 import type { GramMatrixGpuResult } from "../../../src/gpu/spatial/gramMatrix";
-import { MODE_LOOK, modeParams, OKLAB_TO_SRGB_WGSL } from "../../../src/gpu/spatial/gramModes";
+import { MODE_LOOK, type ModeBasis, modeParams, OKLAB_TO_SRGB_WGSL } from "../../../src/gpu/spatial/gramModes";
 import { MARKER_WGSL } from "../../../src/gpu/spatial/markerWgsl";
 import { SIMILARITY_WGSL } from "../../../src/gpu/spatial/similarityWgsl";
 
@@ -146,6 +146,8 @@ export type GramModesLayerProps = {
   tolerance?: number;
   /** Wand sample, in raster pixels. */
   marker?: { col: number; row: number } | null;
+  /** Paint with this fixed projection rather than `res`'s own; `vectors` must then be its modes. */
+  basis?: ModeBasis | null;
 } & LayerProps;
 
 const defaultProps: DefaultProps<GramModesLayerProps> = {
@@ -158,6 +160,7 @@ const defaultProps: DefaultProps<GramModesLayerProps> = {
   modesUsed: { type: "number", value: 3 },
   tolerance: { type: "number", value: 1.2 },
   marker: { type: "object", value: null, compare: 1 },
+  basis: { type: "object", value: null, compare: false },
 };
 
 type State = {
@@ -212,7 +215,8 @@ export class GramModesLayer extends Layer<GramModesLayerProps> {
       props.saturate !== oldProps.saturate ||
       props.chromaWeight !== oldProps.chromaWeight ||
       props.reference !== oldProps.reference ||
-      props.modesUsed !== oldProps.modesUsed;
+      props.modesUsed !== oldProps.modesUsed ||
+      props.basis !== oldProps.basis;
     if (!changed && this.state.params) return;
     const params = modeParams(res, {
       vectors,
@@ -220,6 +224,7 @@ export class GramModesLayer extends Layer<GramModesLayerProps> {
       chromaWeight: props.chromaWeight,
       reference: props.reference ?? undefined,
       modesUsed: props.modesUsed,
+      basis: props.basis ?? undefined,
     });
     // Assigned rather than setState: these are GPU resources, not render inputs deck should diff.
     this.state.chan = storage(this, this.state.chan, params.chan);

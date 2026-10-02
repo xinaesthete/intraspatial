@@ -4,13 +4,13 @@
 import { oklabToSrgb } from "../../../src/color/oklab";
 import { cssRgb } from "../../../src/color/ramps";
 import { modeSwatch } from "../../../src/gpu/spatial/gramModes";
-import type { TranscriptGram } from "./useTranscriptGram";
+import type { CoLocationModes } from "../../../src/spatial/gram";
 
 const swatch = (k: number, sign: 1 | -1): string =>
   cssRgb(oklabToSrgb(modeSwatch([k === 0 ? sign : 0, k === 1 ? sign : 0, k === 2 ? sign : 0])));
 
-export function ModeLegend({ gram }: { gram: TranscriptGram }) {
-  const { vectors, explained, labels } = gram.modes;
+export function ModeLegend({ modes }: { modes: CoLocationModes }) {
+  const { vectors, explained, labels } = modes;
   const K = labels.length;
   const roles = ["brightness", "hue (green ↔ red)", "hue (blue ↔ yellow)"];
   return (
