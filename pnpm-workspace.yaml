@@ -11,7 +11,6 @@ packages:
 #   sharp  — docs-site (Astro) image processing
 #   esbuild — vite/vitest bundler platform binary
 allowBuilds:
-  '@vaadin/vaadin-usage-statistics': false
   esbuild: true
   sharp: true
   webgpu: true
@@ -24,4 +23,9 @@ catalog:
   typescript: ^7.0.0
 # Exact-version exemption from pnpm 11's minimum release age; drop once the release has aged.
 minimumReleaseAgeExclude:
-  - '@spatialdata/core@0.11.1'
+  - '@spatialdata/avivatorish@0.12.0'
+  - '@spatialdata/core@0.12.0'
+  - '@spatialdata/layers@0.12.0'
+  - '@spatialdata/react@0.12.0'
+  - '@spatialdata/vis@0.12.0'
+  - zarrextra@0.5.1

@@ -99,8 +99,8 @@ const linked = linkedSpatialData();
 const LINKED_DEDUPE = [
   "react",
   "react-dom",
-  "deck.gl",
   "@deck.gl/core",
+  "@deck.gl/widgets",
   "@deck.gl/layers",
   "@deck.gl/extensions",
   "@deck.gl/geo-layers",

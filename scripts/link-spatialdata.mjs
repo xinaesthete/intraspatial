@@ -30,13 +30,13 @@ const PACKAGE_DIRS = {
   zarrextra: "packages/zarrextra",
 };
 
-/** What `unlink` restores. A separate copy of the published ranges, so keep it in step. */
+/** What `unlink` restores: the playground's own published dependencies, so keep it in step with
+ *  playground/package.json. Linked packages not listed here (layers, react: reached through vis)
+ *  are removed again on unlink. */
 const PUBLISHED_RANGES = {
-  "@spatialdata/core": "^0.11.1",
-  "@spatialdata/layers": "^0.11.1",
-  "@spatialdata/react": "^0.11.1",
-  "@spatialdata/vis": "^0.11.1",
-  zarrextra: "0.5.0",
+  "@spatialdata/core": "^0.12.0",
+  "@spatialdata/vis": "^0.12.0",
+  zarrextra: "0.5.1",
 };
 
 const expandHome = (p) => (p.startsWith("~/") ? path.join(os.homedir(), p.slice(2)) : p);
@@ -70,9 +70,11 @@ function link() {
 
 function unlink() {
   const pkg = read();
+  for (const name of Object.keys(PACKAGE_DIRS)) delete pkg.dependencies[name];
   for (const [name, range] of Object.entries(PUBLISHED_RANGES)) pkg.dependencies[name] = range;
+  pkg.dependencies = Object.fromEntries(Object.entries(pkg.dependencies).sort(([a], [b]) => a.localeCompare(b)));
   write(pkg);
-  console.log("Restored the published @spatialdata/* and zarrextra ranges");
+  console.log("Restored the published @spatialdata/core, vis and zarrextra ranges");
   execSync("pnpm install", { cwd: repoRoot, stdio: "inherit" });
 }
 

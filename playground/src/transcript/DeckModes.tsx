@@ -1,7 +1,7 @@
 // Experiment: the transcript co-location modes drawn as a deck.gl layer over sd.js's own image layer, on one
 // shared WebGPU device. Deck creates the device (luma 9.4 cannot attach an existing one); this
 // library adopts it before any compute, so the layer binds the Gram's rasters on the GPU — no readback.
-// Needs sd.js with WebGPU rendering (SpatialData.js#204), linked via `pnpm link:spatialdata`.
+// Needs sd.js ≥ 0.12.0, the first release with WebGPU rendering.
 //
 // The analysis window follows the view: once a pan or zoom settles, the visible rectangle, taken
 // into the transcripts' own frame and capped in area, becomes the window the Gram is computed over.
@@ -10,12 +10,12 @@
 // turns layer configs into deck layers, and this page owns the size, the view state and its extra
 // layers. No SpatialCanvas chrome, no store.
 
+import type { Layer } from "@deck.gl/core";
 import type { Device } from "@luma.gl/core";
 import { webgpuAdapter } from "@luma.gl/webgpu";
 import { Matrix4 } from "@math.gl/core";
 import { type SpatialData, viewStateFromBounds } from "@spatialdata/core";
 import { layerConfig, SpatialViewer, useSpatialCanvasRendererFromLayerInputs, type ViewState } from "@spatialdata/vis";
-import type { Layer } from "deck.gl";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { clampWindow, type Rect } from "../../../src/datasource/points";
 import { adoptDevice, getDevice } from "../../../src/gpu/device";
