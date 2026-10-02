@@ -1,12 +1,9 @@
 // Tiles → transcript channels → the GPU Gram → co-location modes, for one window.
 //
-// `gramMatrixGpu` leaves its rasters in ONE pooled device buffer that the next call overwrites, and
-// `paintGramModes` reads that buffer. So compute and paint share a queue, and a paint only runs for
-// the latest result (`isLatest`) — an older one's rasters are already gone.
-//
-// A deck layer cannot follow that rule: it redraws every frame, whenever deck likes, including
-// while the next compute is writing. So each result also carries `rasters`, a GPU-side copy taken
-// inside the queue, in one of two buffers used in turn. A result's copy stays intact until the
+// `gramMatrixGpu` leaves its rasters in ONE pooled device buffer that the next call overwrites. A
+// deck layer redraws every frame, whenever deck likes, including while the next compute is writing,
+// so it cannot read that buffer. Each result therefore carries `rasters`, a GPU-side copy taken
+// inside the GPU queue, in one of two buffers used in turn. A result's copy stays intact until the
 // result after next — by then the layer has long moved on.
 
 import { useRef } from "react";
@@ -22,13 +19,11 @@ let queue: Promise<unknown> = Promise.resolve();
 let generation = 0;
 
 /** Run GPU work one task at a time. */
-export function onGpu<T>(task: () => Promise<T>): Promise<T> {
+function onGpu<T>(task: () => Promise<T>): Promise<T> {
   const run = queue.then(task, task);
   queue = run.catch(() => undefined);
   return run;
 }
-
-export const isLatest = (gen: number): boolean => gen === generation;
 
 const copies: (GPUBuffer | undefined)[] = [undefined, undefined];
 

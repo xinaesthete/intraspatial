@@ -46,6 +46,7 @@ server to use them. A publicly-hosted sample dataset is still an open item.
   (the derivation lives in `docs/cell-stats.md` in the repo), with the
   exact CPU oracle one button away. Reads a SpatialData store, a CSV export, or a built-in fixture.
 - **[Transcript co-location modes](/playground/transcriptmodes.html)** — the same Gram form over
-  transcript density instead of cells: drag a window across a Morton-tiled Xenium store, and the
-  co-location matrix and mode map recompute from tiles fetched once and cached. Gene sets and the
-  panel's negative controls are channels; plain-language notes sit beside the maths.
+  transcript density instead of cells: pan and zoom a Morton-tiled Xenium store over its H&E (sd.js's
+  WebGPU view), and the co-location matrix and mode map recompute for the part in view, from tiles
+  fetched once and cached. Gene sets and the panel's negative controls are channels; plain-language
+  notes sit beside the maths.

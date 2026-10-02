@@ -21,8 +21,8 @@
     .controls input:not([type=range]), .controls select { background: #111827; color: #e2e8f0; border: 1px solid #334155; border-radius: 4px; padding: 3px 6px; font: inherit; min-width: 0; flex: 1; }
     button { background: #1e293b; color: #e2e8f0; border: 1px solid #334155; border-radius: 4px; padding: 3px 8px; font: inherit; cursor: pointer; }
     .views { min-width: 0; }
-    canvas.overview { width: 100%; display: block; border-radius: 4px; cursor: move; touch-action: none; }
-    canvas.modemap { width: 100%; display: block; border-radius: 4px; transform: scaleY(-1); }
+    .deck-canvas { position: relative; height: min(62vh, 640px); min-height: 320px; border-radius: 4px; overflow: hidden; background: #111; }
+    .controls label.check { flex-direction: row; align-items: center; gap: 6px; }
     .status { color: #94a3b8; font-size: 12px; min-height: 18px; margin: 6px 0; }
     .error { color: #f87171; }
     .hint { color: #64748b; font-size: 11px; margin: 4px 0; }

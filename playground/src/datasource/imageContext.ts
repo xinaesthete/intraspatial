@@ -50,8 +50,6 @@ export interface ContextImage {
   readonly dims0: readonly [number, number];
   readonly label: string;
   readonly channels: readonly ChannelSettings[];
-  /** The composited RGBA (`width × height × 4`), kept only when `keepPixels` asked for it. */
-  readonly pixels?: Uint8Array;
 }
 
 /** Names of the image elements in a store, for a dropdown. Takes the shared `SpatialData`. */
@@ -70,68 +68,25 @@ function pickLevel(img: SpatialDataImage, maxSide: number): number {
   return n - 1; // every level is bigger than the budget: take the coarsest and accept it
 }
 
-/** A part of the image to load at screen resolution rather than the whole of one level. */
-export interface ImageRegion {
-  /** World points the region must cover, e.g. an analysis window's corners. The array-space box
-   *  around them is loaded, so a rotated placement costs a little extra at the corners. */
-  readonly world: readonly (readonly [number, number])[];
-  /** Device pixels the region spans on screen along its longer side. Picks the level: the coarsest
-   *  whose pixels are no larger than the screen's. */
-  readonly screenPx: number;
-}
-
 /**
- * Fetch one level — whole, or just the chunks under `region` — and composite it to an RGBA texture.
+ * Fetch one level whole and composite it to an RGBA texture.
  *
  * Compositing happens on the host rather than in the mode shaders, and that is deliberate: the
  * channel colours and contrast windows are load-time metadata that never change while the view is
  * being explored, so folding them in once costs one pass over the level and saves carrying N
  * channel planes and their settings into two more shaders.
- *
- * A region image is placed exactly like a whole one — `worldFromArray` and `dims0` describe just
- * the loaded box — so `uvFromWorld` needs no special case.
  */
-export async function loadContextImage(
-  sdata: SpatialData,
-  element: string,
-  opts: { maxSide?: number; keepPixels?: boolean; region?: ImageRegion } = {},
-): Promise<ContextImage> {
+export async function loadContextImage(sdata: SpatialData, element: string, opts: { maxSide?: number } = {}): Promise<ContextImage> {
   const device = await getDevice();
   const img = await (await imageHandle(sdata)).image(element);
-  const n = img.ms.levelCount;
-  const dimsAt = (L: number) =>
-    img.ms.levelDims?.[L] ?? [Math.ceil(img.ms.voxelDims0[0] / 2 ** L), Math.ceil(img.ms.voxelDims0[1] / 2 ** L), 1];
-
-  let level: number;
-  let box: [number, number, number, number]; // level pixels, [x0, y0, x1, y1)
-  if (opts.region) {
-    const m = img.globalFromArray;
-    if (!m) throw new Error(`${element} carries no stored transform, so a region cannot be located in it`);
-    const pts = opts.region.world.map((w) => arrayFromWorld(m, w));
-    const xs = pts.map((p) => p[0]);
-    const ys = pts.map((p) => p[1]);
-    const long0 = Math.max(Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys));
-    level = Math.min(n - 1, Math.max(0, Math.floor(Math.log2(long0 / Math.max(1, opts.region.screenPx)))));
-    const d = dimsAt(level);
-    const sx = d[0] / img.ms.voxelDims0[0];
-    const sy = d[1] / img.ms.voxelDims0[1];
-    box = [
-      Math.max(0, Math.floor(Math.min(...xs) * sx)),
-      Math.max(0, Math.floor(Math.min(...ys) * sy)),
-      Math.min(d[0], Math.ceil(Math.max(...xs) * sx)),
-      Math.min(d[1], Math.ceil(Math.max(...ys) * sy)),
-    ];
-    if (box[2] <= box[0] || box[3] <= box[1]) throw new Error(`the region lies outside ${element}`);
-  } else {
-    level = pickLevel(img, opts.maxSide ?? DEFAULT_MAX_SIDE);
-    const d = dimsAt(level);
-    box = [0, 0, Math.max(1, d[0]), Math.max(1, d[1])];
-  }
-  const [x0, y0, x1, y1] = box;
-  const W = x1 - x0;
-  const H = y1 - y0;
-  const tw0 = img.ms.chunkShape[0];
-  const th0 = img.ms.chunkShape[1];
+  const maxSide = opts.maxSide ?? DEFAULT_MAX_SIDE;
+  const level = pickLevel(img, maxSide);
+  const dims = img.ms.levelDims?.[level] ?? [Math.ceil(img.ms.voxelDims0[0] / 2 ** level), Math.ceil(img.ms.voxelDims0[1] / 2 ** level), 1];
+  const W = Math.max(1, dims[0]);
+  const H = Math.max(1, dims[1]);
+  const tile = img.ms.chunkShape[0];
+  const nx = Math.ceil(W / tile);
+  const ny = Math.ceil(H / tile);
 
   const lanes = img.ms.element.kind === "vec" ? img.ms.element.n : 1;
   const vis = img.channels.map((c) => c.visible !== false);
@@ -141,20 +96,18 @@ export async function loadContextImage(
   for (let i = 3; i < rgba.length; i += 4) rgba[i] = 255;
 
   const jobs: Promise<void>[] = [];
-  for (let cy = Math.floor(y0 / th0); cy * th0 < y1; cy++) {
-    for (let cx = Math.floor(x0 / tw0); cx * tw0 < x1; cx++) {
+  for (let cy = 0; cy < ny; cy++) {
+    for (let cx = 0; cx < nx; cx++) {
       jobs.push(
         img.loader.getChunk({ level, x: cx, y: cy, z: 0 }).then((t) => {
           const samples = hostSamples(t);
           const [tw, th] = t.dims;
           for (let y = 0; y < th; y++) {
-            const gy = cy * th0 + y;
-            if (gy < y0) continue;
-            if (gy >= y1) break;
+            const gy = cy * tile + y;
+            if (gy >= H) break;
             for (let x = 0; x < tw; x++) {
-              const gx = cx * tw0 + x;
-              if (gx < x0) continue;
-              if (gx >= x1) break;
+              const gx = cx * tile + x;
+              if (gx >= W) break;
               let r = 0;
               let g = 0;
               let b = 0;
@@ -171,7 +124,7 @@ export async function loadContextImage(
                 g += v * (ch.color[1] ?? 0);
                 b += v * (ch.color[2] ?? 0);
               }
-              const o = ((gy - y0) * W + (gx - x0)) * 4;
+              const o = (gy * W + gx) * 4;
               rgba[o] = Math.min(255, r * 255);
               rgba[o + 1] = Math.min(255, g * 255);
               rgba[o + 2] = Math.min(255, b * 255);
@@ -190,44 +143,18 @@ export async function loadContextImage(
   });
   device.queue.writeTexture({ texture }, rgba, { bytesPerRow: W * 4, rowsPerImage: H }, { width: W, height: H });
 
-  // The loaded box, in level-0 array units: its origin shifts the placement, its size is `dims0`.
-  const d = dimsAt(level);
-  const sx = d[0] / img.ms.voxelDims0[0];
-  const sy = d[1] / img.ms.voxelDims0[1];
-  const m = img.globalFromArray;
-  const worldFromArray = m && {
-    origin: [
-      m.origin[0] + m.axes[0][0] * (x0 / sx) + m.axes[1][0] * (y0 / sy),
-      m.origin[1] + m.axes[0][1] * (x0 / sx) + m.axes[1][1] * (y0 / sy),
-      m.origin[2] + m.axes[0][2] * (x0 / sx) + m.axes[1][2] * (y0 / sy),
-    ] as const,
-    axes: m.axes,
-  };
-
   return {
     texture,
     width: W,
     height: H,
     level,
-    levelCount: n,
-    worldFromArray,
-    aligned: m !== undefined,
-    dims0: [W / sx, H / sy],
-    label: `${element} · level ${level}/${n - 1} · ${W}×${H}${opts.region ? " (region)" : ""}`,
+    levelCount: img.ms.levelCount,
+    worldFromArray: img.globalFromArray,
+    aligned: img.globalFromArray !== undefined,
+    dims0: [img.ms.voxelDims0[0], img.ms.voxelDims0[1]],
+    label: `${element} · level ${level}/${img.ms.levelCount - 1} · ${W}×${H}`,
     channels: img.channels,
-    ...(opts.keepPixels ? { pixels: rgba } : {}),
   };
-}
-
-/** Level-0 array XY of a world point under `m` (its XY part; z ignored). */
-function arrayFromWorld(m: Affine3, w: readonly [number, number]): [number, number] {
-  const a = m.axes[0];
-  const b = m.axes[1];
-  const det = a[0] * b[1] - b[0] * a[1];
-  if (!Number.isFinite(det) || Math.abs(det) < 1e-30) throw new Error("the image's placement is degenerate in XY");
-  const dx = w[0] - m.origin[0];
-  const dy = w[1] - m.origin[1];
-  return [(b[1] * dx - b[0] * dy) / det, (a[0] * dy - a[1] * dx) / det];
 }
 
 /**
