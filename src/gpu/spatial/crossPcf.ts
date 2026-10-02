@@ -240,8 +240,8 @@ async function runCounts(
       // call's histogram. See `sized` in `../device.ts`.
       { binding: 1, resource: sized(aBuf, ptsA.length * 4) },
       { binding: 2, resource: sized(bBuf, second.length * 4) },
-      { binding: 3, resource: sized(grid.start, (grid.M + 1) * 4) },
-      { binding: 4, resource: sized(grid.items, Math.max(grid.n, 1) * 4) },
+      { binding: 3, resource: sized(grid.cellOffsets, (grid.M + 1) * 4) },
+      { binding: 4, resource: sized(grid.pointIds, Math.max(grid.n, 1) * 4) },
       { binding: 5, resource: sized(countsRaw!, nCounts * 4) },
     ],
   });

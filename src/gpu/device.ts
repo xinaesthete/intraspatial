@@ -223,3 +223,49 @@ export async function compileShader(device: GPUDevice, code: string, label: stri
 export function writeView(queue: GPUQueue, dst: GPUBuffer, view: ArrayBufferView, dstOffset = 0): void {
   queue.writeBuffer(dst, dstOffset, view.buffer, view.byteOffset, view.byteLength);
 }
+
+// ---------------------------------------------------------------------------------------
+// Raw readback
+// ---------------------------------------------------------------------------------------
+
+/** Grow-only staging buffers for `readBackBytes`, keyed by caller. Never destroyed — mid-process
+ *  `.destroy()` is what segfaults Dawn-on-Node's teardown (ADR-0002/0003). */
+const stagingPool = new Map<string, { buf: GPUBuffer; cap: number }>();
+
+/**
+ * Copy `bytes` out of a storage buffer and return them **verbatim**.
+ *
+ * The dtype-agnostic readback. `GpuBackend.readbackF32` goes through a cached TypeGPU wrapper,
+ * which decodes each word as an IEEE float — correct for an f32 field, and mangling for a u32
+ * one. Reinterpreting those floats back to bits is not a fix either: a u32 whose bit pattern is a
+ * signalling NaN can have its payload canonicalised on the way through a JS number. So a non-f32
+ * buffer is read as bytes and viewed by the caller.
+ *
+ * A second TypeGPU wrapper over the same `GPUBuffer` is what this avoids: every wrapper frees its
+ * buffer when the root is torn down, and the pool recycles buffers, so a u32-schema wrapper
+ * alongside the f32 one would double-free at exit (the note on `wrapperFor` in `backend.node.ts`).
+ * Raw `mapAsync` on a pooled MAP_READ buffer is Dawn-stable since the Instance-lifetime fix of
+ * 2026-07-29, and `test/dawn-limits-sweep.gpu.test.ts` pins exactly this pattern.
+ */
+export async function readBackBytes(
+  device: GPUDevice,
+  key: string,
+  src: GPUBuffer,
+  srcOffset: number,
+  bytes: number,
+): Promise<ArrayBuffer> {
+  const got = stagingPool.get(key);
+  let staging = got?.buf;
+  if (!got || got.cap < bytes) {
+    const cap = Math.max(bytes, (got?.cap ?? 0) * 2, 256);
+    staging = device.createBuffer({ size: cap, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST, label: key });
+    stagingPool.set(key, { buf: staging, cap });
+  }
+  const enc = device.createCommandEncoder();
+  enc.copyBufferToBuffer(src, srcOffset, staging!, 0, bytes);
+  device.queue.submit([enc.finish()]);
+  await staging!.mapAsync(GPUMapMode.READ, 0, bytes);
+  const copy = staging!.getMappedRange(0, bytes).slice(0);
+  staging!.unmap();
+  return copy;
+}

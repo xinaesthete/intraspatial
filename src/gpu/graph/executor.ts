@@ -15,7 +15,7 @@ import type { GpuBackend } from "./backend";
 import { nodeBackend } from "./backend.node";
 import type { Graph, GraphNode } from "./graph";
 import type { FieldValue, GpuField, ResidentPayload } from "./handle";
-import { isResidentTexture } from "./handle";
+import { isResidentTexture, payloadsOf } from "./handle";
 import type { GraphMemo } from "./memo";
 import { hashSource, hashString, stableJSON } from "./memo";
 import type { ExecCtx, OpType } from "./op";
@@ -145,16 +145,38 @@ interface TickOptions {
   onBridge?: (key: string, direction: "download" | "upload" | "detexture") => void;
 }
 
-/** Bytes → f32 count. The bridge is f32-only for now: `readbackF32` converts element-wise
- *  rather than reinterpreting bits, so an i32/u32 resident value would come back mangled.
- *  Guarded explicitly rather than left to produce silently wrong numbers. */
+/** Bytes → f32 count, for the TEXTURE path only: a texture's readback goes through its render
+ *  format, so it stays f32. Resident *buffers* of any dtype are handled by `downloadBuffer`. */
 function residentF32Count(v: FieldValue): number {
   if (v.dtype !== "f32") {
-    throw new Error(`executor: resident bridging is f32-only; got dtype "${v.dtype}" (ADR-0017 stage 1)`);
+    throw new Error(`executor: texture bridging is f32-only; got dtype "${v.dtype}" (ADR-0017 stage 1)`);
   }
   if (v.buffer) return v.buffer.byteLength / 4;
   // A texture-resident value's logical count is its extent — it has no byteLength of its own.
   return v.texture ? v.texture.width * v.texture.height : 0;
+}
+
+/** Strip the resident handles from a value whose leases have gone back to the pool, keeping
+ *  whatever host representation it has. A stale reader then fails loudly instead of reading a
+ *  buffer the pool has already handed to someone else — but a bundle keeps its `parts`, because
+ *  after a host pull those parts carry the downloaded `data` and are the answer. */
+function withoutResidentHandles(v: FieldValue): FieldValue {
+  const parts = v.parts
+    ? Object.fromEntries(Object.entries(v.parts).map(([name, part]) => [name, withoutResidentHandles(part)]))
+    : undefined;
+  return { ...v, buffer: undefined, texture: undefined, ...(parts ? { parts } : {}) };
+}
+
+/** Download a resident BUFFER as the typed array its dtype names.
+ *
+ *  f32 keeps the cached-wrapper `readbackF32` path (proven, and the common case); u32/i32 go
+ *  through the raw byte readback, because decoding their words as floats would mangle them —
+ *  `readBackBytes` in `device.ts` says why that is a separate path rather than a second wrapper. */
+async function downloadBuffer(ctx: ExecCtx, v: FieldValue): Promise<Float32Array | Uint32Array | Int32Array> {
+  const buf = v.buffer!;
+  if (v.dtype === "f32") return ctx.backend.readbackF32(buf.buffer, buf.byteLength / 4);
+  const bytes = await ctx.backend.readbackBytes(buf.buffer, buf.byteLength);
+  return v.dtype === "u32" ? new Uint32Array(bytes) : new Int32Array(bytes);
 }
 
 /** Run one tick: execute the cut-DAG, then commit feedback `next` values into the
@@ -189,6 +211,26 @@ async function runTick(graph: Graph, field: GpuField, o: TickOptions): Promise<M
     if (list) list.push(p);
     else owned.set(k, [p]);
   };
+  // --- Borrowed payloads (ADR-0023) ---
+  //
+  // An extract op hands back a bundle part's buffer AS IS — no copy, because copying `items` to
+  // look at it defeats the bundle. The tick therefore does not own that payload, and the lender
+  // must outlive the borrower: `lenders` records `borrowerKey -> the input keys it borrowed
+  // from`, and a port with a live borrower is not released until the borrower itself dies.
+  const lenders = new Map<string, Set<string>>();
+  const borrowers = new Map<string, Set<string>>();
+  const borrow = (borrower: string, lender: string) => {
+    if (borrower === lender) return;
+    let ls = lenders.get(borrower);
+    if (!ls) lenders.set(borrower, (ls = new Set()));
+    ls.add(lender);
+    let bs = borrowers.get(lender);
+    if (!bs) borrowers.set(lender, (bs = new Set()));
+    bs.add(borrower);
+  };
+  /** A port is dead once its own consumers have run AND nothing is still borrowing from it. */
+  const isDead = (k: string) => (remaining.get(k) ?? 0) <= 0 && (borrowers.get(k)?.size ?? 0) === 0;
+
   const releasePayload = (p: ResidentPayload) => {
     if (isResidentTexture(p)) o.ctx.backend.releaseTexture(p);
     else o.ctx.backend.release(p);
@@ -222,14 +264,26 @@ async function runTick(graph: Graph, field: GpuField, o: TickOptions): Promise<M
 
   const releaseIfDead = (k: string) => {
     if (pinned.has(k) || adopted.has(k)) return;
+    if (!isDead(k)) return;
     const list = owned.get(k);
-    if (!list) return;
-    owned.delete(k);
-    for (const p of list) releasePayload(p);
-    // Drop the handles so a stale reader fails loudly instead of silently reading a resource the
-    // pool has already handed to someone else.
-    const v = pulled.get(k);
-    if (v) pulled.set(k, { ...v, buffer: undefined, texture: undefined });
+    // A borrower owns nothing, but its death still frees its lenders, so keep going.
+    if (list) {
+      owned.delete(k);
+      for (const p of list) releasePayload(p);
+      // Drop the handles so a stale reader fails loudly instead of silently reading a resource the
+      // pool has already handed to someone else.
+      const v = pulled.get(k);
+      if (v) pulled.set(k, withoutResidentHandles(v));
+    }
+    // This port is finished with whatever it borrowed; a lender whose last borrower just went
+    // may now be releasable itself.
+    const ls = lenders.get(k);
+    if (!ls) return;
+    lenders.delete(k);
+    for (const lender of ls) {
+      borrowers.get(lender)?.delete(k);
+      releaseIfDead(lender);
+    }
   };
 
   /** Record that a consumer of `k` has finished; recycle the value once its last one has. */
@@ -237,6 +291,12 @@ async function runTick(graph: Graph, field: GpuField, o: TickOptions): Promise<M
     const left = (remaining.get(k) ?? 0) - 1;
     remaining.set(k, left);
     if (left <= 0) releaseIfDead(k);
+  };
+
+  /** A port that no node in this tick reads (a sibling output, or a borrower whose consumers have
+   *  all run) still has to be swept, or its lease never returns. */
+  const sweep = (k: string) => {
+    if ((remaining.get(k) ?? 0) <= 0) releaseIfDead(k);
   };
 
   /** Move a lease from one port key to another, when a node emits its input unchanged (a
@@ -250,18 +310,70 @@ async function runTick(graph: Graph, field: GpuField, o: TickOptions): Promise<M
     for (const p of list) own(to, p);
   };
 
+  /** Download one bundle part (ADR-0023 decision 3), by dtype: the index's u32 parts come back
+   *  as `Uint32Array`, not as floats decoded from their bits. Parts are values, not ports, so they
+   *  do not go through `hostAt`'s per-key cache. A texture-resident part still cannot cross, and
+   *  names itself rather than leaving the bundle host-side with a hole in it. */
+  const hostPart = async (v: FieldValue, label: string): Promise<FieldValue> => {
+    if (v.parts) {
+      const parts: Record<string, FieldValue> = {};
+      for (const [name, part] of Object.entries(v.parts)) parts[name] = await hostPart(part, `${label}.${name}`);
+      return { ...v, parts };
+    }
+    if (v.data || v.payload !== undefined || (!v.buffer && !v.texture)) return v;
+    if (v.texture)
+      throw new Error(`executor: bundle part "${label}" is texture-resident, which the bundle bridge does not handle (ADR-0023)`);
+    return { ...v, data: await downloadBuffer(o.ctx, v) };
+  };
+
   /** Ensure the value at `k` has host `data`, downloading it if resident-only. */
   const hostAt = async (k: string): Promise<FieldValue> => {
     const v = pulled.get(k);
     if (!v) throw new Error(`executor (unexpected): no value at ${k}`);
+    if (v.parts) {
+      o.onBridge?.(k, "download");
+      const bridged = await hostPart(v, k);
+      pulled.set(k, bridged);
+      return bridged;
+    }
     if (v.data || v.payload !== undefined) return v;
     if (!v.buffer && !v.texture) return v;
     // A texture cannot be read back directly by the f32 path; adapt first, then download once.
     const res = v.buffer ? v : await residentAt(k);
     o.onBridge?.(k, "download");
-    const data = await o.ctx.backend.readbackF32(res.buffer!.buffer, residentF32Count(res));
+    const data = res.buffer ? await downloadBuffer(o.ctx, res) : await o.ctx.backend.readbackF32(res.buffer!.buffer, residentF32Count(res));
     const bridged: FieldValue = { ...res, data };
     pulled.set(k, bridged); // cache: a second consumer reuses the download
+    return bridged;
+  };
+
+  /** Upload one bundle part, returning the leases taken so the caller can own them under the
+   *  bundle's port key (ADR-0023). A part that is already resident, or carries only a payload,
+   *  is passed through untouched. */
+  const residentPart = async (v: FieldValue, took: ResidentPayload[]): Promise<FieldValue> => {
+    if (v.parts) {
+      const parts: Record<string, FieldValue> = {};
+      for (const [name, part] of Object.entries(v.parts)) parts[name] = await residentPart(part, took);
+      return { ...v, parts };
+    }
+    if (v.buffer || v.texture || v.payload !== undefined || !v.data) return v;
+    const res = await o.ctx.backend.upload(v.data);
+    took.push(res);
+    return { ...v, buffer: res };
+  };
+
+  /** True when every part of a bundle already lives on the device. */
+  const bundleIsResident = (v: FieldValue): boolean =>
+    payloadsOf(v).length > 0 && !Object.values(v.parts ?? {}).some((p) => p.data && !p.buffer);
+
+  /** Upload whichever parts of a bundle are still host-side, and own the leases that took. */
+  const residentBundle = async (k: string, v: FieldValue): Promise<FieldValue> => {
+    if (bundleIsResident(v)) return v;
+    o.onBridge?.(k, "upload");
+    const took: ResidentPayload[] = [];
+    const bridged = await residentPart(v, took);
+    pulled.set(k, bridged);
+    for (const p of took) own(k, p);
     return bridged;
   };
 
@@ -269,7 +381,13 @@ async function runTick(graph: Graph, field: GpuField, o: TickOptions): Promise<M
   const residentAt = async (k: string): Promise<FieldValue> => {
     const v = pulled.get(k);
     if (!v) throw new Error(`executor (unexpected): no value at ${k}`);
+    if (v.parts) return await residentBundle(k, v);
     if (v.buffer) return v;
+    // An opaque payload has no GPU representation to make — a resident op that takes one (the
+    // bundle combine op, handed a `lattice`) reads it on the host. Uploading is not merely
+    // unnecessary, it is impossible, and treating it as "no data" is what made recombining a
+    // bucket grid fail.
+    if (v.payload !== undefined) return v;
     // Texture-resident, but this consumer binds a storage buffer. Adapt on-device — the value stays
     // GPU-resident throughout, so this is a copy, never a round trip. Paid only because a buffer
     // consumer exists: a render→render edge never reaches here.
@@ -282,7 +400,7 @@ async function runTick(graph: Graph, field: GpuField, o: TickOptions): Promise<M
       own(k, res); // the tick leased it, so the tick returns it — alongside the texture
       return bridged;
     }
-    if (!v.data) throw new Error(`executor: cannot make value at ${k} resident — it has no data`);
+    if (!v.data) throw new Error(`executor: cannot make value at ${k} resident — it has no data, buffer, texture or payload`);
     o.onBridge?.(k, "upload");
     const res = await o.ctx.backend.upload(v.data);
     const bridged: FieldValue = { ...v, buffer: res };
@@ -394,6 +512,13 @@ async function runTick(graph: Graph, field: GpuField, o: TickOptions): Promise<M
     const inputs: FieldValue[] = [];
     for (const k of inputKeys) inputs.push(wantResident ? await residentAt(k) : await hostAt(k));
 
+    // Which input port each payload came in on, so an output that hands one straight back is
+    // recognised as a borrow rather than double-owned (ADR-0023).
+    const lenderOf = new Map<ResidentPayload, string>();
+    inputs.forEach((v, i) => {
+      for (const p of payloadsOf(v)) if (!lenderOf.has(p)) lenderOf.set(p, inputKeys[i]!);
+    });
+
     const outs = await runNode(op, o.ctx, o.mode, inputs, node.params);
     op.outputs.forEach((out, i) => {
       const v = outs[i];
@@ -415,14 +540,43 @@ async function runTick(graph: Graph, field: GpuField, o: TickOptions): Promise<M
       // A memoised value outlives the tick, so the tick must not reclaim its buffer. Not
       // owning it pins it — correct, but it means resident values accumulate in the memo until
       // eviction releases them (ADR-0017 leaves that coupling to a later stage).
-      else if (v.texture) own(key(node.id, out.name), v.texture);
-      else if (v.buffer) own(key(node.id, out.name), v.buffer);
+      else {
+        // ADR-0023: a payload the op did not create — it handed back one reachable from an input,
+        // as an extract op does — is BORROWED, not owned. Owning it would return a lease to the
+        // pool while the lender still points at it; the borrow edge instead keeps the lender
+        // alive until this port dies.
+        const outKey = key(node.id, out.name);
+        for (const p of payloadsOf(v)) {
+          const lender = lenderOf.get(p);
+          if (lender) borrow(outKey, lender);
+          else own(outKey, p);
+        }
+      }
       emit(node.id, out.name, v);
     });
 
     // This node has consumed its inputs; any whose last reader that was can go back to the pool.
     for (const k of inputKeys) consume(k);
   }
+
+  /** A `pullResident` sink that BORROWED its payload (an extracted bundle part) is the one place
+   *  a lender must be dismantled rather than kept whole: the caller is handed one buffer and owns
+   *  it, so the lender's OTHER payloads — the index's `start` when you pulled its `items` — would
+   *  otherwise never come back. Release those, and let the borrowed one travel to the caller. */
+  const detachBorrowedSink = (k: string) => {
+    const ls = lenders.get(k);
+    if (!ls) return;
+    const sinkValue = pulled.get(k);
+    const keep = new Set<ResidentPayload>(sinkValue ? payloadsOf(sinkValue) : []);
+    lenders.delete(k);
+    for (const lender of ls) {
+      borrowers.get(lender)?.delete(k);
+      const list = owned.get(lender);
+      if (!list) continue;
+      owned.delete(lender);
+      for (const p of list) if (!keep.has(p)) releasePayload(p);
+    }
+  };
 
   // Commit: store each feedback node's fed-back value for the next tick.
   //
@@ -487,8 +641,13 @@ async function runTick(graph: Graph, field: GpuField, o: TickOptions): Promise<M
     releaseIfDead(sinkKey);
   }
 
+  // The sink is pinned, so nothing above released it; if it borrowed, split its lender now.
+  if (!o.materialiseSink) detachBorrowedSink(key(field.producer, field.outPort));
+
   // Return every lease the tick still owns. Nodes release as their last reader completes; this
   // catches values nothing consumed. Pinned ports (the sink, anything fed back) are excluded.
+  // Borrowers first: a borrower owns nothing, but until it dies its lender cannot be released.
+  for (const k of [...lenders.keys()]) releaseIfDead(k);
   for (const k of [...owned.keys()]) releaseIfDead(k);
 
   return pulled;
