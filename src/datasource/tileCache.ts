@@ -11,7 +11,7 @@ import { tileBytes } from "./types";
 export const chunkKey = (id: ChunkId): string => `${id.level}:${id.x}:${id.y}:${id.z}`;
 
 /** The keyed collection Resolve produces — the currency between Resolve and consumers. */
-export type Tileset = ReadonlyMap<string, Tile>;
+export type Tileset<T = Tile> = ReadonlyMap<string, T>;
 
 interface Entry<V> {
   v: V;
@@ -105,8 +105,18 @@ export class TileCache<V> implements MemoryReporting {
  * decoded-Tile cache. The one effectful step (ADR-0008 §2): its only effect is
  * `loader.getChunk`. Cache hits never re-fetch.
  */
-export async function resolve(selection: Selection, loader: Loader, cache?: TileCache<Tile>): Promise<Tileset> {
-  const out = new Map<string, Tile>();
+export function resolve(selection: Selection, loader: Loader, cache?: TileCache<Tile>): Promise<Tileset> {
+  return resolveWith(selection, loader, tileBytes, cache);
+}
+
+/** `resolve` for any payload type; `bytesOf` sizes an entry for the cache ceiling. */
+export async function resolveWith<T>(
+  selection: Selection,
+  loader: Loader<T>,
+  bytesOf: (t: T) => number,
+  cache?: TileCache<T>,
+): Promise<Tileset<T>> {
+  const out = new Map<string, T>();
   const pending = new Set<string>();
   await Promise.all(
     selection.chunks.map(async (sc) => {
@@ -119,7 +129,7 @@ export async function resolve(selection: Selection, loader: Loader, cache?: Tile
       }
       pending.add(key);
       const tile = await loader.getChunk(sc.id);
-      cache?.set(key, tile, tileBytes(tile));
+      cache?.set(key, tile, bytesOf(tile));
       out.set(key, tile);
     }),
   );
