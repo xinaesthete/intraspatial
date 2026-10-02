@@ -47,7 +47,32 @@ const MAX_CHROMA = 0.11;
 const BASE_L = 0.62;
 const SPAN_L = 0.3;
 
-/** Fragment shader constants: the OKLab→linear-sRGB matrices, matching `src/color/oklab.ts`. */
+/** The mode look, for any other renderer of the same map (the deck layer): same constants, same map. */
+export const MODE_LOOK = { baseL: BASE_L, spanL: SPAN_L, chroma: MAX_CHROMA } as const;
+
+/** OKLab → sRGB in WGSL, the matrices matching `src/color/oklab.ts`. */
+export const OKLAB_TO_SRGB_WGSL = /* wgsl */ `
+fn oklabToSrgb(lab: vec3f) -> vec3f {
+  let l_ = lab.x + 0.3963377774 * lab.y + 0.2158037573 * lab.z;
+  let m_ = lab.x - 0.1055613458 * lab.y - 0.0638541728 * lab.z;
+  let s_ = lab.x - 0.0894841775 * lab.y - 1.2914855480 * lab.z;
+  let l = l_ * l_ * l_;
+  let m = m_ * m_ * m_;
+  let s = s_ * s_ * s_;
+  let lin = vec3f(
+    4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s,
+   -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s,
+   -0.0041960863 * l - 0.7034186147 * m + 1.7076147010 * s);
+  // Linear -> sRGB, per channel, clamped. Out-of-gamut is clipped here rather than chroma-reduced:
+  // the host caps chroma to a conservative radius first (see MAX_CHROMA), so clipping is a
+  // backstop for the corners rather than the normal path.
+  let c = clamp(lin, vec3f(0.0), vec3f(1.0));
+  let lo = c * 12.92;
+  let hi = 1.055 * pow(c, vec3f(1.0 / 2.4)) - 0.055;
+  return select(hi, lo, c <= vec3f(0.0031308));
+}
+`;
+
 const PAINT_SHADER = /* wgsl */ `
 struct Uni {
   width: f32, height: f32, rowFloats: f32, K: f32,
@@ -76,26 +101,7 @@ ${MARKER_WGSL}
 ${IMAGE_OVERLAY_WGSL}
 ${SIMILARITY_WGSL}
 
-fn oklabToSrgb(lab: vec3f) -> vec3f {
-  let l_ = lab.x + 0.3963377774 * lab.y + 0.2158037573 * lab.z;
-  let m_ = lab.x - 0.1055613458 * lab.y - 0.0638541728 * lab.z;
-  let s_ = lab.x - 0.0894841775 * lab.y - 1.2914855480 * lab.z;
-  let l = l_ * l_ * l_;
-  let m = m_ * m_ * m_;
-  let s = s_ * s_ * s_;
-  let lin = vec3f(
-    4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s,
-   -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s,
-   -0.0041960863 * l - 0.7034186147 * m + 1.7076147010 * s);
-  // Linear -> sRGB, per channel, clamped. Out-of-gamut is clipped here rather than chroma-reduced:
-  // the host caps chroma to a conservative radius first (see MAX_CHROMA), so clipping is a
-  // backstop for the corners rather than the normal path.
-  let c = clamp(lin, vec3f(0.0), vec3f(1.0));
-  let lo = c * 12.92;
-  let hi = 1.055 * pow(c, vec3f(1.0 / 2.4)) - 0.055;
-  return select(hi, lo, c <= vec3f(0.0031308));
-}
-
+${OKLAB_TO_SRGB_WGSL}
 struct VOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
 
 @vertex
@@ -228,17 +234,24 @@ export interface ModePaintInfo {
   readonly sigmas: [number, number, number];
 }
 
+/** What a renderer of the mode map uploads, computed on the host from the result and the options. */
+export interface ModeParams extends ModePaintInfo {
+  /** 5 floats per channel: mean, 1/sd and the three mode loadings — `chan` in `similarityWgsl`. */
+  readonly chan: Float32Array<ArrayBuffer>;
+  /** K floats of wand reference z, then the m×K whitening matrix — `wand` in `similarityWgsl`. */
+  readonly wand: Float32Array<ArrayBuffer>;
+  /** How many modes the wand metric keeps. */
+  readonly m: number;
+}
+
 /**
- * Paint the leading three co-location modes to a canvas through OKLab.
- *
- * Reads `res.resident` in place — see its lifetime note; call this before the next
- * `gramMatrixGpu`. With fewer than three channels the missing modes are simply zero, which lands
- * on the neutral axis rather than inventing structure.
+ * The host half of the mode map: per-channel standardisation and loadings, per-mode scales, and the
+ * wand's whitening. Shared by `paintGramModes` and any other renderer (the deck layer), so the two
+ * cannot disagree about what a colour means.
  */
-export async function paintGramModes(canvas: HTMLCanvasElement, res: GramMatrixGpuResult, opts: ModePaintOptions): Promise<ModePaintInfo> {
-  const { device, pipeline, format } = await getCtx();
+export function modeParams(res: GramMatrixGpuResult, opts: Omit<ModePaintOptions, "marker" | "image" | "outputSize">): ModeParams {
   const K = res.labels.length;
-  const { mean, sd, buffer, rowFloats } = res.resident;
+  const { mean, sd } = res.resident;
   const saturate = opts.saturate ?? 2.5;
 
   // Interleaved per channel: mean, 1/sd, and the three mode loadings.
@@ -275,7 +288,7 @@ export async function paintGramModes(canvas: HTMLCanvasElement, res: GramMatrixG
   // whitening matrix. `sigmas` above is √λ for the leading three; the metric needs λ for however
   // many modes it keeps, so `whiteningMatrix` recomputes them from the same vᵀ·corr·v identity.
   const m = Math.max(1, Math.min(opts.modesUsed ?? 3, K, 32));
-  const wandData = new Float32Array(K + m * K);
+  const wand = new Float32Array(K + m * K);
   if (opts.reference) {
     const lambda = new Float64Array(K);
     for (let k = 0; k < K; k++) {
@@ -286,9 +299,25 @@ export async function paintGramModes(canvas: HTMLCanvasElement, res: GramMatrixG
       lambda[k] = Math.max(q, 0);
     }
     const A = whiteningMatrix(opts.vectors, lambda, K, m);
-    for (let a = 0; a < K; a++) wandData[a] = opts.reference[a] ?? 0;
-    for (let i = 0; i < m * K; i++) wandData[K + i] = A[i] ?? 0;
+    for (let a = 0; a < K; a++) wand[a] = opts.reference[a] ?? 0;
+    for (let i = 0; i < m * K; i++) wand[K + i] = A[i] ?? 0;
   }
+
+  return { chan, wand, m, scales, sigmas };
+}
+
+/**
+ * Paint the leading three co-location modes to a canvas through OKLab.
+ *
+ * Reads `res.resident` in place — see its lifetime note; call this before the next
+ * `gramMatrixGpu`. With fewer than three channels the missing modes are simply zero, which lands
+ * on the neutral axis rather than inventing structure.
+ */
+export async function paintGramModes(canvas: HTMLCanvasElement, res: GramMatrixGpuResult, opts: ModePaintOptions): Promise<ModePaintInfo> {
+  const { device, pipeline, format } = await getCtx();
+  const K = res.labels.length;
+  const { buffer, rowFloats } = res.resident;
+  const { chan, wand: wandData, m, scales, sigmas } = modeParams(res, opts);
 
   let ctx = surfaces.get(canvas);
   if (!ctx) {

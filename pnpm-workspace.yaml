@@ -11,6 +11,7 @@ packages:
 #   sharp  — docs-site (Astro) image processing
 #   esbuild — vite/vitest bundler platform binary
 allowBuilds:
+  '@vaadin/vaadin-usage-statistics': false
   esbuild: true
   sharp: true
   webgpu: true

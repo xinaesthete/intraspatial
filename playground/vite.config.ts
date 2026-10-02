@@ -1,5 +1,6 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { createRequire } from "node:module";
+import path from "node:path";
 import { fileURLToPath } from "node:url";
 import react from "@vitejs/plugin-react";
 import typegpu from "unplugin-typegpu/vite";
@@ -32,6 +33,91 @@ function emitOpenJphWasm(): Plugin {
     },
   };
 }
+
+/**
+ * A local SpatialData.js checkout linked in by `pnpm link:spatialdata` (scripts/link-spatialdata.mjs),
+ * detected from where `node_modules/@spatialdata/core` really points. Null for a registry install,
+ * which none of the settings below touch. The mechanics are MDV's, each learned from a failure:
+ *
+ * - Aliases, one per `exports` subpath and then the bare name, as regexes ending at `$` or `?`. A
+ *   string alias misses `@spatialdata/core/parquet-worker?worker&url` (the query is part of the id)
+ *   and falls through to the bare one, which resolves to a file that is not there.
+ * - `fs.allow` for the checkout: core's wasm and zarrextra's codec worker live outside this repo.
+ * - `dedupe` for whatever crosses the boundary: the checkout resolves its bare imports from ITS
+ *   node_modules, so without it there are two Reacts (invalid hook call), two deck cores (a layer
+ *   we write would not be the deck its parent knows), two luma devices and two zarritas.
+ * - The linked packages are kept out of prebundling, so an upstream rebuild is not masked by a
+ *   stale `.vite/deps` copy.
+ */
+const here = path.dirname(fileURLToPath(import.meta.url));
+const LINKABLE: ReadonlyArray<readonly [string, string]> = [
+  ["@spatialdata/core", "packages/core"],
+  ["@spatialdata/layers", "packages/layers"],
+  ["@spatialdata/react", "packages/react"],
+  ["@spatialdata/vis", "packages/vis"],
+  ["zarrextra", "packages/zarrextra"],
+];
+function linkedSpatialData(): { root: string; names: string[]; alias: { find: RegExp; replacement: string }[] } | null {
+  let root: string;
+  try {
+    const real = realpathSync(path.join(here, "node_modules/@spatialdata/core"));
+    if (!path.relative(path.resolve(here, ".."), real).startsWith("..")) return null; // installed inside this repo
+    root = path.resolve(real, "../..");
+  } catch {
+    return null;
+  }
+  const esc = (v: string) => v.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const alias: { find: RegExp; replacement: string }[] = [];
+  const names: string[] = [];
+  for (const [name, rel] of LINKABLE) {
+    const pkgRoot = path.join(root, rel);
+    const manifest = path.join(pkgRoot, "package.json");
+    if (!existsSync(manifest)) continue;
+    names.push(name);
+    const exportsMap: unknown = JSON.parse(readFileSync(manifest, "utf8")).exports;
+    for (const [key, entry] of Object.entries(typeof exportsMap === "object" && exportsMap ? exportsMap : {})) {
+      if (!key.startsWith("./") || key.includes("*")) continue;
+      const target = exportTarget(entry);
+      if (target)
+        alias.push({
+          find: new RegExp(`^${esc(`${name}/${key.slice(2)}`)}(?=$|\\?)`),
+          replacement: path.join(pkgRoot, target).replace(/\$/g, "$$$$"),
+        });
+    }
+    alias.push({ find: new RegExp(`^${esc(name)}(?=$|/|\\?)`), replacement: pkgRoot.replace(/\$/g, "$$$$") });
+  }
+  return { root, names, alias };
+}
+function exportTarget(entry: unknown): string | undefined {
+  if (typeof entry === "string") return entry;
+  if (!entry || typeof entry !== "object") return undefined;
+  const e = entry as Record<string, unknown>;
+  return exportTarget(e.import ?? e.default ?? e.browser);
+}
+const linked = linkedSpatialData();
+/** Packages imported from both sides of a linked checkout — one copy each, ours. */
+const LINKED_DEDUPE = [
+  "react",
+  "react-dom",
+  "deck.gl",
+  "@deck.gl/core",
+  "@deck.gl/layers",
+  "@deck.gl/extensions",
+  "@deck.gl/geo-layers",
+  "@deck.gl/mesh-layers",
+  "@deck.gl/react",
+  "@luma.gl/core",
+  "@luma.gl/engine",
+  "@luma.gl/shadertools",
+  "@luma.gl/webgl",
+  "@luma.gl/webgpu",
+  "@luma.gl/constants",
+  "@math.gl/core",
+  "@hms-dbmi/viv",
+  "@vivjs/views",
+  "@vivjs/constants",
+  "zarrita",
+];
 
 // The composer imports the toolbox's own runtime + ops from ../src. Those modules
 // pull in src/gpu/device.ts, which statically imports the Node-only `webgpu` (Dawn)
@@ -80,18 +166,20 @@ export default defineConfig({
   // dist-relative dynamic import.
   // NB MDV also excludes `zod`, because MDV is on Zod 3 while core wants Zod 4. That does not apply
   // here: `pnpm why zod` reports one version (4.x) across the workspace.
-  optimizeDeps: { exclude: ["zarrextra", "zarrextra/workers", "openjph-wasm"] },
+  optimizeDeps: { exclude: ["zarrextra", "zarrextra/workers", "openjph-wasm", ...(linked?.names ?? [])] },
   resolve: {
-    alias: {
-      webgpu: fileURLToPath(new URL("./src/webgpu-stub.ts", import.meta.url)),
-    },
+    // Array form: the linked-checkout entries are regexes, which an object map cannot key on.
+    alias: [
+      { find: /^webgpu(?=$|\/)/, replacement: fileURLToPath(new URL("./src/webgpu-stub.ts", import.meta.url)) },
+      ...(linked?.alias ?? []),
+    ],
     // The composer's own imports and the ../src imports must share ONE TypeGPU
     // instance, or its internal registries (and `instanceof` checks) break.
-    dedupe: ["typegpu"],
+    dedupe: ["typegpu", ...(linked ? LINKED_DEDUPE : [])],
   },
   server: {
     port: Number(process.env.PORT) || 5173,
-    fs: { allow: [".."] }, // allow importing ../src/...
+    fs: { allow: ["..", ...(linked ? [linked.root] : [])] }, // ../src, and a linked sd.js checkout
   },
   build: {
     rollupOptions: {
@@ -108,6 +196,7 @@ export default defineConfig({
         cellstats: fileURLToPath(new URL("./cellstats.html", import.meta.url)),
         cellmodes: fileURLToPath(new URL("./cellmodes.html", import.meta.url)),
         transcriptmodes: fileURLToPath(new URL("./transcriptmodes.html", import.meta.url)),
+        deckmodes: fileURLToPath(new URL("./deckmodes.html", import.meta.url)),
         r3fspike: fileURLToPath(new URL("./r3fspike.html", import.meta.url)),
         umap: fileURLToPath(new URL("./umap.html", import.meta.url)),
       },
