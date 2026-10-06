@@ -133,27 +133,28 @@ export function expandRect(r: Rect, margin: number): Rect {
 }
 
 /**
- * `want` made into a window the analysis can afford: cut to `extent`, then, if its area is over
- * `maxArea`, shrunk about its own centre to that area at the same aspect ratio. Pure.
+ * `want` made into a window the analysis can afford: cut to `extent`, then shrunk about its own
+ * centre, at the same aspect ratio, until its area is at most `maxArea` and its longer side at most
+ * `maxSide`. Pure.
  *
  * What a viewport-driven window needs: zoomed out, the view covers more tissue than one Gram
  * should — the points loaded and the raster both grow with area — so the window becomes the
- * middle of the view rather than all of it. `undefined` when the view misses the extent.
+ * middle of the view rather than all of it. `maxSide` is the resolution limit: a raster can only
+ * be so many pixels across (see `maxWindowSide`). `undefined` when the view misses the extent.
  */
-export function clampWindow(want: Rect, extent: Rect, maxArea: number): Rect | undefined {
+export function clampWindow(want: Rect, extent: Rect, maxArea: number, maxSide = Number.POSITIVE_INFINITY): Rect | undefined {
   const minX = Math.max(want.minX, extent.minX);
   const minY = Math.max(want.minY, extent.minY);
   const maxX = Math.min(want.maxX, extent.maxX);
   const maxY = Math.min(want.maxY, extent.maxY);
   if (!(maxX > minX && maxY > minY)) return undefined;
-  const area = (maxX - minX) * (maxY - minY);
-  if (area <= maxArea) return { minX, minY, maxX, maxY };
-  const k = Math.sqrt(maxArea / area);
-  const hw = ((maxX - minX) * k) / 2;
-  const hh = ((maxY - minY) * k) / 2;
+  const w = maxX - minX;
+  const h = maxY - minY;
+  const k = Math.min(1, Math.sqrt(maxArea / (w * h)), maxSide / Math.max(w, h));
+  if (k >= 1) return { minX, minY, maxX, maxY };
   const cx = (minX + maxX) / 2;
   const cy = (minY + maxY) / 2;
-  return { minX: cx - hw, minY: cy - hh, maxX: cx + hw, maxY: cy + hh };
+  return { minX: cx - (w * k) / 2, minY: cy - (h * k) / 2, maxX: cx + (w * k) / 2, maxY: cy + (h * k) / 2 };
 }
 
 export interface SelectPointsOptions {

@@ -3,7 +3,7 @@
 //
 // The view is sd.js's own (its image layer, its pan and zoom); the modes are a deck layer drawn from
 // the Gram's rasters on the GPU device deck and this library share. Once the view rests, the visible
-// rectangle — in the transcripts' frame, capped in area — is the window the statistics are computed
+// rectangle — in the transcripts' frame, capped in size — is the window the statistics are computed
 // over, unless the window is pinned.
 
 import { PathLayer } from "@deck.gl/layers";
@@ -11,7 +11,7 @@ import { Matrix4 } from "@math.gl/core";
 import { useCallback, useMemo, useState } from "react";
 import { clampWindow, type Rect } from "../../../src/datasource/points";
 import { type ModeBasis, modeBasis } from "../../../src/gpu/spatial/gramModes";
-import type { CoLocationModes } from "../../../src/spatial/gram";
+import { type CoLocationModes, maxWindowSide } from "../../../src/spatial/gram";
 import { invert2, rectThrough2 } from "../../../src/spatial/ngffTransform";
 import { listImageElements } from "../datasource/imageContext";
 import { listPointsElements } from "../datasource/pointsTileLoader";
@@ -30,18 +30,18 @@ import { useTranscriptGram } from "./useTranscriptGram";
 const DEFAULT_STORE = "http://localhost:8080/xenium_2.q0.001.htj2k.index-permutations.zarr/";
 const DEFAULT_SELECTION: Selection = { sets: [...STARTER_SETS.map((s) => s.name), NEGATIVE_CONTROLS], genes: [] };
 /** How long the view must rest before the window moves to it. */
-const SETTLE_MS = 300;
+const SETTLE_MS = 50;
 /** `imageName` for "no image". `undefined` means "pick one". */
 const NO_IMAGE = "";
 
-/** Modes fixed from one window, to paint every later window with. Valid only for rasters made the
- *  same way: same channels, radius and quality filter. */
+/** Modes fixed from one window, to paint every later window with. Each raster is a density
+ *  (molecules per µm², the kernel having unit mass), so the lock stays meaningful when the radius or
+ *  quality filter changes — those change how smooth or how full the maps are, not their units. Only
+ *  other channels break it. */
 interface ModeLock {
   readonly basis: ModeBasis;
   readonly modes: CoLocationModes;
   readonly window: Rect;
-  readonly radius: number;
-  readonly qvMin: number;
 }
 
 const sameLabels = (a: readonly string[], b: readonly string[]) => a.length === b.length && a.every((l, i) => l === b[i]);
@@ -98,14 +98,21 @@ export function TranscriptModes() {
   const fallbackBounds = useMemo(() => (affine && extent ? rectThrough2(affine, extent) : undefined), [affine, extent]);
 
   // The view, once it rests, in the transcripts' frame and capped: the window — or the pinned one.
+  // Capped twice: in area (what one Gram should cost) and, with an automatic map size, in length
+  // (how far a raster can stretch before its pixels outgrow the kernel and molecules drop out).
   const [viewport, setViewport] = useState<Rect>();
   const settled = useSettled(viewport, SETTLE_MS);
   const maxArea = maxAreaMm2 * 1e6;
+  const maxSide = rasterSide > 0 ? Number.POSITIVE_INFINITY : maxWindowSide(radius);
   const inView = useMemo(
-    () => (settled && extent && toElement ? clampWindow(rectThrough2(toElement, settled), extent, maxArea) : undefined),
-    [settled, extent, toElement, maxArea],
+    () => (settled && extent && toElement ? clampWindow(rectThrough2(toElement, settled), extent, maxArea, maxSide) : undefined),
+    [settled, extent, toElement, maxArea, maxSide],
   );
-  const window = follow ? inView : (pinned ?? inView);
+  const kept = useMemo(
+    () => (pinned && extent ? clampWindow(pinned, extent, Number.POSITIVE_INFINITY, maxSide) : undefined),
+    [pinned, extent, maxSide],
+  );
+  const window = follow ? inView : (kept ?? inView);
   const togglePin = useCallback(
     (on: boolean) => {
       setFollow(on);
@@ -124,12 +131,11 @@ export function TranscriptModes() {
   const gram = useTranscriptGram(tiles.value, channels, { radius, qvMin, rasterSide });
   const g = gram.value;
 
-  // A lock applies only while the rasters are made the same way; otherwise this window's own modes.
-  const locked =
-    lock && g && sameLabels(lock.basis.labels, g.modes.labels) && lock.radius === radius && lock.qvMin === qvMin ? lock : undefined;
+  // A lock applies while the channels are the ones it was taken with; otherwise this window's own
+  // modes. The checkbox shows whether it applies, not merely whether one is held.
+  const locked = lock && g && sameLabels(lock.basis.labels, g.modes.labels) ? lock : undefined;
   const modes = locked?.modes ?? g?.modes;
-  const toggleLock = (on: boolean) =>
-    setLock(on && g ? { basis: modeBasis(g.res), modes: g.modes, window: g.window, radius, qvMin } : undefined);
+  const toggleLock = (on: boolean) => setLock(on && g ? { basis: modeBasis(g.res), modes: g.modes, window: g.window } : undefined);
 
   const layers = useMemo(
     () =>
@@ -180,7 +186,16 @@ export function TranscriptModes() {
   const error = sd.error ?? source.error ?? tiles.error ?? gram.error;
   const busy = tiles.progress ? `loading tiles ${tiles.progress.done}/${tiles.progress.total}…` : gram.loading ? "computing…" : "";
   // Shrunk only when over the cap, so reaching the cap means the view was larger.
-  const capped = !!inView && (inView.maxX - inView.minX) * (inView.maxY - inView.minY) >= maxArea * (1 - 1e-9);
+  // Why the window is smaller than the view, if it is: shrunk only to meet a cap, so meeting one says which.
+  const shrunk = !inView
+    ? ""
+    : Math.max(inView.maxX - inView.minX, inView.maxY - inView.minY) >= maxSide * (1 - 1e-9)
+      ? ` (the middle of the view: at r = ${radius} µm*, a map ${Math.round(maxSide)} µm* across is as large as keeps every molecule)`
+      : (inView.maxX - inView.minX) * (inView.maxY - inView.minY) >= maxArea * (1 - 1e-9)
+        ? " (the middle of the view: it is over the largest window)"
+        : "";
+  // A fixed map size can make pixels wider than the kernel, and then molecules between pixel centres are lost.
+  const coarse = g && rasterSide > 0 ? (g.window.maxX - g.window.minX) / g.raster.width > radius : false;
 
   return (
     <div className="page">
@@ -221,7 +236,7 @@ export function TranscriptModes() {
           </label>
           <label>
             Neighbourhood radius r: {radius} µm*
-            <input type="range" min={10} max={300} step={5} value={radius} onChange={(e) => setRadius(Number(e.target.value))} />
+            <input type="range" min={1} max={100} step={1} value={radius} onChange={(e) => setRadius(Number(e.target.value))} />
           </label>
           <label>
             Map resolution (long side, 0 = from r)
@@ -243,7 +258,7 @@ export function TranscriptModes() {
             Follow the view (off: keep the current window)
           </label>
           <label className="check">
-            <input type="checkbox" checked={!!lock} disabled={!g && !lock} onChange={(e) => toggleLock(e.target.checked)} />
+            <input type="checkbox" checked={!!locked} disabled={!g} onChange={(e) => toggleLock(e.target.checked)} />
             Lock the modes (off: recompute them for each window)
           </label>
           <label>
@@ -300,20 +315,26 @@ export function TranscriptModes() {
             {error ? <span className="error">{error.message}</span> : busy}
             {!error && !busy && g && (
               <>
-                window {span(g.window)} µm*{follow ? (capped ? " (the middle of the view: it is over the largest window)" : "") : " (kept)"}{" "}
-                · {g.modes.labels.length} channels · {g.stats.perChannel.reduce((s, n) => s + n, 0).toLocaleString()} molecules in them ·{" "}
-                {g.stats.belowMinimum.toLocaleString()} below qv {qvMin} · map {g.raster.width}×{g.raster.height} ·{" "}
-                {tiles.value?.fetched ?? 0} tiles fetched, {(tiles.value?.tiles.length ?? 0) - (tiles.value?.fetched ?? 0)} from cache ·
-                channels {g.ms.channels.toFixed(0)} ms · Gram {g.ms.gram.toFixed(0)} ms
+                window {span(g.window)} µm*{follow ? shrunk : " (kept)"} · {g.modes.labels.length} channels ·{" "}
+                {g.stats.perChannel.reduce((s, n) => s + n, 0).toLocaleString()} molecules in them · {g.stats.belowMinimum.toLocaleString()}{" "}
+                below qv {qvMin} · map {g.raster.width}×{g.raster.height} · {tiles.value?.fetched ?? 0} tiles fetched,{" "}
+                {(tiles.value?.tiles.length ?? 0) - (tiles.value?.fetched ?? 0)} from cache · channels {g.ms.channels.toFixed(0)} ms · Gram{" "}
+                {g.ms.gram.toFixed(0)} ms
               </>
             )}
           </p>
           <p className="hint">GPU: {device.status}</p>
+          {coarse && (
+            <p className="hint error">
+              The map's pixels are wider than r, so molecules falling between pixel centres are left out. Raise the map resolution, set it
+              to 0, or raise r.
+            </p>
+          )}
           {g && (
             <>
               {lock && !locked && (
                 <p className="hint">
-                  The locked modes were for other channels, radius or quality filter, so these are this window's own.{" "}
+                  The locked modes were for other channels, so these are this window's own.{" "}
                   <button type="button" onClick={() => toggleLock(true)}>
                     lock these instead
                   </button>
@@ -359,13 +380,15 @@ export function TranscriptModes() {
               Normally each window gets its own modes, and each place is compared with the rest of its window: the same colour in two
               windows can mean different mixtures, and the strongest contrast in a window always gets the strongest colours. Locked, every
               window is measured against the window where you locked — same averages, same modes, same scale — so a colour means the same
-              mixture wherever you look, and a window with little going on looks muted. The lock holds only while the channels, radius and
-              quality filter stay as they were.
+              mixture wherever you look, and a window with little going on looks muted. Each map counts molecules per µm², so the lock also
+              holds when you change the radius or the quality filter: a larger radius smooths the map, and its colours calm down, but a
+              colour still means the same mixture. It lapses only if the channels change.
             </Explain>
             <Explain title="Why does the radius set the resolution?">
               r is the neighbourhood each molecule is smoothed over. Anything smaller than r is blurred away, so the map is computed at
               about three pixels per radius — a finer grid would cost more without showing more. A large r shows tissue-scale structure; a
-              small r gets closer to single cells, at more cost.
+              small r gets closer to single cells, at more cost — and because a map can only be so many pixels across, a small r also
+              shrinks the window, down to about 680 µm* across at r = 1.
             </Explain>
             <Explain title="Which part of the slide is analysed?">
               The part in view, once you stop moving: the white outline marks it. Zoomed far out, the view would cover more tissue than is

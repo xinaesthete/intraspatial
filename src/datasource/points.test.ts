@@ -173,6 +173,10 @@ describe("clampWindow", () => {
     const w = clampWindow({ minX: 0, minY: 0, maxX: 80, maxY: 20 }, extent, 400);
     expect(w).toEqual({ minX: 20, minY: 5, maxX: 60, maxY: 15 }); // 40×10 = 400, centred on (40, 10)
   });
+  it("shrinks to the longest side when that is the tighter limit", () => {
+    const w = clampWindow({ minX: 0, minY: 0, maxX: 80, maxY: 20 }, extent, 1e9, 40);
+    expect(w).toEqual({ minX: 20, minY: 5, maxX: 60, maxY: 15 }); // 40 long, aspect kept, centred on (40, 10)
+  });
   it("is undefined when the view misses the extent", () => {
     expect(clampWindow({ minX: 200, minY: 0, maxX: 300, maxY: 50 }, extent, 1e9)).toBeUndefined();
   });

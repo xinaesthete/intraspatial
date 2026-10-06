@@ -2,11 +2,17 @@
 //
 // `gramMatrixGpu` leaves its rasters in ONE pooled device buffer that the next call overwrites. A
 // deck layer redraws every frame, whenever deck likes, including while the next compute is writing,
-// so it cannot read that buffer. Each result therefore carries `rasters`, a GPU-side copy taken
-// inside the GPU queue, in one of two buffers used in turn. A result's copy stays intact until the
-// result after next — by then the layer has long moved on.
+// so it cannot read that buffer. Each result therefore carries `rasters`, its own GPU-side copy,
+// taken inside the GPU queue.
+//
+// Those copies are pooled, and a copy is reused only when no one can be drawing it: when its result
+// is older than both the one on screen and the one before it (deck may still be drawing that for a
+// frame). Results still in flight, or finished but not yet on screen, are never reused. Counting
+// "the result before" only by order breaks: `useAsync` drops results whose inputs changed while they
+// ran, but their GPU work has happened, so while a slider moves, superseded results can come and
+// go in between the one on screen and its successor.
 
-import { useRef } from "react";
+import { useEffect, useRef } from "react";
 import type { Rect } from "../../../src/datasource/points";
 import { getDevice } from "../../../src/gpu/device";
 import { type GramMatrixGpuResult, gramMatrixGpu } from "../../../src/gpu/spatial/gramMatrix";
@@ -25,26 +31,41 @@ function onGpu<T>(task: () => Promise<T>): Promise<T> {
   return run;
 }
 
-const copies: (GPUBuffer | undefined)[] = [undefined, undefined];
+interface Snapshot {
+  readonly buffer: GPUBuffer;
+  /** The generation whose rasters it holds. */
+  gen: number;
+}
 
-/** Copy `res`'s rasters into the next of the two snapshot buffers, on the GPU. Call inside `onGpu`. */
-async function snapshot(res: GramMatrixGpuResult, slot: number): Promise<GPUBuffer> {
+/**
+ * Copy `res`'s rasters into a pooled buffer no one can be drawing — see the note at the top. `shown`
+ * holds the generations on screen now and just before. Call inside `onGpu`.
+ */
+async function snapshot(pool: Snapshot[], shown: readonly number[], res: GramMatrixGpuResult, gen: number): Promise<GPUBuffer> {
   const device = await getDevice();
   const bytes = res.labels.length * res.height * res.resident.rowFloats * 4;
-  let buf = copies[slot];
-  if (!buf || buf.size < bytes) {
-    // Not destroyed: a layer may still bind it. Dropped, it is collected once nothing holds it.
-    buf = device.createBuffer({
-      size: Math.max(bytes, 4),
-      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
-      label: `gram snapshot ${slot}`,
-    });
-    copies[slot] = buf;
+  const newest = shown.length ? Math.max(...shown) : Number.NEGATIVE_INFINITY;
+  const free = (s: Snapshot) => s.gen < newest && !shown.includes(s.gen);
+  let slot = pool.find((s) => free(s) && s.buffer.size >= bytes);
+  if (!slot) {
+    // A free buffer too small for this result is replaced. Free means undrawn, so destroying is safe.
+    const small = pool.findIndex(free);
+    if (small >= 0) pool.splice(small, 1)[0]?.buffer.destroy();
+    slot = {
+      buffer: device.createBuffer({
+        size: Math.max(bytes, 4),
+        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+        label: "gram snapshot",
+      }),
+      gen,
+    };
+    pool.push(slot);
   }
+  slot.gen = gen;
   const enc = device.createCommandEncoder();
-  enc.copyBufferToBuffer(res.resident.buffer, 0, buf, 0, bytes);
+  enc.copyBufferToBuffer(res.resident.buffer, 0, slot.buffer, 0, bytes);
   device.queue.submit([enc.finish()]);
-  return buf;
+  return slot.buffer;
 }
 
 export interface GramParamsUi {
@@ -58,7 +79,7 @@ export interface GramParamsUi {
 export interface TranscriptGram {
   readonly generation: number;
   readonly res: GramMatrixGpuResult;
-  /** This result's rasters, laid out as `res.resident`, safe to draw from until the result after next. */
+  /** This result's rasters, laid out as `res.resident`, kept intact while it or its successor is on screen. */
   readonly rasters: GPUBuffer;
   readonly modes: CoLocationModes;
   readonly stats: TranscriptChannels["stats"];
@@ -77,24 +98,32 @@ function fixedRaster(bbox: readonly [number, number, number, number], side: numb
 
 export function useTranscriptGram(tiles: WindowTiles | undefined, channels: readonly WeightedChannel[], p: GramParamsUi) {
   const prevModes = useRef<CoLocationModes | null>(null);
-  return useAsync<TranscriptGram>(
+  const pool = useRef<Snapshot[]>([]);
+  /** Generations on screen: the one before, and the current one. */
+  const shown = useRef<number[]>([]);
+  const state = useAsync<TranscriptGram>(
     (signal) => {
       if (!tiles || channels.length === 0) return undefined;
-      return onGpu(async () => {
+      const superseded = () => {
         if (signal.aborted) throw new Error("superseded");
+      };
+      return onGpu(async () => {
+        superseded();
         const t0 = performance.now();
         const ch = transcriptChannels(tiles.tiles, channels, {
           window: tiles.window,
           apron: p.radius,
           ...(p.qvMin > 0 ? { minimum: { column: "qv", value: p.qvMin } } : {}),
         });
+        superseded(); // the channels take a while; a moving slider has usually moved on by now
         const t1 = performance.now();
         const raster = p.rasterSide > 0 ? fixedRaster(ch.bbox, p.rasterSide) : rasterSizeForRadius(ch.bbox, p.radius);
         const res = await gramMatrixGpu(ch.clouds, { bbox: ch.bbox, width: raster.width, height: raster.height, radius: p.radius });
+        superseded(); // nothing to copy or align for a result no one will see
         const modes = alignModeSigns(coLocationModes(res), prevModes.current);
         prevModes.current = modes;
         const gen = ++generation;
-        const rasters = await snapshot(res, gen % 2);
+        const rasters = await snapshot(pool.current, shown.current, res, gen);
         return {
           generation: gen,
           res,
@@ -109,4 +138,9 @@ export function useTranscriptGram(tiles: WindowTiles | undefined, channels: read
     },
     [tiles, channels, p.radius, p.qvMin, p.rasterSide],
   );
+  const gen = state.value?.generation;
+  useEffect(() => {
+    if (gen !== undefined) shown.current = [...shown.current.slice(-1), gen];
+  }, [gen]);
+  return state;
 }

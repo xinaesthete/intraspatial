@@ -182,6 +182,10 @@ function storage(layer: GramModesLayer, current: Buffer | undefined, data: Float
   return layer.context.device.createBuffer({ data, usage: Buffer.STORAGE | Buffer.COPY_DST });
 }
 
+// we'd like to have some better visual feedback of loading progress etc.
+// could this subclass our points layer (which has sublayers for 'debug' tile loading status etc)
+// but with the actual point rendering replaced with our gram stuff (which is currently very much outside of this)
+// Conceptually, want to be modelling as "points layer, but rendering the tiles means this gpu graph"
 export class GramModesLayer extends Layer<GramModesLayerProps> {
   static override layerName = "GramModesLayer";
   static override defaultProps = defaultProps;
@@ -247,7 +251,9 @@ export class GramModesLayer extends Layer<GramModesLayerProps> {
     if (!model || !res || !rasters || !params) return;
     const handle = rasters;
     if (this.state.handle !== handle) {
-      // The snapshots alternate between two buffers, so the handle changes with every result.
+      // Every result has its own pooled snapshot, so the handle changes with each one. The pool
+      // never rewrites a snapshot while its result, or the one after it, is on screen — so however
+      // fast the inputs change, this buffer holds `res`'s rasters (see useTranscriptGram).
       // Assigned, not setState: draw() must not schedule another update.
       this.state.rasters?.destroy();
       this.state.rasters = this.context.device.createBuffer({ handle, byteLength: handle.size, usage: Buffer.STORAGE });
