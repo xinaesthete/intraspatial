@@ -215,6 +215,15 @@ export function maxWindowSide(radius: number): number {
   return (RASTER_MAX_SIDE * radius) / RASTER_PX_PER_RADIUS;
 }
 
+/**
+ * The smallest radius at which a default raster covers a window `longSide` across at full
+ * resolution — `maxWindowSide`'s inverse. A view wider than `maxWindowSide(r)` can still be analysed
+ * whole at `max(r, radiusToCover(longSide))`: a coarser neighbourhood, but every molecule counted.
+ */
+export function radiusToCover(longSide: number): number {
+  return (longSide * RASTER_PX_PER_RADIUS) / RASTER_MAX_SIDE;
+}
+
 export function effectiveRadius(p: GramParams): number {
   return 2 * p.radius;
 }

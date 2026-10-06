@@ -84,6 +84,8 @@ export interface TranscriptGram {
   readonly modes: CoLocationModes;
   readonly stats: TranscriptChannels["stats"];
   readonly window: Rect;
+  /** The neighbourhood radius this result was computed at — the caller's, which may differ from the UI's. */
+  readonly radius: number;
   readonly raster: { readonly width: number; readonly height: number; readonly clamped: boolean };
   readonly ms: { readonly channels: number; readonly gram: number };
 }
@@ -131,6 +133,7 @@ export function useTranscriptGram(tiles: WindowTiles | undefined, channels: read
           modes,
           stats: ch.stats,
           window: tiles.window,
+          radius: p.radius,
           raster,
           ms: { channels: t1 - t0, gram: performance.now() - t1 },
         };

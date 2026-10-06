@@ -3,15 +3,17 @@
 //
 // The view is sd.js's own (its image layer, its pan and zoom); the modes are a deck layer drawn from
 // the Gram's rasters on the GPU device deck and this library share. Once the view rests, the visible
-// rectangle — in the transcripts' frame, capped in size — is the window the statistics are computed
-// over, unless the window is pinned.
+// rectangle — in the transcripts' frame, cut to where there are transcripts — is the window the
+// statistics are computed over, unless the window is pinned. A map can only be so many pixels across,
+// so zoomed out the neighbourhood radius is raised until the map covers the whole window, and the
+// page says so.
 
 import { PathLayer } from "@deck.gl/layers";
 import { Matrix4 } from "@math.gl/core";
 import { useCallback, useMemo, useState } from "react";
 import { clampWindow, type Rect } from "../../../src/datasource/points";
 import { type ModeBasis, modeBasis } from "../../../src/gpu/spatial/gramModes";
-import { type CoLocationModes, maxWindowSide } from "../../../src/spatial/gram";
+import { type CoLocationModes, radiusToCover } from "../../../src/spatial/gram";
 import { invert2, rectThrough2 } from "../../../src/spatial/ngffTransform";
 import { listImageElements } from "../datasource/imageContext";
 import { listPointsElements } from "../datasource/pointsTileLoader";
@@ -63,7 +65,6 @@ export function TranscriptModes() {
   const [radius, setRadius] = useState(50);
   const [qvMin, setQvMin] = useState(20);
   const [rasterSide, setRasterSide] = useState(0);
-  const [maxAreaMm2, setMaxAreaMm2] = useState(8);
   const [follow, setFollow] = useState(true);
   const [pinned, setPinned] = useState<Rect>();
   const [selection, setSelection] = useState(DEFAULT_SELECTION);
@@ -97,22 +98,22 @@ export function TranscriptModes() {
   const extent = source.value?.grid.bounds;
   const fallbackBounds = useMemo(() => (affine && extent ? rectThrough2(affine, extent) : undefined), [affine, extent]);
 
-  // The view, once it rests, in the transcripts' frame and capped: the window — or the pinned one.
-  // Capped twice: in area (what one Gram should cost) and, with an automatic map size, in length
-  // (how far a raster can stretch before its pixels outgrow the kernel and molecules drop out).
+  // The view, once it rests, in the transcripts' frame and cut to their extent: the window — or the
+  // pinned one.
   const [viewport, setViewport] = useState<Rect>();
   const settled = useSettled(viewport, SETTLE_MS);
-  const maxArea = maxAreaMm2 * 1e6;
-  const maxSide = rasterSide > 0 ? Number.POSITIVE_INFINITY : maxWindowSide(radius);
   const inView = useMemo(
-    () => (settled && extent && toElement ? clampWindow(rectThrough2(toElement, settled), extent, maxArea, maxSide) : undefined),
-    [settled, extent, toElement, maxArea, maxSide],
+    () => (settled && extent && toElement ? clampWindow(rectThrough2(toElement, settled), extent, Number.POSITIVE_INFINITY) : undefined),
+    [settled, extent, toElement],
   );
-  const kept = useMemo(
-    () => (pinned && extent ? clampWindow(pinned, extent, Number.POSITIVE_INFINITY, maxSide) : undefined),
-    [pinned, extent, maxSide],
-  );
-  const window = follow ? inView : (kept ?? inView);
+  const window = follow ? inView : (pinned ?? inView);
+  // The radius the window is analysed at. With an automatic map size, the map's pixels must stay a
+  // third of the radius or finer, or molecules between pixel centres drop out; a map can only be so
+  // many pixels across, so a wide window raises the radius until the map covers it (rounded up, so
+  // the raster is never clamped). With a fixed map size the radius is the one chosen, and `coarse`
+  // below warns if its pixels outgrow it.
+  const longSide = window ? Math.max(window.maxX - window.minX, window.maxY - window.minY) : 0;
+  const rEff = rasterSide > 0 ? radius : Math.max(radius, Math.ceil(radiusToCover(longSide) * 10) / 10);
   const togglePin = useCallback(
     (on: boolean) => {
       setFollow(on);
@@ -121,14 +122,14 @@ export function TranscriptModes() {
     [window],
   );
 
-  const tiles = usePointsTiles(source.value, window, radius);
+  const tiles = usePointsTiles(source.value, window, rEff);
   const built = useMemo(
     () => (source.value ? buildChannels(selection, source.value.features) : { channels: [], missing: {} }),
     [selection, source.value],
   );
   // No compute until deck's device is ours: resources made on another device could not be drawn.
   const channels = device.ready ? built.channels : [];
-  const gram = useTranscriptGram(tiles.value, channels, { radius, qvMin, rasterSide });
+  const gram = useTranscriptGram(tiles.value, channels, { radius: rEff, qvMin, rasterSide });
   const g = gram.value;
 
   // A lock applies while the channels are the ones it was taken with; otherwise this window's own
@@ -185,17 +186,10 @@ export function TranscriptModes() {
 
   const error = sd.error ?? source.error ?? tiles.error ?? gram.error;
   const busy = tiles.progress ? `loading tiles ${tiles.progress.done}/${tiles.progress.total}…` : gram.loading ? "computing…" : "";
-  // Shrunk only when over the cap, so reaching the cap means the view was larger.
-  // Why the window is smaller than the view, if it is: shrunk only to meet a cap, so meeting one says which.
-  const shrunk = !inView
-    ? ""
-    : Math.max(inView.maxX - inView.minX, inView.maxY - inView.minY) >= maxSide * (1 - 1e-9)
-      ? ` (the middle of the view: at r = ${radius} µm*, a map ${Math.round(maxSide)} µm* across is as large as keeps every molecule)`
-      : (inView.maxX - inView.minX) * (inView.maxY - inView.minY) >= maxArea * (1 - 1e-9)
-        ? " (the middle of the view: it is over the largest window)"
-        : "";
+  // The radius on screen, when the window forced it above the one chosen.
+  const raised = g && g.radius > radius ? g.radius : undefined;
   // A fixed map size can make pixels wider than the kernel, and then molecules between pixel centres are lost.
-  const coarse = g && rasterSide > 0 ? (g.window.maxX - g.window.minX) / g.raster.width > radius : false;
+  const coarse = g && rasterSide > 0 ? (g.window.maxX - g.window.minX) / g.raster.width > g.radius : false;
 
   return (
     <div className="page">
@@ -235,7 +229,15 @@ export function TranscriptModes() {
             </select>
           </label>
           <label>
-            Neighbourhood radius r: {radius} µm*
+            <span>
+              Neighbourhood radius r: {radius} µm*
+              {raised !== undefined && (
+                <span className="raised">
+                  {" "}
+                  — showing {raised} µm* to cover the view; zoom in to reach {radius}
+                </span>
+              )}
+            </span>
             <input type="range" min={1} max={100} step={1} value={radius} onChange={(e) => setRadius(Number(e.target.value))} />
           </label>
           <label>
@@ -260,17 +262,6 @@ export function TranscriptModes() {
           <label className="check">
             <input type="checkbox" checked={!!locked} disabled={!g} onChange={(e) => toggleLock(e.target.checked)} />
             Lock the modes (off: recompute them for each window)
-          </label>
-          <label>
-            Largest window (mm²*)
-            <input
-              type="number"
-              min={0.5}
-              max={50}
-              step={0.5}
-              value={maxAreaMm2}
-              onChange={(e) => setMaxAreaMm2(Math.max(0.5, Number(e.target.value) || 0.5))}
-            />
           </label>
           <label>
             Colour strength
@@ -315,7 +306,8 @@ export function TranscriptModes() {
             {error ? <span className="error">{error.message}</span> : busy}
             {!error && !busy && g && (
               <>
-                window {span(g.window)} µm*{follow ? shrunk : " (kept)"} · {g.modes.labels.length} channels ·{" "}
+                window {span(g.window)} µm*{follow ? "" : " (kept)"} · r {g.radius} µm*
+                {raised !== undefined ? ` (raised from ${radius} to cover the view)` : ""} · {g.modes.labels.length} channels ·{" "}
                 {g.stats.perChannel.reduce((s, n) => s + n, 0).toLocaleString()} molecules in them · {g.stats.belowMinimum.toLocaleString()}{" "}
                 below qv {qvMin} · map {g.raster.width}×{g.raster.height} · {tiles.value?.fetched ?? 0} tiles fetched,{" "}
                 {(tiles.value?.tiles.length ?? 0) - (tiles.value?.fetched ?? 0)} from cache · channels {g.ms.channels.toFixed(0)} ms · Gram{" "}
@@ -387,15 +379,17 @@ export function TranscriptModes() {
             <Explain title="Why does the radius set the resolution?">
               r is the neighbourhood each molecule is smoothed over. Anything smaller than r is blurred away, so the map is computed at
               about three pixels per radius — a finer grid would cost more without showing more. A large r shows tissue-scale structure; a
-              small r gets closer to single cells, at more cost — and because a map can only be so many pixels across, a small r also
-              shrinks the window, down to about 680 µm* across at r = 1.
+              small r gets closer to single cells, at more cost. A map can only be so many pixels across (2048), so one map covers at most
+              about 680 µm* at r = 1, or 6.8 mm* at r = 10. Zoomed out past that, the radius is raised until the map covers the whole view,
+              and the radius label says so: every molecule still counts, but the neighbourhood is coarser. Zoom in, and the radius you chose
+              comes back.
             </Explain>
             <Explain title="Which part of the slide is analysed?">
-              The part in view, once you stop moving: the white outline marks it. Zoomed far out, the view would cover more tissue than is
-              quick to analyse, so the window becomes the middle of the view, up to the largest window set on the left. Molecules are
-              fetched in tiles and kept, so going back over ground already seen is fast. Turn off "follow the view" to keep one window while
-              you look around it. Each mode's sign is kept consistent between windows so colours do not flip for no reason — but if two
-              modes swap order, the colours change, and that change is real.
+              The part in view, once you stop moving: the white outline marks it. Zoomed far out, that can be the whole slide, and the first
+              time every molecule on it has to be fetched, which takes a while. Molecules are fetched in tiles and kept, so going back over
+              ground already seen is fast. Turn off "follow the view" to keep one window while you look around it. Each mode's sign is kept
+              consistent between windows so colours do not flip for no reason — but if two modes swap order, the colours change, and that
+              change is real.
             </Explain>
             <Explain title="What is the quality filter?">
               Every molecule has a quality score, qv. At 20, the chance that it was read as the wrong gene is about 1 in 100. Molecules
