@@ -30,6 +30,7 @@ import * as d from "typegpu/data";
 import type { ChannelCloud, GramParams, GramResult } from "../../spatial/gram";
 import { EPANECHNIKOV, kernelCode, roughness } from "../../spatial/kernels";
 import { checkBindingSize, getDevice, sized } from "../device";
+import { ensureHalfTex, narrowToHalf } from "../halfTexture";
 import { KERNEL_WGSL } from "./kernelWgsl";
 
 const REDUCE_WG = 256;
@@ -91,13 +92,16 @@ fn fsSplat(in: KOut) -> @location(0) vec4f {
 }
 `;
 
-// Both reductions share this preamble. `rowFloats` is the texture-copy row stride in floats
+// Both reductions share this preamble. `rowWords` is the texture-copy row stride in 4-byte words
 // (copyTextureToBuffer pads rows to 256 bytes), so the padding is skipped by indexing rather than
 // removed by a separate de-pad pass.
 const REDUCE_SHADER = /* wgsl */ `
-struct Uni { K: f32, width: f32, height: f32, rowFloats: f32, pad0: f32, pad1: f32, pad2: f32, pad3: f32 };
+struct Uni { K: f32, width: f32, height: f32, rowWords: f32, half: f32, pad1: f32, pad2: f32, pad3: f32 };
 @group(0) @binding(0) var<uniform> U: Uni;
-@group(0) @binding(1) var<storage, read> rasters: array<f32>;
+// Bound as words, not floats: at half precision a word holds TWO texels. U.half picks how to
+// read it - a uniform branch, so every invocation in the dispatch takes the same side, and the
+// halved memory traffic buys far more than the compare costs in a loop this bandwidth-bound.
+@group(0) @binding(1) var<storage, read> rasters: array<u32>;
 @group(0) @binding(2) var<storage, read> means: array<f32>;
 @group(0) @binding(3) var<storage, read_write> sums: array<f32>;      // K
 @group(0) @binding(4) var<storage, read_write> raw: array<f32>;       // K*K
@@ -105,10 +109,15 @@ struct Uni { K: f32, width: f32, height: f32, rowFloats: f32, pad0: f32, pad1: f
 
 var<workgroup> scratch: array<f32, ${REDUCE_WG}>;
 
-fn at(channel: u32, q: u32, width: u32, rowFloats: u32) -> f32 {
+fn at(channel: u32, q: u32, width: u32, rowWords: u32) -> f32 {
   let row = q / width;
   let col = q - row * width;
-  return rasters[channel * u32(U.height) * rowFloats + row * rowFloats + col];
+  let base = channel * u32(U.height) * rowWords + row * rowWords;
+  if (U.half != 0.0) {
+    let pair = unpack2x16float(rasters[base + (col >> 1u)]);
+    return select(pair.y, pair.x, (col & 1u) == 0u);
+  }
+  return bitcast<f32>(rasters[base + col]);
 }
 
 fn treeReduce(lid: u32, v: f32) -> f32 {
@@ -132,13 +141,13 @@ fn treeReduce(lid: u32, v: f32) -> f32 {
 fn sumChannels(@builtin(workgroup_id) wid: vec3u, @builtin(local_invocation_id) lid: vec3u) {
   let a = wid.x;
   let width = u32(U.width);
-  let rowFloats = u32(U.rowFloats);
+  let rowWords = u32(U.rowWords);
   let P = width * u32(U.height);
   var acc = 0.0;
   var q = lid.x;
   loop {
     if (q >= P) { break; }
-    acc = acc + at(a, q, width, rowFloats);
+    acc = acc + at(a, q, width, rowWords);
     q = q + ${REDUCE_WG}u;
   }
   let total = treeReduce(lid.x, acc);
@@ -155,7 +164,7 @@ fn gramPairs(@builtin(workgroup_id) wid: vec3u, @builtin(local_invocation_id) li
   let b = wid.x - a * K;
   if (b < a) { return; }
   let width = u32(U.width);
-  let rowFloats = u32(U.rowFloats);
+  let rowWords = u32(U.rowWords);
   let P = width * u32(U.height);
   let ma = means[a];
   let mb = means[b];
@@ -165,8 +174,8 @@ fn gramPairs(@builtin(workgroup_id) wid: vec3u, @builtin(local_invocation_id) li
   var q = lid.x;
   loop {
     if (q >= P) { break; }
-    let va = at(a, q, width, rowFloats);
-    let vb = at(b, q, width, rowFloats);
+    let va = at(a, q, width, rowWords);
+    let vb = at(b, q, width, rowWords);
     accRaw = accRaw + va * vb;
     accCen = accCen + (va - ma) * (vb - mb);
     q = q + ${REDUCE_WG}u;
@@ -268,7 +277,10 @@ function ensureTex(device: GPUDevice, w: number, h: number) {
   const tex = device.createTexture({
     size: { width: w, height: h },
     format: "r32float",
-    usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
+    // TEXTURE_BINDING as well: the f16 path samples this target in the narrowing pass. Without
+    // it the bind group is invalid, which invalidates the command buffer, and the rasters stay
+    // zero — the silent-failure shape `checkBindingSize` exists to avoid.
+    usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC | GPUTextureUsage.TEXTURE_BINDING,
   });
   scratchTex = { tex, view: tex.createView(), w, h };
   return scratchTex;
@@ -349,9 +361,14 @@ function packChannels(channels: readonly ChannelCloud[], p: GramParams) {
  *  `.destroy()` segfaults Dawn-on-Node's teardown), so a second call overwrites it in place. */
 export interface ResidentRasters {
   readonly buffer: GPUBuffer;
-  /** Row stride in floats — `copyTextureToBuffer` pads rows to 256 bytes, and the padding is
-   *  skipped by indexing rather than removed by a de-pad pass. */
-  readonly rowFloats: number;
+  /** Row stride in 4-BYTE WORDS — `copyTextureToBuffer` pads rows to 256 bytes, and the padding
+   *  is skipped by indexing rather than removed by a de-pad pass. At `f32` a word is one texel;
+   *  at `f16` it is two, so this is not a float count. */
+  readonly rowWords: number;
+  /** How the rasters are stored. `f16` halves the buffer — and so doubles the channel count or
+   *  raster size that fits under `maxStorageBufferBindingSize`, which is the limit this path
+   *  actually hits. A reader must unpack (`unpack2x16float`); see `at()` in the reduce shader. */
+  readonly precision: RasterPrecision;
   readonly mean: Float64Array;
   readonly sd: Float64Array;
 }
@@ -367,7 +384,14 @@ export type GramMatrixGpuResult = Pick<
  * The N-way Gram matrix on the GPU. Same statistic, same normalisation and same result shape as
  * `gramMatrix` in `src/spatial/gram.ts`, which is its f64 oracle.
  */
-export async function gramMatrixGpu(channels: readonly ChannelCloud[], p: GramParams): Promise<GramMatrixGpuResult> {
+/** How a channel's raster is stored once accumulated. Accumulation is f32 either way — see
+ *  `../halfTexture.ts` for why that is not negotiable. */
+export type RasterPrecision = "f32" | "f16";
+
+export async function gramMatrixGpu(
+  channels: readonly ChannelCloud[],
+  p: GramParams & { readonly precision?: RasterPrecision },
+): Promise<GramMatrixGpuResult> {
   const { device, root, splat, sumChannels, gramPairs, reduceLayout } = await getCtx();
   const K = channels.length;
   const { width: w, height: h } = p;
@@ -378,7 +402,11 @@ export async function gramMatrixGpu(channels: readonly ChannelCloud[], p: GramPa
   const pixelArea = roiArea / P;
 
   const { data, offsets, mass, apronMass } = packChannels(channels, p);
-  const rowFloats = align256(w * 4) / 4;
+  const precision: RasterPrecision = p.precision ?? "f32";
+  const half = precision === "f16";
+  // Row stride in 4-byte words. At f16 a row is half the bytes AND two texels share a word, so
+  // the stride is roughly halved — which is where the memory goes.
+  const rowWords = align256(w * (half ? 2 : 4)) / 4;
 
   // `rasters` is the one binding here that can reach `maxStorageBufferBindingSize`: K channels
   // of a w*h f32 raster crosses 128 MiB at 49 channels of 827x827, and because the pool doubles
@@ -386,13 +414,13 @@ export async function gramMatrixGpu(channels: readonly ChannelCloud[], p: GramPa
   // channel count and the raster size come from the caller, so nothing bounds this. Past the
   // limit the bind group is invalid and every dispatch silently returns the previous call's Gram
   // matrix — see `sized`/`checkBindingSize` in `../device.ts`.
-  const rasterFloats = K * h * rowFloats;
-  checkBindingSize(device, `gramMatrixGpu: ${K} channels at ${w}x${h}`, rasterFloats * 4);
+  const rasterWords = K * h * rowWords;
+  checkBindingSize(device, `gramMatrixGpu: ${K} channels at ${w}x${h} (${precision})`, rasterWords * 4);
 
   const ptsBuf = ensureBuf(device, "pts", data.length, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST);
   const uniSplat = ensureBuf(device, "uniSplat", SPLAT_UNI_FLOATS, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST);
   const uniReduce = ensureBuf(device, "uniReduce", REDUCE_UNI_FLOATS, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST);
-  const rasters = ensureBuf(device, "rasters", rasterFloats, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC);
+  const rasters = ensureBuf(device, "rasters", rasterWords, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC);
   const meansBuf = ensureBuf(device, "means", K, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST);
   const sums = ensureReadback(device, root, "sums", K);
   const rawOut = ensureReadback(device, root, "raw", K * K);
@@ -404,9 +432,11 @@ export async function gramMatrixGpu(channels: readonly ChannelCloud[], p: GramPa
     0,
     new Float32Array([minX, minY, 1 / (maxX - minX), 1 / (maxY - minY), p.radius, kernelCode(kernel), 0, 0]),
   );
-  device.queue.writeBuffer(uniReduce, 0, new Float32Array([K, w, h, rowFloats, 0, 0, 0, 0]));
+  device.queue.writeBuffer(uniReduce, 0, new Float32Array([K, w, h, rowWords, half ? 1 : 0, 0, 0, 0]));
 
   const tex = ensureTex(device, w, h);
+  // COPY_SRC as well as RENDER_ATTACHMENT: this one is copied into the raster slice.
+  const halfTex = half ? ensureHalfTex(device, "gramMatrix", w, h, GPUTextureUsage.COPY_SRC) : undefined;
   const splatBind = device.createBindGroup({
     layout: splat.getBindGroupLayout(0),
     entries: [
@@ -428,9 +458,13 @@ export async function gramMatrixGpu(channels: readonly ChannelCloud[], p: GramPa
     const n = channels[k]!.xs.length;
     if (n > 0) pass.draw(4, n, 0, offsets[k]!);
     pass.end();
+    // At f16 the accumulated raster is narrowed into a half target first — one rounding — and
+    // THAT is what lands in the slice. Accumulating in f16 instead would lose most of a dense
+    // channel's mass; see `../halfTexture.ts`.
+    if (half) await narrowToHalf(device, enc, tex.tex, halfTex!, w, h);
     enc.copyTextureToBuffer(
-      { texture: tex.tex },
-      { buffer: rasters, offset: k * h * rowFloats * 4, bytesPerRow: rowFloats * 4, rowsPerImage: h },
+      { texture: half ? halfTex! : tex.tex },
+      { buffer: rasters, offset: k * h * rowWords * 4, bytesPerRow: rowWords * 4, rowsPerImage: h },
       { width: w, height: h },
     );
   }
@@ -441,7 +475,7 @@ export async function gramMatrixGpu(channels: readonly ChannelCloud[], p: GramPa
       layout: reduceLayout,
       entries: [
         { binding: 0, resource: sized(uniReduce, REDUCE_UNI_FLOATS * 4) },
-        { binding: 1, resource: sized(rasters, rasterFloats * 4) },
+        { binding: 1, resource: sized(rasters, rasterWords * 4) },
         { binding: 2, resource: sized(meansBuf, K * 4) },
         { binding: 3, resource: sized(sums.raw, K * 4) },
         { binding: 4, resource: sized(rawOut.raw, K * K * 4) },
@@ -524,6 +558,6 @@ export async function gramMatrixGpu(channels: readonly ChannelCloud[], p: GramPa
     height: h,
     bbox: p.bbox,
     pixelArea,
-    resident: { buffer: rasters, rowFloats, mean, sd },
+    resident: { buffer: rasters, rowWords, precision, mean, sd },
   };
 }

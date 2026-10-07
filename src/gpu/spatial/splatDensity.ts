@@ -24,6 +24,7 @@ import * as d from "typegpu/data";
 import * as std from "typegpu/std";
 import { compileShader, getDevice, sized } from "../device";
 import { rawBindGroup } from "../graph/residentBind";
+import { narrowToHalf } from "../halfTexture";
 
 const SHADER = /* wgsl */ `
 struct Uni {
@@ -124,7 +125,7 @@ interface Pipe {
 }
 
 /** Formats a density field can be STORED in. Accumulation is always f32 — see
- *  `docs/field-precision.md` for the measurements that forced that, and `narrowToHalf` below. */
+ *  `docs/field-precision.md` for the measurements that forced that, and `../halfTexture.ts`. */
 export type DensityFormat = "r32float" | "r16float";
 
 let pipeCache: Promise<Pipe> | undefined;
@@ -465,59 +466,6 @@ function ensureAccum(device: GPUDevice, w: number, h: number): GPUTexture {
     usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
   });
   return accumTex;
-}
-
-const NARROW = /* wgsl */ `
-@group(0) @binding(0) var src: texture_2d<f32>;
-
-@vertex
-fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f {
-  // One oversized triangle rather than a quad: no index buffer, no seam down the diagonal.
-  let p = array(vec2f(-1.0, -1.0), vec2f(3.0, -1.0), vec2f(-1.0, 3.0));
-  return vec4f(p[i], 0.0, 1.0);
-}
-
-@fragment
-fn fs(@builtin(position) pos: vec4f) -> @location(0) f32 {
-  // textureLoad, not a sampler: an r32float texture is not filterable without the
-  // float32-filterable feature, and this is a 1:1 copy that wants no filtering anyway.
-  return textureLoad(src, vec2i(pos.xy), 0).r;
-}
-`;
-
-interface NarrowPipe {
-  pipeline: GPURenderPipeline;
-  layout: GPUBindGroupLayout;
-}
-let narrowPipe: NarrowPipe | undefined;
-
-/** Copy the f32 accumulator into the f16 field — the single rounding the whole design spends. */
-async function narrowToHalf(device: GPUDevice, enc: GPUCommandEncoder, src: GPUTexture, dst: GPUTexture, w: number, h: number) {
-  if (!narrowPipe) {
-    const module = await compileShader(device, NARROW, "splatDensity:narrow");
-    const layout = device.createBindGroupLayout({
-      entries: [{ binding: 0, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "unfilterable-float" } }],
-    });
-    narrowPipe = {
-      layout,
-      pipeline: device.createRenderPipeline({
-        layout: device.createPipelineLayout({ bindGroupLayouts: [layout] }),
-        vertex: { module, entryPoint: "vs" },
-        primitive: { topology: "triangle-list" },
-        fragment: { module, entryPoint: "fs", targets: [{ format: "r16float" }] },
-      }),
-    };
-  }
-  // The accumulator may be larger than this field (it is grown, never shrunk), so sample by
-  // integer position — the top-left w×h corner is this field's.
-  const pass = enc.beginRenderPass({
-    colorAttachments: [{ view: dst.createView(), loadOp: "clear", storeOp: "store", clearValue: { r: 0, g: 0, b: 0, a: 0 } }],
-  });
-  pass.setPipeline(narrowPipe.pipeline);
-  pass.setBindGroup(0, device.createBindGroup({ layout: narrowPipe.layout, entries: [{ binding: 0, resource: src.createView() }] }));
-  pass.setViewport(0, 0, w, h, 0, 1);
-  pass.draw(3);
-  pass.end();
 }
 
 /** Tier-2 form (ADR-0017): splat a GPU-resident point cloud into a GPU-resident density grid,

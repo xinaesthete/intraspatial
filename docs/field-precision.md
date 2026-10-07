@@ -63,6 +63,37 @@ fields a graph *retains* (a layer stack, a memo, a cache), not in the transient 
 **Remaining limit:** f16 saturates at 65504. A field whose peak approaches that clips, and nothing
 warns. Worth a check if a caller pushes density much past the ranges above.
 
+### Tried on a real page: transcript co-location modes
+
+`gramMatrixGpu` keeps one raster per gene channel in a single stacked buffer, and that buffer is
+the binding this path hits the ceiling on first — the comment in the file already noted it crosses
+`maxStorageBufferBindingSize` at 49 channels of 827². f16 halves it, so it doubles the channels or
+the resolution that fit.
+
+It takes `precision: "f32" | "f16"` (default f32), with the narrowing applied per channel on the
+way into its slice — the same accumulate-wide/store-narrow shape, since the splat already renders
+to an `r32float` target. Readers unpack behind a uniform flag (`unpack2x16float`, two texels per
+word): the reduce shader, and the transcript page's `GramModesLayer`. `gramModes.ts` and
+`gramTerrain.ts` have not been taught to unpack and throw if handed f16 rasters.
+
+Measured on the Xenium store, 9 channels over a 10871×3627 µm window, 653×218 map:
+
+| | buffer | modes | Gram |
+| --- | ---: | --- | ---: |
+| f32 | 5.7 MiB | 47% / 15% / 11% | ~46 ms |
+| f16 | **2.9 MiB** | 47% / 15% / 11%, same memberships | ~49 ms |
+
+The statistic is indistinguishable; the memory halves. Time is **slightly worse**, not better —
+the narrowing pass runs per channel, and at this size the reduce is too small for the halved read
+traffic to pay it back. Whether it turns a profit at the raster sizes that actually hurt is
+untested.
+
+One trap worth recording: the splat target needed `TEXTURE_BINDING` added before the narrowing
+pass could sample it. Without it the bind group is invalid, which invalidates the command buffer,
+and every raster stays zero — the page drew a blank map and reported every mode as 0% of the
+variation. Exactly the silent-failure shape `checkBindingSize` exists for, in a usage flag rather
+than a size.
+
 ## 3. 3D volumes: the easy case, not the hard one
 
 Memory pressure is worse in 3D — a 256³ field is 64 MiB at f32 and 32 at f16; 512³ is 512 against
