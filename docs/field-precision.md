@@ -63,7 +63,40 @@ fields a graph *retains* (a layer stack, a memo, a cache), not in the transient 
 **Remaining limit:** f16 saturates at 65504. A field whose peak approaches that clips, and nothing
 warns. Worth a check if a caller pushes density much past the ranges above.
 
-## 3. Not built
+## 3. 3D volumes: the easy case, not the hard one
+
+Memory pressure is worse in 3D — a 256³ field is 64 MiB at f32 and 32 at f16; 512³ is 512 against
+256 — and the 2D mechanism does not transfer, because there is no additive blending into a volume.
+That sounds like the harder problem. It is the easier one.
+
+**The accumulator stops being the destination.** `splatVolume` (designed in
+[`gpu-spatial-index-3d.md`](gpu-spatial-index-3d.md) §4) **gathers**: one thread per output voxel,
+walking the index's 27-cell stencil and summing contributions in a register. The register is f32,
+the voxel is written once, and the swamping that forces the 2D split cannot happen — there is no
+running total in the texture to swamp. So 3D needs **no f32 scratch volume and no extra pass**: it
+writes f16 directly, for the same single rounding (~0.1%) the 2D path pays after its extra work.
+
+The precedent is already in the repo. Volume bricks from the datasource are **already `r16float`**
+(`tileTextureFormat` in `src/gpu/tiles/assemble.ts`, `rgba16float` multi-lane), chosen for exactly
+this memory reason, and they sample with linear filtering.
+
+Two mechanics to know before building it:
+
+- **Writing f16 from a compute kernel is not core.** `r16float` with `STORAGE_BINDING` needs the
+  `texture-formats-tier2` feature. The core-only route is to write packed halves into a storage
+  buffer (`pack2x16float`, two voxels per `u32`) and `copyBufferToTexture` into the `r16float` 3D
+  texture. One copy, and no f32 volume ever materialises.
+- **f16 filtering is core; f32 filtering is not.** Trilinear sampling of `r16float` works out of
+  the box, while `r32float` needs `float32-filterable`, which `getDevice()` does not request. So
+  an f32 computed volume would not even be linearly samplable here without adding a feature — f16
+  is the path of least resistance as well as least memory.
+
+Caveats are the f16 range, as in 2D: it saturates at 65504, and its smallest normal is ~6·10⁻⁵, so
+a very long tail flushes to zero — harmless for display, worth knowing before taking a log of it.
+A gathered volume spreads the same mass over far more voxels than a 2D field, so peaks are lower
+for the same data, but it is still data-dependent and unchecked.
+
+## 4. Not built
 
 **Narrow buffers (u8 / u16).** The win is index-shaped: `pointIds` in a bucket grid is u32, and
 u16 halves it whenever n < 65536 — which is most clouds. The blocker is not the `Dtype` union
@@ -92,3 +125,5 @@ outright, and f32 relative to a local origin beats double-single at a tenth of t
 - [deck.gl — 64-bit precision](https://deck.gl/docs/developer-guide/fp64)
 - [luma.gl — fp64 shader module](https://luma.gl/docs/api-reference/shadertools/shader-modules/fp64-arithmetic)
 - [deck.gl — project64](https://deck.gl/docs/api-reference/core/project64)
+- [WebGPU texture format tiers — `texture-formats-tier2` adds `r16float` storage](https://developer.mozilla.org/en-US/docs/Web/API/GPUSupportedFeatures)
+- [Chrome — filterable 32-bit float textures (`float32-filterable`)](https://developer.chrome.com/blog/new-in-webgpu-119)
