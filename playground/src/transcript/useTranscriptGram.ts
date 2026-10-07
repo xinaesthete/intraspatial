@@ -98,7 +98,11 @@ function fixedRaster(bbox: readonly [number, number, number, number], side: numb
   return { width: w >= h ? side : short, height: w >= h ? short : side, clamped: false };
 }
 
-export function useTranscriptGram(tiles: WindowTiles | undefined, channels: readonly WeightedChannel[], p: GramParamsUi) {
+/**
+ * The Gram and modes for `tiles`' window. The last result stays on screen while the next computes —
+ * within `scope` (the points source, say): another store's result is never shown for this one's.
+ */
+export function useTranscriptGram(tiles: WindowTiles | undefined, channels: readonly WeightedChannel[], p: GramParamsUi, scope?: unknown) {
   const prevModes = useRef<CoLocationModes | null>(null);
   const pool = useRef<Snapshot[]>([]);
   /** Generations on screen: the one before, and the current one. */
@@ -140,6 +144,7 @@ export function useTranscriptGram(tiles: WindowTiles | undefined, channels: read
       });
     },
     [tiles, channels, p.radius, p.qvMin, p.rasterSide],
+    scope,
   );
   const gen = state.value?.generation;
   useEffect(() => {

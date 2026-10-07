@@ -83,7 +83,7 @@ export function TranscriptModes() {
   const pointsNames = useMemo(() => (sd.value ? listPointsElements(sd.value) : []), [sd.value]);
   const pointsEl = pointsName ?? pointsNames.find((n) => /morton/.test(n) && !/feature_then/.test(n)) ?? pointsNames[0];
   const source = usePointsSource(sd.value, pointsEl, { columns: ["qv"] });
-  const imageNames = useAsync(() => (sd.value ? listImageElements(sd.value) : undefined), [sd.value]);
+  const imageNames = useAsync(() => (sd.value ? listImageElements(sd.value) : undefined), [sd.value], sd.value);
   const imageEl = imageName === NO_IMAGE ? undefined : (imageName ?? imageNames.value?.find((n) => /he/i.test(n)) ?? imageNames.value?.[0]);
 
   // Transcripts' own frame ↔ the frame the canvas draws in.
@@ -129,7 +129,8 @@ export function TranscriptModes() {
   );
   // No compute until deck's device is ours: resources made on another device could not be drawn.
   const channels = device.ready ? built.channels : [];
-  const gram = useTranscriptGram(tiles.value, channels, { radius: rEff, qvMin, rasterSide });
+  // Scoped to the source: a result stands in for the next only while it is about the same transcripts.
+  const gram = useTranscriptGram(tiles.value, channels, { radius: rEff, qvMin, rasterSide }, source.value);
   const g = gram.value;
 
   // A lock applies while the channels are the ones it was taken with; otherwise this window's own
@@ -191,6 +192,22 @@ export function TranscriptModes() {
   // A fixed map size can make pixels wider than the kernel, and then molecules between pixel centres are lost.
   const coarse = g && rasterSide > 0 ? (g.window.maxX - g.window.minX) / g.raster.width > g.radius : false;
 
+  // What belongs to one store, or one element of it, is dropped with it — by the action that changes
+  // it, not an effect after: the pinned window is in the old element's frame, the lock is the old
+  // data's projection, and the last viewport would fetch tiles at the old store's coordinates.
+  const openStore = (url: string) => {
+    setStoreUrl(url);
+    setPointsName(undefined);
+    setImageName(undefined);
+    setPinned(undefined);
+    setLock(undefined);
+    setViewport(undefined);
+  };
+  const choosePoints = (name: string) => {
+    setPointsName(name);
+    setPinned(undefined);
+  };
+
   return (
     <div className="page">
       <h2 className="page">Where genes are found together — transcript co-location modes</h2>
@@ -206,14 +223,14 @@ export function TranscriptModes() {
             Store
             <span className="row">
               <input value={storeDraft} onChange={(e) => setStoreDraft(e.target.value)} />
-              <button type="button" onClick={() => setStoreUrl(storeDraft.trim())}>
+              <button type="button" onClick={() => openStore(storeDraft.trim())}>
                 open
               </button>
             </span>
           </label>
           <label>
             Transcripts
-            <select value={pointsEl ?? ""} onChange={(e) => setPointsName(e.target.value)}>
+            <select value={pointsEl ?? ""} onChange={(e) => choosePoints(e.target.value)}>
               {pointsNames.map((n) => (
                 <option key={n}>{n}</option>
               ))}
@@ -289,19 +306,17 @@ export function TranscriptModes() {
         </aside>
 
         <main className="views">
-          {sd.value && (
-            <SpatialDeckView
-              key={`${storeUrl}|${coordinateSystem}`}
-              className="deck-canvas"
-              sdata={sd.value}
-              coordinateSystem={coordinateSystem}
-              image={imageEl}
-              layers={layers}
-              deckProps={deckProps}
-              onViewport={setViewport}
-              fallbackBounds={fallbackBounds}
-            />
-          )}
+          {/* Always mounted, never keyed: see SpatialDeckView on why deck must outlive a store. */}
+          <SpatialDeckView
+            className="deck-canvas"
+            sdata={sd.value}
+            coordinateSystem={coordinateSystem}
+            image={imageEl}
+            layers={layers}
+            deckProps={deckProps}
+            onViewport={setViewport}
+            fallbackBounds={fallbackBounds}
+          />
           <p className="status">
             {error ? <span className="error">{error.message}</span> : busy}
             {!error && !busy && g && (
