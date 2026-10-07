@@ -451,7 +451,8 @@ export async function splatDensityToTexture(points: GPUBuffer, n: number, target
 // The f32 accumulator behind every f16 field. ONE texture, grown to the largest field seen and
 // reused — the saving f16 buys is in the fields a graph RETAINS (a layer stack, a memo, a cache),
 // not in this single transient, so keeping one full-precision scratch costs one field's worth of
-// memory however many half-precision ones are alive.
+// memory however many half-precision ones are alive. Reuse is for cost, not safety; see
+// `../halfTexture.ts` on the destruction folklore.
 let accumTex: GPUTexture | undefined;
 let accumW = 0;
 let accumH = 0;
@@ -459,7 +460,6 @@ function ensureAccum(device: GPUDevice, w: number, h: number): GPUTexture {
   if (accumTex && accumW >= w && accumH >= h) return accumTex;
   accumW = Math.max(w, accumW);
   accumH = Math.max(h, accumH);
-  // Never destroyed: mid-process destruction segfaults Dawn-on-Node (ADR-0002/0003).
   accumTex = device.createTexture({
     size: { width: accumW, height: accumH },
     format: "r32float",

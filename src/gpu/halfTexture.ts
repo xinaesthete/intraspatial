@@ -80,8 +80,12 @@ export async function narrowToHalf(
   pass.end();
 }
 
-/** A grown-and-reused `r16float` scratch target. One per caller key, never destroyed (mid-process
- *  destruction segfaults Dawn-on-Node, ADR-0002/0003). */
+/** A grown-and-reused `r16float` scratch target, one per caller key.
+ *
+ *  Reused rather than reallocated because reuse is cheaper, NOT because destroying it is unsafe:
+ *  `test/destroy-mid-process.gpu.test.ts` destroys hundreds of textures and buffers mid-process
+ *  and exits clean. The repo's older "destroying segfaults Dawn-on-Node" comments predate the
+ *  Instance-lifetime fix in `device.ts` (2026-07-29), which is what those crashes actually were. */
 const halfTex = new Map<string, { tex: GPUTexture; w: number; h: number }>();
 
 export function ensureHalfTex(device: GPUDevice, key: string, w: number, h: number, extraUsage = 0): GPUTexture {
