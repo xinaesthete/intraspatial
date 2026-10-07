@@ -120,6 +120,72 @@ export function ownedTile(grid: PointsGrid, id: ChunkId, raw: RawPoints): Points
   return { id, rect: tileRect(grid, id.x, id.y), count: m, xs, ys, codes, columns };
 }
 
+/**
+ * Every tile of `grid`, from points already in memory: one pass to find each point's owner, one to
+ * place it. Exactly the tiles `ownedTile` would cut, without a pass over all points per tile — for an
+ * element with no tiled layout on disk, read whole and then served through the same grid. Points
+ * outside the grid are dropped. Keyed by `"x,y"`; tiles with no points are absent.
+ */
+export function bucketPoints(grid: PointsGrid, raw: RawPoints): Map<string, PointsTile> {
+  const n = Math.min(raw.xs.length, raw.ys.length, raw.codes.length);
+  const { bounds, tileSize, cols, rows } = grid;
+  const owner = new Int32Array(n);
+  const counts = new Int32Array(cols * rows);
+  for (let i = 0; i < n; i++) {
+    const px = raw.xs[i] ?? Number.NaN;
+    const py = raw.ys[i] ?? Number.NaN;
+    if (!(px >= bounds.minX && px <= bounds.maxX && py >= bounds.minY && py <= bounds.maxY)) {
+      owner[i] = -1;
+      continue;
+    }
+    // The arithmetic guess, then nudged against the edges `ownsPoint` uses, so a point on an edge
+    // goes where ownership says rather than where rounding put it.
+    let x = Math.min(cols - 1, Math.max(0, Math.floor((px - bounds.minX) / tileSize)));
+    let y = Math.min(rows - 1, Math.max(0, Math.floor((py - bounds.minY) / tileSize)));
+    while (x > 0 && px < edgeX(grid, x)) x--;
+    while (x < cols - 1 && px >= edgeX(grid, x + 1)) x++;
+    while (y > 0 && py < edgeY(grid, y)) y--;
+    while (y < rows - 1 && py >= edgeY(grid, y + 1)) y++;
+    const t = y * cols + x;
+    owner[i] = t;
+    counts[t] = (counts[t] ?? 0) + 1;
+  }
+  const names = Object.keys(raw.columns ?? {});
+  const tiles: { xs: Float32Array; ys: Float32Array; codes: Int32Array; columns: Record<string, Float32Array>; fill: number }[] = [];
+  for (let t = 0; t < cols * rows; t++) {
+    const m = counts[t] ?? 0;
+    tiles.push({
+      xs: new Float32Array(m),
+      ys: new Float32Array(m),
+      codes: new Int32Array(m),
+      columns: Object.fromEntries(names.map((c) => [c, new Float32Array(m)])),
+      fill: 0,
+    });
+  }
+  for (let i = 0; i < n; i++) {
+    const t = owner[i] ?? -1;
+    const tile = tiles[t];
+    if (!tile) continue;
+    const k = tile.fill++;
+    tile.xs[k] = raw.xs[i] ?? 0;
+    tile.ys[k] = raw.ys[i] ?? 0;
+    tile.codes[k] = raw.codes[i] ?? 0;
+    for (const c of names) {
+      const out = tile.columns[c];
+      if (out) out[k] = raw.columns?.[c]?.[i] ?? 0;
+    }
+  }
+  const out = new Map<string, PointsTile>();
+  tiles.forEach((tile, t) => {
+    if (tile.fill === 0) return;
+    const x = t % cols;
+    const y = Math.floor(t / cols);
+    const { fill, ...arrays } = tile;
+    out.set(`${x},${y}`, { id: { level: grid.level, x, y, z: 0 }, rect: tileRect(grid, x, y), count: fill, ...arrays });
+  });
+  return out;
+}
+
 /** Resident bytes of a tile — the `TileCache` ceiling's unit. */
 export function pointsTileBytes(tile: PointsTile): number {
   let bytes = tile.xs.byteLength + tile.ys.byteLength + tile.codes.byteLength;

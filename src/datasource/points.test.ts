@@ -3,6 +3,7 @@
 // point lost or doubled, even though the reader's own bounds filter is closed.
 import { describe, expect, it } from "vitest";
 import {
+  bucketPoints,
   clampWindow,
   expandRect,
   ownedTile,
@@ -179,5 +180,29 @@ describe("clampWindow", () => {
   });
   it("is undefined when the view misses the extent", () => {
     expect(clampWindow({ minX: 200, minY: 0, maxX: 300, maxY: 50 }, extent, 1e9)).toBeUndefined();
+  });
+});
+
+describe("bucketPoints", () => {
+  it("cuts exactly the tiles ownedTile does, edge points included", () => {
+    const grid = pointsGrid(BOUNDS, 4000, { minRowsPerTile: 300 });
+    const s = scene(grid);
+    const raw: RawPoints = { xs: s.xs, ys: s.ys, codes: s.codes, columns: { qv: s.qv } };
+    const buckets = bucketPoints(grid, raw);
+    let total = 0;
+    for (let x = 0; x < grid.cols; x++) {
+      for (let y = 0; y < grid.rows; y++) {
+        const want = ownedTile(grid, { level: grid.level, x, y, z: 0 }, raw);
+        const got = buckets.get(`${x},${y}`);
+        expect(got?.count ?? 0).toBe(want.count);
+        if (got) {
+          // Same points; bucketing keeps input order, as ownedTile does.
+          expect(Array.from(got.xs)).toEqual(Array.from(want.xs));
+          expect(Array.from(got.columns.qv ?? [])).toEqual(Array.from(want.columns.qv ?? []));
+        }
+        total += want.count;
+      }
+    }
+    expect(total).toBe(s.xs.length); // every point owned once
   });
 });

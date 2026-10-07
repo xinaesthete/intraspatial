@@ -16,7 +16,7 @@ import { type ModeBasis, modeBasis } from "../../../src/gpu/spatial/gramModes";
 import { type CoLocationModes, radiusToCover } from "../../../src/spatial/gram";
 import { invert2, rectThrough2 } from "../../../src/spatial/ngffTransform";
 import { listImageElements } from "../datasource/imageContext";
-import { listPointsElements } from "../datasource/pointsTileLoader";
+import { DEFAULT_UNTILED_BUDGET, listPointsElements } from "../datasource/pointsTileLoader";
 import { SpatialDeckView } from "../deck/SpatialDeckView";
 import { SHARED_DEVICE_PROPS, useSharedDevice } from "../deck/useSharedDevice";
 import { useAsync, useSettled } from "../hooks/useAsync";
@@ -64,6 +64,7 @@ export function TranscriptModes() {
   const [imageName, setImageName] = useState<string>();
   const [radius, setRadius] = useState(50);
   const [qvMin, setQvMin] = useState(20);
+  const [untiledBudgetM, setUntiledBudgetM] = useState(DEFAULT_UNTILED_BUDGET / 1e6);
   const [rasterSide, setRasterSide] = useState(0);
   const [follow, setFollow] = useState(true);
   const [pinned, setPinned] = useState<Rect>();
@@ -82,7 +83,10 @@ export function TranscriptModes() {
   const sd = useSpatialData(storeUrl);
   const pointsNames = useMemo(() => (sd.value ? listPointsElements(sd.value) : []), [sd.value]);
   const pointsEl = pointsName ?? pointsNames.find((n) => /morton/.test(n) && !/feature_then/.test(n)) ?? pointsNames[0];
-  const source = usePointsSource(sd.value, pointsEl, { columns: ["qv"] });
+  const source = usePointsSource(sd.value, pointsEl, { columns: ["qv"], untiledBudget: untiledBudgetM * 1e6 });
+  // An element read whole has no qv column to filter on, so its filter is off rather than an error.
+  const hasQv = source.value?.columns.includes("qv") ?? true;
+  const qvApplied = hasQv ? qvMin : 0;
   const imageNames = useAsync(() => (sd.value ? listImageElements(sd.value) : undefined), [sd.value], sd.value);
   const imageEl = imageName === NO_IMAGE ? undefined : (imageName ?? imageNames.value?.find((n) => /he/i.test(n)) ?? imageNames.value?.[0]);
 
@@ -130,7 +134,7 @@ export function TranscriptModes() {
   // No compute until deck's device is ours: resources made on another device could not be drawn.
   const channels = device.ready ? built.channels : [];
   // Scoped to the source: a result stands in for the next only while it is about the same transcripts.
-  const gram = useTranscriptGram(tiles.value, channels, { radius: rEff, qvMin, rasterSide }, source.value);
+  const gram = useTranscriptGram(tiles.value, channels, { radius: rEff, qvMin: qvApplied, rasterSide }, source.value);
   const g = gram.value;
 
   // A lock applies while the channels are the ones it was taken with; otherwise this window's own
@@ -186,7 +190,13 @@ export function TranscriptModes() {
   );
 
   const error = sd.error ?? source.error ?? tiles.error ?? gram.error;
-  const busy = tiles.progress ? `loading tiles ${tiles.progress.done}/${tiles.progress.total}…` : gram.loading ? "computing…" : "";
+  const busy = source.loading
+    ? "opening the points element…"
+    : tiles.progress
+      ? `loading tiles ${tiles.progress.done}/${tiles.progress.total}…`
+      : gram.loading
+        ? "computing…"
+        : "";
   // The radius on screen, when the window forced it above the one chosen.
   const raised = g && g.radius > radius ? g.radius : undefined;
   // A fixed map size can make pixels wider than the kernel, and then molecules between pixel centres are lost.
@@ -237,6 +247,17 @@ export function TranscriptModes() {
             </select>
           </label>
           <label>
+            Untiled points budget (million rows)
+            <input
+              type="number"
+              min={0.5}
+              max={100}
+              step={0.5}
+              value={untiledBudgetM}
+              onChange={(e) => setUntiledBudgetM(Math.max(0.5, Number(e.target.value) || 0.5))}
+            />
+          </label>
+          <label>
             Image
             <select value={imageEl ?? NO_IMAGE} onChange={(e) => setImageName(e.target.value)}>
               {(imageNames.value ?? []).map((n) => (
@@ -269,8 +290,15 @@ export function TranscriptModes() {
             />
           </label>
           <label>
-            Minimum molecule quality (qv)
-            <input type="number" min={0} max={40} value={qvMin} onChange={(e) => setQvMin(Math.max(0, Number(e.target.value) || 0))} />
+            Minimum molecule quality (qv){hasQv ? "" : " — not available for this element"}
+            <input
+              type="number"
+              min={0}
+              max={40}
+              value={qvMin}
+              disabled={!hasQv}
+              onChange={(e) => setQvMin(Math.max(0, Number(e.target.value) || 0))}
+            />
           </label>
           <label className="check">
             <input type="checkbox" checked={follow} onChange={(e) => togglePin(e.target.checked)} />
@@ -323,10 +351,13 @@ export function TranscriptModes() {
               <>
                 window {span(g.window)} µm*{follow ? "" : " (kept)"} · r {g.radius} µm*
                 {raised !== undefined ? ` (raised from ${radius} to cover the view)` : ""} · {g.modes.labels.length} channels ·{" "}
-                {g.stats.perChannel.reduce((s, n) => s + n, 0).toLocaleString()} molecules in them · {g.stats.belowMinimum.toLocaleString()}{" "}
-                below qv {qvMin} · map {g.raster.width}×{g.raster.height} · {tiles.value?.fetched ?? 0} tiles fetched,{" "}
-                {(tiles.value?.tiles.length ?? 0) - (tiles.value?.fetched ?? 0)} from cache · channels {g.ms.channels.toFixed(0)} ms · Gram{" "}
-                {g.ms.gram.toFixed(0)} ms
+                {g.stats.perChannel.reduce((s, n) => s + n, 0).toLocaleString()} molecules in them ·{" "}
+                {qvApplied > 0 ? `${g.stats.belowMinimum.toLocaleString()} below qv ${qvApplied} · ` : ""}map {g.raster.width}×
+                {g.raster.height} ·{" "}
+                {source.value?.tiled === false
+                  ? `${source.value.totalRows.toLocaleString()} points read whole (no tiled layout)`
+                  : `${tiles.value?.fetched ?? 0} tiles fetched, ${(tiles.value?.tiles.length ?? 0) - (tiles.value?.fetched ?? 0)} from cache`}{" "}
+                · channels {g.ms.channels.toFixed(0)} ms · Gram {g.ms.gram.toFixed(0)} ms
               </>
             )}
           </p>
@@ -408,7 +439,8 @@ export function TranscriptModes() {
             </Explain>
             <Explain title="What is the quality filter?">
               Every molecule has a quality score, qv. At 20, the chance that it was read as the wrong gene is about 1 in 100. Molecules
-              below the threshold are dropped, as in Xenium's own per-cell counts.
+              below the threshold are dropped, as in Xenium's own per-cell counts. Points stored without a tiled layout are read whole, and
+              that read brings only positions and genes, so for them the filter is off.
             </Explain>
           </section>
         </main>
