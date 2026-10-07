@@ -219,14 +219,16 @@ async function runTick(graph: Graph, field: GpuField, o: TickOptions): Promise<M
   // from`, and a port with a live borrower is not released until the borrower itself dies.
   const lenders = new Map<string, Set<string>>();
   const borrowers = new Map<string, Set<string>>();
+  /** Add `k` to the set at `key`, creating the set on first use. */
+  const addTo = (m: Map<string, Set<string>>, key: string, k: string) => {
+    const got = m.get(key);
+    if (got) got.add(k);
+    else m.set(key, new Set([k]));
+  };
   const borrow = (borrower: string, lender: string) => {
     if (borrower === lender) return;
-    let ls = lenders.get(borrower);
-    if (!ls) lenders.set(borrower, (ls = new Set()));
-    ls.add(lender);
-    let bs = borrowers.get(lender);
-    if (!bs) borrowers.set(lender, (bs = new Set()));
-    bs.add(borrower);
+    addTo(lenders, borrower, lender);
+    addTo(borrowers, lender, borrower);
   };
   /** A port is dead once its own consumers have run AND nothing is still borrowing from it. */
   const isDead = (k: string) => (remaining.get(k) ?? 0) <= 0 && (borrowers.get(k)?.size ?? 0) === 0;
