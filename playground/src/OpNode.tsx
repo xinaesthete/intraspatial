@@ -29,7 +29,7 @@ export function OpNode({ id, data, selected }: NodeProps) {
           id={p.name}
           type="target"
           position={Position.Left}
-          onMouseEnter={(e) => hover?.onPortEnter(id, p.name, true, p.kind, e.currentTarget.getBoundingClientRect())}
+          onMouseEnter={(e) => hover?.onPortEnter(id, p.name, true, p.kind, e.currentTarget.getBoundingClientRect(), p.bundle)}
           onMouseLeave={() => hover?.onPortLeave()}
           style={{ top: portTop(i, spec.inputs.length), background: kindColor(p.kind) }}
         />
@@ -40,7 +40,7 @@ export function OpNode({ id, data, selected }: NodeProps) {
           id={p.name}
           type="source"
           position={Position.Right}
-          onMouseEnter={(e) => hover?.onPortEnter(id, p.name, false, p.kind, e.currentTarget.getBoundingClientRect())}
+          onMouseEnter={(e) => hover?.onPortEnter(id, p.name, false, p.kind, e.currentTarget.getBoundingClientRect(), p.bundle)}
           onMouseLeave={() => hover?.onPortLeave()}
           style={{ top: portTop(i, spec.outputs.length), background: kindColor(p.kind) }}
         />

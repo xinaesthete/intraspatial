@@ -221,7 +221,7 @@ export type ResidentPayload = ResidentBuffer | ResidentTexture;
 /** Narrow a resident payload. Textures carry `texture`, buffers carry `buffer`. */
 export const isResidentTexture = (p: ResidentPayload): p is ResidentTexture => "texture" in p;
 
-export type ShapeKind = "grid" | "points" | "matrix" | "scalar" | "opaque";
+export type ShapeKind = "grid" | "points" | "matrix" | "scalar" | "opaque" | "bundle";
 
 export type Shape =
   | { kind: "grid"; width: number; height: number }
@@ -230,7 +230,11 @@ export type Shape =
   | { kind: "scalar" }
   /** A non-numeric payload (e.g. a persistence diagram); `name` tags the concrete
    *  type so the UI can pick a preview renderer. */
-  | { kind: "opaque"; name: string };
+  | { kind: "opaque"; name: string }
+  /** Several values that are ONE value (ADR-0023): a grid index is its `start`, `items` and
+   *  `lattice` together, and wiring two of them from different producers must be impossible.
+   *  `name` tags the concrete bundle type, as `opaque` does, so port typing stays nominal. */
+  | { kind: "bundle"; name: string; parts: Readonly<Record<string, Shape>> };
 
 export type NodeId = string;
 
@@ -290,9 +294,17 @@ export interface FieldValue {
    *  (invariant 4). The executor bridges the two representations on demand: it downloads into
    *  `data` before a non-resident op and uploads into `buffer` before a resident one.
    *
-   *  INVARIANT: at least one of `data` / `buffer` / `texture` / `payload` is present. A value may
-   *  carry more than one transiently — immediately after a bridge in either direction. */
+   *  INVARIANT: at least one of `data` / `buffer` / `texture` / `payload` / `parts` is present. A
+   *  value may carry more than one transiently — immediately after a bridge in either direction. */
   buffer?: ResidentBuffer;
+  /** The members of a `bundle` value (ADR-0023), keyed as the shape's `parts` are. Each is a whole
+   *  `FieldValue`, so a part may be resident, host-side or opaque, and every facet (placement,
+   *  element, role) already applies per part.
+   *
+   *  A part's payload belongs to the BUNDLE. An op that extracts one returns it as-is — same
+   *  `ResidentBuffer`, no copy — and the executor keeps the bundle alive until the borrower's
+   *  own consumers have run (`borrow` in `executor.ts`). */
+  parts?: Readonly<Record<string, FieldValue>>;
   /** GPU-resident payload held as a texture rather than a buffer — what a render-producing op
    *  leaves behind (ADR-0017). A consumer that needs a storage buffer gets one from the executor's
    *  bridge; a consumer that wants a texture (a paint pass, another render) uses it directly and
@@ -365,6 +377,19 @@ export function unpackPoints(v: FieldValue): { xs: number[]; ys: number[]; n: nu
   return { xs, ys, n: xs.length };
 }
 
+/** Every resident payload this value carries, its bundle parts included (depth-first).
+ *  The executor uses it to decide what a tick owns, and what it merely borrows (ADR-0023). */
+export function payloadsOf(v: FieldValue): ResidentPayload[] {
+  const out: ResidentPayload[] = [];
+  const walk = (x: FieldValue) => {
+    if (x.texture) out.push(x.texture);
+    if (x.buffer) out.push(x.buffer);
+    if (x.parts) for (const p of Object.values(x.parts)) walk(p);
+  };
+  walk(v);
+  return out;
+}
+
 export function numCells(shape: Shape): number {
   switch (shape.kind) {
     case "grid":
@@ -376,6 +401,9 @@ export function numCells(shape: Shape): number {
     case "scalar":
       return 1;
     case "opaque":
+      return 0;
+    // A bundle has no single sample count — a consumer that needs one asks a part.
+    case "bundle":
       return 0;
   }
 }
@@ -393,5 +421,11 @@ export function shapesEqual(a: Shape, b: Shape): boolean {
       return b.kind === "scalar";
     case "opaque":
       return b.kind === "opaque" && a.name === b.name;
+    case "bundle": {
+      if (b.kind !== "bundle" || a.name !== b.name) return false;
+      const ak = Object.keys(a.parts);
+      const bk = Object.keys(b.parts);
+      return ak.length === bk.length && ak.every((k) => b.parts[k] !== undefined && shapesEqual(a.parts[k]!, b.parts[k]!));
+    }
   }
 }

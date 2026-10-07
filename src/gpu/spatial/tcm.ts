@@ -286,8 +286,8 @@ export async function crossMarksGpu(a: CellCloud, b: CellCloud, p: TcmParams): P
   // The index over B is built on the device, in the same submit, from the B points just uploaded.
   const enc = device.createCommandEncoder();
   const bIdx = encodeGridIndex(index, root.unwrap(bPts), nB, grid, enc, { keyPrefix: "tcm:b" });
-  const bStart = wrapU32(root, bIdx.start);
-  const bItems = wrapU32(root, bIdx.items);
+  const bStart = wrapU32(root, bIdx.cellOffsets);
+  const bItems = wrapU32(root, bIdx.pointIds);
   markParams.write({
     nA,
     cols: grid.cols,
@@ -345,10 +345,10 @@ export async function computeTcmGpu(a: CellCloud, b: CellCloud, p: TcmParams): P
   const enc = device.createCommandEncoder();
   const bIdx = encodeGridIndex(index, root.unwrap(bPts), nB, bGrid, enc, { keyPrefix: "tcm:b" });
   const aIdx = encodeGridIndex(index, root.unwrap(aPts), nA, aGrid, enc, { keyPrefix: "tcm:a" });
-  const bStart = wrapU32(root, bIdx.start);
-  const bItems = wrapU32(root, bIdx.items);
-  const aStart = wrapU32(root, aIdx.start);
-  const aItems = wrapU32(root, aIdx.items);
+  const bStart = wrapU32(root, bIdx.cellOffsets);
+  const bItems = wrapU32(root, bIdx.pointIds);
+  const aStart = wrapU32(root, aIdx.cellOffsets);
+  const aItems = wrapU32(root, aIdx.pointIds);
 
   markParams.write({
     nA,

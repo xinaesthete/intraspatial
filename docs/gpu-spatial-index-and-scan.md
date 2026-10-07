@@ -50,7 +50,7 @@ export interface BucketGrid {
 export function buildBucketGrid(xs, ys, cell, bounds?): BucketGrid;
 ```
 
-This is an offset list (`start[M+1]` / `items[n]`): the structure `bucketGrid.ts` builds,
+This is an offset list (`cellOffsets[M+1]` / `pointIds[n]`): the structure `bucketGrid.ts` builds,
 oriented cell→points because every query iterates the points of a cell; it is not a sparse
 feature matrix, so the CSR-vs-CSC question that matters for MDV/AnnData column access does
 not arise here — the point→cell direction is just the dense `cellOf[n]` array.
@@ -204,7 +204,10 @@ via `inferPlacement`.
 
 ### 3.3 Handle shape
 
-**Decision: three output ports, no new `Shape` kind.**
+**Decision: three output ports, no new `Shape` kind.** — *superseded 2026-08-22 by
+[ADR-0023](decisions/0023-composite-values-and-borrowed-leases.md): the op emits ONE `gridIndex`
+bundle whose parts are these three, because sibling ports can be wired from different indexes.
+The reasoning below is why the parts are buffers rather than a payload, which still holds.*
 
 ```ts
 outputs: [
@@ -333,9 +336,11 @@ compiles today's kernel and the morphology bit-exact test stays green.
    **Done 2026-08-22** — `src/gpu/spatial/gridIndexQuery.ts` (2D helpers, `vec2f`/`vec2i`
    for now; the 3D signatures above wait on step 6) + an optional `cell` on all three
    kernels; contract in `IndexedQueryOptions`. CkNN / fuzzy adjacency still call brute force.
-3. **Resident index op** (§3.3) and a resident `separate` / `spring` force op reading it.
-   Unblocks force-directed layout at scale (TerraCognita's displacement-field terrain) and the first
-   per-tick resident chain (ADR-0017 stage 3 feedback state).
+3. ~~**Resident index op** (§3.3)~~ **done 2026-08-22** (`src/gpu/graph/ops/gridIndex.ts`: three
+   ports, one lease each, extent from params because `inferShapes` predates the values; `pull()`
+   on the u32 ports throws by design) — and a resident `separate` / `spring` force op reading it,
+   still to come. That unblocks force-directed layout at scale (TerraCognita's displacement-field
+   terrain) and the first per-tick resident chain (ADR-0017 stage 3 feedback state).
 4. **`encodeCompact` + the `support` facet** (§4.2, §4.4 steps 1–4), pointwise and reduction
    rules. Unblocks the mask ⇄ index duality, weighted null models, MDV filtered density with
    zero marshalling.

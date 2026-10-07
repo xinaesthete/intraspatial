@@ -18,6 +18,11 @@ export interface PortSpec {
    *  ops; used by the UI to validate edges. */
   kind: ShapeKind | "any";
   dtype?: Dtype;
+  /** For `kind: "bundle"`: which bundle type, and what is in it (ADR-0023). Static, so the
+   *  palette and the hover tooltip can say what a port carries BEFORE the graph has run — "a
+   *  bundle" on its own tells a reader nothing. The parts' sizes still come from the run; these
+   *  are the names, which are the part of it that never changes. */
+  bundle?: { readonly name: string; readonly parts: readonly string[] };
 }
 
 export type ParamType = "number" | "int" | "enum" | "bool";

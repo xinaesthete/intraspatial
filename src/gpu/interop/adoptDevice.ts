@@ -14,7 +14,7 @@
 
 import tgpu from "typegpu";
 import * as d from "typegpu/data";
-import { writeView } from "../device";
+import { readBackBytes, writeView } from "../device";
 import type { GpuBackend, Root } from "../graph/backend";
 import type { ResidentBuffer, ResidentTexture } from "../graph/handle";
 import { BufferPool, type PoolStats, residentTextureUsage, residentUsage, TexturePool } from "../graph/pool";
@@ -47,6 +47,12 @@ export function adoptDevice(device: GPUDevice, kind = "adopted"): GpuBackend {
       const wrap = getRoot().createBuffer(d.arrayOf(d.f32, Math.max(1, n)), buffer);
       const got = (await wrap.read()) as ArrayLike<number>;
       return Float32Array.from({ length: n }, (_, i) => got[i] ?? 0);
+    },
+
+    async readbackBytes(buffer: GPUBuffer, bytes: number): Promise<ArrayBuffer> {
+      // Raw staging copy rather than a second TypeGPU wrapper over the host's buffer — see
+      // `readBackBytes` in `../device`. Same off-hot-path caveat as `readbackF32` above.
+      return readBackBytes(device, "adoptDevice:staging", buffer, 0, bytes);
     },
     async lease(byteLength: number, usage: number = residentUsage()): Promise<ResidentBuffer> {
       return pool.lease(byteLength, usage);
