@@ -68,13 +68,13 @@ jobs:
         run: |
           set -euo pipefail
           test -f docs-site/dist/prototypes/index.html
-          for page in index datasource spatialdata spatialscene spatialvolume geometry raymarch hspf; do
+          for page in index datasource spatialdata spatialscene spatialvolume geometry raymarch hspf transcriptmodes; do
             test -f "docs-site/dist/playground/${page}.html" || { echo "::error::missing playground/${page}.html"; exit 1; }
           done
           # The volume viewer decodes HTJ2K through openjph-wasm; its Emscripten glue resolves this
           # binary relative to itself, and it is emitted by a build-only plugin.
           test -f docs-site/dist/playground/assets/libopenjph.wasm || { echo "::error::openjph wasm not emitted"; exit 1; }
-          echo "8 prototypes + openjph wasm present in docs-site/dist"
+          echo "9 prototypes + openjph wasm present in docs-site/dist"
 
       - uses: actions/configure-pages@v5
         if: github.event_name != 'pull_request'

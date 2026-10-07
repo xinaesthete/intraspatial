@@ -61,7 +61,7 @@
     "typegpu": "catalog:",
     "typescript": "catalog:",
     "unplugin-typegpu": "catalog:",
-    "vite": "^8.1.4",
+    "vite": "^8.3.3",
     "vitest": "^4.1.10",
     "webgpu": "^0.4.0"
   },
