@@ -31,12 +31,13 @@ type ModeUniforms = {
   marker: [number, number, number, number];
   width: number;
   height: number;
-  rowFloats: number;
+  rowWords: number;
   K: number;
   m: number;
   selTol: number;
   selOn: number;
-  pad: number;
+  /** 1 when `rasters` holds packed f16 (two texels per word), 0 for plain f32. */
+  half: number;
 };
 
 // Named `U` because the shared mixins read `U.K` and `U.m`; luma binds a module's uniform block by
@@ -49,11 +50,12 @@ struct ModeUniforms {
   scales: vec4<f32>,
   look: vec4<f32>,
   marker: vec4<f32>,
-  width: f32, height: f32, rowFloats: f32, K: f32,
-  m: f32, selTol: f32, selOn: f32, pad: f32,
+  width: f32, height: f32, rowWords: f32, K: f32,
+  m: f32, selTol: f32, selOn: f32, half: f32,
 };
 @group(0) @binding(auto) var<uniform> U: ModeUniforms;
-@group(0) @binding(auto) var<storage, read> rasters: array<f32>;
+/** Words, not floats: at f16 one word holds two texels (see gramMatrix's ResidentRasters). */
+@group(0) @binding(auto) var<storage, read> rasters: array<u32>;
 /** Per channel: mean, 1/sd and the three mode loadings — see similarityWgsl. */
 @group(0) @binding(auto) var<storage, read> chan: array<f32>;
 /** K floats of wand reference z, then m*K of the whitening matrix — see similarityWgsl. */
@@ -67,18 +69,24 @@ struct ModeUniforms {
     marker: "vec4<f32>",
     width: "f32",
     height: "f32",
-    rowFloats: "f32",
+    rowWords: "f32",
     K: "f32",
     m: "f32",
     selTol: "f32",
     selOn: "f32",
-    pad: "f32",
+    half: "f32",
   },
 };
 
 const source = /* wgsl */ `\
 fn fetch(a: u32, col: u32, row: u32) -> f32 {
-  return rasters[a * u32(U.height) * u32(U.rowFloats) + row * u32(U.rowFloats) + col];
+  let rowWords = u32(U.rowWords);
+  let base = a * u32(U.height) * rowWords + row * rowWords;
+  if (U.half != 0.0) {
+    let pair = unpack2x16float(rasters[base + (col >> 1u)]);
+    return select(pair.y, pair.x, (col & 1u) == 0u);
+  }
+  return bitcast<f32>(rasters[base + col]);
 }
 
 ${MARKER_WGSL}
@@ -269,12 +277,12 @@ export class GramModesLayer extends Layer<GramModesLayerProps> {
       marker: [marker?.col ?? 0, marker?.row ?? 0, marker ? 1 : 0, 0.75],
       width: res.width,
       height: res.height,
-      rowFloats: res.resident.rowFloats,
+      rowWords: res.resident.rowWords,
+      half: res.resident.precision === "f16" ? 1 : 0,
       K: res.labels.length,
       m: params.m,
       selTol: tolerance ?? 1.2,
       selOn: reference ? 1 : 0,
-      pad: 0,
     };
     model.shaderInputs.setProps({ U: uniforms });
     model.draw(this.context.renderPass);

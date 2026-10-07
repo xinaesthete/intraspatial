@@ -39,6 +39,7 @@
     "umap:obsm": "tsx scripts/umap-obsm.ts",
     "umap:bench": "tsx scripts/umap-bench.ts",
     "qcm:bench": "tsx scripts/qcm-bench.ts",
+    "bench:density-precision": "tsx scripts/bench-density-precision.ts",
     "bench:scan": "tsx scripts/bench-scan.ts",
     "bench:grid-index": "tsx scripts/bench-grid-index.ts",
     "bench:assembly": "tsx scripts/bench-tile-assembly.ts"

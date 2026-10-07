@@ -140,6 +140,29 @@ export const residentTextureUsage = (): number =>
  *  oversized buffer is still usable, an oversized or differently-formatted texture is not. Like the
  *  buffer pool it never destroys — mid-process destruction segfaults Dawn-on-Node (ADR-0002/0003) —
  *  so a texture returns to the free list of exactly the slot it came from. */
+/** Bytes per texel, for the pool's occupancy figure. Only the formats this pool actually leases
+ *  are listed; anything else falls back to 4, which is what the figure assumed before `r16float`
+ *  made the difference visible (a density field at half precision is half the bytes, and an
+ *  overlay that still said 4 would hide exactly the saving it exists to show). */
+function bytesPerTexel(format: GPUTextureFormat): number {
+  switch (format) {
+    case "r16float":
+    case "r16uint":
+    case "r16sint":
+      return 2;
+    case "r8unorm":
+    case "r8uint":
+    case "r8sint":
+      return 1;
+    case "rgba16float":
+      return 8;
+    case "rgba32float":
+      return 16;
+    default:
+      return 4;
+  }
+}
+
 export class TexturePool {
   private readonly free = new Map<string, GPUTexture[]>();
   private readonly live = new Set<number>();
@@ -162,7 +185,7 @@ export class TexturePool {
     if (!texture) {
       texture = this.device.createTexture({ size: { width: w, height: h }, format, usage });
       this.created++;
-      this.bytes += w * h * 4; // r32float and friends; a coarse figure for the overlay
+      this.bytes += w * h * bytesPerTexel(format);
     }
     const lease: TextureLeaseToken = { id: this.seq++, usage, format, width: w, height: h };
     this.live.add(lease.id);

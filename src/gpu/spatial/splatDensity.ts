@@ -22,8 +22,10 @@
 import tgpu from "typegpu";
 import * as d from "typegpu/data";
 import * as std from "typegpu/std";
-import { getDevice, sized } from "../device";
+import { compileShader, getDevice, sized } from "../device";
 import { rawBindGroup } from "../graph/residentBind";
+import { narrowToHalf } from "../halfTexture";
+import { scratchTexture } from "../scratchTexture";
 
 const SHADER = /* wgsl */ `
 struct Uni {
@@ -122,6 +124,11 @@ interface Pipe {
   root: ReturnType<typeof tgpu.initFromDevice>;
   pipeline: GPURenderPipeline;
 }
+
+/** Formats a density field can be STORED in. Accumulation is always f32 — see
+ *  `docs/field-precision.md` for the measurements that forced that, and `../halfTexture.ts`. */
+export type DensityFormat = "r32float" | "r16float";
+
 let pipeCache: Promise<Pipe> | undefined;
 
 function getPipe(): Promise<Pipe> {
@@ -354,6 +361,11 @@ function renderPoints(
   sigma: number,
   radiusSigma: number,
   bbox: [number, number, number, number],
+  /** The field's extent. The attachment may be a REUSED scratch target that is larger (see
+   *  `../scratchTexture.ts`), and without a viewport the splat would spread across all of it —
+   *  the same points at the wrong scale, cropped back to the right size on the way out, which
+   *  looks like a plausible field rather than an error. */
+  extent?: { width: number; height: number },
 ): void {
   const [minX, minY, maxX, maxY] = bbox;
   const uni = new Float32Array([
@@ -371,6 +383,7 @@ function renderPoints(
   const pass = enc.beginRenderPass({
     colorAttachments: [{ view, clearValue: { r: 0, g: 0, b: 0, a: 0 }, loadOp: "clear", storeOp: "store" }],
   });
+  if (extent) pass.setViewport(0, 0, extent.width, extent.height, 0, 1);
   pass.setPipeline(pipeline);
   pass.setBindGroup(
     0,
@@ -413,18 +426,49 @@ export async function splatDensityToTexture(points: GPUBuffer, n: number, target
   if (w <= 0 || h <= 0) throw new Error("splatDensity: width/height must be > 0");
   if (sigma <= 0) throw new Error("splatDensity: sigma must be > 0");
   const { device, pipeline } = await getPipe();
+
+  // ACCUMULATE IN f32, ALWAYS — even when the field is stored as f16.
+  //
+  // Blending additively straight into an r16float target looks like the obvious way to halve the
+  // memory, and it is wrong in a way that does not announce itself. f16 carries 10 mantissa bits,
+  // so once a texel's running total exceeds ~1024× one splat's contribution, `total + c == total`
+  // and the contribution disappears. The loss is systematic, not noise: measured on a 128² field
+  // (`pnpm bench:density-precision`), a 6400-point cloud lost 9% of its total mass and 25000
+  // points lost 75%, while the same fields stored f16 AFTER an f32 accumulation lose ~0.02%.
+  // Dense data is exactly where a density field is worth computing, so that is the case that must
+  // not quietly degrade.
+  const half = target.format === "r16float";
+  const accum = half ? ensureAccum(device, w, h) : target;
+
   const enc = device.createCommandEncoder();
   renderPoints(
     device,
     enc,
     pipeline,
-    target.createView(),
+    accum.createView(),
     { buffer: points, n, stride: 2, defaultWeight: 1 },
     sigma,
     opts.radiusSigma ?? 4,
     opts.bbox,
+    { width: w, height: h },
   );
+  if (half) await narrowToHalf(device, enc, accum, target, w, h);
   device.queue.submit([enc.finish()]);
+}
+
+// The f32 accumulator behind every f16 field. ONE texture, reused — the saving f16 buys is in the
+// fields a graph RETAINS (a layer stack, a memo, a cache), not in this single transient, so one
+// full-precision scratch costs one field's worth of memory however many half-precision ones are
+// alive. It is reused for cost, and REPLACED PROPERLY when the size changes: `scratchTexture`
+// destroys the one it supersedes rather than leaving a multi-megabyte allocation for a collector
+// that cannot see it. `releaseScratchTextures("splatDensity")` gives it back.
+function ensureAccum(device: GPUDevice, w: number, h: number): GPUTexture {
+  return scratchTexture(device, "splatDensity:accum", {
+    width: w,
+    height: h,
+    format: "r32float",
+    usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
+  });
 }
 
 /** Tier-2 form (ADR-0017): splat a GPU-resident point cloud into a GPU-resident density grid,

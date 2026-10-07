@@ -116,6 +116,13 @@ export const splatDensityOp: OpType = {
     { name: "height", type: "int", default: 64, min: 8, max: 512, describe: "grid height" },
     { name: "sigma", type: "number", default: 2, min: 0.1, max: 40, step: 0.1, describe: "bandwidth (world units)" },
     { name: "radiusSigma", type: "number", default: 4, min: 1, max: 8, step: 0.5 },
+    {
+      name: "precision",
+      type: "enum",
+      default: "f32",
+      options: ["f32", "f16"],
+      describe: "storage precision of the density field — f16 halves its memory",
+    },
   ],
   inferShapes(_inputs, params) {
     return [{ kind: "grid", width: param<number>(params, this.params[0]!), height: param<number>(params, this.params[1]!) }];
@@ -153,7 +160,10 @@ export const splatDensityOp: OpType = {
     const width = params.width as number,
       height = params.height as number;
 
-    const dst = await ctx.backend.leaseTexture(width, height);
+    // f16 is a STORAGE choice: the field accumulates in half precision and the executor's bridge
+    // widens it back to f32, so no consumer sees the difference except in memory (and in the
+    // error documented in `docs/field-precision.md`).
+    const dst = await ctx.backend.leaseTexture(width, height, params.precision === "f16" ? "r16float" : "r32float");
     await splatDensityToTexture(src.buffer, pointCount(inField.shape), dst.texture, {
       width,
       height,
