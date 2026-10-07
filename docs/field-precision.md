@@ -105,25 +105,14 @@ in the graph layer, more in every kernel. `lease(byteLength)` is already byte-ba
 needs nothing. A bundle (ADR-0023) is the natural carrier for the result, since `cellOffsets` u32
 beside `pointIds` u16 is a mixed-precision value that sibling ports could not express.
 
-**Wider than f32.** WebGPU has no f64 at all, so "wider" means a pair of f32s — double-single —
-and belongs with ADR-0004's element algebra rather than with storage.
-
-Before building it, note what deck.gl found. Its `fp64` module is exactly double-single, and it
-is now "a niche technology": deck 6.1's improved **32-bit** projection reaches sub-centimetre
-precision without it, because it transforms coordinates relative to an origin near the data
-instead of carrying absolute ones. fp64 costs them ~10× shader slowdown, double the attribute
-memory, slower compiles and driver-compatibility trouble; they keep it only for extreme dynamic
-range, such as a whole city at sub-centimetre accuracy at once.
-
-The same lever is already here: ADR-0018's `placement` / `worldFromArray` is origin-shifting
-machinery. **Try a placement-relative origin before emulated double precision.** Slide-scale µm
-coordinates are a large-offset-small-extent problem, which is the case origin-shifting solves
-outright, and f32 relative to a local origin beats double-single at a tenth of the cost.
+**Wider than f32.** Probably never needed. WebGPU has no f64, so it would mean double-single
+(a pair of f32s), and the cheaper lever is already here: shift coordinates to a nearby origin via
+ADR-0018's `placement` and stay in f32. deck.gl reached the same conclusion — its `fp64` module is
+double-single and now "a niche technology", superseded by a 32-bit projection relative to a local
+origin.
 
 ## References
 
 - [deck.gl — 64-bit precision](https://deck.gl/docs/developer-guide/fp64)
-- [luma.gl — fp64 shader module](https://luma.gl/docs/api-reference/shadertools/shader-modules/fp64-arithmetic)
-- [deck.gl — project64](https://deck.gl/docs/api-reference/core/project64)
 - [WebGPU texture format tiers — `texture-formats-tier2` adds `r16float` storage](https://developer.mozilla.org/en-US/docs/Web/API/GPUSupportedFeatures)
 - [Chrome — filterable 32-bit float textures (`float32-filterable`)](https://developer.chrome.com/blog/new-in-webgpu-119)
