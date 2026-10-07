@@ -66,7 +66,7 @@ Numbers 0019–0021 are **retired, not reused**, so commit history keeps pointin
 | [0018](0018-field-domains-placement-and-resolution.md) | Field domains: extent, placement, resolution | draft | **partial** | `placement` on `GpuField`+`FieldValue` + `inferPlacement`/`outPlacements` landed (2026-08); `boundsOf` + `ParamSpec.units` remain |
 | [0019](0019-package-surface-and-prebuilt-kernels.md) | Package surface: `intraspatial` subpath exports, pre-transformed kernels, Dawn optional | accepted | **landed** | `package.json` exports, `vite.lib.config.ts`, `tsconfig.build.json`, barrels, lazy Dawn in `device.ts` |
 | [0022](0022-gpu-uniform-grid-index.md) | GPU uniform-grid spatial index (2D, on-device build) | accepted | **partial** | `src/gpu/spatial/gridIndex.ts`, `latticeFor` in `bucketGrid.ts`, consumed by `crossPcf.ts` + `tcm.ts` (2026-08-22); no graph op, no 3D |
-| [0023](0023-composite-values-and-borrowed-leases.md) | Composite field values (bundles) + borrowed resident leases | proposed | **partial** | `bundle` shape + `parts`, borrow liveness in `executor.ts`, `bundleOps.ts` factories, `gridIndex` + `cellCounts` (2026-08-22); no bundle feedback |
+| [0023](0023-composite-values-and-borrowed-leases.md) | Composite field values (bundles) + borrowed resident leases | accepted | **partial** | `bundle` shape + `parts`, borrow liveness in `executor.ts`, `bundleOps.ts` factories, `gridIndex` + `cellCounts` (2026-08-22); no bundle feedback |
 
 ⚠ **Two ADRs share the number 0010** (`procedural-geometry-composable-ops` and
 `spatialdata-js-as-loader-source`). Renumbering breaks inbound links in `docs/gpu-resource-sync.md`

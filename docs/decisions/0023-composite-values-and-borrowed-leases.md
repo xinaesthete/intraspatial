@@ -1,7 +1,8 @@
 # ADR-0023 — Composite field values, and borrowing a resident lease
 
-Status: **proposed** (2026-08-22). Written the day the spike started; the implementation notes at
-the bottom say what is built.
+Status: **accepted** (2026-10-07; written 2026-08-22, the day the spike started). The borrow rule
+changes ADR-0017's ownership model, so it waited for review rather than landing with the code.
+The implementation notes at the bottom say what is built.
 Implementation: `src/gpu/graph/handle.ts` (`bundle` shape + `parts`), `src/gpu/graph/executor.ts`
 (borrow liveness), `src/gpu/graph/ops/bundleOps.ts` (extract/combine factories),
 `src/gpu/graph/ops/gridIndex.ts` (first producer), `src/gpu/graph/ops/cellCounts.ts` (first consumer).
