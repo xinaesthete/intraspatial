@@ -87,6 +87,36 @@ describe("splatDensity precision", () => {
     expect(f16.length).toBe(PARAMS.width * PARAMS.height);
   });
 
+  it("is unaffected by a larger field computed before it (the shared accumulator)", async () => {
+    // The f16 path renders into one reused f32 accumulator. Compute a BIG field first so the
+    // accumulator is oversized, then a small one: without a viewport the small field would be
+    // splatted across the whole target and cropped — a plausible-looking wrong answer.
+    // Sizes chosen to land INSIDE the registry's reuse window (64*64 <= 2*48*48), so the small
+    // field really is handed the bigger target. Outside it the registry reallocates exactly and
+    // the viewport would never be exercised.
+    const big = { ...PARAMS, width: 64, height: 64 };
+    const small = { ...PARAMS, width: 48, height: 48 };
+    const { xs, ys } = cloud(500, 0x5eed);
+    const run = async (p: Record<string, unknown>, precision: "f32" | "f16") => {
+      const g = new Graph();
+      return (await pull(g, g.op1("splatDensity", { points: g.points(xs, ys) }, { ...p, precision }))).data as Float32Array;
+    };
+
+    await run(big, "f16"); // grows the accumulator past what the next call needs
+    const after = await run(small, "f16");
+    const want = await run(small, "f32");
+
+    let maxRel = 0;
+    let peak = 0;
+    for (const v of want) peak = Math.max(peak, v);
+    for (let i = 0; i < want.length; i++) {
+      if (want[i]! < peak * 1e-3) continue;
+      maxRel = Math.max(maxRel, Math.abs(after[i]! - want[i]!) / want[i]!);
+    }
+    expect(peak).toBeGreaterThan(0);
+    expect(maxRel).toBeLessThan(2e-3);
+  });
+
   it("the op's field really is an r16float texture, and costs half the bytes", async () => {
     const g = new Graph();
     const { xs, ys } = cloud(50, 11);

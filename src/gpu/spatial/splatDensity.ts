@@ -25,6 +25,7 @@ import * as std from "typegpu/std";
 import { compileShader, getDevice, sized } from "../device";
 import { rawBindGroup } from "../graph/residentBind";
 import { narrowToHalf } from "../halfTexture";
+import { scratchTexture } from "../scratchTexture";
 
 const SHADER = /* wgsl */ `
 struct Uni {
@@ -360,6 +361,11 @@ function renderPoints(
   sigma: number,
   radiusSigma: number,
   bbox: [number, number, number, number],
+  /** The field's extent. The attachment may be a REUSED scratch target that is larger (see
+   *  `../scratchTexture.ts`), and without a viewport the splat would spread across all of it —
+   *  the same points at the wrong scale, cropped back to the right size on the way out, which
+   *  looks like a plausible field rather than an error. */
+  extent?: { width: number; height: number },
 ): void {
   const [minX, minY, maxX, maxY] = bbox;
   const uni = new Float32Array([
@@ -377,6 +383,7 @@ function renderPoints(
   const pass = enc.beginRenderPass({
     colorAttachments: [{ view, clearValue: { r: 0, g: 0, b: 0, a: 0 }, loadOp: "clear", storeOp: "store" }],
   });
+  if (extent) pass.setViewport(0, 0, extent.width, extent.height, 0, 1);
   pass.setPipeline(pipeline);
   pass.setBindGroup(
     0,
@@ -443,29 +450,25 @@ export async function splatDensityToTexture(points: GPUBuffer, n: number, target
     sigma,
     opts.radiusSigma ?? 4,
     opts.bbox,
+    { width: w, height: h },
   );
   if (half) await narrowToHalf(device, enc, accum, target, w, h);
   device.queue.submit([enc.finish()]);
 }
 
-// The f32 accumulator behind every f16 field. ONE texture, grown to the largest field seen and
-// reused — the saving f16 buys is in the fields a graph RETAINS (a layer stack, a memo, a cache),
-// not in this single transient, so keeping one full-precision scratch costs one field's worth of
-// memory however many half-precision ones are alive. Reuse is for cost, not safety; see
-// `../halfTexture.ts` on the destruction folklore.
-let accumTex: GPUTexture | undefined;
-let accumW = 0;
-let accumH = 0;
+// The f32 accumulator behind every f16 field. ONE texture, reused — the saving f16 buys is in the
+// fields a graph RETAINS (a layer stack, a memo, a cache), not in this single transient, so one
+// full-precision scratch costs one field's worth of memory however many half-precision ones are
+// alive. It is reused for cost, and REPLACED PROPERLY when the size changes: `scratchTexture`
+// destroys the one it supersedes rather than leaving a multi-megabyte allocation for a collector
+// that cannot see it. `releaseScratchTextures("splatDensity")` gives it back.
 function ensureAccum(device: GPUDevice, w: number, h: number): GPUTexture {
-  if (accumTex && accumW >= w && accumH >= h) return accumTex;
-  accumW = Math.max(w, accumW);
-  accumH = Math.max(h, accumH);
-  accumTex = device.createTexture({
-    size: { width: accumW, height: accumH },
+  return scratchTexture(device, "splatDensity:accum", {
+    width: w,
+    height: h,
     format: "r32float",
     usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
   });
-  return accumTex;
 }
 
 /** Tier-2 form (ADR-0017): splat a GPU-resident point cloud into a GPU-resident density grid,

@@ -13,6 +13,7 @@
 // sampler: this is a 1:1 copy that wants no filtering, and an `r32float` source is not filterable
 // without `float32-filterable`, which `getDevice()` does not request.
 import { compileShader } from "./device";
+import { scratchTexture } from "./scratchTexture";
 
 const NARROW = /* wgsl */ `
 @group(0) @binding(0) var src: texture_2d<f32>;
@@ -80,24 +81,13 @@ export async function narrowToHalf(
   pass.end();
 }
 
-/** A grown-and-reused `r16float` scratch target, one per caller key.
- *
- *  Reused rather than reallocated because reuse is cheaper, NOT because destroying it is unsafe:
- *  `test/destroy-mid-process.gpu.test.ts` destroys hundreds of textures and buffers mid-process
- *  and exits clean. The repo's older "destroying segfaults Dawn-on-Node" comments predate the
- *  Instance-lifetime fix in `device.ts` (2026-07-29), which is what those crashes actually were. */
-const halfTex = new Map<string, { tex: GPUTexture; w: number; h: number }>();
-
+/** The `r16float` target a narrowing pass writes into — see `scratchTexture.ts` for the reuse
+ *  and replacement rules, and `releaseScratchTextures` for giving the memory back. */
 export function ensureHalfTex(device: GPUDevice, key: string, w: number, h: number, extraUsage = 0): GPUTexture {
-  const got = halfTex.get(key);
-  if (got && got.w >= w && got.h >= h) return got.tex;
-  const width = Math.max(w, got?.w ?? 0);
-  const height = Math.max(h, got?.h ?? 0);
-  const tex = device.createTexture({
-    size: { width, height },
+  return scratchTexture(device, `${key}:half`, {
+    width: w,
+    height: h,
     format: "r16float",
     usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING | extraUsage,
   });
-  halfTex.set(key, { tex, w: width, h: height });
-  return tex;
 }

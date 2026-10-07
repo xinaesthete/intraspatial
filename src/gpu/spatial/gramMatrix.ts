@@ -31,6 +31,7 @@ import type { ChannelCloud, GramParams, GramResult } from "../../spatial/gram";
 import { EPANECHNIKOV, kernelCode, roughness } from "../../spatial/kernels";
 import { checkBindingSize, getDevice, sized } from "../device";
 import { ensureHalfTex, narrowToHalf } from "../halfTexture";
+import { scratchTexture } from "../scratchTexture";
 import { KERNEL_WGSL } from "./kernelWgsl";
 
 const REDUCE_WG = 256;
@@ -270,20 +271,24 @@ function ensureBuf(device: GPUDevice, key: string, floats: number, usage: number
   return buf;
 }
 
-let scratchTex: { tex: GPUTexture; view: GPUTextureView; w: number; h: number } | undefined;
+// The per-channel splat target. Its size follows the window, so on a page that re-rasters as you
+// pan this is replaced often — which is why it goes through `scratchTexture`, which destroys the
+// one it supersedes. Dropping it instead left a multi-megabyte allocation behind every resize,
+// invisible to the JS collector. The view is cached alongside, keyed by the texture it belongs to.
+let scratchView: { tex: GPUTexture; view: GPUTextureView } | undefined;
 
 function ensureTex(device: GPUDevice, w: number, h: number) {
-  if (scratchTex && scratchTex.w === w && scratchTex.h === h) return scratchTex;
-  const tex = device.createTexture({
-    size: { width: w, height: h },
+  const tex = scratchTexture(device, "gramMatrix:splat", {
+    width: w,
+    height: h,
     format: "r32float",
     // TEXTURE_BINDING as well: the f16 path samples this target in the narrowing pass. Without
     // it the bind group is invalid, which invalidates the command buffer, and the rasters stay
     // zero — the silent-failure shape `checkBindingSize` exists to avoid.
     usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC | GPUTextureUsage.TEXTURE_BINDING,
   });
-  scratchTex = { tex, view: tex.createView(), w, h };
-  return scratchTex;
+  if (scratchView?.tex !== tex) scratchView = { tex, view: tex.createView() };
+  return { tex, view: scratchView.view };
 }
 
 // Readback goes through a TypeGPU-wrapped buffer: `.read()` is the only Dawn-on-Node-stable
@@ -453,6 +458,9 @@ export async function gramMatrixGpu(
     const pass = enc.beginRenderPass({
       colorAttachments: [{ view: tex.view, loadOp: "clear", storeOp: "store", clearValue: { r: 0, g: 0, b: 0, a: 0 } }],
     });
+    // The target may be a larger reused scratch (see ../scratchTexture.ts); without this the
+    // channel would be rasterised across all of it and then cropped, which is wrong but plausible.
+    pass.setViewport(0, 0, w, h, 0, 1);
     pass.setPipeline(splat);
     pass.setBindGroup(0, splatBind);
     const n = channels[k]!.xs.length;

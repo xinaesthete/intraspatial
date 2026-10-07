@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { getDevice } from "../src/gpu/device";
 import { exclusiveScanGpu } from "../src/gpu/scan/prefixSum";
+import { releaseScratchTextures, scratchTexture, scratchTextureBytes } from "../src/gpu/scratchTexture";
 
 // Does destroying a GPU resource mid-process actually segfault Dawn-on-Node?
 //
@@ -79,5 +80,36 @@ describe("destroying GPU resources mid-process", () => {
 
     const { total } = await exclusiveScanGpu(new Uint32Array(1024).fill(2));
     expect(total).toBe(2048);
+  });
+
+  it("replaces a scratch target instead of leaking it, and hands the memory back", async () => {
+    const device = await getDevice();
+    const usage = GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING;
+    const before = scratchTextureBytes();
+
+    const a = scratchTexture(device, "probe:scratch", { width: 256, height: 256, format: "r32float", usage });
+    expect(scratchTextureBytes() - before).toBe(256 * 256 * 4);
+
+    // Within the 2x reuse window: same texture back, no new allocation.
+    const b = scratchTexture(device, "probe:scratch", { width: 200, height: 200, format: "r32float", usage });
+    expect(b).toBe(a);
+    expect(scratchTextureBytes() - before).toBe(256 * 256 * 4);
+
+    // Past it: a new one, and crucially the old is DESTROYED rather than dropped for a collector
+    // that cannot see the 256 KiB behind the handle. The accounting is flat, not cumulative.
+    const c = scratchTexture(device, "probe:scratch", { width: 512, height: 512, format: "r32float", usage });
+    expect(c).not.toBe(a);
+    expect(scratchTextureBytes() - before).toBe(512 * 512 * 4);
+
+    // A smaller request outside the window shrinks it — growth is not one-way.
+    scratchTexture(device, "probe:scratch", { width: 64, height: 64, format: "r32float", usage });
+    expect(scratchTextureBytes() - before).toBe(64 * 64 * 4);
+
+    expect(releaseScratchTextures("probe:")).toBe(64 * 64 * 4);
+    expect(scratchTextureBytes()).toBe(before);
+
+    // Still healthy afterwards.
+    const { total } = await exclusiveScanGpu(new Uint32Array(512).fill(1));
+    expect(total).toBe(512);
   });
 });
