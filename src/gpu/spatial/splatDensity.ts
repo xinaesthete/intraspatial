@@ -22,7 +22,7 @@
 import tgpu from "typegpu";
 import * as d from "typegpu/data";
 import * as std from "typegpu/std";
-import { getDevice, sized } from "../device";
+import { compileShader, getDevice, sized } from "../device";
 import { rawBindGroup } from "../graph/residentBind";
 
 const SHADER = /* wgsl */ `
@@ -122,6 +122,11 @@ interface Pipe {
   root: ReturnType<typeof tgpu.initFromDevice>;
   pipeline: GPURenderPipeline;
 }
+
+/** Formats a density field can be STORED in. Accumulation is always f32 — see
+ *  `docs/field-precision.md` for the measurements that forced that, and `narrowToHalf` below. */
+export type DensityFormat = "r32float" | "r16float";
+
 let pipeCache: Promise<Pipe> | undefined;
 
 function getPipe(): Promise<Pipe> {
@@ -413,18 +418,106 @@ export async function splatDensityToTexture(points: GPUBuffer, n: number, target
   if (w <= 0 || h <= 0) throw new Error("splatDensity: width/height must be > 0");
   if (sigma <= 0) throw new Error("splatDensity: sigma must be > 0");
   const { device, pipeline } = await getPipe();
+
+  // ACCUMULATE IN f32, ALWAYS — even when the field is stored as f16.
+  //
+  // Blending additively straight into an r16float target looks like the obvious way to halve the
+  // memory, and it is wrong in a way that does not announce itself. f16 carries 10 mantissa bits,
+  // so once a texel's running total exceeds ~1024× one splat's contribution, `total + c == total`
+  // and the contribution disappears. The loss is systematic, not noise: measured on a 128² field
+  // (`pnpm bench:density-precision`), a 6400-point cloud lost 9% of its total mass and 25000
+  // points lost 75%, while the same fields stored f16 AFTER an f32 accumulation lose ~0.02%.
+  // Dense data is exactly where a density field is worth computing, so that is the case that must
+  // not quietly degrade.
+  const half = target.format === "r16float";
+  const accum = half ? ensureAccum(device, w, h) : target;
+
   const enc = device.createCommandEncoder();
   renderPoints(
     device,
     enc,
     pipeline,
-    target.createView(),
+    accum.createView(),
     { buffer: points, n, stride: 2, defaultWeight: 1 },
     sigma,
     opts.radiusSigma ?? 4,
     opts.bbox,
   );
+  if (half) await narrowToHalf(device, enc, accum, target, w, h);
   device.queue.submit([enc.finish()]);
+}
+
+// The f32 accumulator behind every f16 field. ONE texture, grown to the largest field seen and
+// reused — the saving f16 buys is in the fields a graph RETAINS (a layer stack, a memo, a cache),
+// not in this single transient, so keeping one full-precision scratch costs one field's worth of
+// memory however many half-precision ones are alive.
+let accumTex: GPUTexture | undefined;
+let accumW = 0;
+let accumH = 0;
+function ensureAccum(device: GPUDevice, w: number, h: number): GPUTexture {
+  if (accumTex && accumW >= w && accumH >= h) return accumTex;
+  accumW = Math.max(w, accumW);
+  accumH = Math.max(h, accumH);
+  // Never destroyed: mid-process destruction segfaults Dawn-on-Node (ADR-0002/0003).
+  accumTex = device.createTexture({
+    size: { width: accumW, height: accumH },
+    format: "r32float",
+    usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
+  });
+  return accumTex;
+}
+
+const NARROW = /* wgsl */ `
+@group(0) @binding(0) var src: texture_2d<f32>;
+
+@vertex
+fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f {
+  // One oversized triangle rather than a quad: no index buffer, no seam down the diagonal.
+  let p = array(vec2f(-1.0, -1.0), vec2f(3.0, -1.0), vec2f(-1.0, 3.0));
+  return vec4f(p[i], 0.0, 1.0);
+}
+
+@fragment
+fn fs(@builtin(position) pos: vec4f) -> @location(0) f32 {
+  // textureLoad, not a sampler: an r32float texture is not filterable without the
+  // float32-filterable feature, and this is a 1:1 copy that wants no filtering anyway.
+  return textureLoad(src, vec2i(pos.xy), 0).r;
+}
+`;
+
+interface NarrowPipe {
+  pipeline: GPURenderPipeline;
+  layout: GPUBindGroupLayout;
+}
+let narrowPipe: NarrowPipe | undefined;
+
+/** Copy the f32 accumulator into the f16 field — the single rounding the whole design spends. */
+async function narrowToHalf(device: GPUDevice, enc: GPUCommandEncoder, src: GPUTexture, dst: GPUTexture, w: number, h: number) {
+  if (!narrowPipe) {
+    const module = await compileShader(device, NARROW, "splatDensity:narrow");
+    const layout = device.createBindGroupLayout({
+      entries: [{ binding: 0, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "unfilterable-float" } }],
+    });
+    narrowPipe = {
+      layout,
+      pipeline: device.createRenderPipeline({
+        layout: device.createPipelineLayout({ bindGroupLayouts: [layout] }),
+        vertex: { module, entryPoint: "vs" },
+        primitive: { topology: "triangle-list" },
+        fragment: { module, entryPoint: "fs", targets: [{ format: "r16float" }] },
+      }),
+    };
+  }
+  // The accumulator may be larger than this field (it is grown, never shrunk), so sample by
+  // integer position — the top-left w×h corner is this field's.
+  const pass = enc.beginRenderPass({
+    colorAttachments: [{ view: dst.createView(), loadOp: "clear", storeOp: "store", clearValue: { r: 0, g: 0, b: 0, a: 0 } }],
+  });
+  pass.setPipeline(narrowPipe.pipeline);
+  pass.setBindGroup(0, device.createBindGroup({ layout: narrowPipe.layout, entries: [{ binding: 0, resource: src.createView() }] }));
+  pass.setViewport(0, 0, w, h, 0, 1);
+  pass.draw(3);
+  pass.end();
 }
 
 /** Tier-2 form (ADR-0017): splat a GPU-resident point cloud into a GPU-resident density grid,
