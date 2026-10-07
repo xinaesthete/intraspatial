@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { type Affine2, compose2, IDENTITY2, micrometresPer, type NgffAxis, resolveNgffXY } from "./ngffTransform";
+import { type Affine2, compose2, IDENTITY2, invert2, micrometresPer, type NgffAxis, rectThrough2, resolveNgffXY } from "./ngffTransform";
 
 const XY: NgffAxis[] = [
   { name: "x", type: "space", unit: "micrometer" },
@@ -45,6 +45,28 @@ describe("compose2", () => {
     const shift: Affine2 = { ...IDENTITY2, tx: 10, ty: 20 };
     expect(apply(compose2(scale, shift), 1, 1)).toEqual([12, 23]); // scale then shift
     expect(apply(compose2(shift, scale), 1, 1)).toEqual([22, 63]); // shift then scale
+  });
+});
+
+describe("invert2", () => {
+  it("undoes a rotation, scale and shift", () => {
+    const m: Affine2 = { a: 0, b: 2, c: -2, d: 0, tx: 5, ty: -7 }; // 90° turn, ×2, then shift
+    const inv = invert2(m);
+    if (!inv) throw new Error("expected an inverse");
+    const [x, y] = apply(m, 3, 4);
+    const [bx, by] = apply(inv, x, y);
+    expect(bx).toBeCloseTo(3, 12);
+    expect(by).toBeCloseTo(4, 12);
+  });
+  it("refuses a singular transform", () => {
+    expect(invert2({ ...IDENTITY2, d: 0 })).toBeUndefined();
+  });
+});
+
+describe("rectThrough2", () => {
+  it("bounds the corners, so a 90° turn swaps the spans", () => {
+    const turn: Affine2 = { a: 0, b: 1, c: -1, d: 0, tx: 0, ty: 0 };
+    expect(rectThrough2(turn, { minX: 0, minY: 0, maxX: 4, maxY: 2 })).toEqual({ minX: -2, minY: 0, maxX: 0, maxY: 4 });
   });
 });
 

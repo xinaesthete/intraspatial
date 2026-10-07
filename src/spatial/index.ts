@@ -25,6 +25,7 @@ export * from "./sublevelsetPersistence";
 export * from "./syntheticManifolds";
 export * from "./tcm";
 export * from "./tcmKernel";
+export * from "./transcriptChannels";
 export * from "./umap";
 export * from "./umapGraph";
 export * from "./umapLayout";

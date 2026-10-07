@@ -121,9 +121,10 @@ export async function tileToHost(tile: Tile, backend: GpuBackend): Promise<Tile>
 // Local to avoid a cycle with tileCache.ts, which imports this module.
 const chunkKeyOf = (id: ChunkId): string => `${id.level}:${id.x}:${id.y}:${id.z}`;
 
-/** The impure seam Resolve calls (deck.gl-`getTileData`-shaped). */
-export interface Loader {
-  getChunk(id: ChunkId): Promise<Tile>;
+/** The impure seam Resolve calls (deck.gl-`getTileData`-shaped). Generic over the payload so a
+ *  points source (`PointsTile`) shares Select/Resolve/TileCache with the grid pyramids. */
+export interface Loader<T = Tile> {
+  getChunk(id: ChunkId): Promise<T>;
 }
 
 /** One entry of a Selection: which chunk, plus the geometry that justified it —

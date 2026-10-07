@@ -64,21 +64,47 @@ export function getDevice(): Promise<GPUDevice> {
     // Harmless for the compute kernels; falls back cleanly if unsupported.
     const requiredFeatures = (["float32-blendable"] as GPUFeatureName[]).filter((f) => adapter.features.has(f));
     const device = await adapter.requestDevice({ requiredFeatures });
-    // WebGPU validation errors are NOT exceptions and do not reach the console on their own: an
-    // invalid pipeline or bind group simply produces nothing. That failure mode is a blank canvas
-    // with no diagnostic, which is the worst kind to debug, so surface them.
-    const report = (err: unknown) => console.error("[webgpu]", (err as GPUError | undefined)?.message ?? err);
-    if (typeof device.addEventListener === "function") {
-      device.addEventListener("uncapturederror", (e) => report((e as GPUUncapturedErrorEvent).error));
-    } else {
-      // Dawn's Node binding is not an EventTarget, so the listener above silently never attaches —
-      // which is how a shader that failed to compile produced an all-zero field and no diagnostic
-      // at all. Fall back to the property form.
-      (device as { onuncapturederror?: (e: GPUUncapturedErrorEvent) => void }).onuncapturederror = (e) => report(e.error);
-    }
+    reportUncapturedErrors(device);
     return device;
   })();
   return devicePromise;
+}
+
+/** WebGPU validation errors are NOT exceptions and do not reach the console on their own: an
+ *  invalid pipeline or bind group simply produces nothing. That failure mode is a blank canvas
+ *  with no diagnostic, which is the worst kind to debug, so surface them. */
+function reportUncapturedErrors(device: GPUDevice): void {
+  const report = (err: unknown) => console.error("[webgpu]", (err as GPUError | undefined)?.message ?? err);
+  if (typeof device.addEventListener === "function") {
+    device.addEventListener("uncapturederror", (e) => report((e as GPUUncapturedErrorEvent).error));
+  } else {
+    // Dawn's Node binding is not an EventTarget, so the listener above silently never attaches —
+    // which is how a shader that failed to compile produced an all-zero field and no diagnostic
+    // at all. Fall back to the property form.
+    (device as { onuncapturederror?: (e: GPUUncapturedErrorEvent) => void }).onuncapturederror = (e) => report(e.error);
+  }
+}
+
+let adopted: GPUDevice | undefined;
+
+/**
+ * Use a device created elsewhere — a renderer's — as the one `getDevice()` returns, so this
+ * library's buffers and textures can be drawn by that renderer directly. GPU resources cannot cross
+ * devices, so this must run before any GPU work here; it throws if a different device already
+ * exists, and is a no-op for the same one.
+ *
+ * The device should carry `float32-blendable`: the Gram splat blends into `r32float`, and without
+ * the feature its pipeline fails validation and the rasters come back as zeros.
+ */
+export function adoptDevice(device: GPUDevice): void {
+  if (adopted === device) return;
+  if (devicePromise) throw new Error("intraspatial: a GPU device already exists; adoptDevice must run before any GPU work");
+  if (!device.features.has("float32-blendable")) {
+    console.warn("intraspatial: the adopted device lacks float32-blendable; additive r32float splats (the Gram form) will fail");
+  }
+  adopted = device;
+  reportUncapturedErrors(device);
+  devicePromise = Promise.resolve(device);
 }
 
 /**
@@ -106,10 +132,13 @@ export function getDevice(): Promise<GPUDevice> {
  */
 export async function releaseDevice(): Promise<void> {
   const pending = devicePromise;
+  const borrowed = adopted !== undefined;
   devicePromise = undefined;
+  adopted = undefined;
   adapterRef = undefined;
   instanceRef = undefined;
-  if (!pending) return;
+  // An adopted device belongs to whoever created it; forget it, never destroy it.
+  if (!pending || borrowed) return;
   try {
     (await pending).destroy();
   } catch {

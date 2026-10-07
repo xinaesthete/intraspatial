@@ -14,6 +14,8 @@
     "dev:docs": "pnpm --filter docs-site dev",
     "build:playground": "pnpm --filter intraspatial-playground build",
     "build:docs": "pnpm --filter docs-site build",
+    "link:spatialdata": "node scripts/link-spatialdata.mjs",
+    "unlink:spatialdata": "node scripts/link-spatialdata.mjs --unlink",
     "build": "pnpm build:lib",
     "build:lib": "vite build -c vite.lib.config.ts && node scripts/guarded.mjs -- tsc -p tsconfig.build.json",
     "prepack": "pnpm build:lib",
@@ -45,7 +47,7 @@
     "@zarrita/storage": "^0.2.0",
     "geotiff": "^3.0.5",
     "wgpu-matrix": "^3.4.2",
-    "zarrita": "^0.7.3"
+    "zarrita": "^0.7.5"
   },
   "optionalDependencies": {
     "openjph-wasm": "file:../codecs/openjph-wasm"
@@ -59,7 +61,7 @@
     "typegpu": "catalog:",
     "typescript": "catalog:",
     "unplugin-typegpu": "catalog:",
-    "vite": "^8.1.4",
+    "vite": "^8.3.3",
     "vitest": "^4.1.10",
     "webgpu": "^0.4.0"
   },

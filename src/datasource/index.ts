@@ -8,6 +8,7 @@ export * from "./centroidsToField";
 export * from "./imageFacets";
 export * from "./math";
 export * from "./multiscale";
+export * from "./points";
 export * from "./select";
 export * from "./syntheticLoader";
 export * from "./tileCache";

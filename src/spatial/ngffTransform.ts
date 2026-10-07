@@ -51,6 +51,37 @@ export function compose2(first: Affine2, second: Affine2): Affine2 {
   };
 }
 
+/** The inverse affine, or `undefined` when it is singular (a scale of zero collapses an axis). */
+export function invert2(m: Affine2): Affine2 | undefined {
+  const det = m.a * m.d - m.b * m.c;
+  if (!Number.isFinite(det) || Math.abs(det) < 1e-12) return undefined;
+  const a = m.d / det;
+  const b = -m.b / det;
+  const c = -m.c / det;
+  const d = m.a / det;
+  return { a, b, c, d, tx: -(a * m.tx + c * m.ty), ty: -(b * m.tx + d * m.ty) };
+}
+
+/** The axis-aligned bounds of a rectangle's four corners through `m`. Under rotation or shear this
+ *  is larger than the rectangle itself — it is what covers it, not what it is. */
+export function rectThrough2(
+  m: Affine2,
+  r: { readonly minX: number; readonly minY: number; readonly maxX: number; readonly maxY: number },
+): { minX: number; minY: number; maxX: number; maxY: number } {
+  const xs: number[] = [];
+  const ys: number[] = [];
+  for (const [x, y] of [
+    [r.minX, r.minY],
+    [r.maxX, r.minY],
+    [r.maxX, r.maxY],
+    [r.minX, r.maxY],
+  ] as const) {
+    xs.push(m.a * x + m.c * y + m.tx);
+    ys.push(m.b * x + m.d * y + m.ty);
+  }
+  return { minX: Math.min(...xs), minY: Math.min(...ys), maxX: Math.max(...xs), maxY: Math.max(...ys) };
+}
+
 /** Micrometres per unit of the named UDUNITS-2 unit, or `undefined` when the unit is unknown, not a
  *  length, or SpatialData's "unit" placeholder.
  *

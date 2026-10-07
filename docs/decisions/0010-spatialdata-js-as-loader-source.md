@@ -18,8 +18,8 @@ downstream consumer** to **also the Milestone-2 Loader source**, one-way
 
 - **Entry is two published npm packages, no monorepo restructure, no `link:`.**
   `@spatialdata/core` and `zarrextra` are on npm (decided against `^0.2.5` / `^0.2.3`; since
-  2026-08-22 the playground is on `@spatialdata/core@^0.8.0` + `zarrextra@0.4.0` exact — see
-  `docs/zarrextra-worker-decode.md`); `openjph-wasm` is already a
+  2026-09-23 the playground is on `@spatialdata/core@^0.10.0` + `zarrextra@0.5.0` exact, via
+  `^0.8.0` + `0.4.0` from 2026-08-22 — see `docs/zarrextra-worker-decode.md`); `openjph-wasm` is already a
   tgpu-htj2k `optionalDependency` (`file:../openjph-wasm`). They install into the **playground**
   package — the engine core (`src/datasource`) stays dependency-free per ADR-0008 §layering.
 - **`@spatialdata/core` for discovery + transforms.** `readZarr(store) → SpatialData`;
@@ -155,8 +155,11 @@ make the bounded-working-set behaviour tangible).
     trade-off differs by Vite version.)
   - `@spatialdata/core` also pulls `apache-arrow` (its table support) which logs harmless warnings
     on image-only use. (`parquet-wasm` was a separate dependency at 0.2.x; from core 0.8.0 it is
-    vendored into core's dist and loaded by a relative dynamic import — which is why core must be
-    excluded from Vite's dep pre-bundling.)
+    vendored into core's dist, loaded at 0.8.0 by a dist-relative dynamic import — which is why core
+    had to be excluded from Vite's dep pre-bundling — and from core 0.10.0 by the bare specifier
+    `@spatialdata/core/parquet-wasm`, a real subpath export, which retired that requirement: core
+    left `optimizeDeps.exclude` on 2026-09-23. zarrextra and `openjph-wasm` stay excluded for their
+    own, unrelated `import.meta.url` reasons.)
   - The local dev server is **CORS-enabled**, so no vite proxy is required.
 - **Implementation status (2026-07-06): 1a landed and verified in the browser.** `he_image`
   (1.5 Gpx RGB HTJ2K) streams from the store, decodes per-chunk, and renders on the plane; zooming

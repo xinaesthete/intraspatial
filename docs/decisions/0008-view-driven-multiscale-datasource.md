@@ -1,6 +1,6 @@
 # ADR-0008 — View-driven multiscale datasource & demand-pull rendering
 
-Status: **proposed** (2026-07-03)
+Status: **accepted — landed** (proposed 2026-07-03; core in `src/datasource`). **Amended 2026-09-29 for points** — see the end.
 
 ## Decision
 
@@ -177,4 +177,28 @@ The `Loader` interface is the load-bearing seam between repositories:
   abstraction hold?); the deck.gl luma.gl-v9 WebGPU backend matures (the I2 spike becomes real);
   progressive/partial decode is taken on (the Loader interface grows a resolution-aware variant); or
   our own codec overtakes OpenJPH (the coefficient-domain decode hook reopens).
-```
+
+## Amendment (2026-09-29) — points
+
+The "revisit when a second datasource family is built" trigger above has fired: Morton-tiled
+transcript points (a SpatialData points element via sd.js). **The abstraction held; one seam, two
+payloads.**
+
+| | Decision |
+|---|---|
+| Payload | `Loader<T>`, `Tileset<T>` and `resolveWith(selection, loader, bytesOf, cache)` are generic; `resolve` is `resolveWith` at `Tile`. A points tile is a `PointsTile` (`xs`, `ys`, feature `codes`, passthrough `columns`), **not** a variant of `Tile` — a tagged union would make every grid consumer narrow for nothing. |
+| Select | By **region**, not camera: `selectPointsTiles(grid, window, apron)` — the analysis window grown by the splat radius, nearest-first in `nearestDepth`. A moving window re-selects; the `TileCache` serves every tile it holds. |
+| Grid | `pointsGrid`: uniform square tiles at one level, the finest whose tiles still hold `minRowsPerTile` (loader default: two row groups — reads round up to whole groups). |
+| Ownership | A tile owns the half-open `[min, max)` rectangle, closed on the grid's far edges. Readers filter **closed**, so without this an edge point is loaded twice. |
+| Feature axis (§3) | **Still not built.** On a Morton-primary artifact features do not select row groups, so the axis buys no I/O until a feature-grouped artifact exists. Features are chosen when building channels (`transcriptChannels`). |
+
+Measured on `xenium_2…index-permutations.zarr` (`transcripts_morton`, 12.17M rows, 16×6 tiles of
+680 µm): every row owned exactly once (12,165,017 = total − the 4 Morton sentinel rows); a 300 µm
+pan of a 16-tile window fetches the 2 new tiles (~1 s) instead of all 16 (~6 s).
+
+**Empty tiles.** sd.js ≤ 0.11.0 decoded the whole file for a Morton read that found no points
+(~3.2 s vs a 220 ms median tile; 61% of a whole-slide load). Fixed upstream in 0.11.1 (#199): empty
+tiles now cost ≤ 54 ms, and a whole-slide load (96 tiles) fell from 53.5 s to 20.0 s.
+
+Implementation: `src/datasource/points.ts`, `tileCache.ts` (`resolveWith`),
+`src/spatial/transcriptChannels.ts`, `playground/src/datasource/pointsTileLoader.ts`.
