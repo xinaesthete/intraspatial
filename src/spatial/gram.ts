@@ -179,6 +179,11 @@ export interface GramResult {
 /** Support radius of the *effective* pair kernel `J ⊛ J` — twice the splat radius. Two cells this
  *  far apart contribute nothing to `C`, which is the honest answer to "what radius is this?" and
  *  is not the `radius` parameter. */
+/** Pixels per splat radius that sample the field well; finer adds cost without information. */
+export const RASTER_PX_PER_RADIUS = 3;
+/** Longest raster side `rasterSizeForRadius` gives by default. */
+export const RASTER_MAX_SIDE = 2048;
+
 /**
  * Raster size for a splat of support `radius` over `bbox`. The field is band-limited by the kernel,
  * so ~3 pixels per radius samples it well and finer pixels add cost without information. The longer
@@ -189,7 +194,7 @@ export function rasterSizeForRadius(
   radius: number,
   opts: { pxPerRadius?: number; minSide?: number; maxSide?: number } = {},
 ): { width: number; height: number; clamped: boolean } {
-  const { pxPerRadius = 3, minSide = 16, maxSide = 2048 } = opts;
+  const { pxPerRadius = RASTER_PX_PER_RADIUS, minSide = 16, maxSide = RASTER_MAX_SIDE } = opts;
   const spanX = bbox[2] - bbox[0];
   const spanY = bbox[3] - bbox[1];
   const long = Math.max(spanX, spanY);
@@ -197,6 +202,26 @@ export function rasterSizeForRadius(
   const side = Math.min(maxSide, Math.max(minSide, want));
   const short = Math.max(1, Math.round((side * Math.min(spanX, spanY)) / long));
   return { width: spanX >= spanY ? side : short, height: spanX >= spanY ? short : side, clamped: side !== want };
+}
+
+/**
+ * The longest window side a default raster covers at `RASTER_PX_PER_RADIUS`. Past it the raster is
+ * clamped and its pixels grow relative to the kernel. The kernel is evaluated at pixel centres, so
+ * each molecule's mass is sampled ever more coarsely, and once a pixel is wider than about one
+ * radius, molecules lying between centres deposit nothing — the map silently loses them. A window
+ * that should represent every molecule faithfully must be no longer than this.
+ */
+export function maxWindowSide(radius: number): number {
+  return (RASTER_MAX_SIDE * radius) / RASTER_PX_PER_RADIUS;
+}
+
+/**
+ * The smallest radius at which a default raster covers a window `longSide` across at full
+ * resolution — `maxWindowSide`'s inverse. A view wider than `maxWindowSide(r)` can still be analysed
+ * whole at `max(r, radiusToCover(longSide))`: a coarser neighbourhood, but every molecule counted.
+ */
+export function radiusToCover(longSide: number): number {
+  return (longSide * RASTER_PX_PER_RADIUS) / RASTER_MAX_SIDE;
 }
 
 export function effectiveRadius(p: GramParams): number {
@@ -457,6 +482,26 @@ export function coLocationModes(
   const explained = new Float64Array(K);
   for (let k = 0; k < K; k++) explained[k] = total !== 0 ? values[k]! / total : 0;
   return { values, vectors, explained, psdDefect: psdDefect(values, K), labels: gram.labels };
+}
+
+/**
+ * Flip mode signs to agree with a previous decomposition over the same channels.
+ *
+ * An eigenvector's sign is arbitrary, so a recompute (a moved window, a new radius) can negate a
+ * mode and swap its colours for no reason in the data. Each mode keeps the sign whose loadings best
+ * match the same-index mode in `prev`. Order is NOT changed: when two eigenvalues cross, the modes
+ * really do trade places, and the colours should show it. Returns `next` when the labels differ.
+ */
+export function alignModeSigns(next: CoLocationModes, prev: CoLocationModes | null | undefined): CoLocationModes {
+  const K = next.labels.length;
+  if (!prev || prev.labels.length !== K || prev.labels.some((l, a) => l !== next.labels[a])) return next;
+  const vectors = new Float64Array(next.vectors);
+  for (let k = 0; k < K; k++) {
+    let dot = 0;
+    for (let a = 0; a < K; a++) dot += (vectors[k * K + a] ?? 0) * (prev.vectors[k * K + a] ?? 0);
+    if (dot < 0) for (let a = 0; a < K; a++) vectors[k * K + a] = -(vectors[k * K + a] ?? 0);
+  }
+  return { ...next, vectors };
 }
 
 /**

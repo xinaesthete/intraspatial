@@ -11,22 +11,37 @@
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
+    "@deck.gl/core": "~9.4.0",
+    "@deck.gl/extensions": "~9.4.0",
+    "@deck.gl/geo-layers": "~9.4.0",
+    "@deck.gl/layers": "~9.4.0",
+    "@deck.gl/mesh-layers": "~9.4.0",
+    "@deck.gl/react": "~9.4.0",
+    "@deck.gl/widgets": "~9.4.0",
+    "@luma.gl/constants": "~9.4.2",
+    "@luma.gl/core": "~9.4.2",
+    "@luma.gl/engine": "~9.4.2",
+    "@luma.gl/shadertools": "~9.4.2",
+    "@luma.gl/webgl": "~9.4.2",
+    "@luma.gl/webgpu": "~9.4.2",
+    "@math.gl/core": "^4.1.0",
     "@react-three/drei": "^10.7.7",
     "@react-three/fiber": "^9.6.1",
-    "@spatialdata/core": "^0.11.1",
+    "@spatialdata/core": "^0.12.0",
+    "@spatialdata/vis": "^0.12.0",
     "@types/katex": "^0.16.8",
-    "openjph-wasm": "^0.1.0",
-    "zarrextra": "0.5.0",
     "@visx/axis": "^4.0.0",
     "@visx/grid": "^4.0.0",
     "@visx/group": "^4.0.0",
     "@visx/scale": "^4.0.0",
     "@xyflow/react": "^12.3.5",
     "katex": "^0.17.0",
+    "openjph-wasm": "^0.1.0",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
     "three": "^0.185.0",
-    "typegpu": "catalog:"
+    "typegpu": "catalog:",
+    "zarrextra": "0.5.1"
   },
   "devDependencies": {
     "@types/react": "^19.2.17",
@@ -35,6 +50,6 @@
     "@vitejs/plugin-react": "^6.0.3",
     "typescript": "catalog:",
     "unplugin-typegpu": "catalog:",
-    "vite": "^8.1.4"
+    "vite": "^8.3.3"
   }
 }

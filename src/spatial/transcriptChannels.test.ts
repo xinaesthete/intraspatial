@@ -2,7 +2,7 @@
 // and the refusal of overlapping channels (which gram.ts would otherwise mis-handle silently).
 import { describe, expect, it } from "vitest";
 import type { PointsTile } from "../datasource/points";
-import { gramMatrix, rasterSizeForRadius } from "./gram";
+import { gramMatrix, maxWindowSide, radiusToCover, rasterSizeForRadius } from "./gram";
 import { transcriptChannels, type WeightedChannel } from "./transcriptChannels";
 
 function tile(x: number, pts: Array<[number, number, number, number]>): PointsTile {
@@ -96,5 +96,11 @@ describe("rasterSizeForRadius", () => {
   it("clamps and says so", () => {
     expect(rasterSizeForRadius([0, 0, 10_000, 100], 1)).toMatchObject({ width: 2048, clamped: true });
     expect(rasterSizeForRadius([0, 0, 10, 10], 100)).toEqual({ width: 16, height: 16, clamped: true });
+  });
+
+  it("covers a window whole, unclamped, at radiusToCover — maxWindowSide's inverse", () => {
+    const r = radiusToCover(6000);
+    expect(maxWindowSide(r)).toBeCloseTo(6000, 9);
+    expect(rasterSizeForRadius([0, 0, 6000, 2000], r)).toMatchObject({ width: 2048, clamped: false });
   });
 });

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { eigenSym, psdDefect } from "./eigenSym";
 import {
+  alignModeSigns,
   apronCoverage,
   type ChannelCloud,
   channelsFromExpression,
@@ -499,5 +500,29 @@ describe("weighted marks — the AnnData X case", () => {
     const withZero = gramMatrix([{ label: "a", xs, ys, weights: w }], p);
     const dropped = gramMatrix([{ label: "a", xs: xs.filter((_, i) => i !== 2), ys: ys.filter((_, i) => i !== 2) }], p);
     expect(withZero.c[0]!).toBeCloseTo(dropped.c[0]!, 10);
+  });
+});
+
+describe("alignModeSigns", () => {
+  const modes = (labels: string[], vectors: number[]) => ({
+    values: new Float64Array(labels.length).fill(1),
+    vectors: Float64Array.from(vectors),
+    explained: new Float64Array(labels.length),
+    psdDefect: 0,
+    labels,
+  });
+
+  it("flips a mode whose sign disagrees with the previous one, and leaves the rest", () => {
+    const prev = modes(["a", "b"], [0.8, 0.6, -0.6, 0.8]);
+    const next = modes(["a", "b"], [-0.8, -0.6, -0.6, 0.8]);
+    expect(Array.from(alignModeSigns(next, prev).vectors)).toEqual([0.8, 0.6, -0.6, 0.8]);
+  });
+
+  it("does not reorder modes, and ignores a previous result over different channels", () => {
+    const prev = modes(["a", "b"], [1, 0, 0, 1]);
+    const swapped = modes(["a", "b"], [0, 1, 1, 0]);
+    expect(Array.from(alignModeSigns(swapped, prev).vectors)).toEqual([0, 1, 1, 0]);
+    const other = modes(["a", "c"], [-1, 0, 0, -1]);
+    expect(alignModeSigns(other, prev)).toBe(other);
   });
 });
