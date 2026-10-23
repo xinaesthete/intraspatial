@@ -22,7 +22,7 @@
 import tgpu from "typegpu";
 import * as d from "typegpu/data";
 import * as std from "typegpu/std";
-import { compileShader, getDevice, sized } from "../device";
+import { compileShader, getDevice, MAX_WORKGROUPS_PER_DIM, sized } from "../device";
 import { rawBindGroup } from "../graph/residentBind";
 import { narrowToHalf } from "../halfTexture";
 import { scratchTexture } from "../scratchTexture";
@@ -412,6 +412,9 @@ export interface ResidentSplatOptions {
    *  back, which is the transfer this whole path exists to avoid. Callers that want the
    *  points' own bounds compute them host-side (or, eventually, with a GPU reduction). */
   bbox: [number, number, number, number];
+  /** Floats per point in `points`: 2 = the graph's packed `[x, y, ...]`, every point weight 1
+   *  (the default); 3 = `[x, y, weight, ...]`. Honoured by `splatDensityResident`. */
+  stride?: 2 | 3;
 }
 
 /** Tier-2 form, TEXTURE output (ADR-0017): splat a GPU-resident point cloud straight into a
@@ -474,36 +477,50 @@ function ensureAccum(device: GPUDevice, w: number, h: number): GPUTexture {
 /** Tier-2 form (ADR-0017): splat a GPU-resident point cloud into a GPU-resident density grid,
  *  with no host transfer in either direction.
  *
- *  `points` is the graph's packed `[x0,y0,x1,y1,...]` points value bound directly — no host
- *  repacking — and every point carries weight 1. `dst` is a caller-owned (leased) buffer of at
- *  least `width*height` f32. */
+ *  `points` is bound directly — no host repacking: the graph's packed `[x0,y0,x1,y1,...]` points
+ *  value (every point weight 1), or `[x, y, weight, ...]` with `stride: 3`. `dst` is a
+ *  caller-owned (leased) buffer of at least `width*height` f32. */
 export async function splatDensityResident(points: GPUBuffer, n: number, dst: GPUBuffer, opts: ResidentSplatOptions): Promise<void> {
   const { width: w, height: h, sigma } = opts;
   if (w <= 0 || h <= 0) throw new Error("splatDensity: width/height must be > 0");
   if (sigma <= 0) throw new Error("splatDensity: sigma must be > 0");
+  // The de-pad dispatch is 1-D, and past the per-dimension workgroup cap WebGPU drops the dispatch
+  // without an error — the caller would get an all-zero field.
+  if (Math.ceil((w * h) / DEPAD_WG) > MAX_WORKGROUPS_PER_DIM) {
+    throw new Error(`splatDensity: ${w}×${h} exceeds the resident path's ${MAX_WORKGROUPS_PER_DIM * DEPAD_WG} cells`);
+  }
   const radiusSigma = opts.radiusSigma ?? 4;
 
+  // Every await happens BEFORE any encoding. The render target and the staging buffer are shared by
+  // every call, so the splat, its copy into staging and the de-pad out of staging must reach the
+  // queue in one submit: with an await between them, a second caller (two layers updating in the
+  // same frame) would splat into the shared staging buffer before the first had de-padded it, and
+  // the first caller would get the second one's field. Nothing would look wrong but the picture.
   const { device, root, pipeline } = await getPipe();
-  const rowFloats = renderToStaging(
+  const depad = await getDepad(device, root);
+
+  ensureTarget(device, w, h);
+  const rowFloats = bytesPerRow / 4;
+  ensureReadback(device, root, rowFloats * h);
+  // queue.writeBuffer lands before the submit below, and after any earlier caller's submit.
+  depad.params.write({ w, h, rowFloats });
+
+  const enc = device.createCommandEncoder();
+  renderPoints(
     device,
-    root,
+    enc,
     pipeline,
-    { buffer: points, n, stride: 2, defaultWeight: 1 },
-    w,
-    h,
+    target!.createView(),
+    { buffer: points, n, stride: opts.stride ?? 2, defaultWeight: 1 },
     sigma,
     radiusSigma,
     opts.bbox,
   );
-
+  enc.copyTextureToBuffer({ texture: target! }, { buffer: rbRaw!, bytesPerRow }, { width: w, height: h });
   // Strip the 256-byte row padding on-device, straight into the caller's buffer.
-  const depad = await getDepad(device, root);
-  depad.params.write({ w, h, rowFloats });
-  const bind = rawBindGroup(device, root, depadLayout, [depad.params, rbRaw!, dst]);
-  const enc = device.createCommandEncoder();
   const pass = enc.beginComputePass();
   pass.setPipeline(depad.pipeline);
-  pass.setBindGroup(0, bind);
+  pass.setBindGroup(0, rawBindGroup(device, root, depadLayout, [depad.params, rbRaw!, dst]));
   pass.dispatchWorkgroups(Math.ceil((w * h) / DEPAD_WG));
   pass.end();
   device.queue.submit([enc.finish()]);
