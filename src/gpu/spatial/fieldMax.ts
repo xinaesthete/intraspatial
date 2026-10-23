@@ -49,34 +49,40 @@ interface Ctx {
   uni: GPUBuffer;
 }
 
-let ctx: Promise<Ctx> | undefined;
+/** Per device, held weakly — see `splatDensity.ts`'s `Gpu` for why. */
+const perDevice = new WeakMap<GPUDevice, Promise<Ctx>>();
 
-function getCtx(): Promise<Ctx> {
-  ctx ??= (async () => {
-    const device = await getDevice();
-    const module = await compileShader(device, SHADER, "fieldMax");
-    const pipeline = device.createComputePipeline({ layout: "auto", compute: { module, entryPoint: "fieldMax" } });
-    const uni = device.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
-    return { device, pipeline, uni };
-  })();
+async function getCtx(device?: GPUDevice): Promise<Ctx> {
+  const dev = device ?? (await getDevice());
+  let ctx = perDevice.get(dev);
+  if (!ctx) {
+    ctx = (async () => {
+      const module = await compileShader(dev, SHADER, "fieldMax");
+      const pipeline = dev.createComputePipeline({ layout: "auto", compute: { module, entryPoint: "fieldMax" } });
+      const uni = dev.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+      return { device: dev, pipeline, uni };
+    })();
+    perDevice.set(dev, ctx);
+  }
   return ctx;
 }
 
 /** Write max(0, max(src[0..n))) into `dst[0]` as its f32 bit pattern (a u32). `dst` needs STORAGE
- *  and COPY_DST usage and at least 4 bytes; it is cleared here, so any previous value is gone. */
-export async function fieldMaxResident(src: GPUBuffer, n: number, dst: GPUBuffer): Promise<void> {
-  const { device, pipeline, uni } = await getCtx();
+ *  and COPY_DST usage and at least 4 bytes; it is cleared here, so any previous value is gone.
+ *  `device` is the one the buffers live on; default: the library's own. */
+export async function fieldMaxResident(src: GPUBuffer, n: number, dst: GPUBuffer, device?: GPUDevice): Promise<void> {
+  const { device: dev, pipeline, uni } = await getCtx(device);
   // No await below this line: the shared uniform is written and consumed in one submit, so a second
   // caller cannot slip its `n` in between (see splatDensityResident).
   const groups = Math.max(1, Math.min(MAX_GROUPS, Math.ceil(n / WG)));
-  device.queue.writeBuffer(uni, 0, new Uint32Array([n, groups * WG]));
-  device.queue.writeBuffer(dst, 0, new Uint32Array([0]));
-  const enc = device.createCommandEncoder();
+  dev.queue.writeBuffer(uni, 0, new Uint32Array([n, groups * WG]));
+  dev.queue.writeBuffer(dst, 0, new Uint32Array([0]));
+  const enc = dev.createCommandEncoder();
   const pass = enc.beginComputePass();
   pass.setPipeline(pipeline);
   pass.setBindGroup(
     0,
-    device.createBindGroup({
+    dev.createBindGroup({
       layout: pipeline.getBindGroupLayout(0),
       entries: [
         { binding: 0, resource: { buffer: uni } },
@@ -87,5 +93,5 @@ export async function fieldMaxResident(src: GPUBuffer, n: number, dst: GPUBuffer
   );
   pass.dispatchWorkgroups(groups);
   pass.end();
-  device.queue.submit([enc.finish()]);
+  dev.queue.submit([enc.finish()]);
 }

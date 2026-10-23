@@ -36,15 +36,21 @@ import { webgpuAdapter } from "@luma.gl/webgpu";
 const deviceProps = { type: "webgpu", adapters: [webgpuAdapter], optionalFeatures: ["float32-blendable"] };
 ```
 
-It adopts deck's `GPUDevice` into IntraSpatial on first use. IntraSpatial keeps **one device per
-page**: a second Deck brings a second device, and the layer will throw. Several deck views on a page
-must share one luma device; that is not yet verified with luma 9.4.
+The layer passes deck's own `GPUDevice` to the kernels it calls, which keep their state per device.
+It does not adopt the device into IntraSpatial, so any number of Decks per page work, and so does a
+canvas remounted with a new device (deck 9.4 does not destroy the old one).
 
 ### From a screen-pixel bandwidth
 
-deck's `HeatmapLayer` (and MDV's contour layers built on it) take a radius in screen pixels. For an
-orthographic view at `zoom`, one data unit is `2^zoom` pixels, so `σ = radiusPixels / 2^zoom`. Do
-that conversion once in the host, at the zoom the user set the bandwidth, not on every zoom.
+deck's `HeatmapLayer` (and MDV's contour layers built on it) take a radius in screen pixels. Its
+kernel is `exp(−(r/R)²/0.0556)` with R = `radiusPixels`, which is a Gaussian with σ = R/6, peaking
+at 6/√π. In an orthographic view at `zoom`, with a `modelMatrix` that scales layer units by `s`:
+
+    σ = radiusPixels / (6 · 2^zoom · s)        (layer units)
+    heatmap weight = density · 12√π · σ²       (density as this layer reports it with scale: "absolute")
+
+so a heatmap threshold or contour spacing converts exactly to `scale: "absolute"` levels. Do the
+conversion once, at the zoom the user set the bandwidth, not on every zoom.
 
 ### Cost
 

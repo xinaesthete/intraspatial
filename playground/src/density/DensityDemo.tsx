@@ -6,8 +6,9 @@ import { OrthographicView, type OrthographicViewState } from "@deck.gl/core";
 import { ScatterplotLayer } from "@deck.gl/layers";
 import DeckGL from "@deck.gl/react";
 import { type Color, DensityLayer } from "@intraspatial/deck";
+import type { Device } from "@luma.gl/core";
+import { webgpuAdapter } from "@luma.gl/webgpu";
 import { useMemo, useState } from "react";
-import { SHARED_DEVICE_PROPS, useSharedDevice } from "../deck/useSharedDevice";
 import { Explain } from "../transcript/Explain";
 
 const EXTENT = 2000;
@@ -72,9 +73,12 @@ const ORANGES: Color[] = [
 
 const INITIAL_VIEW: OrthographicViewState = { target: [EXTENT / 2, EXTENT / 2, 0], zoom: -1.2 };
 const VIEW = new OrthographicView({ id: "ortho", flipY: false });
+/** Module-level, so deck doesn't rebuild its device. The layer needs `float32-blendable`. It does
+ *  NOT need intraspatial to adopt the device: it passes deck's own to the kernels. */
+const DEVICE_PROPS = { type: "webgpu" as const, adapters: [webgpuAdapter], optionalFeatures: ["float32-blendable" as const] };
 
 export function DensityDemo() {
-  const device = useSharedDevice();
+  const [deviceStatus, setDeviceStatus] = useState("waiting for deck's device…");
   const [count, setCount] = useState(200_000);
   const [bandwidth, setBandwidth] = useState(25);
   const [scale, setScale] = useState<"relative" | "absolute">("relative");
@@ -83,6 +87,9 @@ export function DensityDemo() {
   const [fillOpacity, setFillOpacity] = useState(0.6);
   const [split, setSplit] = useState(false);
   const [showPoints, setShowPoints] = useState(false);
+  // Bumping the canvas key remounts deck: a new Deck, a new GPU device, the old one destroyed — what
+  // MDV's backend switch or an error-boundary reset does.
+  const [mount, setMount] = useState(0);
 
   const cloud = useMemo(() => makeCloud(count), [count]);
   // One weight vector per category: a point counts 1 in its own category's field, 0 in the other's.
@@ -107,29 +114,27 @@ export function DensityDemo() {
     contourInterval: interval > 0 ? level(interval) : null,
     fillOpacity,
   };
-  const layers = device.ready
-    ? [
-        ...(split
-          ? [
-              new DensityLayer({ ...shared, id: "density-0", weights: weights[0], colorRange: BLUES }),
-              new DensityLayer({ ...shared, id: "density-1", weights: weights[1], colorRange: ORANGES }),
-            ]
-          : [new DensityLayer({ ...shared, id: "density" })]),
-        ...(showPoints && count <= 200_000
-          ? [
-              new ScatterplotLayer({
-                id: "points",
-                data: { length: count },
-                getPosition: (_: unknown, { index }: { index: number }) => [cloud.x[index]!, cloud.y[index]!],
-                getFillColor: [255, 255, 255, 90],
-                radiusUnits: "pixels",
-                getRadius: 1,
-                updateTriggers: { getPosition: cloud },
-              }),
-            ]
-          : []),
-      ]
-    : [];
+  const layers = [
+    ...(split
+      ? [
+          new DensityLayer({ ...shared, id: "density-0", weights: weights[0], colorRange: BLUES }),
+          new DensityLayer({ ...shared, id: "density-1", weights: weights[1], colorRange: ORANGES }),
+        ]
+      : [new DensityLayer({ ...shared, id: "density" })]),
+    ...(showPoints && count <= 200_000
+      ? [
+          new ScatterplotLayer({
+            id: "points",
+            data: { length: count },
+            getPosition: (_: unknown, { index }: { index: number }) => [cloud.x[index]!, cloud.y[index]!],
+            getFillColor: [255, 255, 255, 90],
+            radiusUnits: "pixels",
+            getRadius: 1,
+            updateTriggers: { getPosition: cloud },
+          }),
+        ]
+      : []),
+  ];
 
   return (
     <>
@@ -191,17 +196,30 @@ export function DensityDemo() {
             <input type="checkbox" checked={showPoints} disabled={count > 200_000} onChange={(e) => setShowPoints(e.target.checked)} />
             Show points (up to 200 thousand)
           </label>
-          <div className="status">{device.status}</div>
+          <button type="button" onClick={() => setMount((m) => m + 1)}>
+            Remount canvas (new GPU device)
+          </button>
+          <div className="status">
+            {deviceStatus}
+            {mount > 0 && ` · remounted ${mount}×`}
+          </div>
         </div>
         <div className="views">
           <div className="deck-canvas">
             <DeckGL
+              key={mount}
               views={VIEW}
               initialViewState={INITIAL_VIEW}
               controller
               layers={layers}
-              deviceProps={SHARED_DEVICE_PROPS}
-              onDeviceInitialized={device.onDeviceInitialized}
+              deviceProps={DEVICE_PROPS}
+              onDeviceInitialized={(d: Device) =>
+                setDeviceStatus(
+                  d.type === "webgpu"
+                    ? `WebGPU · float32-blendable ${d.features.has("float32-blendable") ? "✓" : "✗ (the layer needs it)"}`
+                    : `deck chose ${d.type}; this page needs WebGPU`,
+                )
+              }
             />
           </div>
           <div className="explainers">

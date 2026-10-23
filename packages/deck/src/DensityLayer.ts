@@ -15,12 +15,15 @@
 //
 // Which grid gets splatted, and when it is reused, is `fieldPlan.ts`. Cartesian views only: σ in
 // degrees of longitude would not be a circle.
+//
+// DEVICES: the layer hands deck's own GPUDevice to the kernels it calls, which keep their state per
+// device. It never adopts the device into intraspatial, so a page may have any number of Decks, and
+// a canvas remounted with a new device (deck does not destroy the old one) just works.
 
 import { color, type DefaultProps, Layer, type LayerProps, project32, type UpdateParameters } from "@deck.gl/core";
 import { Buffer } from "@luma.gl/core";
 import { Model } from "@luma.gl/engine";
 import type { ShaderModule } from "@luma.gl/shadertools";
-import { adoptDevice } from "intraspatial/device";
 import { fieldMaxResident } from "intraspatial/gpu/spatial/fieldMax";
 import { splatDensityResident } from "intraspatial/gpu/spatial/splatDensity";
 import { type Bounds, type FieldPlan, type PlanInput, planField, planServes } from "./fieldPlan";
@@ -53,6 +56,7 @@ export type DensityLayerProps = {
   fillOpacity?: number;
   /** Iso-lines every this much density (in `scale`'s units). `null`: none. */
   contourInterval?: number | null;
+  /** Opacity of every line: the iso-lines and the fill's edge. */
   contourOpacity?: number;
   /** Line colour for contours and the fill edge. Default: the top of the ramp. */
   lineColor?: Color | null;
@@ -227,7 +231,9 @@ fn fragmentMain(input: Varyings) -> @location(0) vec4<f32> {
   // zeroth would trace the empty background).
   let edge = select(0.0, lineCover(abs(v - U.levels.z), dv, lineW), U.hasFill > 0.5);
   let iso = select(0.0, lineCover(abs(fract(k + 0.5) - 0.5), dk, lineW), U.hasContours > 0.5 && k > 0.5);
-  let lineA = max(edge * U.look.x, iso * U.look.y) * U.lineColor.a;
+  // Lines take the line opacity, not the fill's: drawn at the fill's own opacity, the edge of a
+  // single-colour fill would vanish into it.
+  let lineA = max(edge, iso) * U.look.y * U.lineColor.a;
 
   // Line over fill, straight alpha.
   let a = lineA + fill.a * (1.0 - lineA);
@@ -263,6 +269,9 @@ type State = {
   /** Bumped by every data or σ change: a plan made before it is no longer a cache of anything. */
   version: number;
   shownVersion: number;
+  /** Configured and initialised: GPU work may run. False after a configuration error, and the
+   *  layer then draws nothing (having said why, once). */
+  ready: boolean;
 };
 
 const toUnit = (c: Color): [number, number, number, number] => [c[0] / 255, c[1] / 255, c[2] / 255, (c[3] ?? 255) / 255];
@@ -278,35 +287,10 @@ export class DensityLayer extends Layer<DensityLayerProps> {
   }
 
   override initializeState(): void {
-    const device = this.context.device;
-    const handle = device.handle;
-    if (device.type !== "webgpu" || !(handle instanceof GPUDevice)) {
-      throw new Error("DensityLayer needs deck on WebGPU (deviceProps: { type: 'webgpu' })");
-    }
-    if (!handle.features.has("float32-blendable")) {
-      throw new Error("DensityLayer needs the 'float32-blendable' device feature (deviceProps.optionalFeatures)");
-    }
-    // The splat runs through intraspatial, which must use deck's device so this layer can bind
-    // what it writes. Idempotent for the same device; throws if intraspatial already made its own.
-    adoptDevice(handle);
-
-    const model = new Model(device, {
-      ...this.getShaders(),
-      id: this.props.id,
-      topology: "triangle-list",
-      bufferLayout: [],
-      isInstanced: false,
-      vertexCount: 6,
-      shaderAssembler: this.context.shaderAssembler,
-    });
-    const max = handle.createBuffer({ size: 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
-    const maxWrap = device.createBuffer({ handle: max, byteLength: 4, usage: Buffer.STORAGE });
-    model.setBindings({ fieldMax: maxWrap });
-    this.state = {
-      model,
-      device: handle,
-      max,
-      maxWrap,
+    // A state object whatever happens next. deck logs an error thrown here and carries on with the
+    // layer, so the later lifecycle calls would then fail on a missing state — and THAT error escapes
+    // the render loop and takes the whole canvas down. Failing inert keeps it to this layer.
+    const s: State = {
       pointCount: 0,
       dataBounds: null,
       shown: null,
@@ -315,7 +299,38 @@ export class DensityLayer extends Layer<DensityLayerProps> {
       retired: [],
       version: 0,
       shownVersion: -1,
+      ready: false,
     };
+    this.state = s;
+    const device = this.context.device;
+    const handle = device.handle;
+    if (device.type !== "webgpu" || !(handle instanceof GPUDevice)) {
+      this.fail("DensityLayer needs deck on WebGPU (deviceProps: { type: 'webgpu' })");
+      return;
+    }
+    if (!handle.features.has("float32-blendable")) {
+      this.fail("DensityLayer needs the 'float32-blendable' device feature (deviceProps.optionalFeatures)");
+      return;
+    }
+    s.device = handle;
+    s.model = new Model(device, {
+      ...this.getShaders(),
+      id: this.props.id,
+      topology: "triangle-list",
+      bufferLayout: [],
+      isInstanced: false,
+      vertexCount: 6,
+      shaderAssembler: this.context.shaderAssembler,
+    });
+    s.max = handle.createBuffer({ size: 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+    s.maxWrap = device.createBuffer({ handle: s.max, byteLength: 4, usage: Buffer.STORAGE });
+    s.model.setBindings({ fieldMax: s.maxWrap });
+    s.ready = true;
+  }
+
+  /** Report a configuration problem once and stay inert. */
+  private fail(message: string): void {
+    this.raiseError(new Error(message), "DensityLayer");
   }
 
   // Re-plan on view changes too, not just prop changes.
@@ -323,8 +338,9 @@ export class DensityLayer extends Layer<DensityLayerProps> {
     return Boolean(changeFlags.somethingChanged);
   }
 
-  override updateState({ props, oldProps, changeFlags }: UpdateParameters<this>): void {
+  override updateState({ props, oldProps }: UpdateParameters<this>): void {
     const s = this.state;
+    if (!s.ready) return;
     if (props.x !== oldProps.x || props.y !== oldProps.y || props.weights !== oldProps.weights || props.bounds !== oldProps.bounds) {
       this.uploadPoints();
       s.version++;
@@ -337,7 +353,8 @@ export class DensityLayer extends Layer<DensityLayerProps> {
       s.version++;
     }
     if (props.colorRange !== oldProps.colorRange || !s.ramp) this.uploadRamp();
-    if (changeFlags.somethingChanged) this.refresh();
+    // Cheap when the field on screen still serves: `planServes` decides.
+    this.refresh();
   }
 
   override finalizeState(context: Parameters<Layer["finalizeState"]>[0]): void {
@@ -482,8 +499,9 @@ export class DensityLayer extends Layer<DensityLayerProps> {
       radiusSigma: RADIUS_SIGMA,
       bbox: plan.bbox,
       stride: 3,
+      device: s.device,
     });
-    await fieldMaxResident(s.field, cells, s.max!);
+    await fieldMaxResident(s.field, cells, s.max!, s.device);
     // Both submitted; queue order puts them before any draw recorded from here on.
     s.shown = plan;
     s.shownVersion = version;
@@ -491,8 +509,8 @@ export class DensityLayer extends Layer<DensityLayerProps> {
   }
 
   override draw(): void {
-    const { model, shown } = this.state;
-    if (!model || !shown) return;
+    const { model, shown, ready } = this.state;
+    if (!ready || !model || !shown) return;
     const p = this.props;
     const relative = (p.scale ?? "relative") === "relative";
     const domain = p.colorDomain ?? [0, 1];

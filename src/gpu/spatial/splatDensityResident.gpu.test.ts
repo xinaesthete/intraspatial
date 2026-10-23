@@ -67,6 +67,21 @@ describe("splatDensityResident", () => {
   });
 });
 
+describe("explicit device", () => {
+  it("splats and reduces on the device it is handed", async () => {
+    // What a deck layer does: pass its own device rather than relying on getDevice().
+    const device = await getDevice();
+    const xyw = new Float32Array([6, 7, 2, 12, 9, 1]);
+    const dst = fieldBuffer(device);
+    await splatDensityResident(await upload(device, xyw), 2, dst, { width: W, height: H, sigma: SIGMA, bbox, stride: 3, device });
+    const max = device.createBuffer({ size: 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC });
+    await fieldMaxResident(dst, W * H, max, device);
+    const field = await read(device, dst);
+    const got = new Float32Array(await readBackBytes(device, "fieldMax:explicit", max, 0, 4))[0];
+    expect(got).toBe(Math.max(...field));
+  });
+});
+
 describe("fieldMaxResident", () => {
   it("leaves the buffer's maximum on the GPU as f32 bits, across many workgroups", async () => {
     const device = await getDevice();
