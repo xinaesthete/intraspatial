@@ -9,6 +9,9 @@ import { getSource, isSource, SOURCES } from "./sources";
 export interface PortMeta {
   name: string;
   kind: string;
+  /** For a `bundle` port: the type name and its member names (ADR-0023), so the palette and the
+   *  hover tooltip can say what is inside before the graph has run. */
+  bundle?: { readonly name: string; readonly parts: readonly string[] };
 }
 
 export interface NodeSpec {
@@ -51,8 +54,8 @@ export function getSpec(name: string): NodeSpec {
     category: categoryOf(name, op.category),
     help: op.help ?? OP_HELP[name],
     isSource: false,
-    inputs: op.inputs.map((p) => ({ name: p.name, kind: String(p.kind) })),
-    outputs: op.outputs.map((p) => ({ name: p.name, kind: String(p.kind) })),
+    inputs: op.inputs.map((p) => ({ name: p.name, kind: String(p.kind), bundle: p.bundle })),
+    outputs: op.outputs.map((p) => ({ name: p.name, kind: String(p.kind), bundle: p.bundle })),
     params: op.params,
   };
 }

@@ -25,15 +25,15 @@ describe("buildBucketGrid", () => {
 
   it("is a partition: every point appears exactly once, in the bucket its coords imply", () => {
     const g = buildBucketGrid(xs, ys, 12);
-    expect(g.items.length).toBe(n);
-    expect(g.start[0]).toBe(0);
-    expect(g.start[g.cols * g.rows]).toBe(n);
+    expect(g.pointIds.length).toBe(n);
+    expect(g.cellOffsets[0]).toBe(0);
+    expect(g.cellOffsets[g.cols * g.rows]).toBe(n);
 
     const seen = new Uint8Array(n);
     let misplaced = 0;
     for (let b = 0; b < g.cols * g.rows; b++) {
-      for (let k = g.start[b]!; k < g.start[b + 1]!; k++) {
-        const i = g.items[k]!;
+      for (let k = g.cellOffsets[b]!; k < g.cellOffsets[b + 1]!; k++) {
+        const i = g.pointIds[k]!;
         seen[i]! += 1;
         const col = Math.floor((xs[i]! - g.minX) / g.cell);
         const row = Math.floor((ys[i]! - g.minY) / g.cell);
@@ -64,7 +64,7 @@ describe("buildBucketGrid", () => {
           const cc = c0 + dc;
           if (rr < 0 || rr >= g.rows || cc < 0 || cc >= g.cols) continue;
           const b = rr * g.cols + cc;
-          for (let k = g.start[b]!; k < g.start[b + 1]!; k++) brute.delete(g.items[k]!);
+          for (let k = g.cellOffsets[b]!; k < g.cellOffsets[b + 1]!; k++) brute.delete(g.pointIds[k]!);
         }
       }
       missing += brute.size;
@@ -74,14 +74,14 @@ describe("buildBucketGrid", () => {
 
   it("clamps out-of-bounds points into the edge buckets rather than dropping them", () => {
     const g = buildBucketGrid([-500, 0, 5, 900], [0, 0, 5, 900], 10, [0, 0, 10, 10]);
-    expect(g.items.length).toBe(4);
-    expect(g.start[g.cols * g.rows]).toBe(4);
+    expect(g.pointIds.length).toBe(4);
+    expect(g.cellOffsets[g.cols * g.rows]).toBe(4);
   });
 
   it("survives an empty cloud", () => {
     const g = buildBucketGrid([], [], 5);
-    expect(g.items.length).toBe(0);
-    expect(g.start[g.cols * g.rows]).toBe(0);
+    expect(g.pointIds.length).toBe(0);
+    expect(g.cellOffsets[g.cols * g.rows]).toBe(0);
   });
 
   describe("with a third axis", () => {
@@ -92,13 +92,13 @@ describe("buildBucketGrid", () => {
       const g = buildBucketGrid(xs, ys, 12, undefined, zs);
       expect(g.depth).toBeGreaterThan(1);
       expect(g.minZ).toBe(Math.min(...zs));
-      expect(g.start.length).toBe(numCells(g) + 1);
-      expect(g.start[numCells(g)]).toBe(n);
+      expect(g.cellOffsets.length).toBe(numCells(g) + 1);
+      expect(g.cellOffsets[numCells(g)]).toBe(n);
       const seen = new Uint8Array(n);
       let misplaced = 0;
       for (let b = 0; b < numCells(g); b++) {
-        for (let k = g.start[b]!; k < g.start[b + 1]!; k++) {
-          const i = g.items[k]!;
+        for (let k = g.cellOffsets[b]!; k < g.cellOffsets[b + 1]!; k++) {
+          const i = g.pointIds[k]!;
           seen[i]! += 1;
           const cx = Math.floor((xs[i]! - g.minX) / g.cell);
           const cy = Math.floor((ys[i]! - g.minY) / g.cell);
@@ -134,7 +134,7 @@ describe("buildBucketGrid", () => {
               const cc = c0 + dc;
               if (ll < 0 || ll >= g.depth! || rr < 0 || rr >= g.rows || cc < 0 || cc >= g.cols) continue;
               const b = cc + g.cols * (rr + g.rows * ll);
-              for (let k = g.start[b]!; k < g.start[b + 1]!; k++) brute.delete(g.items[k]!);
+              for (let k = g.cellOffsets[b]!; k < g.cellOffsets[b + 1]!; k++) brute.delete(g.pointIds[k]!);
             }
           }
         }
@@ -146,14 +146,14 @@ describe("buildBucketGrid", () => {
     it("takes 6-number bounds, clamps on z, and a z-slab of one layer is the 2D grid", () => {
       const g = buildBucketGrid([1, 5, 13], [1, 5, 13], 4, [0, 0, 0, 10, 10, 10], [-50, 5, 500]);
       expect([g.cols, g.rows, g.depth]).toEqual([4, 4, 4]);
-      expect(g.start[numCells(g)]).toBe(3);
+      expect(g.cellOffsets[numCells(g)]).toBe(3);
       // (1,1,-50) clamps to layer 0 → cell 0; (13,13,500) clamps on every axis → the last cell
-      expect(g.items[g.start[0]!]).toBe(0);
-      expect(g.items[g.start[numCells(g) - 1]!]).toBe(2);
+      expect(g.pointIds[g.cellOffsets[0]!]).toBe(0);
+      expect(g.pointIds[g.cellOffsets[numCells(g) - 1]!]).toBe(2);
       const flat = buildBucketGrid(xs, ys, 12, undefined, new Array(n).fill(3));
       const flat2 = buildBucketGrid(xs, ys, 12);
       expect(flat.depth).toBe(1);
-      expect(Array.from(flat.start)).toEqual(Array.from(flat2.start));
+      expect(Array.from(flat.cellOffsets)).toEqual(Array.from(flat2.cellOffsets));
     });
 
     it("rejects mismatched bounds arity and zs length", () => {

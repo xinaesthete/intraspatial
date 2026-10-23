@@ -29,6 +29,10 @@ export interface GpuBackend {
   /** Read back a storage buffer of `n` f32s as a host Float32Array, using the
    *  backend's Dawn-stable path. */
   readbackF32(buffer: GPUBuffer, n: number): Promise<Float32Array>;
+  /** Read back `bytes` of a storage buffer verbatim, for a dtype the f32 path would mangle
+   *  (ADR-0017 stage 1's limit; see `readBackBytes` in `device.ts` for why it is a separate
+   *  path rather than a second TypeGPU wrapper). */
+  readbackBytes(buffer: GPUBuffer, bytes: number): Promise<ArrayBuffer>;
 
   // --- Tier-2 resident pool (ADR-0017, invariant 3) ---
 

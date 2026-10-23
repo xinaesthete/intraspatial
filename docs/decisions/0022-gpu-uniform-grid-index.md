@@ -7,19 +7,19 @@ Implementation: [`src/gpu/spatial/gridIndex.ts`](../../src/gpu/spatial/gridIndex
 [`src/spatial/bucketGrid.ts`](../../src/spatial/bucketGrid.ts) (`latticeFor`, shared lattice + CPU golden),
 [`src/gpu/scan/prefixSum.ts`](../../src/gpu/scan/prefixSum.ts) (`keyPrefix`), consumers
 [`crossPcf.ts`](../../src/gpu/spatial/crossPcf.ts) and [`tcm.ts`](../../src/gpu/spatial/tcm.ts),
-`pnpm bench:grid-index`.
+[`ops/gridIndex.ts`](../../src/gpu/graph/ops/gridIndex.ts) (graph op), `pnpm bench:grid-index`.
 
 ## Decision
 
-The `BucketGrid` offset list (`start[M+1]` / `items[n]`, cell = query radius, 3×3[×3] stencil)
+The `BucketGrid` offset list (`cellOffsets[M+1]` / `pointIds[n]`, cell = query radius, 3×3[×3] stencil)
 is built **on the device, in the caller's command buffer**: histogram (atomics) → `encodeScan`
-→ atomic scatter, one submit. The host never sees `start`/`items` unless it asks
+→ atomic scatter, one submit. The host never sees `cellOffsets`/`pointIds` unless it asks
 (`buildGridIndexGpu`, the test and drop-in path).
 
 | | |
 | --- | --- |
 | Lattice | `latticeFor(xs, ys, cell, bounds?, zs?)` in `bucketGrid.ts` — the CPU build's own arithmetic, so both builds agree cell for cell; the kernel repeats its floor-and-clamp with a division, not a reciprocal. `zs` adds `depth`/`minZ` (2026-08-22); `cellId = cx + cols·(cy + rows·cz)`, x-fastest |
-| API | `encodeGridIndex(ctx, points, n, lattice, enc, { stride, keyPrefix, maxWorkgroupsPerDim })` → `{ start, items, M, n, lattice }` resident (a 3D lattice requires `stride: 3`); `buildGridIndexGpu(points, { cell, bounds, stride, dims })` → `BucketGrid` |
+| API | `encodeGridIndex(ctx, points, n, lattice, enc, { stride, keyPrefix, maxWorkgroupsPerDim })` → `{ cellOffsets, pointIds, M, n, lattice }` resident (a 3D lattice requires `stride: 3`); `buildGridIndexGpu(points, { cell, bounds, stride, dims })` → `BucketGrid` |
 | Pools | grow-only, never destroyed, namespaced by `keyPrefix`; `encodeScan` gained the same so two builds in one submit (`computeTcmGpu`) do not alias |
 | Contract | order within a cell unspecified; golden compares per-cell **sets** plus the 3D note's invariants |
 | Limits | `checkBindingSize` on `M+1` and `n` (loud, not silent); 2-D dispatch fold |
@@ -42,9 +42,44 @@ default and the golden (`gridIndexQuery.gpu.test.ts`). TypeGPU 0.11 note: the ru
 schema for pointer params must be `d.arrayOf(d.u32, 0)` — the count-less form is a comptime
 placeholder that neither indexes nor resolves.
 
+## Graph op (2026-08-22) — superseded by [ADR-0023](0023-composite-values-and-borrowed-leases.md)
+
+The three-port shape below shipped for one afternoon and was replaced the same day: `start` and
+`items` are both `points`/u32, so a graph could wire them from *different* indexes and get a
+plausible wrong answer. The op now emits ONE `gridIndex` bundle on a port named `buckets`;
+`bucketGrid.cellOffsets` and its siblings take a part out. In the composer the whole thing is called a
+*bucket grid* — `index` reads as "an array index", which is what the `items` part actually holds. Everything below still describes what the op computes — only the port
+shape changed.
+
+## Original three-port shape
+
+[`ops/gridIndex.ts`](../../src/gpu/graph/ops/gridIndex.ts), the note's §3.3 shape: **three output
+ports**, `start` (`points{M+1}`, u32), `items` (`points{n}`, u32) and `lattice` (opaque
+`gridLattice` payload — the `GridLattice` plus `cells`, `n` and the derived placement). Not one
+opaque handle carrying buffers: the executor tracks resident ownership through `v.buffer` only, so
+hidden leases would never be released.
+
+Three consequences worth stating:
+
+- **One lease per port, and the kernel's buffers are pooled**, so `execute` copies the two buffers
+  into their own leases inside the same submit. That is what makes two `gridIndex` nodes in one
+  tick safe while they share the global `encodeGridIndex` pool.
+- **`pull()` used to fail on the u32 parts.** The host bridge decoded every word as an f32, which
+  mangles an index, so it refused rather than lie — and the composer showed that refusal as an
+  error the moment you selected the node. Fixed with ADR-0023: a non-f32 resident *buffer* is now
+  read back as bytes and viewed as its own dtype (`readBackBytes` in `device.ts`, `downloadBuffer`
+  in `executor.ts`). Textures are still f32-only.
+- **The extent is params, not a measurement.** `inferShapes` runs at graph-build time with no
+  values, so `minX`/`minY`/`maxX`/`maxY` (+ `cell`) fix the lattice, exactly as `buildBucketGrid`'s
+  optional `bounds` does. Out-of-bounds points clamp into the edge cells.
+
+`inferPlacement` gives the lattice `worldFromArray · translate(origin) · scale(cell)` in the points'
+system (corner-indexed, as `decimatedPlacement`); the two index lists stay array-space.
+
 ## Not yet
 
-- Graph op (three resident ports, note §3.3) and a resident `separate` / `spring` force op
-  (note §5 step 3); CkNN and fuzzy adjacency still call `kthNeighborDistanceGpu` brute force.
+- A resident `separate` / `spring` force op reading the index (note §5 step 3); CkNN and fuzzy
+  adjacency still call `kthNeighborDistanceGpu` brute force.
+- `cellCounts` (bundle → per-cell counts) is the only graph-level consumer so far.
 - The query helpers (`gridIndexQuery.ts`) are `vec2`-shaped: no `dz` loop yet for a 3D lattice.
 - Occupied-cell compaction for sparse lattices (needs `encodeCompact`, note §2.4).

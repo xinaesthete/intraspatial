@@ -1,6 +1,6 @@
 // GPU uniform-grid spatial index — `src/spatial/bucketGrid.ts` built on the device.
 //
-// Same structure, same contract: an offset list (`start[M+1]` / `items[n]`) over a lattice of
+// Same structure, same contract: an offset list (`cellOffsets[M+1]` / `pointIds[n]`) over a lattice of
 // square cells whose side is the query radius, so a 3×3 stencil around a query's cell holds
 // every point within that radius. `crossPcf.ts` walks it from WGSL exactly as it walked the host
 // build; this file only moves the build so the points never round-trip through the host.
@@ -52,10 +52,10 @@ export interface GridIndexOptions {
 /** The index as it lives on the device. The buffers are pooled (grow-only, never destroyed)
  *  under the build's `keyPrefix` and stay valid until the next build under that prefix. */
 export interface GridIndexResident {
-  /** `M + 1` u32 offsets, `start[M] == n`. */
-  readonly start: GPUBuffer;
-  /** `max(n, 1)` u32 point indices grouped by cell. */
-  readonly items: GPUBuffer;
+  /** `M + 1` u32 offsets, `cellOffsets[M] == n`. */
+  readonly cellOffsets: GPUBuffer;
+  /** `max(n, 1)` u32 point ids grouped by cell. */
+  readonly pointIds: GPUBuffer;
   /** Cell count `cols * rows * (depth ?? 1)`. */
   readonly M: number;
   readonly n: number;
@@ -183,7 +183,7 @@ export function encodeGridIndex(
   const cellOf = ensureBuf(device, `${key}:cellOf`, Math.max(n, 1) * 4, storageRw());
   const counts = ensureBuf(device, `${key}:counts`, (M + 1) * 4, storageRw());
   const cursor = ensureBuf(device, `${key}:cursor`, (M + 1) * 4, storageRw());
-  const items = ensureBuf(device, `${key}:items`, Math.max(n, 1) * 4, storageRw());
+  const pointIds = ensureBuf(device, `${key}:pointIds`, Math.max(n, 1) * 4, storageRw());
 
   const { x: gridX, y: gridY } = dispatchGrid(Math.ceil(n / WG), maxWg);
   const u = new ArrayBuffer(UNI_BYTES);
@@ -208,7 +208,7 @@ export function encodeGridIndex(
         { binding: 1, resource: sized(points, Math.max(n, 1) * stride * 4) },
         { binding: 2, resource: sized(cellOf, Math.max(n, 1) * 4) },
         { binding: 3, resource: sized(heads, (M + 1) * 4) },
-        { binding: 4, resource: sized(items, Math.max(n, 1) * 4) },
+        { binding: 4, resource: sized(pointIds, Math.max(n, 1) * 4) },
       ],
     });
 
@@ -236,7 +236,7 @@ export function encodeGridIndex(
     pass.end();
   }
 
-  return { start, items, M, n, lattice };
+  return { cellOffsets: start, pointIds, M, n, lattice };
 }
 
 /**
@@ -245,7 +245,7 @@ export function encodeGridIndex(
  * with `stride: 3`; `dims: 3` indexes the z as well).
  *
  * This is the test and drop-in path. A kernel that walks the index on the device should use
- * `encodeGridIndex` and never bring `start`/`items` to the host.
+ * `encodeGridIndex` and never bring `cellOffsets`/`pointIds` to the host.
  */
 export async function buildGridIndexGpu(points: Float32Array, opts: GridIndexOptions): Promise<BucketGrid> {
   const ctx = await getGridIndexCtx();
@@ -276,7 +276,7 @@ export async function buildGridIndexGpu(points: Float32Array, opts: GridIndexOpt
   device.queue.submit([enc.finish()]);
 
   const M = idx.M;
-  const start = new Int32Array(await readBack(device, `${key}:stagingStart`, idx.start, 0, (M + 1) * 4));
-  const items = n > 0 ? new Int32Array(await readBack(device, `${key}:stagingItems`, idx.items, 0, n * 4)) : new Int32Array(0);
-  return { ...lattice, start, items };
+  const cellOffsets = new Int32Array(await readBack(device, `${key}:stagingOffsets`, idx.cellOffsets, 0, (M + 1) * 4));
+  const pointIds = n > 0 ? new Int32Array(await readBack(device, `${key}:stagingIds`, idx.pointIds, 0, n * 4)) : new Int32Array(0);
+  return { ...lattice, cellOffsets, pointIds };
 }

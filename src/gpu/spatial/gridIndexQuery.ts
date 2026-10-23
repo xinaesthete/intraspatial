@@ -104,7 +104,7 @@ export interface QueryIndex {
 /**
  * Record the index build for `n` points already resident in `points` (`[x, y]` pairs, `STORAGE`
  * usage) into `enc`, and write the matching `Lattice` uniform. The caller binds `lat`,
- * `index.start`, `index.items` with `sized()` and submits; the build and the query share one
+ * `index.cellOffsets`, `index.pointIds` with `sized()` and submits; the build and the query share one
  * command buffer. Pools are namespaced by `keyPrefix` (grow-only, never destroyed).
  */
 export function encodeQueryIndex(

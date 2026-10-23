@@ -5,7 +5,7 @@
 // from the Node backend; the op definitions and executor are imported verbatim.
 import tgpu from "typegpu";
 import * as d from "typegpu/data";
-import { getDevice, writeView } from "../device";
+import { getDevice, readBackBytes, writeView } from "../device";
 import type { GpuBackend, Root } from "./backend";
 import type { ResidentBuffer, ResidentTexture } from "./handle";
 import { BufferPool, type PoolStats, residentTextureUsage, residentUsage, TexturePool } from "./pool";
@@ -57,6 +57,10 @@ export const browserBackend: GpuBackend = {
     const root = await getRoot();
     const got = (await wrapperFor(root, buffer).read()) as ArrayLike<number>;
     return Float32Array.from({ length: n }, (_, i) => got[i] ?? 0);
+  },
+
+  async readbackBytes(buffer: GPUBuffer, bytes: number): Promise<ArrayBuffer> {
+    return readBackBytes(await getDevice(), "backend.browser:staging", buffer, 0, bytes);
   },
 
   async lease(byteLength: number, usage: number = residentUsage()): Promise<ResidentBuffer> {

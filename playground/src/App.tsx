@@ -34,7 +34,7 @@ import { InterfaceNode } from "./InterfaceNode";
 import { MathTex } from "./Math";
 import { OpNode } from "./OpNode";
 import { CATEGORY_ORDER } from "./opMeta";
-import { PortHoverContext } from "./PortHover";
+import { type BundleInfo, PortHoverContext } from "./PortHover";
 import { Preview } from "./Preview";
 import { kindColor } from "./portKinds";
 import type { NodeSpec } from "./specs";
@@ -128,7 +128,9 @@ export default function App() {
   // Per-port values captured during the last run (key "nodeId:port"), driving the
   // port/edge hover tooltip's data view.
   const portValues = useRef<Map<string, FieldValue>>(new Map());
-  const [inspect, setInspect] = useState<{ title: string; kind: string; value?: FieldValue; rect: DOMRect } | null>(null);
+  const [inspect, setInspect] = useState<{ title: string; kind: string; value?: FieldValue; rect: DOMRect; bundle?: BundleInfo } | null>(
+    null,
+  );
   const inspectTimer = useRef<number | undefined>(undefined);
   // All insertable node specs (sources + ops), grouped for the palette + command list.
   const allSpecs = useMemo(() => [...listSourceSpecs(), ...listOpSpecs()], []);
@@ -166,10 +168,10 @@ export default function App() {
   );
   const portHover = useMemo(
     () => ({
-      onPortEnter: (nodeId: string, port: string, isInput: boolean, kind: string, rect: DOMRect) => {
+      onPortEnter: (nodeId: string, port: string, isInput: boolean, kind: string, rect: DOMRect, bundle?: BundleInfo) => {
         window.clearTimeout(inspectTimer.current);
         const value = portValueAt(nodeId, port, isInput);
-        inspectTimer.current = window.setTimeout(() => setInspect({ title: port, kind, value, rect }), 120);
+        inspectTimer.current = window.setTimeout(() => setInspect({ title: port, kind, value, rect, bundle }), 120);
       },
       onPortLeave: () => {
         window.clearTimeout(inspectTimer.current);
@@ -1074,7 +1076,9 @@ export default function App() {
           />
         )}
         {hoverHelp && <HelpTooltip spec={hoverHelp.spec} rect={hoverHelp.rect} />}
-        {inspect && <FieldTooltip title={inspect.title} kind={inspect.kind} value={inspect.value} rect={inspect.rect} />}
+        {inspect && (
+          <FieldTooltip title={inspect.title} kind={inspect.kind} value={inspect.value} rect={inspect.rect} bundle={inspect.bundle} />
+        )}
       </div>
     </PortHoverContext.Provider>
   );
@@ -1113,26 +1117,17 @@ function ParamControl({
     );
   }
   const step = spec.step ?? (spec.type === "int" ? 1 : 0.01);
+  const set = (raw: string) => onChange(spec.type === "int" ? Math.round(+raw) : +raw);
+  // A slider needs BOTH ends. Defaulting a missing range to 0–1 (which this used to do) makes the
+  // slider lie about params that have no natural bound — a world coordinate, a timestep — and the
+  // first drag silently clamps the real value into [0, 1]. Those params get the number box alone.
+  const ranged = spec.min !== undefined && spec.max !== undefined;
   return (
     <label className="row">
       <span title={spec.describe}>{spec.name}</span>
-      <span className="num">
-        <input
-          type="range"
-          min={spec.min ?? 0}
-          max={spec.max ?? 1}
-          step={step}
-          value={Number(v)}
-          onChange={(e) => onChange(spec.type === "int" ? Math.round(+e.target.value) : +e.target.value)}
-        />
-        <input
-          type="number"
-          min={spec.min}
-          max={spec.max}
-          step={step}
-          value={Number(v)}
-          onChange={(e) => onChange(spec.type === "int" ? Math.round(+e.target.value) : +e.target.value)}
-        />
+      <span className={ranged ? "num" : "num num-unbounded"}>
+        {ranged && <input type="range" min={spec.min} max={spec.max} step={step} value={Number(v)} onChange={(e) => set(e.target.value)} />}
+        <input type="number" min={spec.min} max={spec.max} step={step} value={Number(v)} onChange={(e) => set(e.target.value)} />
       </span>
     </label>
   );
