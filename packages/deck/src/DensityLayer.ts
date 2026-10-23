@@ -92,7 +92,7 @@ const defaultProps: DefaultProps<DensityLayerProps> = {
   lineColor: { type: "object", value: null, compare: true },
   lineWidth: { type: "number", value: 1.25, min: 0 },
   pixelsPerCell: { type: "number", value: 1, min: 0.25 },
-  cellsPerSigma: { type: "number", value: 3, min: 1 },
+  cellsPerSigma: { type: "number", value: 4, min: 2 },
 };
 
 /** Kernel support in σ — the splat's default, restated because the plan needs it too. */
@@ -181,8 +181,19 @@ fn vertexMain(@builtin(vertex_index) vertexIndex: u32) -> Varyings {
   return output;
 }
 
-fn at(col: u32, row: u32) -> f32 {
-  return field[row * u32(U.width) + col];
+fn at(col: i32, row: i32) -> f32 {
+  // Clamp to the edge: the grid's border is either beyond the kernel support or off screen.
+  let c = u32(clamp(col, 0, i32(U.width) - 1));
+  let r = u32(clamp(row, 0, i32(U.height) - 1));
+  return field[r * u32(U.width) + c];
+}
+
+/** Uniform cubic B-spline weights for the samples at offsets -1, 0, 1, 2 from floor(q). */
+fn bspline(t: f32) -> vec4<f32> {
+  let t2 = t * t;
+  let t3 = t2 * t;
+  let u = 1.0 - t;
+  return vec4<f32>(u * u * u, 3.0 * t3 - 6.0 * t2 + 4.0, -3.0 * t3 + 3.0 * t2 + 3.0 * t + 1.0, t3) / 6.0;
 }
 
 fn rampAt(t: f32) -> vec4<f32> {
@@ -200,13 +211,24 @@ fn lineCover(d: f32, dd: f32, widthPx: f32) -> f32 {
 
 @fragment
 fn fragmentMain(input: Varyings) -> @location(0) vec4<f32> {
-  // Bilinear between cell centres; the field is band-limited by the kernel, so this is faithful.
+  // Cubic B-spline reconstruction between cell centres, not bilinear. Bilinear gets the VALUES
+  // right but its gradient jumps at every cell edge, and iso-lines follow the gradient: zoomed in,
+  // where the cell is a fixed fraction of σ, every contour became a polygon. The B-spline is C²,
+  // never overshoots (its weights are non-negative, so no negative density and no spurious lines
+  // near zero), and blurs by a known variance h²/3 — which the splat has already taken out of σ.
   let size = vec2<f32>(U.width, U.height);
   let q = clamp(input.uv * size - vec2<f32>(0.5), vec2<f32>(0.0), size - vec2<f32>(1.0));
-  let c0 = vec2<u32>(floor(q));
-  let c1 = min(c0 + vec2<u32>(1u), vec2<u32>(size) - vec2<u32>(1u));
-  let f = q - vec2<f32>(c0);
-  let sum = mix(mix(at(c0.x, c0.y), at(c1.x, c0.y), f.x), mix(at(c0.x, c1.y), at(c1.x, c1.y), f.x), f.y);
+  let base = vec2<i32>(floor(q));
+  let wx = bspline(q.x - f32(base.x));
+  let wy = bspline(q.y - f32(base.y));
+  var sum = 0.0;
+  for (var j = 0; j < 4; j++) {
+    var row = 0.0;
+    for (var i = 0; i < 4; i++) {
+      row += wx[i] * at(base.x + i - 1, base.y + j - 1);
+    }
+    sum += wy[j] * row;
+  }
 
   // Density, then into the levels' units: a fraction of the maximum, or density as it is.
   let density = sum * U.norm;
@@ -269,6 +291,8 @@ type State = {
   /** Bumped by every data or σ change: a plan made before it is no longer a cache of anything. */
   version: number;
   shownVersion: number;
+  /** The σ the shown field was splatted with — see `splatSigma`. */
+  shownSigma: number;
   /** Configured and initialised: GPU work may run. False after a configuration error, and the
    *  layer then draws nothing (having said why, once). */
   ready: boolean;
@@ -299,6 +323,7 @@ export class DensityLayer extends Layer<DensityLayerProps> {
       retired: [],
       version: 0,
       shownVersion: -1,
+      shownSigma: 1,
       ready: false,
     };
     this.state = s;
@@ -441,7 +466,7 @@ export class DensityLayer extends Layer<DensityLayerProps> {
       data: s.dataBounds,
       sigma: this.props.bandwidth,
       radiusSigma: RADIUS_SIGMA,
-      cellsPerSigma: this.props.cellsPerSigma ?? 3,
+      cellsPerSigma: this.props.cellsPerSigma ?? 4,
       pixelsPerCell: this.props.pixelsPerCell ?? 1,
       margin: 0.25,
       maxCells: MAX_CELLS,
@@ -495,7 +520,7 @@ export class DensityLayer extends Layer<DensityLayerProps> {
     await splatDensityResident(s.points!, s.pointCount, s.field, {
       width: plan.width,
       height: plan.height,
-      sigma: this.props.bandwidth,
+      sigma: splatSigma(this.props.bandwidth, plan.cell),
       radiusSigma: RADIUS_SIGMA,
       bbox: plan.bbox,
       stride: 3,
@@ -505,6 +530,7 @@ export class DensityLayer extends Layer<DensityLayerProps> {
     // Both submitted; queue order puts them before any draw recorded from here on.
     s.shown = plan;
     s.shownVersion = version;
+    s.shownSigma = splatSigma(this.props.bandwidth, plan.cell);
     this.setNeedsRedraw();
   }
 
@@ -524,7 +550,8 @@ export class DensityLayer extends Layer<DensityLayerProps> {
       lineColor: line,
       width: shown.width,
       height: shown.height,
-      norm: 1 / (2 * Math.PI * p.bandwidth * p.bandwidth),
+      // The splatted kernel's normalisation: mass is what the B-spline preserves, so this stays a density.
+      norm: 1 / (2 * Math.PI * this.state.shownSigma * this.state.shownSigma),
       relative: relative ? 1 : 0,
       stops: Math.max(2, ramp.length),
       hasFill: p.fillLevel == null ? 0 : 1,
@@ -534,6 +561,17 @@ export class DensityLayer extends Layer<DensityLayerProps> {
     model.shaderInputs.setProps({ U: uniforms });
     model.draw(this.context.renderPass);
   }
+}
+
+/**
+ * The σ to splat with so that, after the shader's cubic B-spline reconstruction, the field shown has
+ * width `sigma`. The B-spline is close to a Gaussian of variance h²/3 per axis (h the cell), and
+ * Gaussian variances add, so splatting at √(σ² − h²/3) and reconstructing gives σ. At the zoomed-in
+ * cap (h = σ/4) that is a 2% narrower splat; zoomed out (h a screen pixel ≪ σ) nothing. Past h = σ
+ * the field is under-resolved anyway, and no compensation is applied.
+ */
+function splatSigma(sigma: number, cell: number): number {
+  return cell < sigma ? Math.sqrt(sigma * sigma - (cell * cell) / 3) : sigma;
 }
 
 /** World → layer units, inverting the 2-D affine part of a column-major 4×4 model matrix. */
