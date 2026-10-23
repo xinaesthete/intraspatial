@@ -85,6 +85,7 @@ export function DensityDemo() {
   const [fillLevel, setFillLevel] = useState(0.1);
   const [interval, setLineInterval] = useState(0.2);
   const [fillOpacity, setFillOpacity] = useState(0.6);
+  const [edgeOpacity, setEdgeOpacity] = useState(1);
   const [split, setSplit] = useState(false);
   const [showPoints, setShowPoints] = useState(false);
   // Bumping the canvas key remounts deck: a new Deck, a new GPU device, the old one destroyed — what
@@ -113,6 +114,7 @@ export function DensityDemo() {
     fillLevel: level(fillLevel),
     contourInterval: interval > 0 ? level(interval) : null,
     fillOpacity,
+    edgeOpacity,
   };
   const layers = [
     ...(split
@@ -187,6 +189,10 @@ export function DensityDemo() {
           <label>
             Fill opacity: {fillOpacity.toFixed(2)}
             <input type="range" min={0} max={1} step={0.01} value={fillOpacity} onChange={(e) => setFillOpacity(Number(e.target.value))} />
+          </label>
+          <label>
+            Edge opacity: {edgeOpacity.toFixed(2)}
+            <input type="range" min={0} max={1} step={0.01} value={edgeOpacity} onChange={(e) => setEdgeOpacity(Number(e.target.value))} />
           </label>
           <label className="check">
             <input type="checkbox" checked={split} onChange={(e) => setSplit(e.target.checked)} />

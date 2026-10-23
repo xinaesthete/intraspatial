@@ -5,8 +5,10 @@ computed on the device deck renders with and never read back. **WebGPU only.**
 
 ## DensityLayer
 
-A Gaussian kernel density estimate of a point cloud, drawn as a colour ramp, a filled region above a
-level with an edge along it, and iso-lines at regular intervals.
+A Gaussian kernel density estimate of a point cloud, drawn as a region (density ≥ `fillLevel`) with
+a fill and an outline, and iso-lines at regular intervals. Fill, outline and iso-lines each have their
+own opacity (`fillOpacity`, `edgeOpacity`, `contourOpacity`), so a region can be outline-only.
+Iso-lines fade out by themselves where they would crowd closer than a few line widths apart.
 
 ```ts
 new DensityLayer({

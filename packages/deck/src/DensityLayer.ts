@@ -50,15 +50,19 @@ export type DensityLayerProps = {
   colorDomain?: readonly [number, number] | null;
   /** The ramp, low to high, interpolated linearly. */
   colorRange?: readonly Color[];
-  /** Fill where density ≥ this level (in `scale`'s units), with an edge line along it. `null`: no
-   *  fill and no edge. */
+  /** The region: where density ≥ this level (in `scale`'s units). It is filled (`fillOpacity`) and
+   *  outlined (`edgeOpacity`). `null`: no region, so no fill and no edge. */
   fillLevel?: number | null;
+  /** Opacity of the region's fill. */
   fillOpacity?: number;
+  /** Opacity of the region's outline — independent of the fill, so a region can be outline-only. */
+  edgeOpacity?: number;
   /** Iso-lines every this much density (in `scale`'s units). `null`: none. */
   contourInterval?: number | null;
-  /** Opacity of every line: the iso-lines and the fill's edge. */
+  /** Opacity of the iso-lines. They fade out on their own where they would crowd closer than a few
+   *  line widths apart (zoomed out, or on steep slopes), so they never bury the shape. */
   contourOpacity?: number;
-  /** Line colour for contours and the fill edge. Default: the top of the ramp. */
+  /** Line colour for contours and the edge. Default: the top of the ramp. */
   lineColor?: Color | null;
   /** Line width, in CSS pixels. */
   lineWidth?: number;
@@ -88,6 +92,7 @@ const defaultProps: DefaultProps<DensityLayerProps> = {
   fillLevel: { type: "object", value: 0.1 },
   fillOpacity: { type: "number", value: 0.6, min: 0, max: 1 },
   contourInterval: { type: "object", value: 0.2 },
+  edgeOpacity: { type: "number", value: 1, min: 0, max: 1 },
   contourOpacity: { type: "number", value: 0.9, min: 0, max: 1 },
   lineColor: { type: "object", value: null, compare: true },
   lineWidth: { type: "number", value: 1.25, min: 0 },
@@ -120,6 +125,10 @@ type DensityUniforms = {
   hasContours: number;
   /** 1: no colorDomain given — the ramp spans [0, the field's maximum], resolved on the GPU. */
   autoDomain: number;
+  edgeOpacity: number;
+  pad0: number;
+  pad1: number;
+  pad2: number;
 };
 
 // Named `U` to match the WGSL variable: luma binds a module's uniform block by the module's name.
@@ -133,6 +142,7 @@ struct DensityUniforms {
   lineColor: vec4<f32>,
   width: f32, height: f32, norm: f32, relative: f32,
   stops: f32, hasFill: f32, hasContours: f32, autoDomain: f32,
+  edgeOpacity: f32, pad0: f32, pad1: f32, pad2: f32,
 };
 @group(0) @binding(auto) var<uniform> U: DensityUniforms;
 /** The field, row-major width*height, as the splat left it (kernel sums; row 0 is maxY). */
@@ -156,6 +166,10 @@ struct DensityUniforms {
     hasFill: "f32",
     hasContours: "f32",
     autoDomain: "f32",
+    edgeOpacity: "f32",
+    pad0: "f32",
+    pad1: "f32",
+    pad2: "f32",
   },
 };
 
@@ -252,10 +266,14 @@ fn fragmentMain(input: Varyings) -> @location(0) vec4<f32> {
   // The fill's edge, and iso-lines at every multiple of the interval from the first one up (the
   // zeroth would trace the empty background).
   let edge = select(0.0, lineCover(abs(v - U.levels.z), dv, lineW), U.hasFill > 0.5);
-  let iso = select(0.0, lineCover(abs(fract(k + 0.5) - 0.5), dk, lineW), U.hasContours > 0.5 && k > 0.5);
-  // Lines take the line opacity, not the fill's: drawn at the fill's own opacity, the edge of a
-  // single-colour fill would vanish into it.
-  let lineA = max(edge, iso) * U.look.y * U.lineColor.a;
+  // Iso-lines are 1/dk pixels apart. Where that falls below a few line widths they stop being lines
+  // and become a solid band (zoomed out, every blob is mostly contour), so fade them out across
+  // 2–6 line widths of spacing — contour-map generalisation, with no setting to tune. The edge is not
+  // faded: it marks the region, however small it is on screen.
+  let spacing = 1.0 / max(dk, 1e-20);
+  let uncrowded = smoothstep(2.0 * lineW, 6.0 * lineW, spacing);
+  let iso = select(0.0, lineCover(abs(fract(k + 0.5) - 0.5), dk, lineW), U.hasContours > 0.5 && k > 0.5) * uncrowded;
+  let lineA = max(edge * U.edgeOpacity, iso * U.look.y) * U.lineColor.a;
 
   // Line over fill, straight alpha.
   let a = lineA + fill.a * (1.0 - lineA);
@@ -557,6 +575,10 @@ export class DensityLayer extends Layer<DensityLayerProps> {
       hasFill: p.fillLevel == null ? 0 : 1,
       hasContours: p.contourInterval == null ? 0 : 1,
       autoDomain: p.colorDomain == null ? 1 : 0,
+      edgeOpacity: p.edgeOpacity ?? 1,
+      pad0: 0,
+      pad1: 0,
+      pad2: 0,
     };
     model.shaderInputs.setProps({ U: uniforms });
     model.draw(this.context.renderPass);
