@@ -27,6 +27,7 @@ import type { ShaderModule } from "@luma.gl/shadertools";
 import { fieldMaxResident } from "intraspatial/gpu/spatial/fieldMax";
 import { splatDensityResident } from "intraspatial/gpu/spatial/splatDensity";
 import { type Bounds, type FieldPlan, type PlanInput, planField, planServes } from "./fieldPlan";
+import { packPoints } from "./packPoints";
 
 /** An RGB or RGBA colour, components 0–255 (deck's convention). */
 export type Color = readonly [number, number, number] | readonly [number, number, number, number];
@@ -37,7 +38,8 @@ export type DensityLayerProps = {
   /** Point y coordinates, same length as `x`. */
   y: ArrayLike<number>;
   /** Per-point weight (default 1). A weight of 0 leaves a point out — how a filter or a category
-   *  selects its points without the host copying them. */
+   *  selects its points without the host copying them. A non-finite weight counts as 0, and a point
+   *  with a non-finite coordinate is left out (see `packPoints`). */
   weights?: ArrayLike<number> | null;
   /** Gaussian σ, in the same units as `x` and `y`. */
   bandwidth: number;
@@ -418,23 +420,8 @@ export class DensityLayer extends Layer<DensityLayerProps> {
   private uploadPoints(): void {
     const s = this.state;
     const { x, y, weights, bounds } = this.props;
-    const n = Math.min(x.length, y.length);
-    const xyw = new Float32Array(Math.max(1, n) * 3);
-    let minX = Infinity;
-    let minY = Infinity;
-    let maxX = -Infinity;
-    let maxY = -Infinity;
-    for (let i = 0; i < n; i++) {
-      const px = x[i]!;
-      const py = y[i]!;
-      xyw[3 * i] = px;
-      xyw[3 * i + 1] = py;
-      xyw[3 * i + 2] = weights ? weights[i]! : 1;
-      if (px < minX) minX = px;
-      if (px > maxX) maxX = px;
-      if (py < minY) minY = py;
-      if (py > maxY) maxY = py;
-    }
+    // Sanitised here: a NaN weight or coordinate would otherwise poison its whole kernel footprint.
+    const { xyw, n, bounds: dataBounds } = packPoints(x, y, weights);
     if (!s.points || s.points.size < xyw.byteLength) {
       // A splat in flight may not have submitted yet (its first pipeline compile is async), and it
       // holds this buffer: destroying it now would fail that submit. Retire it until the splat ends.
@@ -446,7 +433,7 @@ export class DensityLayer extends Layer<DensityLayerProps> {
     }
     s.device!.queue.writeBuffer(s.points, 0, xyw.buffer, xyw.byteOffset, xyw.byteLength);
     s.pointCount = n;
-    s.dataBounds = bounds ?? (n > 0 ? [minX, minY, maxX, maxY] : null);
+    s.dataBounds = bounds ?? dataBounds;
   }
 
   private uploadRamp(): void {
