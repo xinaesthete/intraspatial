@@ -67,6 +67,43 @@ describe("splatDensityResident", () => {
   });
 });
 
+describe("atomic accumulation (no float32-blendable)", () => {
+  it("matches the blend path: same cells, same kernel, fixed-point instead of blending", async () => {
+    // Forced here; on a device without float32-blendable (Firefox) it is chosen automatically.
+    const device = await getDevice();
+    const pts: number[] = [];
+    let s = 7;
+    const rnd = () => {
+      s = (s * 1103515245 + 12345) & 0x7fffffff;
+      return s / 0x7fffffff;
+    };
+    for (let i = 0; i < 2000; i++) pts.push(2 + rnd() * 16, 2 + rnd() * 16, 0.25 + rnd() * 2.75);
+    const xyw = new Float32Array(pts);
+    const src = await upload(device, xyw);
+    const opts = { width: W, height: H, sigma: SIGMA, bbox, stride: 3 as const, device };
+    const blend = fieldBuffer(device);
+    const atomic = fieldBuffer(device);
+    await splatDensityResident(src, 2000, blend, { ...opts, accumulate: "blend" });
+    await splatDensityResident(src, 2000, atomic, { ...opts, accumulate: "atomic", maxWeight: 3 });
+    const a = await read(device, blend);
+    const b = await read(device, atomic);
+    let peak = 0;
+    for (const v of a) peak = Math.max(peak, v);
+    let sumA = 0;
+    let sumB = 0;
+    for (let i = 0; i < a.length; i++) {
+      sumA += a[i]!;
+      sumB += b[i]!;
+    }
+    // Mass agrees closely: neither path is biased (measured: 3e-6).
+    expect(Math.abs(sumA - sumB) / sumA).toBeLessThan(1e-5);
+    // Cells differ by unbiased f32 noise: blending rounds every add, in raster order, and the two
+    // paths evaluate exp() in different shader stages. With ~2000 overlapping points per cell here
+    // that is ~1e-4 of the peak (measured 8.2e-5; not the support edge — a 6σ support changes nothing).
+    expect(maxAbsDiff(a, b) / peak).toBeLessThan(2e-4);
+  });
+});
+
 describe("explicit device", () => {
   it("splats and reduces on the device it is handed", async () => {
     // What a deck layer does: pass its own device rather than relying on getDevice().

@@ -27,6 +27,11 @@ describe("packPoints", () => {
     expect(bounds).toEqual([5, 6, 5, 6]);
   });
 
+  it("reports the largest weight, ignoring non-finite ones", () => {
+    expect(packPoints([1, 2, 3], [1, 2, 3], [0.5, Number.POSITIVE_INFINITY, 2.5]).maxWeight).toBe(2.5);
+    expect(packPoints([1], [1]).maxWeight).toBe(1);
+  });
+
   it("has no bounds when nothing contributes", () => {
     expect(packPoints([1, 2], [1, 2], [0, Number.NaN]).bounds).toBeNull();
     expect(packPoints([], []).bounds).toBeNull();

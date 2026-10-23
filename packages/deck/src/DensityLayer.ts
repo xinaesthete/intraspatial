@@ -313,6 +313,8 @@ type State = {
   shownVersion: number;
   /** The σ the shown field was splatted with — see `splatSigma`. */
   shownSigma: number;
+  /** The largest point weight — the compute splat's fixed-point scale (see `packPoints`). */
+  maxWeight: number;
   /** Configured and initialised: GPU work may run. False after a configuration error, and the
    *  layer then draws nothing (having said why, once). */
   ready: boolean;
@@ -345,16 +347,13 @@ export class DensityLayer extends Layer<DensityLayerProps> {
       shownVersion: -1,
       shownSigma: 1,
       ready: false,
+      maxWeight: 1,
     };
     this.state = s;
     const device = this.context.device;
     const handle = device.handle;
     if (device.type !== "webgpu" || !(handle instanceof GPUDevice)) {
       this.fail("DensityLayer needs deck on WebGPU (deviceProps: { type: 'webgpu' })");
-      return;
-    }
-    if (!handle.features.has("float32-blendable")) {
-      this.fail("DensityLayer needs the 'float32-blendable' device feature (deviceProps.optionalFeatures)");
       return;
     }
     s.device = handle;
@@ -421,7 +420,8 @@ export class DensityLayer extends Layer<DensityLayerProps> {
     const s = this.state;
     const { x, y, weights, bounds } = this.props;
     // Sanitised here: a NaN weight or coordinate would otherwise poison its whole kernel footprint.
-    const { xyw, n, bounds: dataBounds } = packPoints(x, y, weights);
+    const { xyw, n, bounds: dataBounds, maxWeight } = packPoints(x, y, weights);
+    s.maxWeight = maxWeight;
     if (!s.points || s.points.size < xyw.byteLength) {
       // A splat in flight may not have submitted yet (its first pipeline compile is async), and it
       // holds this buffer: destroying it now would fail that submit. Retire it until the splat ends.
@@ -530,6 +530,7 @@ export class DensityLayer extends Layer<DensityLayerProps> {
       bbox: plan.bbox,
       stride: 3,
       device: s.device,
+      maxWeight: s.maxWeight,
     });
     await fieldMaxResident(s.field, cells, s.max!, s.device);
     // Both submitted; queue order puts them before any draw recorded from here on.

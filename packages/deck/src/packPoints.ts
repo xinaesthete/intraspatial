@@ -23,6 +23,8 @@ export interface PackedPoints {
   n: number;
   /** Bounds of the contributing points, or null if none contribute. */
   bounds: Bounds | null;
+  /** The largest weight (0 if none contribute) — the fixed-point scale of the compute splat. */
+  maxWeight: number;
 }
 
 export function packPoints(x: ArrayLike<number>, y: ArrayLike<number>, weights?: ArrayLike<number> | null): PackedPoints {
@@ -32,6 +34,7 @@ export function packPoints(x: ArrayLike<number>, y: ArrayLike<number>, weights?:
   let minY = Infinity;
   let maxX = -Infinity;
   let maxY = -Infinity;
+  let maxWeight = 0;
   for (let i = 0; i < n; i++) {
     const px = x[i]!;
     const py = y[i]!;
@@ -42,10 +45,11 @@ export function packPoints(x: ArrayLike<number>, y: ArrayLike<number>, weights?:
     xyw[3 * i + 1] = placed ? py : 0;
     xyw[3 * i + 2] = w;
     if (w === 0) continue;
+    if (w > maxWeight) maxWeight = w;
     if (px < minX) minX = px;
     if (px > maxX) maxX = px;
     if (py < minY) minY = py;
     if (py > maxY) maxY = py;
   }
-  return { xyw, n, bounds: minX <= maxX ? [minX, minY, maxX, maxY] : null };
+  return { xyw, n, bounds: minX <= maxX ? [minX, minY, maxX, maxY] : null, maxWeight };
 }

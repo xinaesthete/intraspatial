@@ -73,9 +73,14 @@ const ORANGES: Color[] = [
 
 const INITIAL_VIEW: OrthographicViewState = { target: [EXTENT / 2, EXTENT / 2, 0], zoom: -1.2 };
 const VIEW = new OrthographicView({ id: "ortho", flipY: false });
-/** Module-level, so deck doesn't rebuild its device. The layer needs `float32-blendable`. It does
- *  NOT need intraspatial to adopt the device: it passes deck's own to the kernels. */
-const DEVICE_PROPS = { type: "webgpu" as const, adapters: [webgpuAdapter], optionalFeatures: ["float32-blendable" as const] };
+/** Module-level, so deck doesn't rebuild its device. `?noblend` leaves out `float32-blendable`, as
+ *  Firefox's WebGPU does, to exercise the layer's compute-splat fallback. */
+const NO_BLEND = new URLSearchParams(location.search).has("noblend");
+const DEVICE_PROPS = {
+  type: "webgpu" as const,
+  adapters: [webgpuAdapter],
+  optionalFeatures: NO_BLEND ? [] : ["float32-blendable" as const],
+};
 
 export function DensityDemo() {
   const [deviceStatus, setDeviceStatus] = useState("waiting for deck's device…");
@@ -222,7 +227,7 @@ export function DensityDemo() {
               onDeviceInitialized={(d: Device) =>
                 setDeviceStatus(
                   d.type === "webgpu"
-                    ? `WebGPU · float32-blendable ${d.features.has("float32-blendable") ? "✓" : "✗ (the layer needs it)"}`
+                    ? `WebGPU · ${d.features.has("float32-blendable") ? "blended splat" : "compute splat (no float32-blendable)"}`
                     : `deck chose ${d.type}; this page needs WebGPU`,
                 )
               }

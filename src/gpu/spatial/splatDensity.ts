@@ -26,6 +26,7 @@ import { getDevice, MAX_WORKGROUPS_PER_DIM, sized } from "../device";
 import { rawBindGroup } from "../graph/residentBind";
 import { narrowToHalf } from "../halfTexture";
 import { scratchTexture } from "../scratchTexture";
+import { splatDensityAtomic } from "./splatDensityAtomic";
 
 const SHADER = /* wgsl */ `
 struct Uni {
@@ -136,7 +137,9 @@ export type DensityFormat = "r32float" | "r16float";
 interface Gpu {
   device: GPUDevice;
   root: ReturnType<typeof tgpu.initFromDevice>;
-  pipeline: GPURenderPipeline;
+  /** The additive-blend render pipeline; absent on a device without `float32-blendable`, where
+   *  creating it would be a validation error (the resident path falls back to compute there). */
+  pipeline?: GPURenderPipeline;
   depad?: Promise<{ pipeline: GPUComputePipeline; params: ReturnType<Gpu["root"]["createBuffer"]> }>;
   ptsBuf?: GPUBuffer;
   ptsCap: number;
@@ -168,6 +171,8 @@ async function getGpu(device?: GPUDevice): Promise<Gpu> {
 
 function buildGpu(device: GPUDevice): Gpu {
   const root = tgpu.initFromDevice({ device });
+  const base = { device, root, ptsCap: 0, texW: 0, texH: 0, bytesPerRow: 0, rbCap: 0 };
+  if (!device.features.has("float32-blendable")) return base;
   const module = device.createShaderModule({ code: SHADER });
   const pipeline = device.createRenderPipeline({
     layout: "auto",
@@ -188,7 +193,7 @@ function buildGpu(device: GPUDevice): Gpu {
       ],
     },
   });
-  return { device, root, pipeline, ptsCap: 0, texW: 0, texH: 0, bytesPerRow: 0, rbCap: 0 };
+  return { ...base, pipeline };
 }
 
 const align256 = (n: number) => Math.ceil(n / 256) * 256;
@@ -380,6 +385,12 @@ function renderPoints(
     pts.defaultWeight,
   ]);
   const { device, pipeline } = g;
+  if (!pipeline) {
+    throw new Error(
+      "splatDensity: this device lacks 'float32-blendable', which the render path needs " +
+        "(splatDensityResident falls back to a compute splat; the host and texture paths do not)",
+    );
+  }
   g.uniBuf ??= device.createBuffer({ size: uni.byteLength, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
   device.queue.writeBuffer(g.uniBuf, 0, uni);
   const pass = enc.beginRenderPass({
@@ -420,6 +431,13 @@ export interface ResidentSplatOptions {
   /** The device `points` and the output live on. Default: the library's own (`getDevice()`). A
    *  renderer with its own device — a deck layer — passes it, and needs no `adoptDevice`. */
   device?: GPUDevice;
+  /** How `splatDensityResident` accumulates. `"blend"`: additive blending into r32float (fast; needs
+   *  `float32-blendable`). `"atomic"`: an exact fixed-point compute scatter (`splatDensityAtomic.ts`).
+   *  Default: blend where the device can, atomic where it cannot. */
+  accumulate?: "blend" | "atomic";
+  /** The largest point weight (default 1). Only the atomic path uses it, to set its fixed-point
+   *  scale; a weight above it is clamped there. */
+  maxWeight?: number;
 }
 
 /** Tier-2 form, TEXTURE output (ADR-0017): splat a GPU-resident point cloud straight into a
@@ -483,6 +501,20 @@ export async function splatDensityResident(points: GPUBuffer, n: number, dst: GP
   const { width: w, height: h, sigma } = opts;
   if (w <= 0 || h <= 0) throw new Error("splatDensity: width/height must be > 0");
   if (sigma <= 0) throw new Error("splatDensity: sigma must be > 0");
+  const dev = opts.device ?? (await getDevice());
+  if (opts.accumulate === "atomic" || !dev.features.has("float32-blendable")) {
+    // No float blending on this device (Firefox's WebGPU): the compute path, same output layout.
+    await splatDensityAtomic(dev, points, n, dst, {
+      width: w,
+      height: h,
+      sigma,
+      radiusSigma: opts.radiusSigma ?? 4,
+      bbox: opts.bbox,
+      stride: opts.stride ?? 2,
+      maxWeight: opts.maxWeight ?? 1,
+    });
+    return;
+  }
   // The de-pad dispatch is 1-D, and past the per-dimension workgroup cap WebGPU drops the dispatch
   // without an error — the caller would get an all-zero field.
   if (Math.ceil((w * h) / DEPAD_WG) > MAX_WORKGROUPS_PER_DIM) {
@@ -495,7 +527,7 @@ export async function splatDensityResident(points: GPUBuffer, n: number, dst: GP
   // queue in one submit: with an await between them, a second caller (two layers updating in the
   // same frame) would splat into the shared staging buffer before the first had de-padded it, and
   // the first caller would get the second one's field. Nothing would look wrong but the picture.
-  const g = await getGpu(opts.device);
+  const g = await getGpu(dev);
   const depad = await getDepad(g);
   const { device, root } = g;
 

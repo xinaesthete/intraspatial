@@ -30,8 +30,10 @@ Cartesian views only.
 
 ### Deck setup
 
-The layer needs deck on WebGPU, with the `float32-blendable` feature (the splat blends additively
-into r32float):
+The layer needs deck on WebGPU. Ask for `float32-blendable` where the browser has it: with it the
+splat accumulates by additive blending into r32float, in hardware. Without it (Firefox's WebGPU, at
+the time of writing) the layer falls back to an exact fixed-point compute splat — the same field,
+slower where points are dense:
 
 ```ts
 import { webgpuAdapter } from "@luma.gl/webgpu";
