@@ -43,7 +43,7 @@ interface Snapshot {
  */
 async function snapshot(pool: Snapshot[], shown: readonly number[], res: GramMatrixGpuResult, gen: number): Promise<GPUBuffer> {
   const device = await getDevice();
-  const bytes = res.labels.length * res.height * res.resident.rowFloats * 4;
+  const bytes = res.labels.length * res.height * res.resident.rowWords * 4;
   const newest = shown.length ? Math.max(...shown) : Number.NEGATIVE_INFINITY;
   const free = (s: Snapshot) => s.gen < newest && !shown.includes(s.gen);
   let slot = pool.find((s) => free(s) && s.buffer.size >= bytes);
@@ -72,6 +72,9 @@ export interface GramParamsUi {
   readonly radius: number;
   /** Transcripts below this quality are dropped; 0 keeps all. */
   readonly qvMin: number;
+  /** Store the per-channel rasters at half precision — halves the raster buffer, which is both
+   *  the memory and the `maxStorageBufferBindingSize` ceiling this path hits first. */
+  readonly halfRasters: boolean;
   /** Raster long side; 0 derives it from the radius. */
   readonly rasterSide: number;
 }
@@ -124,7 +127,13 @@ export function useTranscriptGram(tiles: WindowTiles | undefined, channels: read
         superseded(); // the channels take a while; a moving slider has usually moved on by now
         const t1 = performance.now();
         const raster = p.rasterSide > 0 ? fixedRaster(ch.bbox, p.rasterSide) : rasterSizeForRadius(ch.bbox, p.radius);
-        const res = await gramMatrixGpu(ch.clouds, { bbox: ch.bbox, width: raster.width, height: raster.height, radius: p.radius });
+        const res = await gramMatrixGpu(ch.clouds, {
+          bbox: ch.bbox,
+          width: raster.width,
+          height: raster.height,
+          radius: p.radius,
+          precision: p.halfRasters ? "f16" : "f32",
+        });
         superseded(); // nothing to copy or align for a result no one will see
         const modes = alignModeSigns(coLocationModes(res), prevModes.current);
         prevModes.current = modes;
@@ -143,7 +152,7 @@ export function useTranscriptGram(tiles: WindowTiles | undefined, channels: read
         };
       });
     },
-    [tiles, channels, p.radius, p.qvMin, p.rasterSide],
+    [tiles, channels, p.radius, p.qvMin, p.rasterSide, p.halfRasters],
     scope,
   );
   const gen = state.value?.generation;

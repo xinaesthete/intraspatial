@@ -354,7 +354,12 @@ export function modeParams(res: ModeSource, opts: Omit<ModePaintOptions, "marker
 export async function paintGramModes(canvas: HTMLCanvasElement, res: GramMatrixGpuResult, opts: ModePaintOptions): Promise<ModePaintInfo> {
   const { device, pipeline, format } = await getCtx();
   const K = res.labels.length;
-  const { buffer, rowFloats } = res.resident;
+  // These two surfaces read `rasters` as plain f32 and have not been taught to unpack halves, so
+  // refuse rather than draw noise. Only the transcript page's `GramModesLayer` reads f16 today.
+  if (res.resident.precision === "f16") {
+    throw new Error('gramModes: f16 rasters are not supported here yet — rebuild the Gram with precision "f32"');
+  }
+  const { buffer, rowWords: rowFloats } = res.resident;
   const { chan, wand: wandData, m, scales, sigmas } = modeParams(res, opts);
 
   let ctx = surfaces.get(canvas);

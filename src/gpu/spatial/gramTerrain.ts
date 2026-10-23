@@ -389,7 +389,12 @@ let probeOut: { raw: GPUBuffer; staging: GPUBuffer; cap: number } | undefined;
 export async function probeChannels(res: GramMatrixGpuResult, col: number, row: number): Promise<Float64Array> {
   const { device, probe } = await getCtx();
   const K = res.labels.length;
-  const { buffer, rowFloats } = res.resident;
+  // These two surfaces read `rasters` as plain f32 and have not been taught to unpack halves, so
+  // refuse rather than draw noise. Only the transcript page's `GramModesLayer` reads f16 today.
+  if (res.resident.precision === "f16") {
+    throw new Error('gramTerrain: f16 rasters are not supported here yet — rebuild the Gram with precision "f32"');
+  }
+  const { buffer, rowWords: rowFloats } = res.resident;
   probeUni ??= device.createBuffer({ size: 32, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
   if (!probeOut || probeOut.cap < K) {
     const cap = Math.max(K, 64);
@@ -433,7 +438,10 @@ export async function probeChannels(res: GramMatrixGpuResult, col: number, row: 
 export async function paintGramTerrain(canvas: HTMLCanvasElement, res: GramMatrixGpuResult, opts: TerrainOptions): Promise<TerrainInfo> {
   const { device, pipeline, format } = await getCtx();
   const K = res.labels.length;
-  const { mean, sd, buffer, rowFloats } = res.resident;
+  if (res.resident.precision === "f16") {
+    throw new Error('gramTerrain: f16 rasters are not supported here yet — rebuild the Gram with precision "f32"');
+  }
+  const { mean, sd, buffer, rowWords: rowFloats } = res.resident;
   const saturate = opts.saturate ?? 2.5;
   const step = Math.max(1, Math.floor(opts.step ?? 1));
   const m = Math.max(1, Math.min(opts.modesUsed ?? 3, K, 32));

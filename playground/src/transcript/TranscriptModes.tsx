@@ -29,6 +29,16 @@ import { MatrixView } from "./MatrixView";
 import { ModeLegend } from "./ModeLegend";
 import { useTranscriptGram } from "./useTranscriptGram";
 
+/** The raster stack's size on the device, in MiB. `bytesPerWordRatio` of 2 reports what the same
+ *  stack would cost at f32, which is the comparison the checkbox is making. */
+function rasterMiB(
+  g: { res: { labels: readonly unknown[]; height: number; resident: { rowWords: number; precision: string } } },
+  scale = 1,
+) {
+  const words = g.res.labels.length * g.res.height * g.res.resident.rowWords;
+  return ((words * 4 * scale) / (1024 * 1024)).toFixed(1);
+}
+
 const DEFAULT_STORE = "http://localhost:8080/xenium_2.q0.001.htj2k.index-permutations.zarr/";
 const DEFAULT_SELECTION: Selection = { sets: [...STARTER_SETS.map((s) => s.name), NEGATIVE_CONTROLS], genes: [] };
 /** How long the view must rest before the window moves to it. */
@@ -66,6 +76,7 @@ export function TranscriptModes() {
   const [qvMin, setQvMin] = useState(20);
   const [untiledBudgetM, setUntiledBudgetM] = useState(DEFAULT_UNTILED_BUDGET / 1e6);
   const [rasterSide, setRasterSide] = useState(0);
+  const [halfRasters, setHalfRasters] = useState(false);
   const [follow, setFollow] = useState(true);
   const [pinned, setPinned] = useState<Rect>();
   const [selection, setSelection] = useState(DEFAULT_SELECTION);
@@ -134,7 +145,7 @@ export function TranscriptModes() {
   // No compute until deck's device is ours: resources made on another device could not be drawn.
   const channels = device.ready ? built.channels : [];
   // Scoped to the source: a result stands in for the next only while it is about the same transcripts.
-  const gram = useTranscriptGram(tiles.value, channels, { radius: rEff, qvMin: qvApplied, rasterSide }, source.value);
+  const gram = useTranscriptGram(tiles.value, channels, { radius: rEff, qvMin: qvApplied, rasterSide, halfRasters }, source.value);
   const g = gram.value;
 
   // A lock applies while the channels are the ones it was taken with; otherwise this window's own
@@ -288,6 +299,10 @@ export function TranscriptModes() {
               value={rasterSide}
               onChange={(e) => setRasterSide(Math.max(0, Number(e.target.value) || 0))}
             />
+          </label>
+          <label className="check">
+            <input type="checkbox" checked={halfRasters} onChange={(e) => setHalfRasters(e.target.checked)} />
+            Half-precision maps (f16){halfRasters && gram.value ? ` — ${rasterMiB(gram.value)} MiB, was ${rasterMiB(gram.value, 2)}` : ""}
           </label>
           <label>
             Minimum molecule quality (qv){hasQv ? "" : " — not available for this element"}

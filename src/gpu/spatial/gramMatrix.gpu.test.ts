@@ -83,6 +83,21 @@ describe("gramMatrixGpu", () => {
     expect(gpu.labels).toEqual(["0", "1", "2"]);
   });
 
+  it("gives the same statistic with f16 rasters, at half the buffer", async () => {
+    const { xs, ys, typeId } = scene();
+    const ch = channelsFromLabels(xs, ys, typeId);
+    const f32 = await gramMatrixGpu(ch, PARAMS);
+    const c32 = Float64Array.from(f32.corr);
+    const half = await gramMatrixGpu(ch, { ...PARAMS, precision: "f16" });
+
+    expect(half.resident.precision).toBe("f16");
+    // Half the row stride is where the memory goes.
+    expect(half.resident.rowWords).toBeLessThanOrEqual(Math.ceil(f32.resident.rowWords / 2) + 64);
+    // The rasters are narrowed once, so the statistic moves by about f16's resolution, not more.
+    expect(relMax(c32, half.corr)).toBeLessThan(5e-3);
+    expect(relMax(ORACLE.corr, half.corr)).toBeLessThan(6e-3);
+  });
+
   it("keeps the PSD guarantee in f32 — the property is structural, not numerical", async () => {
     // The load-bearing claim of the formulation: MMᵀ is PSD because of what it is. Accumulate it
     // in f32 through a raster quadrature and it is still PSD — for the top-hat too, whose own

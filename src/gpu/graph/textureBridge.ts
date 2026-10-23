@@ -19,10 +19,19 @@ import type { ResidentTexture } from "./handle";
 
 const WG = 64;
 
+// Two entry points, one per source format. `U.rowWords` is the padded row stride in u32 WORDS,
+// which is the unit both read as — an `r16float` row is half the bytes but the same kind of word,
+// holding two texels each.
+//
+// The f16 texels are widened to f32 HERE, on the device, rather than handed to the host as halves.
+// Downstream is f32 either way, so the halving is a storage decision that stops at this boundary:
+// no consumer, no test and no readback has to know the field was accumulated in f16. (`Float16Array`
+// exists in Node 24 but not in every browser this ships to, so converting on the host would have
+// been the fragile half of the same trade.)
 const DEPAD = /* wgsl */ `
-struct Uni { w: u32, h: u32, rowFloats: u32, pad: u32 };
+struct Uni { w: u32, h: u32, rowWords: u32, pad: u32 };
 @group(0) @binding(0) var<uniform> U: Uni;
-@group(0) @binding(1) var<storage, read> src: array<f32>;
+@group(0) @binding(1) var<storage, read> src: array<u32>;
 @group(0) @binding(2) var<storage, read_write> dst: array<f32>;
 
 @compute @workgroup_size(${WG})
@@ -31,13 +40,26 @@ fn depad(@builtin(global_invocation_id) gid: vec3u) {
   if (i >= U.w * U.h) { return; }
   let row = i / U.w;
   let col = i - row * U.w;
-  dst[i] = src[row * U.rowFloats + col];
+  dst[i] = bitcast<f32>(src[row * U.rowWords + col]);
+}
+
+@compute @workgroup_size(${WG})
+fn depadHalf(@builtin(global_invocation_id) gid: vec3u) {
+  let i = gid.x;
+  if (i >= U.w * U.h) { return; }
+  let row = i / U.w;
+  let col = i - row * U.w;
+  // Two texels per word, little-endian: x is the even column, y the odd one.
+  let word = src[row * U.rowWords + (col >> 1u)];
+  let pair = unpack2x16float(word);
+  dst[i] = select(pair.y, pair.x, (col & 1u) == 0u);
 }
 `;
 
 interface Ctx {
   device: GPUDevice;
   pipeline: GPUComputePipeline;
+  pipelineHalf: GPUComputePipeline;
   uni: GPUBuffer;
 }
 let ctxCache: Promise<Ctx> | undefined;
@@ -45,12 +67,11 @@ let ctxCache: Promise<Ctx> | undefined;
 function getCtx(): Promise<Ctx> {
   ctxCache ??= (async () => {
     const device = await getDevice();
+    const module = device.createShaderModule({ code: DEPAD });
     return {
       device,
-      pipeline: device.createComputePipeline({
-        layout: "auto",
-        compute: { module: device.createShaderModule({ code: DEPAD }), entryPoint: "depad" },
-      }),
+      pipeline: device.createComputePipeline({ layout: "auto", compute: { module, entryPoint: "depad" } }),
+      pipelineHalf: device.createComputePipeline({ layout: "auto", compute: { module, entryPoint: "depadHalf" } }),
       uni: device.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST }),
     };
   })();
@@ -73,14 +94,18 @@ function ensureStaging(device: GPUDevice, bytes: number): GPUBuffer {
 
 const align256 = (n: number) => Math.ceil(n / 256) * 256;
 
-/** Copy a resident texture's red channel into a tightly packed `width*height` f32 buffer.
+/** Copy a resident texture's red channel into a tightly packed `width*height` **f32** buffer,
+ *  whether the texture itself is `r32float` or `r16float`.
  *
  *  Submits and returns; the copy is ordered before anything the caller submits afterwards, so no
  *  fence is needed for a GPU-side consumer. */
 export async function textureToBuffer(tex: ResidentTexture, dst: GPUBuffer): Promise<void> {
-  const { device, pipeline, uni } = await getCtx();
+  const ctx = await getCtx();
+  const { device, uni } = ctx;
   const { width: w, height: h } = tex;
-  const bytesPerRow = align256(w * 4);
+  const half = tex.format === "r16float";
+  const pipeline = half ? ctx.pipelineHalf : ctx.pipeline;
+  const bytesPerRow = align256(w * (half ? 2 : 4));
   const src = ensureStaging(device, bytesPerRow * h);
 
   device.queue.writeBuffer(uni, 0, new Uint32Array([w, h, bytesPerRow / 4, 0]));
