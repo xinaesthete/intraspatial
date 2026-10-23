@@ -102,13 +102,13 @@ export const knnOp: OpType = {
     matrixDims(inputs[0]!, "knn");
     return [{ kind: "opaque", name: "knn" }];
   },
-  async execute(_ctx, inputs, params) {
+  async execute(ctx, inputs, params) {
     const { n, dim } = matrixDims(inputs[0]!.shape, "knn");
     const k = (params.nNeighbors as number) - 1;
     if (k < 1) throw new Error("knn: nNeighbors must be at least 2");
     if (k >= n) throw new Error(`knn: nNeighbors-1 must be < rows (got ${k}, rows ${n})`);
     const reduced = maybeReduce(inputs[0]!.data!, n, dim, params.nComponents as number);
-    const result = await knnGpu(reduced.values, { n, dim: reduced.dim, k });
+    const result = await knnGpu(reduced.values, { n, dim: reduced.dim, k, device: await ctx.backend.getDevice() });
     return [{ shape: { kind: "opaque", name: "knn" }, dtype: "f32", payload: result }];
   },
   cpuGolden(inputs, params) {

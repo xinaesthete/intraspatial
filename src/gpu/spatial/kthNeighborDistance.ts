@@ -16,7 +16,7 @@
 // TGSL helpers as template externals. Brute force stays the default and the golden.
 import tgpu from "typegpu";
 import * as d from "typegpu/data";
-import { getDevice, sized, writeView } from "../device";
+import { deviceScoped, sized, writeView } from "../device";
 import { type GridIndexCtx, getGridIndexCtx } from "./gridIndex";
 import { cellCoord, cellRange, encodeQueryIndex, type IndexedQueryOptions, LATTICE_BYTES, Lattice, StartArray } from "./gridIndexQuery";
 
@@ -116,28 +116,24 @@ interface Pipe {
   pipelineIdx: GPUComputePipeline;
   indexCtx: GridIndexCtx;
 }
-let pipeCache: Promise<Pipe> | undefined;
-function getPipe(): Promise<Pipe> {
-  pipeCache ??= (async () => {
-    const device = await getDevice();
-    const root = tgpu.initFromDevice({ device });
-    const build = (template: string, externals: Record<string, object>, entryPoint: string) => {
-      const { code, usedBindGroupLayouts } = tgpu.resolveWithContext({ template, externals, names: "strict" });
-      const module = device.createShaderModule({ code });
-      const pipeLayout = device.createPipelineLayout({ bindGroupLayouts: usedBindGroupLayouts.map((l) => root.unwrap(l)) });
-      return device.createComputePipeline({ layout: pipeLayout, compute: { module, entryPoint } });
-    };
-    const indexCtx = await getGridIndexCtx();
-    return {
-      device,
-      root,
-      pipeline: build(TEMPLATE, { ...layout.bound }, "kthnn"),
-      pipelineIdx: build(TEMPLATE_IDX, { ...layoutIdx.bound, cellCoord, cellRange }, "kthnnIdx"),
-      indexCtx,
-    };
-  })();
-  return pipeCache;
-}
+/** Per device (default: the library's own) — `deviceScoped` in `../device` says why. */
+const getPipe = deviceScoped(async (device: GPUDevice): Promise<Pipe> => {
+  const root = tgpu.initFromDevice({ device });
+  const build = (template: string, externals: Record<string, object>, entryPoint: string) => {
+    const { code, usedBindGroupLayouts } = tgpu.resolveWithContext({ template, externals, names: "strict" });
+    const module = device.createShaderModule({ code });
+    const pipeLayout = device.createPipelineLayout({ bindGroupLayouts: usedBindGroupLayouts.map((l) => root.unwrap(l)) });
+    return device.createComputePipeline({ layout: pipeLayout, compute: { module, entryPoint } });
+  };
+  const indexCtx = await getGridIndexCtx(device);
+  return {
+    device,
+    root,
+    pipeline: build(TEMPLATE, { ...layout.bound }, "kthnn"),
+    pipelineIdx: build(TEMPLATE_IDX, { ...layoutIdx.bound, cellCoord, cellRange }, "kthnnIdx"),
+    indexCtx,
+  };
+});
 
 type Root = Pipe["root"];
 function makePool(root: Root, n: number) {
@@ -148,10 +144,13 @@ function makePool(root: Root, n: number) {
     params: root.createBuffer(Params).$usage("uniform"),
   };
 }
-let pool: ReturnType<typeof makePool> | undefined;
+/** Per root, so per device: a pool's buffers belong to the device its root wraps. */
+const pools = new WeakMap<Root, ReturnType<typeof makePool>>();
 function ensurePool(root: Root, n: number) {
+  let pool = pools.get(root);
   if (pool && pool.n >= n) return pool;
   pool = makePool(root, Math.max(n, pool?.n ?? 0, 1));
+  pools.set(root, pool);
   return pool;
 }
 
@@ -174,7 +173,7 @@ export async function kthNeighborDistanceGpu(
   if (k < 1 || k > MAX_K) throw new Error(`kthNeighborDistance: k must be in 1..${MAX_K}`);
   if (k >= n) throw new Error("kthNeighborDistance: need k < N");
 
-  const { device, root, pipeline, pipelineIdx, indexCtx } = await getPipe();
+  const { device, root, pipeline, pipelineIdx, indexCtx } = await getPipe(opts.device);
   const p = ensurePool(root, n);
 
   const flat = new Float32Array(2 * n);

@@ -14,7 +14,7 @@
 import tgpu from "typegpu";
 import * as d from "typegpu/data";
 import * as std from "typegpu/std";
-import { dispatchGrid, getDevice, writeView } from "../device";
+import { deviceScoped, dispatchGrid, writeView } from "../device";
 import { rawBindGroup } from "../graph/residentBind";
 
 const WG = 64;
@@ -85,24 +85,20 @@ interface Pipe {
   root: ReturnType<typeof tgpu.initFromDevice>;
   pipeline: GPUComputePipeline;
 }
-let pipeCache: Promise<Pipe> | undefined;
-function getPipe(): Promise<Pipe> {
-  pipeCache ??= (async () => {
-    const device = await getDevice();
-    const root = tgpu.initFromDevice({ device });
-    const { code, usedBindGroupLayouts } = tgpu.resolveWithContext([decimateFn], { names: "strict" });
-    const module = device.createShaderModule({ code });
-    const pipeLayout = device.createPipelineLayout({
-      bindGroupLayouts: usedBindGroupLayouts.map((l) => root.unwrap(l)),
-    });
-    const pipeline = device.createComputePipeline({
-      layout: pipeLayout,
-      compute: { module, entryPoint: "decimateBlock" },
-    });
-    return { device, root, pipeline };
-  })();
-  return pipeCache;
-}
+/** Per device (default: the library's own) — `deviceScoped` in `../device` says why. */
+const getPipe = deviceScoped(async (device: GPUDevice): Promise<Pipe> => {
+  const root = tgpu.initFromDevice({ device });
+  const { code, usedBindGroupLayouts } = tgpu.resolveWithContext([decimateFn], { names: "strict" });
+  const module = device.createShaderModule({ code });
+  const pipeLayout = device.createPipelineLayout({
+    bindGroupLayouts: usedBindGroupLayouts.map((l) => root.unwrap(l)),
+  });
+  const pipeline = device.createComputePipeline({
+    layout: pipeLayout,
+    compute: { module, entryPoint: "decimateBlock" },
+  });
+  return { device, root, pipeline };
+});
 
 type Root = Pipe["root"];
 function buf(root: Root, n: number) {
@@ -111,10 +107,15 @@ function buf(root: Root, n: number) {
 function makeParams(root: Root) {
   return root.createBuffer(Params).$usage("uniform");
 }
-let params: ReturnType<typeof makeParams> | undefined;
+/** Per root, so per device, like the pipeline. */
+const params = new WeakMap<Root, ReturnType<typeof makeParams>>();
 function ensureParams(root: Root) {
-  params ??= makeParams(root);
-  return params;
+  let p = params.get(root);
+  if (!p) {
+    p = makeParams(root);
+    params.set(root, p);
+  }
+  return p;
 }
 
 function modeFlag(mode: DecimateMode): number {
@@ -133,7 +134,8 @@ export function decimatedSize(width: number, height: number, factor: number): { 
 
 /** Tier-2 form (ADR-0017): decimate a GPU-resident width×height grid into a GPU-resident
  *  destination of at least `ceil(w/f)·ceil(h/f)` f32 cells, no host transfer. `src` and `dst`
- *  are caller-owned and must be distinct (every output cell reads a whole input block). */
+ *  are caller-owned and must be distinct (every output cell reads a whole input block). `device`
+ *  is the one they live on; default: the library's own. */
 export async function decimateResident(
   src: GPUBuffer,
   dst: GPUBuffer,
@@ -141,51 +143,56 @@ export async function decimateResident(
   height: number,
   factor: number,
   mode: DecimateMode,
+  device?: GPUDevice,
 ): Promise<void> {
   if (src === dst) throw new Error("decimateResident: src and dst must be distinct buffers");
   const { width: ow, height: oh } = decimatedSize(width, height, factor);
-  const pipe = await getPipe();
-  const { device, root, pipeline } = pipe;
+  const pipe = await getPipe(device);
+  const { device: dev, root, pipeline } = pipe;
   const p = ensureParams(root);
   p.write({ w: width, h: height, ow, oh, factor, mode: modeFlag(mode) });
-  const bind = rawBindGroup(device, root, layout, [p, src, dst]);
+  const bind = rawBindGroup(dev, root, layout, [p, src, dst]);
   const { x, y } = dispatchGrid(Math.ceil((ow * oh) / WG));
-  const enc = device.createCommandEncoder();
+  const enc = dev.createCommandEncoder();
   const pass = enc.beginComputePass();
   pass.setPipeline(pipeline);
   pass.setBindGroup(0, bind);
   pass.dispatchWorkgroups(x, y);
   pass.end();
-  device.queue.submit([enc.finish()]);
+  dev.queue.submit([enc.finish()]);
 }
 
 /** Host-array form: block-reduce a row-major width×height grid by `factor`. Returns the
- *  ceil(w/f)×ceil(h/f) grid (row-major). */
+ *  ceil(w/f)×ceil(h/f) grid (row-major). `device` defaults to the library's own. */
 export async function decimateGpu(
   grid: ArrayLike<number>,
   width: number,
   height: number,
   factor: number,
   mode: DecimateMode,
+  device?: GPUDevice,
 ): Promise<Float32Array> {
   const cells = width * height;
   if (grid.length !== cells) throw new Error("decimate: grid length != width*height");
   const { width: ow, height: oh } = decimatedSize(width, height, factor);
-  const pipe = await getPipe();
-  const { device, root } = pipe;
+  const pipe = await getPipe(device);
+  const { device: dev, root } = pipe;
   const io = ensureIo(root, cells, ow * oh);
-  writeView(device.queue, root.unwrap(io.src), Float32Array.from(grid));
-  await decimateResident(root.unwrap(io.src), root.unwrap(io.dst), width, height, factor, mode);
+  writeView(dev.queue, root.unwrap(io.src), Float32Array.from(grid));
+  await decimateResident(root.unwrap(io.src), root.unwrap(io.dst), width, height, factor, mode, dev);
   const got = (await io.dst.read()) as ArrayLike<number>;
   return Float32Array.from({ length: ow * oh }, (_, i) => got[i]!);
 }
 
-let io: { capIn: number; capOut: number; src: ReturnType<typeof buf>; dst: ReturnType<typeof buf> } | undefined;
+/** Per root, like the scratch pool. */
+const ios = new WeakMap<Root, { capIn: number; capOut: number; src: ReturnType<typeof buf>; dst: ReturnType<typeof buf> }>();
 function ensureIo(root: Root, cellsIn: number, cellsOut: number) {
+  let io = ios.get(root);
   if (io && io.capIn >= cellsIn && io.capOut >= cellsOut) return io;
   const capIn = Math.max(cellsIn, io?.capIn ?? 0, 1);
   const capOut = Math.max(cellsOut, io?.capOut ?? 0, 1);
   io = { capIn, capOut, src: buf(root, capIn), dst: buf(root, capOut) };
+  ios.set(root, io);
   return io;
 }
 

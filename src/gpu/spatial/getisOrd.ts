@@ -27,19 +27,19 @@ export interface HotspotField {
 }
 
 /** Getis-Ord Gi* z-scores for a grid, using a square box neighbourhood of the
- *  given radius (in cells). */
+ *  given radius (in cells). `device` defaults to the library's own. */
 export async function getisOrdGpu(
   grid: ArrayLike<number>,
   width: number,
   height: number,
-  opts: { radius?: number } = {},
+  opts: { radius?: number; device?: GPUDevice } = {},
 ): Promise<HotspotField> {
   const radius = opts.radius ?? 2;
   const n = width * height;
   if (grid.length !== n) throw new Error("getisOrd: grid length != width*height");
 
   // Windowed neighbourhood sum, Σ_j w_ij x_j  (GPU).
-  const localSum = await convolveSeparableGpu(grid, width, height, boxKernel(radius));
+  const localSum = await convolveSeparableGpu(grid, width, height, boxKernel(radius), opts.device);
 
   // Global mean and population std (CPU; cheap).
   let sum = 0,

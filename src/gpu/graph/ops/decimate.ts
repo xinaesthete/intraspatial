@@ -72,7 +72,7 @@ export const decimateOp: OpType = {
     const factor = factorOf(params);
     const out = decimatedSize(width, height, factor);
     const dst = await ctx.backend.lease(out.width * out.height * 4);
-    await decimateResident(src.buffer, dst.buffer, width, height, factor, modeOf(params));
+    await decimateResident(src.buffer, dst.buffer, width, height, factor, modeOf(params), await ctx.backend.getDevice());
     return [{ shape: { kind: "grid", ...out }, dtype: "f32", buffer: dst }];
   },
   cpuGolden(inputs, params) {

@@ -159,7 +159,7 @@ export const gridIndexOp: OpType = {
     const n = pointsN(pts.shape);
     const lattice = latticeOf(params);
     const cells = numCells(lattice);
-    const gridCtx = await getGridIndexCtx();
+    const gridCtx = await getGridIndexCtx(await ctx.backend.getDevice());
     const { device } = gridCtx.scan;
 
     // A host points cloud arriving at a resident op is uploaded by the executor's bridge, but an

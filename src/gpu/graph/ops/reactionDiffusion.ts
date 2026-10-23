@@ -60,8 +60,13 @@ export const reactionDiffusionStepOp: OpType = {
   inferShapes(inputs) {
     return [inputs[0]!, inputs[0]!];
   },
-  async execute(_ctx, inputs, params) {
-    const next = await grayScottStepsGpu(stateOf(inputs[0]!, inputs[1]!), params.steps as number, rdParams(params));
+  async execute(ctx, inputs, params) {
+    const next = await grayScottStepsGpu(
+      stateOf(inputs[0]!, inputs[1]!),
+      params.steps as number,
+      rdParams(params),
+      await ctx.backend.getDevice(),
+    );
     return outputs(next);
   },
   cpuGolden(inputs, params) {

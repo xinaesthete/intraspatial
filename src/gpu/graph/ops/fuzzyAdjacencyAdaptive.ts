@@ -27,12 +27,13 @@ export const fuzzyAdjacencyAdaptiveOp: OpType = {
     const n = pointCount(inputs[0]!);
     return [{ kind: "matrix", rows: n, cols: n }];
   },
-  async execute(_ctx, inputs, params) {
+  async execute(ctx, inputs, params) {
     const { xs, ys, n } = unpackPoints(inputs[0]!);
     const rho = inputs[1]!.data!;
     const { membership } = await fuzzyAdjacencyAdaptiveFromRhoGpu(xs, ys, rho, {
       scale: params.scale as number,
       minSigma: params.minSigma as number,
+      device: await ctx.backend.getDevice(),
     });
     return [{ shape: { kind: "matrix", rows: n, cols: n }, dtype: "f32", data: membership }];
   },

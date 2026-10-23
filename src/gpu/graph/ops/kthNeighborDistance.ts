@@ -21,9 +21,9 @@ export const kthNeighborDistanceOp: OpType = {
   inferShapes(inputs) {
     return [{ kind: "matrix", rows: pointCount(inputs[0]!), cols: 1 }];
   },
-  async execute(_ctx, inputs, params) {
+  async execute(ctx, inputs, params) {
     const { xs, ys, n } = unpackPoints(inputs[0]!);
-    const rho = await kthNeighborDistanceGpu(xs, ys, params.k as number);
+    const rho = await kthNeighborDistanceGpu(xs, ys, params.k as number, { device: await ctx.backend.getDevice() });
     return [{ shape: { kind: "matrix", rows: n, cols: 1 }, dtype: "f32", data: rho }];
   },
   cpuGolden(inputs, params) {

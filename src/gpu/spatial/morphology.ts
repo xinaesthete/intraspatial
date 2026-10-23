@@ -15,7 +15,7 @@
 import tgpu from "typegpu";
 import * as d from "typegpu/data";
 import * as std from "typegpu/std";
-import { getDevice, writeView } from "../device";
+import { deviceScoped, writeView } from "../device";
 import { type BindEntry, rawBindGroup } from "../graph/residentBind";
 
 const WG = 64;
@@ -71,21 +71,17 @@ interface Pipe {
   root: ReturnType<typeof tgpu.initFromDevice>;
   pipeline: GPUComputePipeline;
 }
-let pipeCache: Promise<Pipe> | undefined;
-function getPipe(): Promise<Pipe> {
-  pipeCache ??= (async () => {
-    const device = await getDevice();
-    const root = tgpu.initFromDevice({ device });
-    const { code, usedBindGroupLayouts } = tgpu.resolveWithContext([morphFn], { names: "strict" });
-    const module = device.createShaderModule({ code });
-    const pipeLayout = device.createPipelineLayout({
-      bindGroupLayouts: usedBindGroupLayouts.map((l) => root.unwrap(l)),
-    });
-    const pipeline = device.createComputePipeline({ layout: pipeLayout, compute: { module, entryPoint: "morphSep" } });
-    return { device, root, pipeline };
-  })();
-  return pipeCache;
-}
+/** Per device (default: the library's own) — `deviceScoped` in `../device` says why. */
+const getPipe = deviceScoped(async (device: GPUDevice): Promise<Pipe> => {
+  const root = tgpu.initFromDevice({ device });
+  const { code, usedBindGroupLayouts } = tgpu.resolveWithContext([morphFn], { names: "strict" });
+  const module = device.createShaderModule({ code });
+  const pipeLayout = device.createPipelineLayout({
+    bindGroupLayouts: usedBindGroupLayouts.map((l) => root.unwrap(l)),
+  });
+  const pipeline = device.createComputePipeline({ layout: pipeLayout, compute: { module, entryPoint: "morphSep" } });
+  return { device, root, pipeline };
+});
 
 type Root = Pipe["root"];
 function buf(root: Root, n: number) {
@@ -99,11 +95,14 @@ function makePool(root: Root, cap: number, params: ReturnType<typeof makeParams>
   // of a composed opening/closing (which needs a full erode result before the dilate starts).
   return { cap, a: buf(root, cap), b: buf(root, cap), params };
 }
-let pool: ReturnType<typeof makePool> | undefined;
+/** Per root, so per device: a pool's buffers belong to the device its root wraps. */
+const pools = new WeakMap<Root, ReturnType<typeof makePool>>();
 function ensurePool(root: Root, cells: number) {
+  let pool = pools.get(root);
   if (pool && pool.cap >= cells) return pool;
   const cap = Math.max(cells, pool?.cap ?? 0, 1);
   pool = makePool(root, cap, pool?.params ?? makeParams(root));
+  pools.set(root, pool);
   return pool;
 }
 
@@ -145,7 +144,8 @@ function runPasses(
 /** Tier-2 form (ADR-0017): morphology of a GPU-resident grid into a GPU-resident destination,
  *  no host transfer. `src` and `dst` are caller-owned (the executor's lease) and must be distinct
  *  (the two passes read and write across the whole grid). `open`/`close` run two full
- *  erode/dilate rounds through the module's scratch pool. */
+ *  erode/dilate rounds through the module's scratch pool. `device` is the one `src`/`dst` live on;
+ *  default: the library's own. */
 export async function morphologyResident(
   src: GPUBuffer,
   dst: GPUBuffer,
@@ -153,10 +153,11 @@ export async function morphologyResident(
   height: number,
   radius: number,
   op: MorphOp,
+  device?: GPUDevice,
 ): Promise<void> {
   if (src === dst) throw new Error("morphologyResident: src and dst must be distinct buffers");
   checkRadius(radius);
-  const pipe = await getPipe();
+  const pipe = await getPipe(device);
   const p = ensurePool(pipe.root, width * height);
   if (op === "erode" || op === "dilate") {
     runPasses(pipe, p.params, src, p.a, dst, width, height, radius, op);
@@ -172,32 +173,36 @@ function checkRadius(radius: number): void {
 }
 
 /** Host-array form: erode or dilate a row-major width*height grid over a (2r+1)² square
- *  with clamp-to-edge boundaries. Returns a new grid. */
+ *  with clamp-to-edge boundaries. Returns a new grid. `device` defaults to the library's own. */
 export async function morphologyGpu(
   grid: ArrayLike<number>,
   width: number,
   height: number,
   radius: number,
   op: MorphOp,
+  device?: GPUDevice,
 ): Promise<Float32Array> {
   const cells = width * height;
   if (grid.length !== cells) throw new Error("morphology: grid length != width*height");
   checkRadius(radius);
-  const pipe = await getPipe();
-  const { device, root } = pipe;
+  const pipe = await getPipe(device);
+  const { device: dev, root } = pipe;
   // Host form needs its own in/out pair distinct from the scratch pool the resident path uses.
   const io = ensureIo(root, cells);
-  writeView(device.queue, root.unwrap(io.src), Float32Array.from(grid));
-  await morphologyResident(root.unwrap(io.src), root.unwrap(io.dst), width, height, radius, op);
+  writeView(dev.queue, root.unwrap(io.src), Float32Array.from(grid));
+  await morphologyResident(root.unwrap(io.src), root.unwrap(io.dst), width, height, radius, op, dev);
   const got = (await io.dst.read()) as ArrayLike<number>;
   return Float32Array.from({ length: cells }, (_, i) => got[i]!);
 }
 
-let io: { cap: number; src: ReturnType<typeof buf>; dst: ReturnType<typeof buf> } | undefined;
+/** Per root, like the scratch pool. */
+const ios = new WeakMap<Root, { cap: number; src: ReturnType<typeof buf>; dst: ReturnType<typeof buf> }>();
 function ensureIo(root: Root, cells: number) {
+  let io = ios.get(root);
   if (io && io.cap >= cells) return io;
   const cap = Math.max(cells, io?.cap ?? 0, 1);
   io = { cap, src: buf(root, cap), dst: buf(root, cap) };
+  ios.set(root, io);
   return io;
 }
 

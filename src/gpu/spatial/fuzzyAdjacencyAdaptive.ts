@@ -19,7 +19,7 @@
 import tgpu from "typegpu";
 import * as d from "typegpu/data";
 import * as std from "typegpu/std";
-import { getDevice, writeView } from "../device";
+import { deviceScoped, writeView } from "../device";
 import { kthNeighborDistanceGpu } from "./kthNeighborDistance";
 
 const WG = 64;
@@ -70,19 +70,15 @@ interface Pipe {
   root: ReturnType<typeof tgpu.initFromDevice>;
   pipeline: GPUComputePipeline;
 }
-let pipeCache: Promise<Pipe> | undefined;
-function getPipe(): Promise<Pipe> {
-  pipeCache ??= (async () => {
-    const device = await getDevice();
-    const root = tgpu.initFromDevice({ device });
-    const { code, usedBindGroupLayouts } = tgpu.resolveWithContext([adaptiveFn], { names: "strict" });
-    const module = device.createShaderModule({ code });
-    const pipeLayout = device.createPipelineLayout({ bindGroupLayouts: usedBindGroupLayouts.map((l) => root.unwrap(l)) });
-    const pipeline = device.createComputePipeline({ layout: pipeLayout, compute: { module, entryPoint: "fuzzyAdjAdaptive" } });
-    return { device, root, pipeline };
-  })();
-  return pipeCache;
-}
+/** Per device (default: the library's own) — `deviceScoped` in `../device` says why. */
+const getPipe = deviceScoped(async (device: GPUDevice): Promise<Pipe> => {
+  const root = tgpu.initFromDevice({ device });
+  const { code, usedBindGroupLayouts } = tgpu.resolveWithContext([adaptiveFn], { names: "strict" });
+  const module = device.createShaderModule({ code });
+  const pipeLayout = device.createPipelineLayout({ bindGroupLayouts: usedBindGroupLayouts.map((l) => root.unwrap(l)) });
+  const pipeline = device.createComputePipeline({ layout: pipeLayout, compute: { module, entryPoint: "fuzzyAdjAdaptive" } });
+  return { device, root, pipeline };
+});
 
 type Root = Pipe["root"];
 function makePool(root: Root, n: number) {
@@ -94,10 +90,13 @@ function makePool(root: Root, n: number) {
     params: root.createBuffer(Params).$usage("uniform"),
   };
 }
-let pool: ReturnType<typeof makePool> | undefined;
+/** Per root, so per device: a pool's buffers belong to the device its root wraps. */
+const pools = new WeakMap<Root, ReturnType<typeof makePool>>();
 function ensurePool(root: Root, n: number) {
+  let pool = pools.get(root);
   if (pool && pool.n >= n) return pool;
   pool = makePool(root, Math.max(n, pool?.n ?? 0, 1));
+  pools.set(root, pool);
   return pool;
 }
 
@@ -106,6 +105,8 @@ export interface FuzzyAdjacencyAdaptiveOptions {
   scale?: number;
   /** Floor on σ_i so a degenerate ρ_i = 0 doesn't divide by zero. Default 1e-6. */
   minSigma?: number;
+  /** The device to run on. Default: the library's own (`getDevice()`). */
+  device?: GPUDevice;
 }
 
 export interface FuzzyAdjacency {
@@ -126,7 +127,7 @@ export async function fuzzyAdjacencyAdaptiveFromRhoGpu(
   if (rho.length !== n) throw new Error("fuzzyAdjacencyAdaptive: rho length != point count");
   if (n < 2) throw new Error("fuzzyAdjacencyAdaptive: need at least 2 points");
 
-  const { device, root, pipeline } = await getPipe();
+  const { device, root, pipeline } = await getPipe(opts.device);
   const p = ensurePool(root, n);
 
   const flat = new Float32Array(2 * n);
@@ -164,6 +165,6 @@ export async function fuzzyAdjacencyAdaptiveGpu(
   opts: FuzzyAdjacencyAdaptiveKOptions = {},
 ): Promise<FuzzyAdjacency> {
   const k = opts.k ?? 4;
-  const rho = await kthNeighborDistanceGpu(xs, ys, k);
+  const rho = await kthNeighborDistanceGpu(xs, ys, k, { device: opts.device });
   return fuzzyAdjacencyAdaptiveFromRhoGpu(xs, ys, rho, opts);
 }

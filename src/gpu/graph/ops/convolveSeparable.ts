@@ -41,7 +41,7 @@ export const convolveSeparableOp: OpType = {
     // Lease the output rather than reusing module scratch: the executor owns this buffer's
     // lifetime and returns it to the pool once the last consumer has read it.
     const dst = await ctx.backend.lease(width * height * 4);
-    await convolveSeparableResident(src.buffer, dst.buffer, width, height, kernelFor(params));
+    await convolveSeparableResident(src.buffer, dst.buffer, width, height, kernelFor(params), await ctx.backend.getDevice());
     return [{ shape: { kind: "grid", width, height }, dtype: "f32", buffer: dst }];
   },
   cpuGolden(inputs, params) {

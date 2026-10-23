@@ -24,11 +24,12 @@ export const fuzzyAdjacencyOp: OpType = {
     const n = pointCount(inputs[0]!);
     return [{ kind: "matrix", rows: n, cols: n }];
   },
-  async execute(_ctx, inputs, params) {
+  async execute(ctx, inputs, params) {
     const { xs, ys, n } = unpackPoints(inputs[0]!);
     const { membership } = await fuzzyAdjacencyGpu(xs, ys, {
       sigma: params.sigma as number,
       radiusSigma: params.radiusSigma as number,
+      device: await ctx.backend.getDevice(),
     });
     return [{ shape: { kind: "matrix", rows: n, cols: n }, dtype: "f32", data: membership }];
   },

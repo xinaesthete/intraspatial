@@ -20,7 +20,7 @@
 import tgpu from "typegpu";
 import * as d from "typegpu/data";
 import * as std from "typegpu/std";
-import { getDevice, writeView } from "../device";
+import { deviceScoped, writeView } from "../device";
 
 const WG = 64;
 
@@ -65,19 +65,15 @@ interface Pipe {
   root: ReturnType<typeof tgpu.initFromDevice>;
   pipeline: GPUComputePipeline;
 }
-let pipeCache: Promise<Pipe> | undefined;
-function getPipe(): Promise<Pipe> {
-  pipeCache ??= (async () => {
-    const device = await getDevice();
-    const root = tgpu.initFromDevice({ device });
-    const { code, usedBindGroupLayouts } = tgpu.resolveWithContext([fuzzyFn], { names: "strict" });
-    const module = device.createShaderModule({ code });
-    const pipeLayout = device.createPipelineLayout({ bindGroupLayouts: usedBindGroupLayouts.map((l) => root.unwrap(l)) });
-    const pipeline = device.createComputePipeline({ layout: pipeLayout, compute: { module, entryPoint: "fuzzyAdj" } });
-    return { device, root, pipeline };
-  })();
-  return pipeCache;
-}
+/** Per device (default: the library's own) — `deviceScoped` in `../device` says why. */
+const getPipe = deviceScoped(async (device: GPUDevice): Promise<Pipe> => {
+  const root = tgpu.initFromDevice({ device });
+  const { code, usedBindGroupLayouts } = tgpu.resolveWithContext([fuzzyFn], { names: "strict" });
+  const module = device.createShaderModule({ code });
+  const pipeLayout = device.createPipelineLayout({ bindGroupLayouts: usedBindGroupLayouts.map((l) => root.unwrap(l)) });
+  const pipeline = device.createComputePipeline({ layout: pipeLayout, compute: { module, entryPoint: "fuzzyAdj" } });
+  return { device, root, pipeline };
+});
 
 type Root = Pipe["root"];
 function makePool(root: Root, n: number) {
@@ -88,10 +84,13 @@ function makePool(root: Root, n: number) {
     params: root.createBuffer(Params).$usage("uniform"),
   };
 }
-let pool: ReturnType<typeof makePool> | undefined;
+/** Per root, so per device: a pool's buffers belong to the device its root wraps. */
+const pools = new WeakMap<Root, ReturnType<typeof makePool>>();
 function ensurePool(root: Root, n: number) {
+  let pool = pools.get(root);
   if (pool && pool.n >= n) return pool;
   pool = makePool(root, Math.max(n, pool?.n ?? 0, 1));
+  pools.set(root, pool);
   return pool;
 }
 
@@ -101,6 +100,8 @@ export interface FuzzyAdjacencyOptions {
   /** Support radius in units of σ; memberships beyond it are exactly 0
    *  (sparsity / principled truncation). Default 3. */
   radiusSigma?: number;
+  /** The device to run on. Default: the library's own (`getDevice()`). */
+  device?: GPUDevice;
 }
 
 export interface FuzzyAdjacency {
@@ -121,7 +122,7 @@ export async function fuzzyAdjacencyGpu(
   if (!(opts.sigma > 0)) throw new Error("fuzzyAdjacency: sigma must be > 0");
   const radiusSigma = opts.radiusSigma ?? 3;
 
-  const { device, root, pipeline } = await getPipe();
+  const { device, root, pipeline } = await getPipe(opts.device);
   const p = ensurePool(root, n);
 
   const flat = new Float32Array(2 * n);

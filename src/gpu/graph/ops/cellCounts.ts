@@ -12,8 +12,8 @@
 // The output grid inherits the LATTICE's placement, not the points': one cell of this grid is one
 // cell of the index, so it is already in world space via `worldFromArray · translate(origin) ·
 // scale(cell)`.
-import { checkBindingSize, compileShader, dispatchGrid, MAX_WORKGROUPS_PER_DIM, sized } from "../../device";
-import { ensureBuf, getScanCtx } from "../../scan/prefixSum";
+import { checkBindingSize, compileShader, deviceScoped, dispatchGrid, MAX_WORKGROUPS_PER_DIM, sized } from "../../device";
+import { ensureBuf } from "../../scan/prefixSum";
 import type { FieldValue, Shape } from "../handle";
 import type { ExecCtx, OpType, Params } from "../op";
 import { partNames } from "./bundleOps";
@@ -42,29 +42,22 @@ interface Ctx {
   layout: GPUBindGroupLayout;
   pipeline: GPUComputePipeline;
 }
-let ctxCache: Promise<Ctx> | undefined;
-
-function getCtx(): Promise<Ctx> {
-  ctxCache ??= (async () => {
-    // The scan context owns the device this index was built on; sharing it keeps the pool keys
-    // and the device in one place.
-    const { device } = await getScanCtx();
-    const layout = device.createBindGroupLayout({
-      entries: [
-        { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: "uniform" } },
-        { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
-        { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
-      ],
-    });
-    const module = await compileShader(device, SHADER, "cellCounts");
-    const pipeline = device.createComputePipeline({
-      layout: device.createPipelineLayout({ bindGroupLayouts: [layout] }),
-      compute: { module, entryPoint: "cellCounts" },
-    });
-    return { device, layout, pipeline };
-  })();
-  return ctxCache;
-}
+/** Per device: the op runs on its backend's device, the one the index it reads was built on. */
+const getCtx = deviceScoped(async (device: GPUDevice): Promise<Ctx> => {
+  const layout = device.createBindGroupLayout({
+    entries: [
+      { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: "uniform" } },
+      { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
+      { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
+    ],
+  });
+  const module = await compileShader(device, SHADER, "cellCounts");
+  const pipeline = device.createComputePipeline({
+    layout: device.createPipelineLayout({ bindGroupLayouts: [layout] }),
+    compute: { module, entryPoint: "cellCounts" },
+  });
+  return { device, layout, pipeline };
+});
 
 function latticeOf(v: FieldValue, who: string): GridLatticePayload {
   const lat = v.parts?.lattice?.payload as GridLatticePayload | undefined;
@@ -108,19 +101,19 @@ export const cellCountsOp: OpType = {
     return [undefined];
   },
   resident: true,
-  async execute(_ctx: ExecCtx, inputs: FieldValue[], _params: Params) {
+  async execute(ctx: ExecCtx, inputs: FieldValue[], _params: Params) {
     const bundle = inputs[0]!;
     const lat = latticeOf(bundle, "cellCounts");
     const offsetsPart = bundle.parts!.cellOffsets!;
     const src = offsetsPart.buffer;
     if (!src) throw new Error("cellCounts: the bundle's cellOffsets part is not resident");
 
-    const { device, layout, pipeline } = await getCtx();
+    const { device, layout, pipeline } = await getCtx(await ctx.backend.getDevice());
     const cells = lat.cells;
     checkBindingSize(device, `cellCounts: ${cells} cells`, (cells + 1) * 4);
 
     // Its own lease, not a borrow: this op creates a value rather than passing one through.
-    const out = await _ctx.backend.lease(cells * 4);
+    const out = await ctx.backend.lease(cells * 4);
     const uni = ensureBuf(device, "cellCounts:uni", 16, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST);
     const { x: gridX, y: gridY } = dispatchGrid(Math.ceil(cells / WG), MAX_WORKGROUPS_PER_DIM);
     device.queue.writeBuffer(uni, 0, new Uint32Array([cells, gridX, 0, 0]));

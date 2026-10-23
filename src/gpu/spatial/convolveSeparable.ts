@@ -11,7 +11,7 @@
 import tgpu from "typegpu";
 import * as d from "typegpu/data";
 import * as std from "typegpu/std";
-import { getDevice, writeView } from "../device";
+import { deviceScoped, writeView } from "../device";
 import { type BindEntry, rawBindGroup } from "../graph/residentBind";
 
 const WG = 64;
@@ -57,21 +57,17 @@ interface Pipe {
   root: ReturnType<typeof tgpu.initFromDevice>;
   pipeline: GPUComputePipeline;
 }
-let pipeCache: Promise<Pipe> | undefined;
-function getPipe(): Promise<Pipe> {
-  pipeCache ??= (async () => {
-    const device = await getDevice();
-    const root = tgpu.initFromDevice({ device });
-    const { code, usedBindGroupLayouts } = tgpu.resolveWithContext([convFn], { names: "strict" });
-    const module = device.createShaderModule({ code });
-    const pipeLayout = device.createPipelineLayout({
-      bindGroupLayouts: usedBindGroupLayouts.map((l) => root.unwrap(l)),
-    });
-    const pipeline = device.createComputePipeline({ layout: pipeLayout, compute: { module, entryPoint: "convSep" } });
-    return { device, root, pipeline };
-  })();
-  return pipeCache;
-}
+/** Per device (default: the library's own) — `deviceScoped` in `../device` says why. */
+const getPipe = deviceScoped(async (device: GPUDevice): Promise<Pipe> => {
+  const root = tgpu.initFromDevice({ device });
+  const { code, usedBindGroupLayouts } = tgpu.resolveWithContext([convFn], { names: "strict" });
+  const module = device.createShaderModule({ code });
+  const pipeLayout = device.createPipelineLayout({
+    bindGroupLayouts: usedBindGroupLayouts.map((l) => root.unwrap(l)),
+  });
+  const pipeline = device.createComputePipeline({ layout: pipeLayout, compute: { module, entryPoint: "convSep" } });
+  return { device, root, pipeline };
+});
 
 type Root = Pipe["root"];
 function buf(root: Root, n: number) {
@@ -83,12 +79,15 @@ function makeParams(root: Root) {
 function makePool(root: Root, cap: number, wcap: number, params: ReturnType<typeof makeParams>) {
   return { cap, wcap, a: buf(root, cap), b: buf(root, cap), w: buf(root, wcap), params };
 }
-let pool: ReturnType<typeof makePool> | undefined;
+/** Per root, so per device: a pool's buffers belong to the device its root wraps. */
+const pools = new WeakMap<Root, ReturnType<typeof makePool>>();
 function ensurePool(root: Root, cells: number, weights: number) {
+  let pool = pools.get(root);
   if (pool && pool.cap >= cells && pool.wcap >= weights) return pool;
   const cap = Math.max(cells, pool?.cap ?? 0, 1);
   const wcap = Math.max(weights, pool?.wcap ?? 0, 1);
   pool = makePool(root, cap, wcap, pool?.params ?? makeParams(root));
+  pools.set(root, pool);
   return pool;
 }
 
@@ -113,35 +112,37 @@ export function gaussianKernel(sigma: number, radius?: number): Float32Array {
 }
 
 /** Separable convolution of a row-major width*height grid with a 1D `kernel`
- *  (odd length, centred), applied on both axes. Returns a new grid. */
+ *  (odd length, centred), applied on both axes. Returns a new grid. `device` defaults to the
+ *  library's own. */
 export async function convolveSeparableGpu(
   grid: ArrayLike<number>,
   width: number,
   height: number,
   kernel: ArrayLike<number>,
+  device?: GPUDevice,
 ): Promise<Float32Array> {
   const cells = width * height;
   if (grid.length !== cells) throw new Error("convolveSeparable: grid length != width*height");
   if (kernel.length % 2 === 0) throw new Error("convolveSeparable: kernel length must be odd");
   const r = (kernel.length - 1) / 2;
 
-  const { device, root, pipeline } = await getPipe();
+  const { device: dev, root, pipeline } = await getPipe(device);
   const p = ensurePool(root, cells, kernel.length);
 
-  writeView(device.queue, root.unwrap(p.a), Float32Array.from(grid));
-  writeView(device.queue, root.unwrap(p.w), Float32Array.from(kernel));
+  writeView(dev.queue, root.unwrap(p.a), Float32Array.from(grid));
+  writeView(dev.queue, root.unwrap(p.w), Float32Array.from(kernel));
 
   const groups = Math.ceil(cells / WG);
   const run = (src: typeof p.a, dst: typeof p.a, stepX: number, stepY: number) => {
     p.params.write({ w: width, h: height, r, stepX, stepY });
     const bind = root.unwrap(root.createBindGroup(layout, { params: p.params, src, wts: p.w, dst }));
-    const enc = device.createCommandEncoder();
+    const enc = dev.createCommandEncoder();
     const pass = enc.beginComputePass();
     pass.setPipeline(pipeline);
     pass.setBindGroup(0, bind);
     pass.dispatchWorkgroups(groups);
     pass.end();
-    device.queue.submit([enc.finish()]);
+    dev.queue.submit([enc.finish()]);
   };
 
   run(p.a, p.b, 1, 0); // horizontal: a -> b
@@ -157,36 +158,38 @@ export async function convolveSeparableGpu(
  *
  *  `src` and `dst` are pooled buffers owned by the caller (the executor's lease). They must be
  *  distinct: the two passes read and write across the whole grid, so writing in place would
- *  violate invariant 1's single-writer rule. The module pool supplies the intermediate only. */
+ *  violate invariant 1's single-writer rule. The module pool supplies the intermediate only.
+ *  `device` is the one they live on; default: the library's own. */
 export async function convolveSeparableResident(
   src: GPUBuffer,
   dst: GPUBuffer,
   width: number,
   height: number,
   kernel: ArrayLike<number>,
+  device?: GPUDevice,
 ): Promise<void> {
   if (src === dst) throw new Error("convolveSeparableResident: src and dst must be distinct buffers");
   if (kernel.length % 2 === 0) throw new Error("convolveSeparable: kernel length must be odd");
   const cells = width * height;
   const r = (kernel.length - 1) / 2;
 
-  const { device, root, pipeline } = await getPipe();
+  const { device: dev, root, pipeline } = await getPipe(device);
   const p = ensurePool(root, cells, kernel.length);
-  writeView(device.queue, root.unwrap(p.w), Float32Array.from(kernel));
+  writeView(dev.queue, root.unwrap(p.w), Float32Array.from(kernel));
 
   const groups = Math.ceil(cells / WG);
   // Raw bind groups over the pooled buffers — see residentBind.ts for why these are not wrapped
   // as TypeGPU buffers. Order matches the `layout` declaration: params, src, wts, dst.
   const run = (from: BindEntry, to: BindEntry, stepX: number, stepY: number) => {
     p.params.write({ w: width, h: height, r, stepX, stepY });
-    const bind = rawBindGroup(device, root, layout, [p.params, from, p.w, to]);
-    const enc = device.createCommandEncoder();
+    const bind = rawBindGroup(dev, root, layout, [p.params, from, p.w, to]);
+    const enc = dev.createCommandEncoder();
     const pass = enc.beginComputePass();
     pass.setPipeline(pipeline);
     pass.setBindGroup(0, bind);
     pass.dispatchWorkgroups(groups);
     pass.end();
-    device.queue.submit([enc.finish()]);
+    dev.queue.submit([enc.finish()]);
   };
 
   // Per-dependent-stage submits (invariant 2): the vertical pass reads what the horizontal

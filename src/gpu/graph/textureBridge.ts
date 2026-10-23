@@ -14,7 +14,7 @@
 // Raw WGSL rather than TGSL deliberately: `i / w` on u32 operands is honest integer division here,
 // where the TGSL transpiler turns it into float division and silently scrambles the row index (see
 // splatDensity's own de-pad for the bug that caused).
-import { getDevice, sized } from "../device";
+import { deviceScoped, perDevice, sized } from "../device";
 import type { ResidentTexture } from "./handle";
 
 const WG = 64;
@@ -62,34 +62,30 @@ interface Ctx {
   pipelineHalf: GPUComputePipeline;
   uni: GPUBuffer;
 }
-let ctxCache: Promise<Ctx> | undefined;
-
-function getCtx(): Promise<Ctx> {
-  ctxCache ??= (async () => {
-    const device = await getDevice();
-    const module = device.createShaderModule({ code: DEPAD });
-    return {
-      device,
-      pipeline: device.createComputePipeline({ layout: "auto", compute: { module, entryPoint: "depad" } }),
-      pipelineHalf: device.createComputePipeline({ layout: "auto", compute: { module, entryPoint: "depadHalf" } }),
-      uni: device.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST }),
-    };
-  })();
-  return ctxCache;
-}
+/** Per device: the executor runs on its backend's device, which `interop/adoptDevice` lets be a
+ *  renderer's rather than the library's own (`deviceScoped` in `../device`). */
+const getCtx = deviceScoped(async (device: GPUDevice): Promise<Ctx> => {
+  const module = device.createShaderModule({ code: DEPAD });
+  return {
+    device,
+    pipeline: device.createComputePipeline({ layout: "auto", compute: { module, entryPoint: "depad" } }),
+    pipelineHalf: device.createComputePipeline({ layout: "auto", compute: { module, entryPoint: "depadHalf" } }),
+    uni: device.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST }),
+  };
+});
 
 // Row-padded staging, pooled and grown, never destroyed (mid-process destruction segfaults
-// Dawn-on-Node — ADR-0002/0003).
-let staging: GPUBuffer | undefined;
-let stagingBytes = 0;
+// Dawn-on-Node — ADR-0002/0003). One per device, like the pipelines.
+const stagings = perDevice((): { buf?: GPUBuffer; bytes: number } => ({ bytes: 0 }));
 function ensureStaging(device: GPUDevice, bytes: number): GPUBuffer {
-  if (staging && stagingBytes >= bytes) return staging;
-  stagingBytes = Math.max(bytes, stagingBytes * 2, 256);
-  staging = device.createBuffer({
-    size: stagingBytes,
+  const s = stagings(device);
+  if (s.buf && s.bytes >= bytes) return s.buf;
+  s.bytes = Math.max(bytes, s.bytes * 2, 256);
+  s.buf = device.createBuffer({
+    size: s.bytes,
     usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
   });
-  return staging;
+  return s.buf;
 }
 
 const align256 = (n: number) => Math.ceil(n / 256) * 256;
@@ -98,24 +94,25 @@ const align256 = (n: number) => Math.ceil(n / 256) * 256;
  *  whether the texture itself is `r32float` or `r16float`.
  *
  *  Submits and returns; the copy is ordered before anything the caller submits afterwards, so no
- *  fence is needed for a GPU-side consumer. */
-export async function textureToBuffer(tex: ResidentTexture, dst: GPUBuffer): Promise<void> {
-  const ctx = await getCtx();
-  const { device, uni } = ctx;
+ *  fence is needed for a GPU-side consumer. `device` is the one `tex` and `dst` live on — the
+ *  executor passes its backend's; default: the library's own. */
+export async function textureToBuffer(tex: ResidentTexture, dst: GPUBuffer, device?: GPUDevice): Promise<void> {
+  const ctx = await getCtx(device);
+  const { device: dev, uni } = ctx;
   const { width: w, height: h } = tex;
   const half = tex.format === "r16float";
   const pipeline = half ? ctx.pipelineHalf : ctx.pipeline;
   const bytesPerRow = align256(w * (half ? 2 : 4));
-  const src = ensureStaging(device, bytesPerRow * h);
+  const src = ensureStaging(dev, bytesPerRow * h);
 
-  device.queue.writeBuffer(uni, 0, new Uint32Array([w, h, bytesPerRow / 4, 0]));
-  const enc = device.createCommandEncoder();
+  dev.queue.writeBuffer(uni, 0, new Uint32Array([w, h, bytesPerRow / 4, 0]));
+  const enc = dev.createCommandEncoder();
   enc.copyTextureToBuffer({ texture: tex.texture }, { buffer: src, bytesPerRow }, { width: w, height: h });
   const pass = enc.beginComputePass();
   pass.setPipeline(pipeline);
   pass.setBindGroup(
     0,
-    device.createBindGroup({
+    dev.createBindGroup({
       layout: pipeline.getBindGroupLayout(0),
       entries: [
         { binding: 0, resource: { buffer: uni } },
@@ -131,5 +128,5 @@ export async function textureToBuffer(tex: ResidentTexture, dst: GPUBuffer): Pro
   );
   pass.dispatchWorkgroups(Math.ceil((w * h) / WG));
   pass.end();
-  device.queue.submit([enc.finish()]);
+  dev.queue.submit([enc.finish()]);
 }

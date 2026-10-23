@@ -170,6 +170,7 @@ export const splatDensityOp: OpType = {
       sigma: params.sigma as number,
       radiusSigma: params.radiusSigma as number,
       bbox: residentBbox(inField, params),
+      device: await ctx.backend.getDevice(),
     });
     return [{ shape: { kind: "grid", width, height }, dtype: "f32", texture: dst }];
   },
