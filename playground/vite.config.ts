@@ -4,7 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import react from "@vitejs/plugin-react";
 import typegpu from "unplugin-typegpu/vite";
-import { defineConfig, type Plugin } from "vite";
+import { defaultClientConditions, defineConfig, type Plugin } from "vite";
 
 const require_ = createRequire(import.meta.url);
 
@@ -176,6 +176,10 @@ export default defineConfig({
     // The composer's own imports and the ../src imports must share ONE TypeGPU
     // instance, or its internal registries (and `instanceof` checks) break.
     dedupe: ["typegpu", ...(linked ? LINKED_DEDUPE : [])],
+    // Workspace packages (`intraspatial`, `@intraspatial/deck`) resolve to their src/*.ts, so this
+    // app runs the engine as it is — with the TGSL plugin above transpiling its kernels — instead of
+    // a dist/ that may be stale or unbuilt. See pnpm-workspace.yaml.
+    conditions: ["@intraspatial/source", ...defaultClientConditions],
   },
   server: {
     port: Number(process.env.PORT) || 5173,
@@ -196,6 +200,7 @@ export default defineConfig({
         cellstats: fileURLToPath(new URL("./cellstats.html", import.meta.url)),
         cellmodes: fileURLToPath(new URL("./cellmodes.html", import.meta.url)),
         transcriptmodes: fileURLToPath(new URL("./transcriptmodes.html", import.meta.url)),
+        density: fileURLToPath(new URL("./density.html", import.meta.url)),
         r3fspike: fileURLToPath(new URL("./r3fspike.html", import.meta.url)),
         umap: fileURLToPath(new URL("./umap.html", import.meta.url)),
       },

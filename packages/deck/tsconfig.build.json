@@ -1,0 +1,14 @@
+{
+  // Emit dist/ against intraspatial's PUBLISHED surface (its dist .d.ts), without the source
+  // condition, so a type that only resolves from source fails here rather than in a consumer.
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "declaration": true,
+    "outDir": "dist",
+    "rootDir": "src",
+    "types": ["@webgpu/types"]
+  },
+  "include": ["src"],
+  "exclude": ["src/**/*.test.ts"]
+}
