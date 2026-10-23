@@ -1,9 +1,16 @@
-# pnpm workspace: the root engine package (`intraspatial`) plus the two front-end apps that
-# reuse it (the React Flow composer and the Astro docs site). One lockfile, one
+# pnpm workspace: the root engine package (`intraspatial`), the packages built on it
+# (`packages/*`: `@intraspatial/deck`, the deck.gl layers), and the two front-end apps that
+# reuse them (the React Flow composer and the Astro docs site). One lockfile, one
 # `pnpm install`, shared deps hoisted — and worktrees install cleanly instead of
 # each package needing its own install. The external `openjph-wasm` sibling is kept
 # out of the worktree-fragile hard-dependency path (see root package.json).
+#
+# Inside the workspace, packages resolve each other's SOURCE through the `@intraspatial/source`
+# export condition (each app's Vite `resolve.conditions`, each tsconfig's `customConditions`), so
+# nothing needs building to develop against it. Published consumers never set that condition and
+# get `dist/`.
 packages:
+  - packages/*
   - playground
   - docs-site
 # Build scripts we trust to run on install:

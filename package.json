@@ -23,8 +23,9 @@
     "test:cpu": "vitest run",
     "test:gpu": "vitest run -c vitest.gpu.config.ts",
     "test:watch": "vitest",
-    "typecheck": "pnpm typecheck:core && pnpm typecheck:playground",
+    "typecheck": "pnpm typecheck:core && pnpm typecheck:deck && pnpm typecheck:playground",
     "typecheck:core": "node scripts/guarded.mjs -- tsc --noEmit",
+    "typecheck:deck": "pnpm --filter @intraspatial/deck typecheck",
     "typecheck:playground": "node scripts/guarded.mjs -- node scripts/tsc-5.mjs --noEmit -p playground/tsconfig.typecheck.json",
     "typecheck:raw": "tsc --noEmit",
     "lint": "biome check . && biome check test",
@@ -91,54 +92,67 @@
   "types": "./dist/index.d.ts",
   "exports": {
     ".": {
+      "@intraspatial/source": "./src/index.ts",
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
     },
     "./graph": {
+      "@intraspatial/source": "./src/gpu/graph/index.ts",
       "types": "./dist/gpu/graph/index.d.ts",
       "default": "./dist/gpu/graph/index.js"
     },
     "./graph/*": {
+      "@intraspatial/source": "./src/gpu/graph/*.ts",
       "types": "./dist/gpu/graph/*.d.ts",
       "default": "./dist/gpu/graph/*.js"
     },
     "./device": {
+      "@intraspatial/source": "./src/gpu/device.ts",
       "types": "./dist/gpu/device.d.ts",
       "default": "./dist/gpu/device.js"
     },
     "./datasource": {
+      "@intraspatial/source": "./src/datasource/index.ts",
       "types": "./dist/datasource/index.d.ts",
       "default": "./dist/datasource/index.js"
     },
     "./geometry": {
+      "@intraspatial/source": "./src/geometry/index.ts",
       "types": "./dist/geometry/index.d.ts",
       "default": "./dist/geometry/index.js"
     },
     "./evo": {
+      "@intraspatial/source": "./src/evo/index.ts",
       "types": "./dist/evo/index.d.ts",
       "default": "./dist/evo/index.js"
     },
     "./spatial": {
+      "@intraspatial/source": "./src/spatial/index.ts",
       "types": "./dist/spatial/index.d.ts",
       "default": "./dist/spatial/index.js"
     },
     "./color": {
+      "@intraspatial/source": "./src/color/index.ts",
       "types": "./dist/color/index.d.ts",
       "default": "./dist/color/index.js"
     },
     "./gpu/spatial": {
+      "@intraspatial/source": "./src/gpu/spatial/index.ts",
       "types": "./dist/gpu/spatial/index.d.ts",
       "default": "./dist/gpu/spatial/index.js"
     },
     "./gpu/sim": {
+      "@intraspatial/source": "./src/gpu/sim/index.ts",
       "types": "./dist/gpu/sim/index.d.ts",
       "default": "./dist/gpu/sim/index.js"
     },
     "./gpu/interop": {
+      "@intraspatial/source": "./src/gpu/interop/index.ts",
       "types": "./dist/gpu/interop/index.d.ts",
       "default": "./dist/gpu/interop/index.js"
     },
     "./*": {
+      "@intraspatial/source": "./src/*.ts",
       "types": "./dist/*.d.ts",
       "default": "./dist/*.js"
     },

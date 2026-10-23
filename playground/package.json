@@ -18,6 +18,7 @@
     "@deck.gl/mesh-layers": "~9.4.0",
     "@deck.gl/react": "~9.4.0",
     "@deck.gl/widgets": "~9.4.0",
+    "@intraspatial/deck": "workspace:*",
     "@luma.gl/constants": "~9.4.2",
     "@luma.gl/core": "~9.4.2",
     "@luma.gl/engine": "~9.4.2",
