@@ -9,15 +9,37 @@ and terrain, generative art) rather than a bridge between two. The engine's job 
 crossings between those domains cheap and expressive; the catalogues are where each domain's
 primitives live.
 
-> **Runtime: Node + pnpm + vitest, not Bun.** The Dawn `webgpu` native binding segfaults
-> under Bun on the compute path, so the toolchain matches the sibling `psychogeo` project.
-> Use `pnpm`, not `bun`. See [`docs/decisions/0002-runtime-node-not-bun.md`](docs/decisions/0002-runtime-node-not-bun.md).
+> **Status: experimental, 0.x.** The API is not stable. Any `0.x` minor release may rename,
+> move or remove exports; patch releases aim not to, without promising it. Deep imports through
+> the `intraspatial/<src path>` wildcard are the least stable surface of all — they exist so
+> everything is reachable while the package is young, not as a commitment. Pin with `~` (e.g.
+> `"intraspatial": "~0.1.0"`) and read the changelog before upgrading: `CHANGELOG.md` at the repo
+> root for `intraspatial`, and in `packages/deck/` for `@intraspatial/deck`.
 
-> **Lineage.** This repo was split out of `tgpu-htj2k` on 2026-08-22 with history preserved.
-> The HTJ2K codec (Rust/wasm core + GPU DWT kernels) stays in
-> [`tgpu-htj2k`](https://github.com/xinaesthete/tgpu-htj2k) under BSD-2-Clause; this repo is
-> pure MIT and has no dependency on it. Older design notes under `docs/` still mention the
-> codec where it was historically relevant.
+Docs, maths and interactive demos: **<https://xinaesthete.github.io/intraspatial/>**.
+
+## Using it as a package
+
+```sh
+pnpm add intraspatial typegpu        # browser: that's all
+pnpm add webgpu                      # headless Node only (Dawn; optional peer)
+```
+
+```ts
+import { nearestNeighborDistancesGpu } from "intraspatial/gpu/spatial";
+import { Graph, pullData } from "intraspatial/graph";
+import { getDevice } from "intraspatial/device";
+```
+
+Subpaths: `intraspatial` (engine), `/graph`, `/device`, `/datasource`, `/geometry`, `/evo`,
+`/spatial` (CPU goldens), `/color`, `/gpu/spatial`, `/gpu/sim`, `/gpu/interop`, and any module by
+its `src/` path (`intraspatial/gpu/spatial/anni`). The `"use gpu"` kernels ship **pre-transformed**,
+so no bundler plugin is needed — see
+[ADR-0019](docs/decisions/0019-package-surface-and-prebuilt-kernels.md). The browser needs WebGPU
+(`navigator.gpu`); under Node, `getDevice` loads Dawn from the optional `webgpu` peer.
+
+deck.gl layers over the same compute — currently a WebGPU kernel density layer — are
+[`@intraspatial/deck`](packages/deck/).
 
 ## FAIR by design
 
@@ -42,27 +64,21 @@ afterthought:
 
 See [FAIR by design](docs-site/src/content/docs/concepts/fair.md) for the full treatment.
 
-## Using it as a package
+## Developing
 
-```sh
-pnpm add intraspatial typegpu        # browser: that's all
-pnpm add webgpu                      # headless Node only (Dawn; optional peer)
-```
+Everything below is for working on this repository rather than using the packages.
 
-```ts
-import { nearestNeighborDistancesGpu } from "intraspatial/gpu/spatial";
-import { Graph, pullData } from "intraspatial/graph";
-import { getDevice } from "intraspatial/device";
-```
+> **Runtime: Node + pnpm + vitest, not Bun.** The Dawn `webgpu` native binding segfaults
+> under Bun on the compute path, so the toolchain matches the sibling `psychogeo` project.
+> Use `pnpm`, not `bun`. See [`docs/decisions/0002-runtime-node-not-bun.md`](docs/decisions/0002-runtime-node-not-bun.md).
 
-Subpaths: `intraspatial` (engine), `/graph`, `/device`, `/datasource`, `/geometry`, `/evo`,
-`/spatial` (CPU goldens), `/color`, `/gpu/spatial`, `/gpu/sim`, `/gpu/interop`, and any module by
-its `src/` path (`intraspatial/gpu/spatial/anni`). The `"use gpu"` kernels ship **pre-transformed**,
-so no bundler plugin is needed — see
-[ADR-0019](docs/decisions/0019-package-surface-and-prebuilt-kernels.md). Not yet on npm; build
-locally with `pnpm build:lib` and `pnpm pack`.
+> **Lineage.** This repo was split out of `tgpu-htj2k` on 2026-08-22 with history preserved.
+> The HTJ2K codec (Rust/wasm core + GPU DWT kernels) stays in
+> [`tgpu-htj2k`](https://github.com/xinaesthete/tgpu-htj2k) under BSD-2-Clause; this repo is
+> pure MIT and has no dependency on it. Older design notes under `docs/` still mention the
+> codec where it was historically relevant.
 
-## Layout
+### Layout
 
 | Path | What |
 | :--- | :--- |
@@ -79,7 +95,7 @@ locally with `pnpm build:lib` and `pnpm pack`.
 | [`viz/`](viz/) | A standalone, dependency-free DWT primer (open `viz/index.html`). See [`viz/README.md`](viz/README.md). |
 | [`test/`](test/) | GPU integration/bench tests (run under the separate `vitest.gpu` config). |
 
-## Prerequisites
+### Prerequisites
 
 - **Node 22+** — pinned via [Volta](https://volta.sh). The pin is conservatism: Node 24
   and 26 also pass the full suite (see `docs/umap-on-anndata.md` §5).
@@ -88,18 +104,18 @@ locally with `pnpm build:lib` and `pnpm pack`.
 - A **WebGPU** device: the GPU test suite runs headless through Dawn (`webgpu` npm
   package); the apps need a WebGPU-capable browser.
 
-## Install
+### Install
 
 ```sh
 pnpm install
 ```
 
-The external `openjph-wasm` sibling (`../codecs/openjph-wasm`, a test-only reference
-fixture) is an `optionalDependency`; it is skipped cleanly in worktrees and CI where the
-sibling checkout isn't present. The playground depends on the *published* `openjph-wasm`
-for its volume viewer.
+`openjph-wasm` (the HTJ2K reference decoder used by `scripts/bench-tile-assembly.ts`) is a
+devDependency on the *published* package, as in the playground's volume viewer. To try a local
+checkout of it, `pnpm link` it rather than editing `package.json`: a `file:` range would ship in
+the published manifest.
 
-## Common tasks
+### Common tasks
 
 All run from the repo root.
 
@@ -118,10 +134,30 @@ All run from the repo root.
 | `pnpm typecheck` | `tsc --noEmit` over core and playground |
 | `pnpm lint` | Biome check |
 
+| `pnpm changeset` | Record a release note + bump type for the packages a change touches |
+| `pnpm check:publish` | Pack each publishable package and lint the tarballs (publint, arethetypeswrong) |
+
 The two front-end apps also have their own `pnpm dev` / `pnpm build` if you prefer to run
 them from inside `playground/` or `docs-site/`.
 
-## Docs & decisions
+### Releasing
+
+Published packages: `intraspatial` (the root) and `@intraspatial/deck`. The playground and
+docs-site are private. Versions and changelogs are managed by [Changesets](https://github.com/changesets/changesets):
+
+1. With a change that consumers would notice, run `pnpm changeset`, pick the packages and the bump
+   (patch / minor / major — at 0.x, minor is the breaking one), and commit the generated
+   `.changeset/*.md` with the change.
+2. To cut a release, `pnpm version-packages` folds the pending changesets into version bumps and
+   `CHANGELOG.md`s (and dependents' ranges, e.g. `@intraspatial/deck` → `intraspatial`); review and
+   commit.
+3. `pnpm release` builds both packages, runs `check:publish`, and `changeset publish`es every
+   package whose version isn't on npm yet (needs `npm login`), tagging each `name@version` in git.
+   Push the tags.
+
+The first publish needs no changeset: both packages are at `0.1.0`, unpublished.
+
+### Docs & decisions
 
 Start with the toolbox overviews in [`docs/`](docs/) (e.g.
 [`gpu-primitives-toolbox.md`](docs/gpu-primitives-toolbox.md),

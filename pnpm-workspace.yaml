@@ -9,7 +9,11 @@
 # export condition (each app's Vite `resolve.conditions`, each tsconfig's `customConditions`), so
 # nothing needs building to develop against it. Published consumers never set that condition and
 # get `dist/`.
+#
+# `.` is listed explicitly although pnpm always includes the root: Changesets only versions and
+# publishes the root package of a monorepo when the workspace globs name it.
 packages:
+  - .
   - packages/*
   - playground
   - docs-site

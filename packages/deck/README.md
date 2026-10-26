@@ -1,7 +1,10 @@
 # @intraspatial/deck
 
-deck.gl layers over [IntraSpatial](../../README.md)'s GPU compute. The field a layer draws is
+deck.gl layers over [IntraSpatial](https://github.com/xinaesthete/intraspatial#readme)'s GPU compute. The field a layer draws is
 computed on the device deck renders with and never read back. **WebGPU only.**
+
+> **Experimental, 0.x.** Layer props may change in any `0.x` minor release; pin with `~` and see
+> [`CHANGELOG.md`](https://github.com/xinaesthete/intraspatial/blob/main/packages/deck/CHANGELOG.md).
 
 ## DensityLayer
 
