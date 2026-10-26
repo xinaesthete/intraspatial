@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
-import { crossPCF, crossPCFMatrix, type LabelledCells } from "../../spatial/pcf";
-import type { CellCloud } from "../../spatial/tcm";
+import { crossPCF, crossPCFMatrix, type LabelledCells } from "#src/spatial/pcf";
+import type { CellCloud } from "#src/spatial/tcm";
 import { crossPCFGpu, crossPCFMatrixGpu } from "./crossPcf";
 
 // Two standing constraints of Dawn-on-Node, both already paid for elsewhere in this suite:

@@ -3,7 +3,7 @@
 // One of the two ADR-0017 pilot conversions. `execute` now takes a GPU-resident input and leases
 // a resident output, so a convolve sandwiched between other resident ops moves no bytes across
 // the bus at all. `cpuGolden` is unchanged and remains the host-side reference oracle.
-import { boxKernel, convolveSeparableResident, gaussianKernel } from "../../spatial/convolveSeparable";
+import { boxKernel, convolveSeparableResident, gaussianKernel } from "#src/gpu/spatial/convolveSeparable";
 import type { Shape } from "../handle";
 import type { OpType, Params } from "../op";
 

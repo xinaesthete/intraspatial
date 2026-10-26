@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vite-plus/test";
-import { mulberry32 } from "../../spatial/kernelAnalysis";
+import { mulberry32 } from "#src/spatial/kernelAnalysis";
 import { KNN_NO_NEIGHBOUR, knnGpu } from "./knn";
 import { kthNeighborDistanceGpu } from "./kthNeighborDistance";
 import { nearestNeighborDistancesGpu } from "./nnDistance";

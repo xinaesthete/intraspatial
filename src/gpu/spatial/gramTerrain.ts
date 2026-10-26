@@ -37,7 +37,7 @@
 // distance between raw channel vectors, a diagonal gives per-channel weights, and a full matrix
 // gives a channel covariance. The Gram form is what makes the full case computable.
 
-import type { Oklab } from "../../color/oklab";
+import type { Oklab } from "#src/color/oklab";
 import { compileShader, getDevice } from "../device";
 import type { GramMatrixGpuResult } from "./gramMatrix";
 import { IMAGE_OVERLAY_WGSL, type ImageOverlay, overlayResources } from "./imageOverlayWgsl";

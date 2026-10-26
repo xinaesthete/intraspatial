@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
-import { knnBruteForceCpu } from "../../spatial/umapGraph";
-import { mulberry32 } from "../../spatial/umapLayout";
+import { knnBruteForceCpu } from "#src/spatial/umapGraph";
+import { mulberry32 } from "#src/spatial/umapLayout";
 import { knnGpu } from "./knn";
 
 // Structural invariants of `knnGpu` — properties that hold regardless of the input, so

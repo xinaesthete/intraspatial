@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vite-plus/test";
-import { eigenSym, psdDefect } from "../../spatial/eigenSym";
-import { type ChannelCloud, channelsFromLabels } from "../../spatial/gram";
-import { EPANECHNIKOV, TOPHAT } from "../../spatial/kernels";
+import { eigenSym, psdDefect } from "#src/spatial/eigenSym";
+import { type ChannelCloud, channelsFromLabels } from "#src/spatial/gram";
+import { EPANECHNIKOV, TOPHAT } from "#src/spatial/kernels";
 import { gramMatrixGpu } from "./gramMatrix";
 
 // ## Why the f64 oracle is BAKED IN rather than computed here

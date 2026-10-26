@@ -24,9 +24,9 @@
 // `src/spatial/tcmKernel.ts` is the continuous f64 oracle this is measured against.
 import tgpu from "typegpu";
 import * as d from "typegpu/data";
-import { type KernelSpec, kernelCode, TOPHAT } from "../../spatial/kernels";
-import type { CellCloud } from "../../spatial/tcm";
-import type { TcmKernelParams } from "../../spatial/tcmKernel";
+import { type KernelSpec, kernelCode, TOPHAT } from "#src/spatial/kernels";
+import type { CellCloud } from "#src/spatial/tcm";
+import type { TcmKernelParams } from "#src/spatial/tcmKernel";
 import { getDevice, sized, writeView } from "../device";
 import { KERNEL_WGSL } from "./kernelWgsl";
 

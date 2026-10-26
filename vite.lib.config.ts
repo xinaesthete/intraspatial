@@ -39,7 +39,9 @@ export default defineConfig({
     target: "esnext",
     rollupOptions: {
       // Everything that is not a relative/absolute import is a dependency the consumer installs.
-      external: (id) => !id.startsWith(".") && !id.startsWith("/") && !id.includes("\0"),
+      // `#src/*` is ours: bundled, so dist JS carries relative paths (fix-esm-specifiers rewrites the
+      // `#src/*` that tsc leaves in the .d.ts files the same way).
+      external: (id) => !id.startsWith(".") && !id.startsWith("/") && !id.startsWith("#") && !id.includes("\0"),
       output: { preserveModules: true, preserveModulesRoot: SRC, entryFileNames: "[name].js" },
     },
   },

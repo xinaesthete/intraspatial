@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vite-plus/test";
-import { mulberry32 } from "../../spatial/kernelAnalysis";
-import type { LabelledCells } from "../../spatial/pcf";
-import { partialCorrelation, quadratCorrelation, quadratCounts, rowCorrelation } from "../../spatial/quadratCorrelation";
+import { mulberry32 } from "#src/spatial/kernelAnalysis";
+import type { LabelledCells } from "#src/spatial/pcf";
+import { partialCorrelation, quadratCorrelation, quadratCounts, rowCorrelation } from "#src/spatial/quadratCorrelation";
 import { quadratCorrelationGpu, quadratCorrelationGpuSupported } from "./quadratCorrelationGpu";
 
 // The GPU path replaces the NULL, not the statistic, so the tests split the same way: the observed

@@ -48,7 +48,7 @@ import {
   type PcaResult,
   pcaBasis,
   pcaComponentCount,
-} from "../../spatial/pca";
+} from "#src/spatial/pca";
 import { getDevice, writeView } from "../device";
 
 /** Output tile edge, and the row block staged in workgroup memory. 16x16 = 256 threads,

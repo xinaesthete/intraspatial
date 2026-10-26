@@ -7,7 +7,7 @@
 
 import tgpu from "typegpu";
 import * as d from "typegpu/data";
-import { writeView } from "../../device";
+import { writeView } from "#src/gpu/device";
 import type { Root } from "../backend";
 
 const WG = 64;

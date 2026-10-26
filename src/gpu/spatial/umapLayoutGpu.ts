@@ -27,8 +27,8 @@
 // The per-edge sampling schedule is NOT raced: each thread owns its own edge's slot.
 import tgpu from "typegpu";
 import * as d from "typegpu/data";
-import type { AbParams, LayoutOptions } from "../../spatial/umapLayout";
-import { fitAB, makeEpochsPerSample, mulberry32 } from "../../spatial/umapLayout";
+import type { AbParams, LayoutOptions } from "#src/spatial/umapLayout";
+import { fitAB, makeEpochsPerSample, mulberry32 } from "#src/spatial/umapLayout";
 import { getDevice, writeView } from "../device";
 
 const WG = 64;

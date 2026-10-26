@@ -21,7 +21,7 @@
 //
 // Third axis: a lattice with `depth`/`minZ` (from `latticeFor(…, zs)`) makes the kernel take z as
 // well, which needs `stride: 3`. `stride: 3` on a 2D lattice still indexes xy only.
-import { type Bounds2, type Bounds3, type BucketGrid, type GridLattice, latticeFor, numCells } from "../../spatial/bucketGrid";
+import { type Bounds2, type Bounds3, type BucketGrid, type GridLattice, latticeFor, numCells } from "#src/spatial/bucketGrid";
 import { checkBindingSize, compileShader, deviceScoped, dispatchGrid, MAX_WORKGROUPS_PER_DIM, sized } from "../device";
 import { encodeScan, ensureBuf, getScanCtx, readBack, type ScanCtx } from "../scan/prefixSum";
 

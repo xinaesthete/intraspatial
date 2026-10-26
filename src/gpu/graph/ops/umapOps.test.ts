@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
-import { type FuzzyGraph, fuzzySimplicialSet, type KnnResult } from "../../../spatial/umapGraph";
-import { trustworthiness } from "../../../spatial/umapLayout";
+import { type FuzzyGraph, fuzzySimplicialSet, type KnnResult } from "#src/spatial/umapGraph";
+import { trustworthiness } from "#src/spatial/umapLayout";
 import type { ExecCtx } from "../op";
 import { hasOp, listOps } from "../registry";
 import { registerUmapOps } from "./index";

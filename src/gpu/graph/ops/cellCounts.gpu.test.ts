@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vite-plus/test";
-import { buildBucketGrid } from "../../../spatial/bucketGrid";
+import { buildBucketGrid } from "#src/spatial/bucketGrid";
 import { nodeBackend } from "../backend.node";
 import { Graph, pull, pullResident, registerBuiltinOps } from "../index";
 import { getOp } from "../registry";

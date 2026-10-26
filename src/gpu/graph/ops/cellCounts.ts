@@ -12,8 +12,8 @@
 // The output grid inherits the LATTICE's placement, not the points': one cell of this grid is one
 // cell of the index, so it is already in world space via `worldFromArray · translate(origin) ·
 // scale(cell)`.
-import { checkBindingSize, compileShader, deviceScoped, dispatchGrid, MAX_WORKGROUPS_PER_DIM, sized } from "../../device";
-import { ensureBuf } from "../../scan/prefixSum";
+import { checkBindingSize, compileShader, deviceScoped, dispatchGrid, MAX_WORKGROUPS_PER_DIM, sized } from "#src/gpu/device";
+import { ensureBuf } from "#src/gpu/scan/prefixSum";
 import type { FieldValue, Shape } from "../handle";
 import type { ExecCtx, OpType, Params } from "../op";
 import { partNames } from "./bundleOps";

@@ -4,8 +4,8 @@
 // step node (or pulling repeatedly) drives the simulation forward; the executor's
 // per-stage submits are exactly the per-step boundary the integrator needs.
 
-import type { GrayScottParams, GrayScottState } from "../../sim/reactionDiffusion";
-import { grayScottStepCpu, grayScottStepsGpu } from "../../sim/reactionDiffusion";
+import type { GrayScottParams, GrayScottState } from "#src/gpu/sim/reactionDiffusion";
+import { grayScottStepCpu, grayScottStepsGpu } from "#src/gpu/sim/reactionDiffusion";
 import type { FieldValue, Shape } from "../handle";
 import type { OpType, Params } from "../op";
 

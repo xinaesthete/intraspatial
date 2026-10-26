@@ -5,7 +5,7 @@
 // of the last-return surface is a bare-earth estimate. Same resident shape as
 // `convolveSeparableOp`; `cpuGolden` is the separable CPU reference in `spatial/morphology.ts`,
 // which is itself checked bit-exact against a direct 2-D window in the GPU test.
-import { type MorphOp, morphologyCpu, morphologyResident } from "../../spatial/morphology";
+import { type MorphOp, morphologyCpu, morphologyResident } from "#src/gpu/spatial/morphology";
 import type { Shape } from "../handle";
 import type { OpType, Params } from "../op";
 

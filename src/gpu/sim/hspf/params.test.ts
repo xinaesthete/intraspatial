@@ -2,7 +2,7 @@
 // mapping, the filter-then-apply helpers, and — the point of the seam — that HsPf's ParamSpecs
 // drop straight into the src/evo Mutator (round-trip + freeze-via-lock-complement).
 import { describe, expect, it } from "vite-plus/test";
-import { paramsToSpecimen, specimenToParams, traitSpaceFromParams, withLocked } from "../../../evo/traitSpace";
+import { paramsToSpecimen, specimenToParams, traitSpaceFromParams, withLocked } from "#src/evo/traitSpace";
 import { DEFAULT_FITNESS } from "./math";
 import { complementNames, defaultHspfParams, filterSpecs, HSPF_PARAM_SPECS, toHspfConfig } from "./params";
 

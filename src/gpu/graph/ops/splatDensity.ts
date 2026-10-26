@@ -8,9 +8,9 @@
 // The one thing still resolved host-side is the default `bbox`, which needs the points' own
 // bounds. See `resolveBbox` below.
 
-import type { Affine3 } from "../../../coords";
-import { gaussianKdeField } from "../../../spatial/scalarField";
-import { splatDensityToTexture } from "../../spatial/splatDensity";
+import type { Affine3 } from "#src/coords";
+import { gaussianKdeField } from "#src/spatial/scalarField";
+import { splatDensityToTexture } from "#src/gpu/spatial/splatDensity";
 import type { FieldValue, ResolvedPlacement, Shape } from "../handle";
 import type { OpType, Params } from "../op";
 import { param } from "../op";

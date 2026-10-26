@@ -27,9 +27,9 @@
 // typed arrays for this reason: they upload verbatim.
 import tgpu from "typegpu";
 import * as d from "typegpu/data";
-import { buildCandidates, type DescentOptions, finalise, initialiseHeap } from "../../spatial/knnDescent";
-import type { KnnResult } from "../../spatial/umapGraph";
-import { mulberry32 } from "../../spatial/umapLayout";
+import { buildCandidates, type DescentOptions, finalise, initialiseHeap } from "#src/spatial/knnDescent";
+import type { KnnResult } from "#src/spatial/umapGraph";
+import { mulberry32 } from "#src/spatial/umapLayout";
 import { getDevice, writeView } from "../device";
 
 const WG = 64;

@@ -12,7 +12,7 @@
 // shared by both fronts (grid for the image side, points/matrix for the spatial
 // side) plus scalar and an opaque payload (e.g. a persistence diagram).
 
-import type { Affine3 } from "../../coords";
+import type { Affine3 } from "#src/coords";
 
 export type Dtype = "f32" | "i32" | "u32";
 

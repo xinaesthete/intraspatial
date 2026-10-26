@@ -15,7 +15,7 @@
 
 import tgpu from "typegpu";
 import * as d from "typegpu/data";
-import { writeView } from "../../device";
+import { writeView } from "#src/gpu/device";
 import { DEFAULT_FITNESS, type FitnessMatrix, ld, OFFSPRING, type Vec4 } from "./math";
 import type { Neighbourhood } from "./neighbourhood";
 

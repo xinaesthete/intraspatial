@@ -7,7 +7,7 @@
 // interpolate this string rather than each carrying their own copy. The constants are derived from
 // `GAUSS_TRUNC` at module load so a change there propagates to both.
 
-import { GAUSS_TRUNC } from "../../spatial/kernels";
+import { GAUSS_TRUNC } from "#src/spatial/kernels";
 
 /** WGSL source declaring `fn kernelAt(d2: f32, r: f32, code: f32) -> f32`, matching
  *  `kernelAt` in `src/spatial/kernels.ts` exactly. `code` is `kernelCode(spec)`: a polynomial

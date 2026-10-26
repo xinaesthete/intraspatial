@@ -16,7 +16,7 @@
 import tgpu from "typegpu";
 import * as d from "typegpu/data";
 import * as std from "typegpu/std";
-import { type GridLattice, latticeFor } from "../../spatial/bucketGrid";
+import { type GridLattice, latticeFor } from "#src/spatial/bucketGrid";
 import { ensureBuf } from "../scan/prefixSum";
 import { encodeGridIndex, type GridIndexCtx, type GridIndexResident } from "./gridIndex";
 

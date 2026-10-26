@@ -9,8 +9,8 @@
 // invisible.
 
 import { beforeAll, describe, expect, it } from "vite-plus/test";
-import { columnStats, covarianceHost, pca, pcaBasis, projectScoresHost } from "../../spatial/pca";
-import { expressManifold, makeManifold } from "../../spatial/syntheticManifolds";
+import { columnStats, covarianceHost, pca, pcaBasis, projectScoresHost } from "#src/spatial/pca";
+import { expressManifold, makeManifold } from "#src/spatial/syntheticManifolds";
 import { covarianceGpu, pcaGpu, planTiles, projectScoresGpu } from "./pcaGpu";
 
 const N = 4000;

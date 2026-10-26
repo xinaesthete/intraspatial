@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vite-plus/test";
-import { type CellCloud, computeTcmReference, crossMarks, type TcmParams } from "../../spatial/tcm";
+import { type CellCloud, computeTcmReference, crossMarks, type TcmParams } from "#src/spatial/tcm";
 import { computeTcmGpu, crossMarksGpu } from "./tcm";
 
 // Same two Dawn-on-Node constraints as the cross-PCF tests next door: aggregated assertions (no

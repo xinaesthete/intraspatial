@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vite-plus/test";
-import { QUARTIC, TOPHAT } from "../../spatial/kernels";
-import type { CellCloud } from "../../spatial/tcm";
-import { computeTcmKernel } from "../../spatial/tcmKernel";
+import { QUARTIC, TOPHAT } from "#src/spatial/kernels";
+import type { CellCloud } from "#src/spatial/tcm";
+import { computeTcmKernel } from "#src/spatial/tcmKernel";
 import { computeTcmRender, kernelDensityGpu } from "./tcmRender";
 
 function mulberry32(seed: number) {

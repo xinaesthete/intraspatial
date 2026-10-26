@@ -32,7 +32,7 @@
 // the golden.
 import tgpu from "typegpu";
 import * as d from "typegpu/data";
-import type { KnnResult } from "../../spatial/umapGraph";
+import type { KnnResult } from "#src/spatial/umapGraph";
 import { deviceScoped, sized, writeView } from "../device";
 import { type GridIndexCtx, getGridIndexCtx } from "./gridIndex";
 import { cellCoord, cellRange, encodeQueryIndex, type IndexedQueryOptions, LATTICE_BYTES, Lattice, StartArray } from "./gridIndexQuery";

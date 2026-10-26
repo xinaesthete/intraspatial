@@ -9,8 +9,8 @@
 // into every GPU test fork — see registerElementOps in ./index and the ADR-0002/0003
 // Dawn-on-Node fragility notes.
 
-import type { GrayScottParams, GrayScottState } from "../../sim/reactionDiffusion";
-import { grayScottStepCpu, grayScottStepsGpu } from "../../sim/reactionDiffusion";
+import type { GrayScottParams, GrayScottState } from "#src/gpu/sim/reactionDiffusion";
+import { grayScottStepCpu, grayScottStepsGpu } from "#src/gpu/sim/reactionDiffusion";
 import { extractLane, packComplex } from "../elementMath";
 import type { ElementType, FieldValue, Shape } from "../handle";
 import type { OpType, ParamSpec, Params } from "../op";

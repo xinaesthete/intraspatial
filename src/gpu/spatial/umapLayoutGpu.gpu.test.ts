@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
-import { fuzzySimplicialSet, knnBruteForceCpu } from "../../spatial/umapGraph";
-import { mulberry32, optimizeLayout, trustworthiness } from "../../spatial/umapLayout";
+import { fuzzySimplicialSet, knnBruteForceCpu } from "#src/spatial/umapGraph";
+import { mulberry32, optimizeLayout, trustworthiness } from "#src/spatial/umapLayout";
 import { GpuUmapLayout } from "./umapLayoutGpu";
 
 // The GPU layout races by design (Hogwild; see the module header), so NOTHING here

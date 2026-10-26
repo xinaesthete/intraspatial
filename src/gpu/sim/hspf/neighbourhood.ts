@@ -7,7 +7,7 @@
 //
 // Beta(1, c) has a closed-form inverse-CDF: F(x) = 1 − (1−x)^c ⇒ x = 1 − (1−U)^(1/c) for
 // U ~ Uniform(0,1). That removes the @stdlib/random dependency entirely.
-import { mulberry32 } from "../../../evo/rng";
+import { mulberry32 } from "#src/evo/rng";
 
 /** A neighbourhood packed for upload as an array of `{dx, dy, weight}` (matching the kernel's
  *  `NbhdPoint` struct: three f32 per sample). */

@@ -4,7 +4,7 @@
 // golden. Kept lean (few cells, one step, one test) because Dawn-on-Node's exit teardown is
 // timing-sensitive and heavy per-fork work trips its segfault.
 import { describe, expect, it } from "vite-plus/test";
-import { getDevice } from "../../device";
+import { getDevice } from "#src/gpu/device";
 import { type HspfParams, type HspfScaffold, hspfStepsGpu } from "./kernel";
 import { blendFitness, DEFAULT_FITNESS, gatherCell, ld, selectionWeights, sum4, type Vec4 } from "./math";
 import type { Neighbourhood } from "./neighbourhood";

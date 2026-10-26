@@ -9,8 +9,8 @@
 // Every op's ParamSpec[] is the breedable trait set (src/evo). CPU Tier-1 for now (the
 // GPU artefact mirrors this math in TSL); validated at the boundary, checked access, no `!`.
 
-import { BODY_BLOCK_COUNT, type IntegrateParams, integrateBody, readBodyState, tapBlock, writeBodyState } from "../../sim/body";
-import { figureAt, figureTargetVel, partnerIndex } from "../../sim/figures";
+import { BODY_BLOCK_COUNT, type IntegrateParams, integrateBody, readBodyState, tapBlock, writeBodyState } from "#src/gpu/sim/body";
+import { figureAt, figureTargetVel, partnerIndex } from "#src/gpu/sim/figures";
 import {
   cohereForce,
   constrainForce,
@@ -21,8 +21,8 @@ import {
   springForce,
   swimForce,
   vortexForce,
-} from "../../sim/forces";
-import { readVec3, unpack, type Vec3, vec3, writeVec3 } from "../../sim/vec3";
+} from "#src/gpu/sim/forces";
+import { readVec3, unpack, type Vec3, vec3, writeVec3 } from "#src/gpu/sim/vec3";
 import type { ElementType, FieldValue, Shape } from "../handle";
 import type { OpType, ParamSpec, Params } from "../op";
 import { hasOp, registerOp } from "../registry";

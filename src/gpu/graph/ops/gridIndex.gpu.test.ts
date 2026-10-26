@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vite-plus/test";
-import { buildBucketGrid } from "../../../spatial/bucketGrid";
-import { getDevice } from "../../device";
-import { readBack } from "../../scan/prefixSum";
+import { buildBucketGrid } from "#src/spatial/bucketGrid";
+import { getDevice } from "#src/gpu/device";
+import { readBack } from "#src/gpu/scan/prefixSum";
 import { nodeBackend } from "../backend.node";
 import { Graph, pull, pullResident, registerBuiltinOps } from "../index";
 import type { GridLatticePayload } from "./gridIndex";

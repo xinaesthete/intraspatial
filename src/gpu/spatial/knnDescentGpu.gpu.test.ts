@@ -12,9 +12,9 @@
 // 0.951 for both host and device at n=100k, with the per-slot agreement at 81%.
 
 import { beforeAll, describe, expect, it } from "vite-plus/test";
-import { knnDescentCpu, knnRecall } from "../../spatial/knnDescent";
-import { expressManifold, makeManifold } from "../../spatial/syntheticManifolds";
-import { type KnnResult, knnBruteForceCpu } from "../../spatial/umapGraph";
+import { knnDescentCpu, knnRecall } from "#src/spatial/knnDescent";
+import { expressManifold, makeManifold } from "#src/spatial/syntheticManifolds";
+import { type KnnResult, knnBruteForceCpu } from "#src/spatial/umapGraph";
 import { knnDescentGpu } from "./knnDescentGpu";
 
 const N = 1500;
