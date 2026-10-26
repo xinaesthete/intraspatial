@@ -177,7 +177,11 @@ function getCtx(device: GPUDevice): Ctx {
   let ctx = ctxByDevice.get(device);
   if (!ctx) {
     const pipe = (code: string, entryPoint: string): GPUComputePipeline =>
-      device.createComputePipeline({ layout: "auto", compute: { module: device.createShaderModule({ code }), entryPoint } });
+      device.createComputePipeline({
+        label: `assembleTile:${entryPoint}`,
+        layout: "auto",
+        compute: { module: device.createShaderModule({ label: `assembleTile:${entryPoint}`, code }), entryPoint },
+      });
     ctx = { scatter: pipe(SCATTER, "scatter"), pack: pipe(PACK_HALF, "packHalf") };
     ctxByDevice.set(device, ctx);
   }
@@ -199,10 +203,10 @@ let ownedSeq = 0;
  *  as long as the camera wants it, which is not a liveness the pool models, and recycling it
  *  underneath a resident texture is exactly the bug the pool's rules exist to prevent. The lease
  *  id is negative so an owned payload can never be mistaken for (or released into) a pool. */
-function ownedBuffer(device: GPUDevice, byteLength: number, usage: number): ResidentBuffer {
+function ownedBuffer(device: GPUDevice, label: string, byteLength: number, usage: number): ResidentBuffer {
   const size = Math.max(4, Math.ceil(byteLength / 4) * 4);
   const lease: LeaseToken = { id: -++ownedSeq, usage, capacity: size };
-  return { buffer: device.createBuffer({ size, usage }), byteLength, lease };
+  return { buffer: device.createBuffer({ label, size, usage }), byteLength, lease };
 }
 
 // Scratch for the f32 intermediate in "f16" mode. Grow-only and never destroyed — destroying a
@@ -212,7 +216,11 @@ function scratch(device: GPUDevice, bytes: number): GPUBuffer {
   const held = scratchByDevice.get(device);
   if (held && held.bytes >= bytes) return held.buffer;
   const size = Math.max(bytes, (held?.bytes ?? 0) * 2, 256);
-  const buffer = device.createBuffer({ size, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST });
+  const buffer = device.createBuffer({
+    label: "assembleTile:f32Scratch",
+    size,
+    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST,
+  });
   scratchByDevice.set(device, { buffer, bytes: size });
   return buffer;
 }
@@ -223,7 +231,7 @@ function scratch(device: GPUDevice, bytes: number): GPUBuffer {
 export function uploadPlane(device: GPUDevice, samples: ArrayBufferView): GPUBuffer {
   const bytes = samples.byteLength;
   const size = Math.ceil(bytes / 4) * 4;
-  const buffer = device.createBuffer({ size, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+  const buffer = device.createBuffer({ label: "uploadPlane:samples", size, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
   if (size === bytes) {
     writeView(device.queue, buffer, samples);
   } else {
@@ -263,16 +271,22 @@ export async function assembleTile(opts: AssembleOpts): Promise<AssembledTile> {
   // Stage 1 — every plane scatters into the tight f32 interleave. In "f32" mode that buffer IS
   // the result; in "f16" mode it is the scratch the pack stage reads.
   const f32Target =
-    out === "f32" ? ownedBuffer(device, tightBytes, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST) : null;
+    out === "f32"
+      ? ownedBuffer(device, "assembleTile:f32Out", tightBytes, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST)
+      : null;
   const f32Buffer = f32Target?.buffer ?? scratch(device, tightBytes);
 
   const encoder = device.createCommandEncoder({ label: "assembleTile" });
-  const pass = encoder.beginComputePass();
+  const pass = encoder.beginComputePass({ label: "assembleTile:scatter" });
   pass.setPipeline(ctx.scatter);
   const d = dispatch2D(voxels);
   const uniforms: GPUBuffer[] = [];
   for (let lane = 0; lane < lanes; lane++) {
-    const uni = device.createBuffer({ size: 48, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+    const uni = device.createBuffer({
+      label: "assembleTile:scatterUniforms",
+      size: 48,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
     uniforms.push(uni);
     const L = layoutFor(lane);
     const words = new ArrayBuffer(48);
@@ -283,6 +297,7 @@ export async function assembleTile(opts: AssembleOpts): Promise<AssembledTile> {
     pass.setBindGroup(
       0,
       device.createBindGroup({
+        label: "assembleTile:scatter",
         layout: ctx.scatter.getBindGroupLayout(0),
         entries: [
           { binding: 0, resource: { buffer: uni } },
@@ -304,14 +319,19 @@ export async function assembleTile(opts: AssembleOpts): Promise<AssembledTile> {
     bytesPerRow = align256(width * lanes * 2);
     const dstRowWords = bytesPerRow / 4;
     const rows = height * depth;
-    result = ownedBuffer(device, bytesPerRow * rows, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC);
-    const uni = device.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+    result = ownedBuffer(device, "assembleTile:f16Out", bytesPerRow * rows, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC);
+    const uni = device.createBuffer({
+      label: "assembleTile:packUniforms",
+      size: 16,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
     uniforms.push(uni);
     device.queue.writeBuffer(uni, 0, new Uint32Array([width * lanes, dstRowWords, rows, 0]));
     pass.setPipeline(ctx.pack);
     pass.setBindGroup(
       0,
       device.createBindGroup({
+        label: "assembleTile:pack",
         layout: ctx.pack.getBindGroupLayout(0),
         entries: [
           { binding: 0, resource: { buffer: uni } },
@@ -379,6 +399,7 @@ export async function assembleTileTexture(opts: Omit<AssembleOpts, "out">): Prom
 
   const assembled = await assembleTile({ ...opts, planes, out: "f16" });
   const texture = device.createTexture({
+    label: "assembleTileTexture:texture",
     size: { width, height, depthOrArrayLayers: depth },
     dimension: depth > 1 ? "3d" : "2d",
     format,

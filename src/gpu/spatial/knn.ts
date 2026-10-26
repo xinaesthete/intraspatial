@@ -34,6 +34,7 @@ import tgpu from "typegpu";
 import * as d from "typegpu/data";
 import type { KnnResult } from "../../spatial/umapGraph";
 import { deviceScoped, sized, writeView } from "../device";
+import { typegpuComputePipeline } from "../typegpuPipeline";
 import { type GridIndexCtx, getGridIndexCtx } from "./gridIndex";
 import { cellCoord, cellRange, encodeQueryIndex, type IndexedQueryOptions, LATTICE_BYTES, Lattice, StartArray } from "./gridIndexQuery";
 
@@ -45,22 +46,26 @@ const MAX_K = 32;
 
 const Params = d.struct({ n: d.u32, dim: d.u32, k: d.u32, rowOffset: d.u32 });
 
-const layout = tgpu.bindGroupLayout({
-  params: { uniform: Params },
-  data: { storage: (n: number) => d.arrayOf(d.f32, n), access: "readonly" }, // [n, dim] row-major
-  outIdx: { storage: (n: number) => d.arrayOf(d.u32, n), access: "mutable" }, // [n, k]
-  outDist: { storage: (n: number) => d.arrayOf(d.f32, n), access: "mutable" }, // [n, k]
-});
+const layout = tgpu
+  .bindGroupLayout({
+    params: { uniform: Params },
+    data: { storage: (n: number) => d.arrayOf(d.f32, n), access: "readonly" }, // [n, dim] row-major
+    outIdx: { storage: (n: number) => d.arrayOf(d.u32, n), access: "mutable" }, // [n, k]
+    outDist: { storage: (n: number) => d.arrayOf(d.f32, n), access: "mutable" }, // [n, k]
+  })
+  .$name("knn");
 
-const layoutIdx = tgpu.bindGroupLayout({
-  params: { uniform: Params },
-  lat: { uniform: Lattice },
-  data: { storage: (n: number) => d.arrayOf(d.f32, n), access: "readonly" },
-  start: { storage: StartArray, access: "readonly" },
-  items: { storage: StartArray, access: "readonly" },
-  outIdx: { storage: (n: number) => d.arrayOf(d.u32, n), access: "mutable" },
-  outDist: { storage: (n: number) => d.arrayOf(d.f32, n), access: "mutable" },
-});
+const layoutIdx = tgpu
+  .bindGroupLayout({
+    params: { uniform: Params },
+    lat: { uniform: Lattice },
+    data: { storage: (n: number) => d.arrayOf(d.f32, n), access: "readonly" },
+    start: { storage: StartArray, access: "readonly" },
+    items: { storage: StartArray, access: "readonly" },
+    outIdx: { storage: (n: number) => d.arrayOf(d.u32, n), access: "mutable" },
+    outDist: { storage: (n: number) => d.arrayOf(d.f32, n), access: "mutable" },
+  })
+  .$name("knn:indexed");
 
 /** Index reported for a neighbour slot the indexed query could not fill. */
 export const KNN_NO_NEIGHBOUR = 0xffffffff;
@@ -160,10 +165,13 @@ interface Pipe {
 const getPipe = deviceScoped(async (device: GPUDevice): Promise<Pipe> => {
   const root = tgpu.initFromDevice({ device });
   const build = (template: string, externals: Record<string, object>, entryPoint: string) => {
-    const { code, usedBindGroupLayouts } = tgpu.resolveWithContext({ template, externals, names: "strict" });
-    const module = device.createShaderModule({ code });
-    const pipeLayout = device.createPipelineLayout({ bindGroupLayouts: usedBindGroupLayouts.map((l) => root.unwrap(l)) });
-    return device.createComputePipeline({ layout: pipeLayout, compute: { module, entryPoint } });
+    return typegpuComputePipeline(
+      device,
+      root,
+      tgpu.resolveWithContext({ template, externals, names: "strict" }),
+      entryPoint,
+      `knn:${entryPoint}`,
+    );
   };
   const indexCtx = await getGridIndexCtx(device);
   return {
@@ -180,10 +188,10 @@ function makePool(root: Root, values: number, pairs: number) {
   return {
     values,
     pairs,
-    data: root.createBuffer(d.arrayOf(d.f32, values)).$usage("storage"),
-    outIdx: root.createBuffer(d.arrayOf(d.u32, pairs)).$usage("storage"),
-    outDist: root.createBuffer(d.arrayOf(d.f32, pairs)).$usage("storage"),
-    params: root.createBuffer(Params).$usage("uniform"),
+    data: root.createBuffer(d.arrayOf(d.f32, values)).$usage("storage").$name("knn:data"),
+    outIdx: root.createBuffer(d.arrayOf(d.u32, pairs)).$usage("storage").$name("knn:outIdx"),
+    outDist: root.createBuffer(d.arrayOf(d.f32, pairs)).$usage("storage").$name("knn:outDist"),
+    params: root.createBuffer(Params).$usage("uniform").$name("knn:params"),
   };
 }
 /** Per root, so per device: a pool's buffers belong to the device its root wraps. */
@@ -249,9 +257,10 @@ export async function knnGpu(data: ArrayLike<number>, opts: KnnGpuOptions): Prom
   } else {
     const xs = Float32Array.from({ length: n }, (_, i) => flat[2 * i]!);
     const ys = Float32Array.from({ length: n }, (_, i) => flat[2 * i + 1]!);
-    indexEnc = device.createCommandEncoder();
+    indexEnc = device.createCommandEncoder({ label: "knn" });
     const q = encodeQueryIndex(indexCtx, root.unwrap(p.data), n, xs, ys, cell, opts.bounds, indexEnc, "knn:index");
     bind = device.createBindGroup({
+      label: "knn",
       layout: root.unwrap(layoutIdx),
       entries: [
         { binding: 0, resource: { buffer: root.unwrap(p.params) } },
@@ -281,9 +290,9 @@ export async function knnGpu(data: ArrayLike<number>, opts: KnnGpuOptions): Prom
   for (let start = 0; start < n; start += rowsPerTile) {
     const count = Math.min(rowsPerTile, n - start);
     p.params.write({ n, dim, k, rowOffset: start });
-    const enc = indexEnc ?? device.createCommandEncoder();
+    const enc = indexEnc ?? device.createCommandEncoder({ label: "knn" });
     indexEnc = undefined;
-    const pass = enc.beginComputePass();
+    const pass = enc.beginComputePass({ label: "knn" });
     pass.setPipeline(cell === undefined ? pipeline : pipelineIdx);
     pass.setBindGroup(0, bind);
     pass.dispatchWorkgroups(Math.ceil(count / WG));

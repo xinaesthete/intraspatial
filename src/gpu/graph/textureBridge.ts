@@ -65,12 +65,16 @@ interface Ctx {
 /** Per device: the executor runs on its backend's device, which `interop/adoptDevice` lets be a
  *  renderer's rather than the library's own (`deviceScoped` in `../device`). */
 const getCtx = deviceScoped(async (device: GPUDevice): Promise<Ctx> => {
-  const module = device.createShaderModule({ code: DEPAD });
+  const module = device.createShaderModule({ label: "textureBridge", code: DEPAD });
   return {
     device,
-    pipeline: device.createComputePipeline({ layout: "auto", compute: { module, entryPoint: "depad" } }),
-    pipelineHalf: device.createComputePipeline({ layout: "auto", compute: { module, entryPoint: "depadHalf" } }),
-    uni: device.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST }),
+    pipeline: device.createComputePipeline({ label: "textureBridge:depad", layout: "auto", compute: { module, entryPoint: "depad" } }),
+    pipelineHalf: device.createComputePipeline({
+      label: "textureBridge:depadHalf",
+      layout: "auto",
+      compute: { module, entryPoint: "depadHalf" },
+    }),
+    uni: device.createBuffer({ label: "textureBridge:uniforms", size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST }),
   };
 });
 
@@ -82,6 +86,7 @@ function ensureStaging(device: GPUDevice, bytes: number): GPUBuffer {
   if (s.buf && s.bytes >= bytes) return s.buf;
   s.bytes = Math.max(bytes, s.bytes * 2, 256);
   s.buf = device.createBuffer({
+    label: "textureBridge:staging",
     size: s.bytes,
     usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
   });
@@ -106,13 +111,14 @@ export async function textureToBuffer(tex: ResidentTexture, dst: GPUBuffer, devi
   const src = ensureStaging(dev, bytesPerRow * h);
 
   dev.queue.writeBuffer(uni, 0, new Uint32Array([w, h, bytesPerRow / 4, 0]));
-  const enc = dev.createCommandEncoder();
+  const enc = dev.createCommandEncoder({ label: "textureBridge" });
   enc.copyTextureToBuffer({ texture: tex.texture }, { buffer: src, bytesPerRow }, { width: w, height: h });
-  const pass = enc.beginComputePass();
+  const pass = enc.beginComputePass({ label: "textureBridge:depad" });
   pass.setPipeline(pipeline);
   pass.setBindGroup(
     0,
     dev.createBindGroup({
+      label: "textureBridge:depad",
       layout: pipeline.getBindGroupLayout(0),
       entries: [
         { binding: 0, resource: { buffer: uni } },

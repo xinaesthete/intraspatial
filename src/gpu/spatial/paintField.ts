@@ -89,10 +89,15 @@ function getCtx(): Promise<Ctx> {
     const gpu = (globalThis as { navigator?: { gpu?: GPU } }).navigator?.gpu;
     const format = gpu?.getPreferredCanvasFormat?.() ?? ("bgra8unorm" as GPUTextureFormat);
     const compute = (code: string, entryPoint: string) =>
-      device.createComputePipeline({ layout: "auto", compute: { module: device.createShaderModule({ code }), entryPoint } });
+      device.createComputePipeline({
+        label: `paintField:${entryPoint}`,
+        layout: "auto",
+        compute: { module: device.createShaderModule({ label: `paintField:${entryPoint}`, code }), entryPoint },
+      });
     const render = (code: string, fs: string) => {
-      const module = device.createShaderModule({ code });
+      const module = device.createShaderModule({ label: `paintField:${fs}`, code });
       return device.createRenderPipeline({
+        label: `paintField:${fs}`,
         layout: "auto",
         vertex: { module, entryPoint: "vs" },
         primitive: { topology: "triangle-list" },
@@ -104,8 +109,12 @@ function getCtx(): Promise<Ctx> {
       format,
       reduceTex: compute(TEX_REDUCE, "reduceTex"),
       paintTex: render(PAINT_TEX, "fsTex"),
-      uni: device.createBuffer({ size: UNI_FLOATS * 4, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST }),
-      scale: device.createBuffer({ size: 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST }),
+      uni: device.createBuffer({
+        label: "paintField:uniforms",
+        size: UNI_FLOATS * 4,
+        usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+      }),
+      scale: device.createBuffer({ label: "paintField:scale", size: 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST }),
     };
   })();
   return ctxCache;
@@ -144,6 +153,7 @@ function ensureLut(device: GPUDevice, lut: Uint8Array): GPUTexture {
   if (got) return got;
   const n = Math.floor(lut.length / 3);
   const tex = device.createTexture({
+    label: "paintField:lut",
     size: { width: n, height: 1 },
     format: "rgba8unorm",
     usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
@@ -194,12 +204,13 @@ function encodePaint(
   device.queue.writeBuffer(c.uni, 0, new Float32Array([width, height, width * height, opts.signed ? 1 : 0, opts.flipY ? 1 : 0, 0, 0, 0]));
   device.queue.writeBuffer(c.scale, 0, ZERO); // atomicMax needs a clean floor each frame
 
-  const enc = device.createCommandEncoder();
-  const rpass = enc.beginComputePass();
+  const enc = device.createCommandEncoder({ label: "paintField" });
+  const rpass = enc.beginComputePass({ label: "paintField:reduceTex" });
   rpass.setPipeline(reducePipe);
   rpass.setBindGroup(
     0,
     device.createBindGroup({
+      label: "paintField:reduceTex",
       layout: reducePipe.getBindGroupLayout(0),
       entries: [
         { binding: 0, resource: { buffer: c.uni } },
@@ -213,12 +224,14 @@ function encodePaint(
 
   const view = surface.ctx.getCurrentTexture().createView();
   const pass = enc.beginRenderPass({
+    label: "paintField:paintTex",
     colorAttachments: [{ view, clearValue: { r: 0, g: 0, b: 0, a: 1 }, loadOp: "clear", storeOp: "store" }],
   });
   pass.setPipeline(paintPipe);
   pass.setBindGroup(
     0,
     device.createBindGroup({
+      label: "paintField:paintTex",
       layout: paintPipe.getBindGroupLayout(0),
       entries: [
         { binding: 0, resource: { buffer: c.uni } },

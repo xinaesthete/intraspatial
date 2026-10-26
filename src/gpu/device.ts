@@ -65,7 +65,9 @@ export function getDevice(): Promise<GPUDevice> {
     // blend density into an r32float render target (the no-atomics splat path).
     // Harmless for the compute kernels; falls back cleanly if unsupported.
     const requiredFeatures = (["float32-blendable"] as GPUFeatureName[]).filter((f) => adapter.features.has(f));
-    const device = await adapter.requestDevice({ requiredFeatures });
+    // Labelled so validation errors on a device intraspatial created itself say so. A host's device
+    // (`adoptDevice`) keeps the host's labels — its queue is shared with everything on the page.
+    const device = await adapter.requestDevice({ label: "intraspatial", requiredFeatures, defaultQueue: { label: "intraspatial" } });
     reportUncapturedErrors(device);
     return device;
   })();
@@ -201,6 +203,29 @@ export function dispatchGrid(workgroups: number, maxPerDim: number = MAX_WORKGRO
 }
 
 /**
+ * Encode one compute pass — one pipeline, one bind group at slot 0, one dispatch — and submit it.
+ * The encoder and the pass share `label`, so a validation error from either names the kernel.
+ * Multi-pass encodes are written out where they happen.
+ */
+export function submitDispatch(
+  device: GPUDevice,
+  label: string,
+  pipeline: GPUComputePipeline,
+  bindGroup: GPUBindGroup,
+  x: number,
+  y = 1,
+  z = 1,
+): void {
+  const enc = device.createCommandEncoder({ label });
+  const pass = enc.beginComputePass({ label });
+  pass.setPipeline(pipeline);
+  pass.setBindGroup(0, bindGroup);
+  pass.dispatchWorkgroups(x, y, z);
+  pass.end();
+  device.queue.submit([enc.finish()]);
+}
+
+/**
  * Refuse a storage binding larger than the device allows, rather than discovering it as a
  * wrong answer.
  *
@@ -324,7 +349,7 @@ export async function readBackBytes(
     staging = device.createBuffer({ size: cap, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST, label: key });
     pool.set(key, { buf: staging, cap });
   }
-  const enc = device.createCommandEncoder();
+  const enc = device.createCommandEncoder({ label: `${key}:readBack` });
   enc.copyBufferToBuffer(src, srcOffset, staging!, 0, bytes);
   device.queue.submit([enc.finish()]);
   await staging!.mapAsync(GPUMapMode.READ, 0, bytes);

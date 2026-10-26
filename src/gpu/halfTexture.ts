@@ -44,12 +44,14 @@ function getPipe(device: GPUDevice): Promise<NarrowPipe> {
   pipe = (async () => {
     const module = await compileShader(device, NARROW, "halfTexture:narrow");
     const layout = device.createBindGroupLayout({
+      label: "halfTexture",
       entries: [{ binding: 0, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "unfilterable-float" } }],
     });
     return {
       layout,
       pipeline: device.createRenderPipeline({
-        layout: device.createPipelineLayout({ bindGroupLayouts: [layout] }),
+        label: "halfTexture",
+        layout: device.createPipelineLayout({ label: "halfTexture", bindGroupLayouts: [layout] }),
         vertex: { module, entryPoint: "vs" },
         primitive: { topology: "triangle-list" },
         fragment: { module, entryPoint: "fs", targets: [{ format: "r16float" }] },
@@ -78,10 +80,11 @@ export async function halfNarrower(device: GPUDevice): Promise<HalfNarrower> {
   const { pipeline, layout } = await getPipe(device);
   return (enc, src, dst, w, h) => {
     const pass = enc.beginRenderPass({
+      label: "halfTexture",
       colorAttachments: [{ view: dst.createView(), loadOp: "clear", storeOp: "store", clearValue: { r: 0, g: 0, b: 0, a: 0 } }],
     });
     pass.setPipeline(pipeline);
-    pass.setBindGroup(0, device.createBindGroup({ layout, entries: [{ binding: 0, resource: src.createView() }] }));
+    pass.setBindGroup(0, device.createBindGroup({ label: "halfTexture", layout, entries: [{ binding: 0, resource: src.createView() }] }));
     pass.setViewport(0, 0, w, h, 0, 1);
     pass.draw(3);
     pass.end();

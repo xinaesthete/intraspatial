@@ -15,8 +15,9 @@
 import tgpu from "typegpu";
 import * as d from "typegpu/data";
 import * as std from "typegpu/std";
-import { deviceScoped, writeView } from "../device";
+import { deviceScoped, submitDispatch, writeView } from "../device";
 import { type BindEntry, rawBindGroup } from "../graph/residentBind";
+import { typegpuComputePipeline } from "../typegpuPipeline";
 
 const WG = 64;
 
@@ -33,11 +34,13 @@ const Params = d.struct({
   mode: d.u32,
 });
 
-const layout = tgpu.bindGroupLayout({
-  params: { uniform: Params },
-  src: { storage: (n: number) => d.arrayOf(d.f32, n), access: "readonly" },
-  dst: { storage: (n: number) => d.arrayOf(d.f32, n), access: "mutable" },
-});
+const layout = tgpu
+  .bindGroupLayout({
+    params: { uniform: Params },
+    src: { storage: (n: number) => d.arrayOf(d.f32, n), access: "readonly" },
+    dst: { storage: (n: number) => d.arrayOf(d.f32, n), access: "mutable" },
+  })
+  .$name("morphology");
 
 const morphFn = tgpu
   .computeFn({ in: { gid: d.builtin.globalInvocationId }, workgroupSize: [WG] })((input) => {
@@ -74,26 +77,24 @@ interface Pipe {
 /** Per device (default: the library's own) — `deviceScoped` in `../device` says why. */
 const getPipe = deviceScoped(async (device: GPUDevice): Promise<Pipe> => {
   const root = tgpu.initFromDevice({ device });
-  const { code, usedBindGroupLayouts } = tgpu.resolveWithContext([morphFn], { names: "strict" });
-  const module = device.createShaderModule({ code });
-  const pipeLayout = device.createPipelineLayout({
-    bindGroupLayouts: usedBindGroupLayouts.map((l) => root.unwrap(l)),
-  });
-  const pipeline = device.createComputePipeline({ layout: pipeLayout, compute: { module, entryPoint: "morphSep" } });
+  const pipeline = typegpuComputePipeline(device, root, tgpu.resolveWithContext([morphFn], { names: "strict" }), "morphSep", "morphology");
   return { device, root, pipeline };
 });
 
 type Root = Pipe["root"];
-function buf(root: Root, n: number) {
-  return root.createBuffer(d.arrayOf(d.f32, Math.max(1, n))).$usage("storage");
+function buf(root: Root, n: number, label: string) {
+  return root
+    .createBuffer(d.arrayOf(d.f32, Math.max(1, n)))
+    .$usage("storage")
+    .$name(label);
 }
 function makeParams(root: Root) {
-  return root.createBuffer(Params).$usage("uniform");
+  return root.createBuffer(Params).$usage("uniform").$name("morphology:params");
 }
 function makePool(root: Root, cap: number, params: ReturnType<typeof makeParams>) {
   // Two grid-sized scratch buffers: one holds the horizontal pass, the other the intermediate
   // of a composed opening/closing (which needs a full erode result before the dilate starts).
-  return { cap, a: buf(root, cap), b: buf(root, cap), params };
+  return { cap, a: buf(root, cap, "morphology:a"), b: buf(root, cap, "morphology:b"), params };
 }
 /** Per root, so per device: a pool's buffers belong to the device its root wraps. */
 const pools = new WeakMap<Root, ReturnType<typeof makePool>>();
@@ -128,14 +129,8 @@ function runPasses(
   const groups = Math.ceil((width * height) / WG);
   const run = (from: BindEntry, to: BindEntry, stepX: number, stepY: number) => {
     params.write({ w: width, h: height, r, stepX, stepY, mode: modeFlag(mode) });
-    const bind = rawBindGroup(device, root, layout, [params, from, to]);
-    const enc = device.createCommandEncoder();
-    const pass = enc.beginComputePass();
-    pass.setPipeline(pipeline);
-    pass.setBindGroup(0, bind);
-    pass.dispatchWorkgroups(groups);
-    pass.end();
-    device.queue.submit([enc.finish()]);
+    const bind = rawBindGroup(device, root, layout, [params, from, to], "morphology");
+    submitDispatch(device, "morphology", pipeline, bind, groups);
   };
   run(src, scratch, 1, 0); // horizontal: src -> scratch
   run(scratch, dst, 0, 1); // vertical:   scratch -> dst
@@ -201,7 +196,7 @@ function ensureIo(root: Root, cells: number) {
   let io = ios.get(root);
   if (io && io.cap >= cells) return io;
   const cap = Math.max(cells, io?.cap ?? 0, 1);
-  io = { cap, src: buf(root, cap), dst: buf(root, cap) };
+  io = { cap, src: buf(root, cap, "morphology:src"), dst: buf(root, cap, "morphology:dst") };
   ios.set(root, io);
   return io;
 }

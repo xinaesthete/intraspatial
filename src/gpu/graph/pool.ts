@@ -100,7 +100,7 @@ export class BufferPool {
     const list = this.free.get(slot);
     let buffer = list?.pop();
     if (!buffer) {
-      buffer = this.device.createBuffer({ size: capacity, usage });
+      buffer = this.device.createBuffer({ label: "BufferPool:lease", size: capacity, usage });
       this.created++;
       this.bytes += capacity;
     }
@@ -183,7 +183,7 @@ export class TexturePool {
     const list = this.free.get(slot);
     let texture = list?.pop();
     if (!texture) {
-      texture = this.device.createTexture({ size: { width: w, height: h }, format, usage });
+      texture = this.device.createTexture({ label: "TexturePool:lease", size: { width: w, height: h }, format, usage });
       this.created++;
       this.bytes += w * h * bytesPerTexel(format);
     }

@@ -98,6 +98,7 @@ let sampler: GPUSampler | undefined;
 export function overlayResources(device: GPUDevice, image: ImageOverlay | undefined, worldFromLocal: ArrayLike<number>) {
   if (!blank) {
     blank = device.createTexture({
+      label: "imageOverlay:blank",
       size: { width: 1, height: 1 },
       format: "rgba8unorm",
       usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
@@ -105,6 +106,7 @@ export function overlayResources(device: GPUDevice, image: ImageOverlay | undefi
     device.queue.writeTexture({ texture: blank }, new Uint8Array([0, 0, 0, 255]), { bytesPerRow: 4 }, { width: 1, height: 1 });
   }
   sampler ??= device.createSampler({
+    label: "imageOverlay:sampler",
     magFilter: "linear",
     minFilter: "linear",
     addressModeU: "clamp-to-edge",

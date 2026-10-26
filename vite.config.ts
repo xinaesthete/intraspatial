@@ -49,7 +49,10 @@ export default defineConfig({
     plugins: ["eslint", "typescript", "unicorn", "oxc", "import", "react"],
     categories: { correctness: "error" },
     ignorePatterns: ["**/rust/**", "**/target/**", "**/.astro/**", "**/public/**", "viz/**", "scratch/**"],
-    jsPlugins: [{ name: "vite-plus", specifier: "vite-plus/oxlint-plugin" }],
+    jsPlugins: [
+      { name: "vite-plus", specifier: "vite-plus/oxlint-plugin" },
+      { name: "intraspatial", specifier: "./scripts/lint/gpu-resource-label.mjs" },
+    ],
     rules: {
       // Test and config imports go through `vite-plus/test` / `vite-plus`, so there is one Vitest and one Vite.
       "vite-plus/prefer-vite-plus-imports": "error",
@@ -70,5 +73,13 @@ export default defineConfig({
       "react/set-state-in-effect": "warn",
       "react/preserve-manual-memoization": "warn",
     },
+    overrides: [
+      {
+        // Every GPU object the library and its packages create is named — see the rule's header.
+        files: ["src/**/*.ts", "packages/*/src/**/*.ts", "packages/*/src/**/*.tsx"],
+        excludeFiles: ["**/*.test.ts", "**/*.test.tsx"],
+        rules: { "intraspatial/gpu-resource-label": "error" },
+      },
+    ],
   },
 });

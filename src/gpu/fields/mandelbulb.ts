@@ -15,7 +15,9 @@
 import tgpu from "typegpu";
 import * as d from "typegpu/data";
 import * as std from "typegpu/std";
+import { submitDispatch } from "../device";
 import type { GpuBackend, Root } from "../graph/backend";
+import { typegpuComputePipeline } from "../typegpuPipeline";
 
 /** A brick request: sample a `dims`-sized grid whose voxel (i,j,k) centre maps to the
  *  normalised unit-cube coordinate `origin + (idx + 0.5)·step` per axis. For a chunk of
@@ -49,10 +51,12 @@ const Params = d.struct({
   _pad: d.f32,
 });
 
-const layout = tgpu.bindGroupLayout({
-  params: { uniform: Params },
-  dst: { storage: (n: number) => d.arrayOf(d.f32, n), access: "mutable" },
-});
+const layout = tgpu
+  .bindGroupLayout({
+    params: { uniform: Params },
+    dst: { storage: (n: number) => d.arrayOf(d.f32, n), access: "mutable" },
+  })
+  .$name("mandelbulb");
 
 // 3-D dispatch: the global invocation id IS the voxel coordinate, so there is no
 // float-division index math (the `d.u32(i / w)` gotcha the 2-D kernels wrestle with).
@@ -117,8 +121,8 @@ function makePool(root: Root, n: number) {
   const cap = Math.max(1, n);
   return {
     cap,
-    dst: root.createBuffer(d.arrayOf(d.f32, cap)).$usage("storage"),
-    params: root.createBuffer(Params).$usage("uniform"),
+    dst: root.createBuffer(d.arrayOf(d.f32, cap)).$usage("storage").$name("mandelbulb:dst"),
+    params: root.createBuffer(Params).$usage("uniform").$name("mandelbulb:params"),
   };
 }
 type Pool = ReturnType<typeof makePool>;
@@ -135,10 +139,13 @@ function getPipe(device: GPUDevice, root: Root): Promise<Pipe> {
   let p = pipes.get(root as object);
   if (!p) {
     p = (async () => {
-      const { code, usedBindGroupLayouts } = tgpu.resolveWithContext([mandelbulbFn], { names: "strict" });
-      const module = device.createShaderModule({ code });
-      const pipeLayout = device.createPipelineLayout({ bindGroupLayouts: usedBindGroupLayouts.map((l) => root.unwrap(l)) });
-      const pipeline = device.createComputePipeline({ layout: pipeLayout, compute: { module, entryPoint: "mandelbulb" } });
+      const pipeline = typegpuComputePipeline(
+        device,
+        root,
+        tgpu.resolveWithContext([mandelbulbFn], { names: "strict" }),
+        "mandelbulb",
+        "mandelbulb",
+      );
       return { pipeline, pool: makePool(root, 1) };
     })();
     pipes.set(root as object, p);
@@ -180,13 +187,7 @@ export async function mandelbulbBrickGpu(backend: GpuBackend, region: Mandelbulb
   });
 
   const bind = root.unwrap(root.createBindGroup(layout, { params: pool.params, dst: pool.dst }));
-  const enc = device.createCommandEncoder();
-  const pass = enc.beginComputePass();
-  pass.setPipeline(pipe.pipeline);
-  pass.setBindGroup(0, bind);
-  pass.dispatchWorkgroups(Math.ceil(nx / WG[0]), Math.ceil(ny / WG[1]), Math.ceil(nz / WG[2]));
-  pass.end();
-  device.queue.submit([enc.finish()]);
+  submitDispatch(device, "mandelbulb", pipe.pipeline, bind, Math.ceil(nx / WG[0]), Math.ceil(ny / WG[1]), Math.ceil(nz / WG[2]));
 
   const got = (await pool.dst.read()) as ArrayLike<number>;
   return Float32Array.from({ length: n }, (_, idx) => got[idx] ?? 0);

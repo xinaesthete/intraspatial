@@ -30,7 +30,8 @@ import * as d from "typegpu/data";
 import { buildCandidates, type DescentOptions, finalise, initialiseHeap } from "../../spatial/knnDescent";
 import type { KnnResult } from "../../spatial/umapGraph";
 import { mulberry32 } from "../../spatial/umapLayout";
-import { getDevice, writeView } from "../device";
+import { getDevice, submitDispatch, writeView } from "../device";
+import { typegpuComputePipeline } from "../typegpuPipeline";
 
 const WG = 64;
 /** Compile-time bound on the private heap, matching `knn.ts`. */
@@ -38,15 +39,17 @@ const MAX_K = 32;
 
 const Params = d.struct({ n: d.u32, dim: d.u32, k: d.u32, width: d.u32, rowOffset: d.u32, _pad0: d.u32, _pad1: d.u32, _pad2: d.u32 });
 
-const layout = tgpu.bindGroupLayout({
-  params: { uniform: Params },
-  data: { storage: (n: number) => d.arrayOf(d.f32, n), access: "readonly" }, // [n, dim]
-  candidates: { storage: (n: number) => d.arrayOf(d.i32, n), access: "readonly" }, // [n, width]
-  counts: { storage: (n: number) => d.arrayOf(d.i32, n), access: "readonly" }, // [n]
-  heapIdx: { storage: (n: number) => d.arrayOf(d.i32, n), access: "mutable" }, // [n, k]
-  heapDist: { storage: (n: number) => d.arrayOf(d.f32, n), access: "mutable" }, // [n, k]
-  changed: { storage: (n: number) => d.arrayOf(d.u32, n), access: "mutable" }, // [n]
-});
+const layout = tgpu
+  .bindGroupLayout({
+    params: { uniform: Params },
+    data: { storage: (n: number) => d.arrayOf(d.f32, n), access: "readonly" }, // [n, dim]
+    candidates: { storage: (n: number) => d.arrayOf(d.i32, n), access: "readonly" }, // [n, width]
+    counts: { storage: (n: number) => d.arrayOf(d.i32, n), access: "readonly" }, // [n]
+    heapIdx: { storage: (n: number) => d.arrayOf(d.i32, n), access: "mutable" }, // [n, k]
+    heapDist: { storage: (n: number) => d.arrayOf(d.f32, n), access: "mutable" }, // [n, k]
+    changed: { storage: (n: number) => d.arrayOf(d.u32, n), access: "mutable" }, // [n]
+  })
+  .$name("knnDescentGpu");
 
 // WGSL template rather than `"use gpu"`, same reason as `knn.ts` (ADR-0003): the k-smallest
 // selection needs a local mutable array, which TGSL cannot express.
@@ -133,10 +136,13 @@ function getPipe(): Promise<Pipe> {
   pipeCache ??= (async () => {
     const device = await getDevice();
     const root = tgpu.initFromDevice({ device });
-    const { code, usedBindGroupLayouts } = tgpu.resolveWithContext({ template: TEMPLATE, externals: { ...layout.bound }, names: "strict" });
-    const module = device.createShaderModule({ code });
-    const pipeLayout = device.createPipelineLayout({ bindGroupLayouts: usedBindGroupLayouts.map((l) => root.unwrap(l)) });
-    const pipeline = device.createComputePipeline({ layout: pipeLayout, compute: { module, entryPoint: "localJoin" } });
+    const pipeline = typegpuComputePipeline(
+      device,
+      root,
+      tgpu.resolveWithContext({ template: TEMPLATE, externals: { ...layout.bound }, names: "strict" }),
+      "localJoin",
+      "knnDescentGpu",
+    );
     return { device, root, pipeline };
   })();
   return pipeCache;
@@ -149,13 +155,13 @@ function makeBuffers(root: Root, values: number, cands: number, rows: number, sl
     cands,
     rows,
     slots,
-    data: root.createBuffer(d.arrayOf(d.f32, values)).$usage("storage"),
-    candidates: root.createBuffer(d.arrayOf(d.i32, cands)).$usage("storage"),
-    counts: root.createBuffer(d.arrayOf(d.i32, rows)).$usage("storage"),
-    heapIdx: root.createBuffer(d.arrayOf(d.i32, slots)).$usage("storage"),
-    heapDist: root.createBuffer(d.arrayOf(d.f32, slots)).$usage("storage"),
-    changed: root.createBuffer(d.arrayOf(d.u32, rows)).$usage("storage"),
-    params: root.createBuffer(Params).$usage("uniform"),
+    data: root.createBuffer(d.arrayOf(d.f32, values)).$usage("storage").$name("knnDescentGpu:data"),
+    candidates: root.createBuffer(d.arrayOf(d.i32, cands)).$usage("storage").$name("knnDescentGpu:candidates"),
+    counts: root.createBuffer(d.arrayOf(d.i32, rows)).$usage("storage").$name("knnDescentGpu:counts"),
+    heapIdx: root.createBuffer(d.arrayOf(d.i32, slots)).$usage("storage").$name("knnDescentGpu:heapIdx"),
+    heapDist: root.createBuffer(d.arrayOf(d.f32, slots)).$usage("storage").$name("knnDescentGpu:heapDist"),
+    changed: root.createBuffer(d.arrayOf(d.u32, rows)).$usage("storage").$name("knnDescentGpu:changed"),
+    params: root.createBuffer(Params).$usage("uniform").$name("knnDescentGpu:params"),
   };
 }
 
@@ -227,13 +233,7 @@ export async function knnDescentGpu(data: ArrayLike<number>, n: number, dim: num
     for (let start = 0; start < n; start += rowsPerTile) {
       const count = Math.min(rowsPerTile, n - start);
       buf.params.write({ n, dim, k, width, rowOffset: start, _pad0: 0, _pad1: 0, _pad2: 0 });
-      const enc = device.createCommandEncoder();
-      const pass = enc.beginComputePass();
-      pass.setPipeline(pipeline);
-      pass.setBindGroup(0, bind);
-      pass.dispatchWorkgroups(Math.ceil(count / WG));
-      pass.end();
-      device.queue.submit([enc.finish()]);
+      submitDispatch(device, "knnDescentGpu", pipeline, bind, Math.ceil(count / WG));
       await device.queue.onSubmittedWorkDone();
     }
 
