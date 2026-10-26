@@ -35,10 +35,13 @@ interface NarrowPipe {
   pipeline: GPURenderPipeline;
   layout: GPUBindGroupLayout;
 }
-let pipeP: Promise<NarrowPipe> | undefined;
+/** Per device: a pipeline cannot be used on a device other than the one that made it. */
+const pipes = new WeakMap<GPUDevice, Promise<NarrowPipe>>();
 
 function getPipe(device: GPUDevice): Promise<NarrowPipe> {
-  pipeP ??= (async () => {
+  let pipe = pipes.get(device);
+  if (pipe) return pipe;
+  pipe = (async () => {
     const module = await compileShader(device, NARROW, "halfTexture:narrow");
     const layout = device.createBindGroupLayout({
       entries: [{ binding: 0, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "unfilterable-float" } }],
@@ -53,7 +56,8 @@ function getPipe(device: GPUDevice): Promise<NarrowPipe> {
       }),
     };
   })();
-  return pipeP;
+  pipes.set(device, pipe);
+  return pipe;
 }
 
 /**

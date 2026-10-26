@@ -1,0 +1,10 @@
+{
+  // The root's strictness, plus the workspace source condition: `intraspatial/...` resolves to the
+  // root's src/*.ts, so this typechecks against the engine as it is, not a stale dist/.
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "customConditions": ["@intraspatial/source"],
+    "types": ["node", "@webgpu/types"]
+  },
+  "include": ["src"]
+}

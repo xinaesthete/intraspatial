@@ -22,10 +22,11 @@
 import tgpu from "typegpu";
 import * as d from "typegpu/data";
 import * as std from "typegpu/std";
-import { compileShader, getDevice, sized } from "../device";
+import { getDevice, MAX_WORKGROUPS_PER_DIM, sized } from "../device";
 import { rawBindGroup } from "../graph/residentBind";
 import { narrowToHalf } from "../halfTexture";
 import { scratchTexture } from "../scratchTexture";
+import { splatDensityAtomic } from "./splatDensityAtomic";
 
 const SHADER = /* wgsl */ `
 struct Uni {
@@ -119,107 +120,124 @@ const depadFn = tgpu
   })
   .$name("splatDepad");
 
-interface Pipe {
-  device: GPUDevice;
-  root: ReturnType<typeof tgpu.initFromDevice>;
-  pipeline: GPURenderPipeline;
-}
-
 /** Formats a density field can be STORED in. Accumulation is always f32 — see
  *  `docs/field-precision.md` for the measurements that forced that, and `../halfTexture.ts`. */
 export type DensityFormat = "r32float" | "r16float";
 
-let pipeCache: Promise<Pipe> | undefined;
-
-function getPipe(): Promise<Pipe> {
-  pipeCache ??= (async () => {
-    const device = await getDevice();
-    const root = tgpu.initFromDevice({ device });
-    const module = device.createShaderModule({ code: SHADER });
-    const pipeline = device.createRenderPipeline({
-      layout: "auto",
-      vertex: { module, entryPoint: "vs" },
-      primitive: { topology: "triangle-strip" },
-      fragment: {
-        module,
-        entryPoint: "fs",
-        targets: [
-          {
-            format: "r32float",
-            // additive accumulation — the whole point of the render path
-            blend: {
-              color: { srcFactor: "one", dstFactor: "one", operation: "add" },
-              alpha: { srcFactor: "one", dstFactor: "one", operation: "add" },
-            },
-          },
-        ],
-      },
-    });
-    return { device, root, pipeline };
-  })();
-  return pipeCache;
+/**
+ * Everything this module makes on a device: the pipelines, and the pooled (grown, never destroyed)
+ * point buffer, uniform block, render target and row-padded staging buffer.
+ *
+ * Kept PER DEVICE rather than in module singletons, so a caller holding its own device — a deck
+ * layer drawing with whatever device its canvas was given — passes it in and gets state made on
+ * that device, however many devices a page has (several canvases, or a canvas remounted with a new
+ * device while the old one is never destroyed). Held weakly: a device nobody references takes its
+ * state with it.
+ */
+interface Gpu {
+  device: GPUDevice;
+  root: ReturnType<typeof tgpu.initFromDevice>;
+  /** The additive-blend render pipeline; absent on a device without `float32-blendable`, where
+   *  creating it would be a validation error (the resident path falls back to compute there). */
+  pipeline?: GPURenderPipeline;
+  depad?: Promise<{ pipeline: GPUComputePipeline; params: ReturnType<Gpu["root"]["createBuffer"]> }>;
+  ptsBuf?: GPUBuffer;
+  ptsCap: number;
+  uniBuf?: GPUBuffer;
+  target?: GPUTexture;
+  texW: number;
+  texH: number;
+  bytesPerRow: number;
+  // Readback goes through TypeGPU's `.read()` (the project's Dawn-on-Node-stable path) rather than a
+  // raw `mapAsync` on a pooled MAP_READ buffer, which crashed the vitest worker on teardown. We own
+  // the underlying GPUBuffer (so the raw `copyTextureToBuffer` can target it) and wrap it for `.read()`.
+  rbRaw?: GPUBuffer;
+  rbWrap?: ReturnType<Gpu["root"]["createBuffer"]>;
+  rbCap: number;
 }
 
-// Pooled, grown (never destroyed): the point buffer, and the render target +
-// readback buffer (keyed by W,H).
-let ptsBuf: GPUBuffer | undefined;
-let ptsCap = 0;
-let uniBuf: GPUBuffer | undefined;
-let target: GPUTexture | undefined;
-// Readback goes through TypeGPU's `.read()` (the project's Dawn-on-Node-stable
-// path) rather than a raw `mapAsync` on a pooled MAP_READ buffer, which crashed
-// the vitest worker on teardown. We own the underlying GPUBuffer (so the raw
-// `copyTextureToBuffer` can target it) and wrap it for `.read()`.
-let rbRaw: GPUBuffer | undefined;
-let rbWrap: ReturnType<ReturnType<typeof tgpu.initFromDevice>["createBuffer"]> | undefined;
-let rbCap = 0;
-let texW = 0;
-let texH = 0;
-let bytesPerRow = 0;
+const perDevice = new WeakMap<GPUDevice, Promise<Gpu>>();
+
+/** This module's state on `device`, or on the library's own device when none is given. */
+async function getGpu(device?: GPUDevice): Promise<Gpu> {
+  const dev = device ?? (await getDevice());
+  let gpu = perDevice.get(dev);
+  if (!gpu) {
+    gpu = Promise.resolve(buildGpu(dev));
+    perDevice.set(dev, gpu);
+  }
+  return gpu;
+}
+
+function buildGpu(device: GPUDevice): Gpu {
+  const root = tgpu.initFromDevice({ device });
+  const base = { device, root, ptsCap: 0, texW: 0, texH: 0, bytesPerRow: 0, rbCap: 0 };
+  if (!device.features.has("float32-blendable")) return base;
+  const module = device.createShaderModule({ code: SHADER });
+  const pipeline = device.createRenderPipeline({
+    layout: "auto",
+    vertex: { module, entryPoint: "vs" },
+    primitive: { topology: "triangle-strip" },
+    fragment: {
+      module,
+      entryPoint: "fs",
+      targets: [
+        {
+          format: "r32float",
+          // additive accumulation — the whole point of the render path
+          blend: {
+            color: { srcFactor: "one", dstFactor: "one", operation: "add" },
+            alpha: { srcFactor: "one", dstFactor: "one", operation: "add" },
+          },
+        },
+      ],
+    },
+  });
+  return { ...base, pipeline };
+}
 
 const align256 = (n: number) => Math.ceil(n / 256) * 256;
 
-// De-pad pipeline + its uniform block, built once per device (like the render pipeline above).
-let depadCache: Promise<{ pipeline: GPUComputePipeline; params: ReturnType<Pipe["root"]["createBuffer"]> }> | undefined;
-
-function getDepad(device: GPUDevice, root: Pipe["root"]) {
-  depadCache ??= (async () => {
+/** The de-pad pipeline and its uniform block, built once per device like the render pipeline. */
+function getDepad(g: Gpu) {
+  g.depad ??= (async () => {
     const { code, usedBindGroupLayouts } = tgpu.resolveWithContext([depadFn], { names: "strict" });
-    const module = device.createShaderModule({ code });
-    const layout = device.createPipelineLayout({ bindGroupLayouts: usedBindGroupLayouts.map((l) => root.unwrap(l)) });
-    const pipeline = device.createComputePipeline({ layout, compute: { module, entryPoint: "splatDepad" } });
-    return { pipeline, params: root.createBuffer(DepadParams).$usage("uniform") };
+    const module = g.device.createShaderModule({ code });
+    const layout = g.device.createPipelineLayout({ bindGroupLayouts: usedBindGroupLayouts.map((l) => g.root.unwrap(l)) });
+    const pipeline = g.device.createComputePipeline({ layout, compute: { module, entryPoint: "splatDepad" } });
+    return { pipeline, params: g.root.createBuffer(DepadParams).$usage("uniform") };
   })();
-  return depadCache;
+  return g.depad;
 }
 
-function ensurePts(device: GPUDevice, floats: number) {
-  if (ptsBuf && ptsCap >= floats) return ptsBuf;
-  ptsCap = Math.max(floats, ptsCap * 2, 3);
-  ptsBuf = device.createBuffer({ size: ptsCap * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
-  return ptsBuf;
+function ensurePts(g: Gpu, floats: number): GPUBuffer {
+  if (g.ptsBuf && g.ptsCap >= floats) return g.ptsBuf;
+  g.ptsCap = Math.max(floats, g.ptsCap * 2, 3);
+  g.ptsBuf = g.device.createBuffer({ size: g.ptsCap * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+  return g.ptsBuf;
 }
 
-function ensureReadback(device: GPUDevice, root: Pipe["root"], floats: number) {
-  if (rbWrap && rbCap >= floats) return;
-  rbCap = Math.max(floats, rbCap * 2, 1);
-  rbRaw = device.createBuffer({
-    size: rbCap * 4,
+function ensureReadback(g: Gpu, floats: number): void {
+  if (g.rbWrap && g.rbCap >= floats) return;
+  g.rbCap = Math.max(floats, g.rbCap * 2, 1);
+  g.rbRaw = g.device.createBuffer({
+    size: g.rbCap * 4,
     usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
   });
-  rbWrap = root.createBuffer(d.arrayOf(d.f32, rbCap), rbRaw);
+  g.rbWrap = g.root.createBuffer(d.arrayOf(d.f32, g.rbCap), g.rbRaw);
 }
 
-function ensureTarget(device: GPUDevice, w: number, h: number) {
-  if (target && texW === w && texH === h) return;
-  texW = w;
-  texH = h;
-  bytesPerRow = align256(w * 4); // r32float = 4 bytes/texel; rows must be 256-aligned
-  target = device.createTexture({
+function ensureTarget(g: Gpu, w: number, h: number): GPUTexture {
+  if (g.target && g.texW === w && g.texH === h) return g.target;
+  g.texW = w;
+  g.texH = h;
+  g.bytesPerRow = align256(w * 4); // r32float = 4 bytes/texel; rows must be 256-aligned
+  g.target = g.device.createTexture({
     size: { width: w, height: h },
     format: "r32float",
     usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
   });
+  return g.target;
 }
 
 export interface SplatOptions {
@@ -256,7 +274,8 @@ export async function splatDensityGpu(xs: ArrayLike<number>, ys: ArrayLike<numbe
   const radiusSigma = opts.radiusSigma ?? 4;
   const weights = opts.weights;
 
-  const { device, root, pipeline } = await getPipe();
+  const g = await getGpu();
+  const { device } = g;
 
   let bbox = opts.bbox;
   if (!bbox) {
@@ -279,7 +298,7 @@ export async function splatDensityGpu(xs: ArrayLike<number>, ys: ArrayLike<numbe
   const spanX = maxX - minX || 1;
   const spanY = maxY - minY || 1;
 
-  const pbuf = ensurePts(device, 3 * n);
+  const pbuf = ensurePts(g, 3 * n);
   const flat = new Float32Array(3 * Math.max(n, 1));
   for (let i = 0; i < n; i++) {
     flat[3 * i] = xs[i]!;
@@ -288,19 +307,9 @@ export async function splatDensityGpu(xs: ArrayLike<number>, ys: ArrayLike<numbe
   }
   device.queue.writeBuffer(pbuf, 0, flat);
 
-  const rowFloats = renderToStaging(
-    device,
-    root,
-    pipeline,
-    { buffer: pbuf, n, stride: 3, defaultWeight: 1 },
-    w,
-    h,
-    sigma,
-    radiusSigma,
-    bbox,
-  );
+  const rowFloats = renderToStaging(g, { buffer: pbuf, n, stride: 3, defaultWeight: 1 }, w, h, sigma, radiusSigma, bbox);
 
-  const padded = (await rbWrap!.read()) as ArrayLike<number>; // 256-byte-padded rows
+  const padded = (await g.rbWrap!.read()) as ArrayLike<number>; // 256-byte-padded rows
   const data = new Float32Array(w * h);
   for (let row = 0; row < h; row++) {
     const base = row * rowFloats;
@@ -323,9 +332,7 @@ interface PointSource {
  *  staging buffer. Shared by both paths — they differ only in where the points come from and
  *  what happens to the staging buffer afterwards. Returns floats per padded row. */
 function renderToStaging(
-  device: GPUDevice,
-  root: Pipe["root"],
-  pipeline: GPURenderPipeline,
+  g: Gpu,
   pts: PointSource,
   w: number,
   h: number,
@@ -337,14 +344,14 @@ function renderToStaging(
   const spanX = maxX - minX || 1;
   const spanY = maxY - minY || 1;
 
-  ensureTarget(device, w, h);
-  const rowFloats = bytesPerRow / 4;
-  ensureReadback(device, root, rowFloats * h);
+  const target = ensureTarget(g, w, h);
+  const rowFloats = g.bytesPerRow / 4;
+  ensureReadback(g, rowFloats * h);
 
-  const enc = device.createCommandEncoder();
-  renderPoints(device, enc, pipeline, target!.createView(), pts, sigma, radiusSigma, bbox);
-  enc.copyTextureToBuffer({ texture: target! }, { buffer: rbRaw!, bytesPerRow }, { width: w, height: h });
-  device.queue.submit([enc.finish()]);
+  const enc = g.device.createCommandEncoder();
+  renderPoints(g, enc, target.createView(), pts, sigma, radiusSigma, bbox);
+  enc.copyTextureToBuffer({ texture: target }, { buffer: g.rbRaw!, bytesPerRow: g.bytesPerRow }, { width: w, height: h });
+  g.device.queue.submit([enc.finish()]);
 
   return rowFloats;
 }
@@ -353,9 +360,8 @@ function renderToStaging(
  *  the texture path can target a caller-owned texture and stop, while the host path follows it
  *  with a copy into staging. */
 function renderPoints(
-  device: GPUDevice,
+  g: Gpu,
   enc: GPUCommandEncoder,
-  pipeline: GPURenderPipeline,
   view: GPUTextureView,
   pts: PointSource,
   sigma: number,
@@ -378,8 +384,15 @@ function renderPoints(
     pts.stride,
     pts.defaultWeight,
   ]);
-  uniBuf ??= device.createBuffer({ size: uni.byteLength, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
-  device.queue.writeBuffer(uniBuf, 0, uni);
+  const { device, pipeline } = g;
+  if (!pipeline) {
+    throw new Error(
+      "splatDensity: this device lacks 'float32-blendable', which the render path needs " +
+        "(splatDensityResident falls back to a compute splat; the host and texture paths do not)",
+    );
+  }
+  g.uniBuf ??= device.createBuffer({ size: uni.byteLength, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+  device.queue.writeBuffer(g.uniBuf, 0, uni);
   const pass = enc.beginRenderPass({
     colorAttachments: [{ view, clearValue: { r: 0, g: 0, b: 0, a: 0 }, loadOp: "clear", storeOp: "store" }],
   });
@@ -390,7 +403,7 @@ function renderPoints(
     device.createBindGroup({
       layout: pipeline.getBindGroupLayout(0),
       entries: [
-        { binding: 0, resource: { buffer: uniBuf } },
+        { binding: 0, resource: { buffer: g.uniBuf } },
         // n * stride floats, not the whole pooled buffer. `ensurePts` doubles on growth, so
         // binding the buffer whole crosses maxStorageBufferBindingSize at ~5.6M points once a
         // larger call has been through — and past it the draw silently splats nothing. This is
@@ -412,6 +425,19 @@ export interface ResidentSplatOptions {
    *  back, which is the transfer this whole path exists to avoid. Callers that want the
    *  points' own bounds compute them host-side (or, eventually, with a GPU reduction). */
   bbox: [number, number, number, number];
+  /** Floats per point in `points`: 2 = the graph's packed `[x, y, ...]`, every point weight 1
+   *  (the default); 3 = `[x, y, weight, ...]`. Honoured by `splatDensityResident`. */
+  stride?: 2 | 3;
+  /** The device `points` and the output live on. Default: the library's own (`getDevice()`). A
+   *  renderer with its own device — a deck layer — passes it, and needs no `adoptDevice`. */
+  device?: GPUDevice;
+  /** How `splatDensityResident` accumulates. `"blend"`: additive blending into r32float (fast; needs
+   *  `float32-blendable`). `"atomic"`: an exact fixed-point compute scatter (`splatDensityAtomic.ts`).
+   *  Default: blend where the device can, atomic where it cannot. */
+  accumulate?: "blend" | "atomic";
+  /** The largest point weight (default 1). Only the atomic path uses it, to set its fixed-point
+   *  scale; a weight above it is clamped there. */
+  maxWeight?: number;
 }
 
 /** Tier-2 form, TEXTURE output (ADR-0017): splat a GPU-resident point cloud straight into a
@@ -425,7 +451,8 @@ export async function splatDensityToTexture(points: GPUBuffer, n: number, target
   const { width: w, height: h, sigma } = opts;
   if (w <= 0 || h <= 0) throw new Error("splatDensity: width/height must be > 0");
   if (sigma <= 0) throw new Error("splatDensity: sigma must be > 0");
-  const { device, pipeline } = await getPipe();
+  const g = await getGpu(opts.device);
+  const { device } = g;
 
   // ACCUMULATE IN f32, ALWAYS — even when the field is stored as f16.
   //
@@ -441,17 +468,10 @@ export async function splatDensityToTexture(points: GPUBuffer, n: number, target
   const accum = half ? ensureAccum(device, w, h) : target;
 
   const enc = device.createCommandEncoder();
-  renderPoints(
-    device,
-    enc,
-    pipeline,
-    accum.createView(),
-    { buffer: points, n, stride: 2, defaultWeight: 1 },
-    sigma,
-    opts.radiusSigma ?? 4,
-    opts.bbox,
-    { width: w, height: h },
-  );
+  renderPoints(g, enc, accum.createView(), { buffer: points, n, stride: 2, defaultWeight: 1 }, sigma, opts.radiusSigma ?? 4, opts.bbox, {
+    width: w,
+    height: h,
+  });
   if (half) await narrowToHalf(device, enc, accum, target, w, h);
   device.queue.submit([enc.finish()]);
 }
@@ -474,36 +494,64 @@ function ensureAccum(device: GPUDevice, w: number, h: number): GPUTexture {
 /** Tier-2 form (ADR-0017): splat a GPU-resident point cloud into a GPU-resident density grid,
  *  with no host transfer in either direction.
  *
- *  `points` is the graph's packed `[x0,y0,x1,y1,...]` points value bound directly — no host
- *  repacking — and every point carries weight 1. `dst` is a caller-owned (leased) buffer of at
- *  least `width*height` f32. */
+ *  `points` is bound directly — no host repacking: the graph's packed `[x0,y0,x1,y1,...]` points
+ *  value (every point weight 1), or `[x, y, weight, ...]` with `stride: 3`. `dst` is a
+ *  caller-owned (leased) buffer of at least `width*height` f32. */
 export async function splatDensityResident(points: GPUBuffer, n: number, dst: GPUBuffer, opts: ResidentSplatOptions): Promise<void> {
   const { width: w, height: h, sigma } = opts;
   if (w <= 0 || h <= 0) throw new Error("splatDensity: width/height must be > 0");
   if (sigma <= 0) throw new Error("splatDensity: sigma must be > 0");
+  const dev = opts.device ?? (await getDevice());
+  if (opts.accumulate === "atomic" || !dev.features.has("float32-blendable")) {
+    // No float blending on this device (Firefox's WebGPU): the compute path, same output layout.
+    await splatDensityAtomic(dev, points, n, dst, {
+      width: w,
+      height: h,
+      sigma,
+      radiusSigma: opts.radiusSigma ?? 4,
+      bbox: opts.bbox,
+      stride: opts.stride ?? 2,
+      maxWeight: opts.maxWeight ?? 1,
+    });
+    return;
+  }
+  // The de-pad dispatch is 1-D, and past the per-dimension workgroup cap WebGPU drops the dispatch
+  // without an error — the caller would get an all-zero field.
+  if (Math.ceil((w * h) / DEPAD_WG) > MAX_WORKGROUPS_PER_DIM) {
+    throw new Error(`splatDensity: ${w}×${h} exceeds the resident path's ${MAX_WORKGROUPS_PER_DIM * DEPAD_WG} cells`);
+  }
   const radiusSigma = opts.radiusSigma ?? 4;
 
-  const { device, root, pipeline } = await getPipe();
-  const rowFloats = renderToStaging(
-    device,
-    root,
-    pipeline,
-    { buffer: points, n, stride: 2, defaultWeight: 1 },
-    w,
-    h,
+  // Every await happens BEFORE any encoding. The render target and the staging buffer are shared by
+  // every call on a device, so the splat, its copy into staging and the de-pad out of staging must reach the
+  // queue in one submit: with an await between them, a second caller (two layers updating in the
+  // same frame) would splat into the shared staging buffer before the first had de-padded it, and
+  // the first caller would get the second one's field. Nothing would look wrong but the picture.
+  const g = await getGpu(dev);
+  const depad = await getDepad(g);
+  const { device, root } = g;
+
+  const target = ensureTarget(g, w, h);
+  const rowFloats = g.bytesPerRow / 4;
+  ensureReadback(g, rowFloats * h);
+  // queue.writeBuffer lands before the submit below, and after any earlier caller's submit.
+  depad.params.write({ w, h, rowFloats });
+
+  const enc = device.createCommandEncoder();
+  renderPoints(
+    g,
+    enc,
+    target.createView(),
+    { buffer: points, n, stride: opts.stride ?? 2, defaultWeight: 1 },
     sigma,
     radiusSigma,
     opts.bbox,
   );
-
+  enc.copyTextureToBuffer({ texture: target }, { buffer: g.rbRaw!, bytesPerRow: g.bytesPerRow }, { width: w, height: h });
   // Strip the 256-byte row padding on-device, straight into the caller's buffer.
-  const depad = await getDepad(device, root);
-  depad.params.write({ w, h, rowFloats });
-  const bind = rawBindGroup(device, root, depadLayout, [depad.params, rbRaw!, dst]);
-  const enc = device.createCommandEncoder();
   const pass = enc.beginComputePass();
   pass.setPipeline(depad.pipeline);
-  pass.setBindGroup(0, bind);
+  pass.setBindGroup(0, rawBindGroup(device, root, depadLayout, [depad.params, g.rbRaw!, dst]));
   pass.dispatchWorkgroups(Math.ceil((w * h) / DEPAD_WG));
   pass.end();
   device.queue.submit([enc.finish()]);

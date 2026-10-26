@@ -29,6 +29,8 @@ export interface ScratchDesc {
 }
 
 interface Slot {
+  /** Textures cannot cross devices: a slot made on another device never fits. */
+  device: GPUDevice;
   tex: GPUTexture;
   width: number;
   height: number;
@@ -40,7 +42,8 @@ const slots = new Map<string, Slot>();
 
 const bytesPerTexel = (format: GPUTextureFormat): number => (format === "r16float" ? 2 : format === "rgba16float" ? 8 : 4);
 
-function fits(s: Slot, d: ScratchDesc): boolean {
+function fits(s: Slot, device: GPUDevice, d: ScratchDesc): boolean {
+  if (s.device !== device) return false;
   if (s.format !== d.format || s.usage !== d.usage) return false;
   if (s.width < d.width || s.height < d.height) return false;
   return s.width * s.height <= 2 * d.width * d.height;
@@ -51,14 +54,14 @@ function fits(s: Slot, d: ScratchDesc): boolean {
  *  do not assume its extent is the region you asked for. */
 export function scratchTexture(device: GPUDevice, key: string, d: ScratchDesc): GPUTexture {
   const got = slots.get(key);
-  if (got && fits(got, d)) return got.tex;
+  if (got && fits(got, device, d)) return got.tex;
   got?.tex.destroy();
   const tex = device.createTexture({
     size: { width: d.width, height: d.height },
     format: d.format,
     usage: d.usage,
   });
-  slots.set(key, { tex, width: d.width, height: d.height, format: d.format, usage: d.usage });
+  slots.set(key, { device, tex, width: d.width, height: d.height, format: d.format, usage: d.usage });
   return tex;
 }
 

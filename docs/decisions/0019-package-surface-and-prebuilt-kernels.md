@@ -61,3 +61,19 @@ package could ship them at all.
 - Anything exported from `src/` is now API. The `./*` wildcard is deliberate openness at 0.x;
   tighten it when the surface stabilises.
 - The viewer layer in `playground/` remains the next structural move (design note, sequencing §2).
+
+## Amendment (2026-10-23): the first scoped package, and developing against source
+
+- **`@intraspatial/deck`** (`packages/deck`) is the first package under the reserved scope. It earns
+  its boundary under decision 1's test: it forces deck.gl and luma.gl (peers) on its consumers, which
+  `intraspatial` must not. It replaces the planned `viewer-deck`. Its first layer, `DensityLayer`,
+  is the WebGPU density backend MDV wants. The root package stays where it is for now; moving it to
+  `packages/intraspatial` is a later, purely mechanical step.
+- **The `@intraspatial/source` export condition.** Every `exports` entry gains a first condition
+  pointing at `src/*.ts`. Workspace apps enable it (Vite `resolve.conditions`, tsconfig
+  `customConditions`), so they run the engine from source, with their own TGSL plugin, and never a
+  stale or unbuilt `dist/`. Published consumers never set it and get `dist/`, as before. The name is
+  namespaced because a bare `source` is set by some tools and would resolve to files the tarball
+  does not ship.
+- A package's own `dist/` is built against `intraspatial`'s *published* types (no source condition),
+  so a type that only resolves from source fails at build time rather than in a consumer.

@@ -13,7 +13,8 @@
     "forceConsistentCasingInFileNames": true,
     "noUncheckedIndexedAccess": true,
     "allowImportingTsExtensions": true,
-    "resolveJsonModule": true
+    "resolveJsonModule": true,
+    "customConditions": ["@intraspatial/source"]
   },
   "include": ["src", "vite.config.ts", "../src/gpu/graph"]
 }

@@ -13,7 +13,7 @@ export default defineConfig({
     maxWorkers: 1,
     isolate: false,
     testTimeout: 30_000,
-    include: ["test/**/*.test.ts", "src/**/*.test.ts"],
+    include: ["test/**/*.test.ts", "src/**/*.test.ts", "packages/*/src/**/*.test.ts"],
     exclude: ["**/node_modules/**", "**/dist/**", "**/*.gpu.test.ts"],
   },
 });
