@@ -38,7 +38,7 @@ export const morphologyOp: OpType = {
     const src = inField.buffer;
     if (!src) throw new Error("morphology: resident op received a non-resident input");
     const dst = await ctx.backend.lease(width * height * 4);
-    await morphologyResident(src.buffer, dst.buffer, width, height, params.radius as number, opOf(params));
+    await morphologyResident(src.buffer, dst.buffer, width, height, params.radius as number, opOf(params), await ctx.backend.getDevice());
     return [{ shape: { kind: "grid", width, height }, dtype: "f32", buffer: dst }];
   },
   cpuGolden(inputs, params) {

@@ -23,7 +23,7 @@
 import tgpu from "typegpu";
 import * as d from "typegpu/data";
 import * as std from "typegpu/std";
-import { getDevice, sized, writeView } from "../device";
+import { deviceScoped, sized, writeView } from "../device";
 import { type GridIndexCtx, getGridIndexCtx } from "./gridIndex";
 import { cellCoord, cellRange, encodeQueryIndex, type IndexedQueryOptions, LATTICE_BYTES, Lattice, StartArray } from "./gridIndexQuery";
 
@@ -111,25 +111,20 @@ interface Pipe {
   pipelineIdx: GPUComputePipeline;
   indexCtx: GridIndexCtx;
 }
-let pipeCache: Promise<Pipe> | undefined;
-
-function getPipe(): Promise<Pipe> {
-  pipeCache ??= (async () => {
-    const device = await getDevice();
-    const root = tgpu.initFromDevice({ device });
-    const build = (fn: typeof nnFn, entryPoint: string) => {
-      const { code, usedBindGroupLayouts } = tgpu.resolveWithContext([fn], { names: "strict" });
-      const module = device.createShaderModule({ code });
-      const pipeLayout = device.createPipelineLayout({
-        bindGroupLayouts: usedBindGroupLayouts.map((l) => root.unwrap(l)),
-      });
-      return device.createComputePipeline({ layout: pipeLayout, compute: { module, entryPoint } });
-    };
-    const indexCtx = await getGridIndexCtx();
-    return { root, device, pipeline: build(nnFn, "nnDist"), pipelineIdx: build(nnIdxFn, "nnDistIdx"), indexCtx };
-  })();
-  return pipeCache;
-}
+/** Per device (default: the library's own) — `deviceScoped` in `../device` says why. */
+const getPipe = deviceScoped(async (device: GPUDevice): Promise<Pipe> => {
+  const root = tgpu.initFromDevice({ device });
+  const build = (fn: typeof nnFn, entryPoint: string) => {
+    const { code, usedBindGroupLayouts } = tgpu.resolveWithContext([fn], { names: "strict" });
+    const module = device.createShaderModule({ code });
+    const pipeLayout = device.createPipelineLayout({
+      bindGroupLayouts: usedBindGroupLayouts.map((l) => root.unwrap(l)),
+    });
+    return device.createComputePipeline({ layout: pipeLayout, compute: { module, entryPoint } });
+  };
+  const indexCtx = await getGridIndexCtx(device);
+  return { root, device, pipeline: build(nnFn, "nnDist"), pipelineIdx: build(nnIdxFn, "nnDistIdx"), indexCtx };
+});
 
 // Pooled buffers, grown (never destroyed) across calls.
 type Root = Pipe["root"];
@@ -141,10 +136,13 @@ function makePool(root: Root, cap: number) {
     params: root.createBuffer(Params).$usage("uniform"),
   };
 }
-let pool: ReturnType<typeof makePool> | undefined;
+/** Per root, so per device: a pool's buffers belong to the device its root wraps. */
+const pools = new WeakMap<Root, ReturnType<typeof makePool>>();
 function ensurePool(root: Root, n: number) {
+  let pool = pools.get(root);
   if (pool && pool.cap >= n) return pool;
   pool = makePool(root, Math.max(n, pool?.cap ?? 0, 1));
+  pools.set(root, pool);
   return pool;
 }
 
@@ -164,7 +162,7 @@ export async function nearestNeighborDistancesGpu(
   if (ys.length !== n) throw new Error("nnDistance: xs and ys length mismatch");
   if (n < 2) throw new Error("nnDistance: need at least 2 points");
 
-  const { root, device, pipeline, pipelineIdx, indexCtx } = await getPipe();
+  const { root, device, pipeline, pipelineIdx, indexCtx } = await getPipe(opts.device);
   const p = ensurePool(root, n);
 
   const flat = new Float32Array(2 * n);

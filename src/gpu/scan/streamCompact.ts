@@ -52,7 +52,7 @@
 // 4 bytes of output per row whether or not it passes — and it is right here because nothing
 // crosses to the host: the worst case costs device memory, not transfer. Same kernels, same
 // bind-group layout; only the sequencing differs.
-import { checkBindingSize, compileShader, sized } from "../device";
+import { checkBindingSize, compileShader, deviceScoped, sized } from "../device";
 import { dispatchGrid, encodeScan, ensureBuf, getScanCtx, MAX_WORKGROUPS_PER_DIM, readBack, type ScanCtx } from "./prefixSum";
 
 /** One thread per row in the predicate and scatter passes. Exported so a test can state
@@ -78,6 +78,8 @@ export interface CompactOptions {
   readonly value?: number;
   /** Test seam — see `ScanOptions.maxWorkgroupsPerDim` in `prefixSum.ts`. */
   readonly maxWorkgroupsPerDim?: number;
+  /** The device to compact on. Default: the library's own (`getDevice()`). */
+  readonly device?: GPUDevice;
 }
 
 export interface CompactResult {
@@ -173,32 +175,27 @@ export interface CompactCtx {
   predicate: GPUComputePipeline;
   scatter: GPUComputePipeline;
 }
-let ctxCache: Promise<CompactCtx> | undefined;
-
-/** Pipelines and layout, built once. `encodeCompact` takes this as an argument so the one
- *  async step happens before the caller starts recording. */
-export function getCompactCtx(): Promise<CompactCtx> {
-  ctxCache ??= (async () => {
-    const scan = await getScanCtx();
-    const { device } = scan;
-    const module = await compileShader(device, SHADER, "streamCompact");
-    // 4 storage bindings. Nine would make the layout invalid and every dispatch a silent
-    // no-op — the failure that reads as a maths bug.
-    const layout = device.createBindGroupLayout({
-      entries: [
-        { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: "uniform" } },
-        { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
-        { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
-        { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
-        { binding: 4, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
-      ],
-    });
-    const pipelineLayout = device.createPipelineLayout({ bindGroupLayouts: [layout] });
-    const mk = (entryPoint: string) => device.createComputePipeline({ layout: pipelineLayout, compute: { module, entryPoint } });
-    return { scan, layout, predicate: mk("predicate"), scatter: mk("scatter") };
-  })();
-  return ctxCache;
-}
+/** Pipelines and layout, built once per device (default: the library's own) on top of that
+ *  device's scan context. `encodeCompact` takes this as an argument so the one async step happens
+ *  before the caller starts recording. */
+export const getCompactCtx = deviceScoped(async (device: GPUDevice): Promise<CompactCtx> => {
+  const scan = await getScanCtx(device);
+  const module = await compileShader(device, SHADER, "streamCompact");
+  // 4 storage bindings. Nine would make the layout invalid and every dispatch a silent
+  // no-op — the failure that reads as a maths bug.
+  const layout = device.createBindGroupLayout({
+    entries: [
+      { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: "uniform" } },
+      { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
+      { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
+      { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
+      { binding: 4, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
+    ],
+  });
+  const pipelineLayout = device.createPipelineLayout({ bindGroupLayouts: [layout] });
+  const mk = (entryPoint: string) => device.createComputePipeline({ layout: pipelineLayout, compute: { module, entryPoint } });
+  return { scan, layout, predicate: mk("predicate"), scatter: mk("scatter") };
+});
 
 /** The encoding a typed-array mask carries. */
 export function maskEncodingOf(mask: MaskArray): MaskEncoding {
@@ -352,7 +349,7 @@ export async function streamCompactGpu(mask: MaskArray, opts: CompactOptions = {
   const n = mask.length;
   if (n === 0) return { indices: new Uint32Array(0), count: 0 };
 
-  const ctx = await getCompactCtx();
+  const ctx = await getCompactCtx(opts.device);
   const { device } = ctx.scan;
   // Before anything is allocated: the flags and offsets buffers are 4 bytes per row, and
   // over the binding limit every dispatch below silently does nothing.

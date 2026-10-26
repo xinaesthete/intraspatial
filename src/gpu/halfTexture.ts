@@ -60,29 +60,32 @@ function getPipe(device: GPUDevice): Promise<NarrowPipe> {
   return pipe;
 }
 
+/** Records a copy of the top-left `w × h` of an f32 texture into an `r16float` one. */
+export type HalfNarrower = (enc: GPUCommandEncoder, src: GPUTexture, dst: GPUTexture, w: number, h: number) => void;
+
 /**
- * Record a copy of the top-left `w × h` of an f32 texture into an `r16float` one.
+ * The narrowing pass on `device`, ready to record with no further await.
+ *
+ * Fetch it BEFORE taking any scratch texture. Both sources are scratch textures, and an await
+ * between taking one and submitting is where another call can destroy it (`scratchTexture.ts`).
+ * Recording is synchronous for that reason. It used to be `await narrowToHalf(...)` mid-encode, and
+ * that await is what lost three of four concurrent f16 splats.
  *
  * The source may be larger than the region — both callers keep a grown-and-reused scratch — so the
  * region is taken by position rather than by scaling.
  */
-export async function narrowToHalf(
-  device: GPUDevice,
-  enc: GPUCommandEncoder,
-  src: GPUTexture,
-  dst: GPUTexture,
-  w: number,
-  h: number,
-): Promise<void> {
+export async function halfNarrower(device: GPUDevice): Promise<HalfNarrower> {
   const { pipeline, layout } = await getPipe(device);
-  const pass = enc.beginRenderPass({
-    colorAttachments: [{ view: dst.createView(), loadOp: "clear", storeOp: "store", clearValue: { r: 0, g: 0, b: 0, a: 0 } }],
-  });
-  pass.setPipeline(pipeline);
-  pass.setBindGroup(0, device.createBindGroup({ layout, entries: [{ binding: 0, resource: src.createView() }] }));
-  pass.setViewport(0, 0, w, h, 0, 1);
-  pass.draw(3);
-  pass.end();
+  return (enc, src, dst, w, h) => {
+    const pass = enc.beginRenderPass({
+      colorAttachments: [{ view: dst.createView(), loadOp: "clear", storeOp: "store", clearValue: { r: 0, g: 0, b: 0, a: 0 } }],
+    });
+    pass.setPipeline(pipeline);
+    pass.setBindGroup(0, device.createBindGroup({ layout, entries: [{ binding: 0, resource: src.createView() }] }));
+    pass.setViewport(0, 0, w, h, 0, 1);
+    pass.draw(3);
+    pass.end();
+  };
 }
 
 /** The `r16float` target a narrowing pass writes into — see `scratchTexture.ts` for the reuse

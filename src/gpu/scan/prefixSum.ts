@@ -40,7 +40,7 @@
 //     rows) is a validation error, i.e. silence. Every binding here carries an explicit
 //     `size` and `checkBindingSize` throws above the limit — see the note on the bind
 //     groups for the wrong answer that cost.
-import { checkBindingSize, compileShader, dispatchGrid, getDevice, MAX_WORKGROUPS_PER_DIM, sized } from "../device";
+import { checkBindingSize, compileShader, deviceScoped, dispatchGrid, MAX_WORKGROUPS_PER_DIM, perDevice, sized } from "../device";
 
 // Re-exported: they live in `device.ts` because every kernel with a per-element dispatch needs
 // them, but this module and its tests were their first caller.
@@ -62,6 +62,8 @@ export interface ScanOptions {
    *  `maxComputeWorkgroupsPerDimension` is this, so the 2-D fold can be exercised without
    *  allocating the ~67M elements it takes to cross the real limit. */
   readonly maxWorkgroupsPerDim?: number;
+  /** The device to scan on. Default: the library's own (`getDevice()`). */
+  readonly device?: GPUDevice;
 }
 
 // ---------------------------------------------------------------------------------------
@@ -166,33 +168,30 @@ export interface ScanCtx {
   pipes: Record<ScanElement, ScanPipes>;
 }
 
-let ctxCache: Promise<ScanCtx> | undefined;
-
-export function getScanCtx(): Promise<ScanCtx> {
-  ctxCache ??= (async () => {
-    const device = await getDevice();
-    // One explicit layout shared by both entry points and both element types. `layout:
-    // "auto"` derives a different layout per entry point — only the bindings that entry
-    // point happens to touch — so no single bind group could satisfy `addOffsets`, which
-    // never mentions `blockSums`.
-    const layout = device.createBindGroupLayout({
-      entries: [
-        { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: "uniform" } },
-        { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
-        { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
-        { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
-      ],
-    });
-    const pipelineLayout = device.createPipelineLayout({ bindGroupLayouts: [layout] });
-    const build = async (elem: ScanElement): Promise<ScanPipes> => {
-      const module = await compileShader(device, scanShader(elem), `prefixSum:${elem}`);
-      const mk = (entryPoint: string) => device.createComputePipeline({ layout: pipelineLayout, compute: { module, entryPoint } });
-      return { scanBlocks: mk("scanBlocks"), addOffsets: mk("addOffsets") };
-    };
-    return { device, layout, pipes: { u32: await build("u32"), f32: await build("f32") } };
-  })();
-  return ctxCache;
-}
+/** The scan pipelines on `device` (default: the library's own). Per device, because the grid index,
+ *  stream compaction and every index-walking kernel build on this context and take its `device` as
+ *  theirs — so this is where a caller's device choice propagates from (`perDevice` in `../device`). */
+export const getScanCtx = deviceScoped(async (device: GPUDevice): Promise<ScanCtx> => {
+  // One explicit layout shared by both entry points and both element types. `layout:
+  // "auto"` derives a different layout per entry point — only the bindings that entry
+  // point happens to touch — so no single bind group could satisfy `addOffsets`, which
+  // never mentions `blockSums`.
+  const layout = device.createBindGroupLayout({
+    entries: [
+      { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: "uniform" } },
+      { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
+      { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
+      { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
+    ],
+  });
+  const pipelineLayout = device.createPipelineLayout({ bindGroupLayouts: [layout] });
+  const build = async (elem: ScanElement): Promise<ScanPipes> => {
+    const module = await compileShader(device, scanShader(elem), `prefixSum:${elem}`);
+    const mk = (entryPoint: string) => device.createComputePipeline({ layout: pipelineLayout, compute: { module, entryPoint } });
+    return { scanBlocks: mk("scanBlocks"), addOffsets: mk("addOffsets") };
+  };
+  return { device, layout, pipes: { u32: await build("u32"), f32: await build("f32") } };
+});
 
 // ---------------------------------------------------------------------------------------
 // Pooled buffers
@@ -200,10 +199,14 @@ export function getScanCtx(): Promise<ScanCtx> {
 
 /** Grow-only, never destroyed — `.destroy()` on a pooled buffer is what ADR-0017's
  *  double-free was about, and the pool outlives every call by design. Shared with
- *  `streamCompact.ts`, which is why it is exported. */
-const pool = new Map<string, { buf: GPUBuffer; cap: number }>();
+ *  `streamCompact.ts`, which is why it is exported.
+ *
+ *  Keyed by device, then by name: the names are fixed strings (`"gridIndex:counts"`), so a pool
+ *  keyed by name alone would hand a buffer made on one device to a caller on another. */
+const pools = perDevice(() => new Map<string, { buf: GPUBuffer; cap: number }>());
 
 export function ensureBuf(device: GPUDevice, key: string, bytes: number, usage: number): GPUBuffer {
+  const pool = pools(device);
   const got = pool.get(key);
   if (got && got.cap >= bytes) return got.buf;
   const cap = Math.max(bytes, (got?.cap ?? 0) * 2, 256);
@@ -378,7 +381,7 @@ export async function exclusiveScanGpu(
     return { scan: elem === "f32" ? new Float32Array(0) : new Uint32Array(0), total: 0 };
   }
 
-  const ctx = await getScanCtx();
+  const ctx = await getScanCtx(opts.device);
   const { device } = ctx;
   const input = ensureBuf(device, `scan:${elem}:in`, n * 4, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST);
   device.queue.writeBuffer(input, 0, values.buffer, values.byteOffset, n * 4);

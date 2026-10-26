@@ -70,6 +70,35 @@ export function getDevice(): Promise<GPUDevice> {
   return devicePromise;
 }
 
+/**
+ * A per-device memo: `make(device)` runs once per device, and its result is kept for that device.
+ *
+ * This is what a kernel module's cache wants instead of a module singleton. Everything it caches —
+ * pipelines, a TypeGPU root, pooled buffers, staging — belongs to the device that made it and is
+ * invalid on any other, yet a page can hold several live devices: deck.gl 9.4 never destroys a
+ * finalised Deck's device, so a remounted canvas brings a second one, and several Decks bring one
+ * each. `getDevice()` / `adoptDevice` model exactly one per page, so a caller holding its own device
+ * (a deck layer, or the graph executor over `interop/adoptDevice`'s backend) must be able to say
+ * which one it means. Held weakly: a device nobody references takes its state with it.
+ */
+export function perDevice<T>(make: (device: GPUDevice) => T): (device: GPUDevice) => T {
+  const cache = new WeakMap<GPUDevice, T>();
+  return (device) => {
+    if (cache.has(device)) return cache.get(device)!;
+    const made = make(device);
+    cache.set(device, made);
+    return made;
+  };
+}
+
+/** `perDevice` for async state, where the device is optional: omitted, it is the library's own
+ *  (`getDevice()`), which is every existing caller's behaviour. The promise is cached, so concurrent
+ *  first callers share one build. */
+export function deviceScoped<T>(make: (device: GPUDevice) => Promise<T>): (device?: GPUDevice) => Promise<T> {
+  const get = perDevice(make);
+  return async (device) => get(device ?? (await getDevice()));
+}
+
 /** WebGPU validation errors are NOT exceptions and do not reach the console on their own: an
  *  invalid pipeline or bind group simply produces nothing. That failure mode is a blank canvas
  *  with no diagnostic, which is the worst kind to debug, so surface them. */
@@ -257,9 +286,11 @@ export function writeView(queue: GPUQueue, dst: GPUBuffer, view: ArrayBufferView
 // Raw readback
 // ---------------------------------------------------------------------------------------
 
-/** Grow-only staging buffers for `readBackBytes`, keyed by caller. Never destroyed — mid-process
- *  `.destroy()` is what segfaults Dawn-on-Node's teardown (ADR-0002/0003). */
-const stagingPool = new Map<string, { buf: GPUBuffer; cap: number }>();
+/** Grow-only staging buffers for `readBackBytes`, keyed by caller WITHIN a device: a key alone would
+ *  hand one device's staging buffer to another, and the copy into it would fail validation (which
+ *  is silence — see `checkBindingSize`). Never destroyed — mid-process `.destroy()` is what
+ *  segfaults Dawn-on-Node's teardown (ADR-0002/0003). */
+const stagingPool = perDevice(() => new Map<string, { buf: GPUBuffer; cap: number }>());
 
 /**
  * Copy `bytes` out of a storage buffer and return them **verbatim**.
@@ -283,12 +314,13 @@ export async function readBackBytes(
   srcOffset: number,
   bytes: number,
 ): Promise<ArrayBuffer> {
-  const got = stagingPool.get(key);
+  const pool = stagingPool(device);
+  const got = pool.get(key);
   let staging = got?.buf;
   if (!got || got.cap < bytes) {
     const cap = Math.max(bytes, (got?.cap ?? 0) * 2, 256);
     staging = device.createBuffer({ size: cap, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST, label: key });
-    stagingPool.set(key, { buf: staging, cap });
+    pool.set(key, { buf: staging, cap });
   }
   const enc = device.createCommandEncoder();
   enc.copyBufferToBuffer(src, srcOffset, staging!, 0, bytes);

@@ -29,8 +29,8 @@ import tgpu from "typegpu";
 import * as d from "typegpu/data";
 import type { ChannelCloud, GramParams, GramResult } from "../../spatial/gram";
 import { EPANECHNIKOV, kernelCode, roughness } from "../../spatial/kernels";
-import { checkBindingSize, getDevice, sized } from "../device";
-import { ensureHalfTex, narrowToHalf } from "../halfTexture";
+import { checkBindingSize, deviceScoped, perDevice, sized } from "../device";
+import { ensureHalfTex, halfNarrower } from "../halfTexture";
 import { scratchTexture } from "../scratchTexture";
 import { KERNEL_WGSL } from "./kernelWgsl";
 
@@ -207,62 +207,60 @@ interface Ctx {
    *  `means`, `raw` or `centred`) would reject them as unexpected entries. */
   reduceLayout: GPUBindGroupLayout;
 }
-let ctxCache: Promise<Ctx> | undefined;
-
-function getCtx(): Promise<Ctx> {
-  ctxCache ??= (async () => {
-    const device = await getDevice();
-    const root = tgpu.initFromDevice({ device });
-    const splatModule = device.createShaderModule({ code: SPLAT_SHADER });
-    const reduceModule = device.createShaderModule({ code: REDUCE_SHADER });
-    const splat = device.createRenderPipeline({
-      layout: "auto",
-      vertex: { module: splatModule, entryPoint: "vsSplat" },
-      fragment: {
-        module: splatModule,
-        entryPoint: "fsSplat",
-        targets: [
-          {
-            format: "r32float",
-            // Additive blending IS the sum in `M(x) = Σ_i w_i J(x − x_i)`. No atomics, no
-            // read-modify-write; the raster op does it.
-            blend: {
-              color: { srcFactor: "one", dstFactor: "one", operation: "add" },
-              alpha: { srcFactor: "one", dstFactor: "one", operation: "add" },
-            },
+/** Per device (default: the library's own): the Gram view's deck layer binds `resident.buffer` in
+ *  its own pass, so it must be able to run this on deck's device (`deviceScoped` in `../device`). */
+const getCtx = deviceScoped(async (device: GPUDevice): Promise<Ctx> => {
+  const root = tgpu.initFromDevice({ device });
+  const splatModule = device.createShaderModule({ code: SPLAT_SHADER });
+  const reduceModule = device.createShaderModule({ code: REDUCE_SHADER });
+  const splat = device.createRenderPipeline({
+    layout: "auto",
+    vertex: { module: splatModule, entryPoint: "vsSplat" },
+    fragment: {
+      module: splatModule,
+      entryPoint: "fsSplat",
+      targets: [
+        {
+          format: "r32float",
+          // Additive blending IS the sum in `M(x) = Σ_i w_i J(x − x_i)`. No atomics, no
+          // read-modify-write; the raster op does it.
+          blend: {
+            color: { srcFactor: "one", dstFactor: "one", operation: "add" },
+            alpha: { srcFactor: "one", dstFactor: "one", operation: "add" },
           },
-        ],
-      },
-      primitive: { topology: "triangle-strip" },
-    });
-    const storage = (binding: number, type: GPUBufferBindingType): GPUBindGroupLayoutEntry => ({
-      binding,
-      visibility: GPUShaderStage.COMPUTE,
-      buffer: { type },
-    });
-    const reduceLayout = device.createBindGroupLayout({
-      entries: [
-        { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: "uniform" } },
-        storage(1, "read-only-storage"), // rasters
-        storage(2, "read-only-storage"), // means
-        storage(3, "storage"), // sums
-        storage(4, "storage"), // raw
-        storage(5, "storage"), // centred
+        },
       ],
-    });
-    const pipelineLayout = device.createPipelineLayout({ bindGroupLayouts: [reduceLayout] });
-    const mk = (entryPoint: string) =>
-      device.createComputePipeline({ layout: pipelineLayout, compute: { module: reduceModule, entryPoint } });
-    return { device, root, splat, sumChannels: mk("sumChannels"), gramPairs: mk("gramPairs"), reduceLayout };
-  })();
-  return ctxCache;
-}
+    },
+    primitive: { topology: "triangle-strip" },
+  });
+  const storage = (binding: number, type: GPUBufferBindingType): GPUBindGroupLayoutEntry => ({
+    binding,
+    visibility: GPUShaderStage.COMPUTE,
+    buffer: { type },
+  });
+  const reduceLayout = device.createBindGroupLayout({
+    entries: [
+      { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: "uniform" } },
+      storage(1, "read-only-storage"), // rasters
+      storage(2, "read-only-storage"), // means
+      storage(3, "storage"), // sums
+      storage(4, "storage"), // raw
+      storage(5, "storage"), // centred
+    ],
+  });
+  const pipelineLayout = device.createPipelineLayout({ bindGroupLayouts: [reduceLayout] });
+  const mk = (entryPoint: string) =>
+    device.createComputePipeline({ layout: pipelineLayout, compute: { module: reduceModule, entryPoint } });
+  return { device, root, splat, sumChannels: mk("sumChannels"), gramPairs: mk("gramPairs"), reduceLayout };
+});
 
 // Pooled, grow-only, never destroyed — `.destroy()` segfaults Dawn-on-Node's teardown, the same
-// constraint crossPcf.ts and splatDensity.ts work under.
-const bufPool = new Map<string, { buf: GPUBuffer; cap: number }>();
+// constraint crossPcf.ts and splatDensity.ts work under. Keyed by device, then name: the names are
+// fixed, so a pool keyed by name alone would hand one device's buffer to a call on another.
+const bufPools = perDevice(() => new Map<string, { buf: GPUBuffer; cap: number }>());
 
 function ensureBuf(device: GPUDevice, key: string, floats: number, usage: number): GPUBuffer {
+  const bufPool = bufPools(device);
   const got = bufPool.get(key);
   if (got && got.cap >= floats) return got.buf;
   const cap = Math.max(floats, (got?.cap ?? 0) * 2, 4);
@@ -293,9 +291,11 @@ function ensureTex(device: GPUDevice, w: number, h: number) {
 
 // Readback goes through a TypeGPU-wrapped buffer: `.read()` is the only Dawn-on-Node-stable
 // readback in this project (see crossPcf.ts).
-const readbacks = new Map<string, { raw: GPUBuffer; wrap: ReturnType<Root["createBuffer"]>; cap: number }>();
+// Per device, like the pool above.
+const readbackPools = perDevice(() => new Map<string, { raw: GPUBuffer; wrap: ReturnType<Root["createBuffer"]>; cap: number }>());
 
 function ensureReadback(device: GPUDevice, root: Root, key: string, floats: number) {
+  const readbacks = readbackPools(device);
   const got = readbacks.get(key);
   if (got && got.cap >= floats) return got;
   const cap = Math.max(floats, (got?.cap ?? 0) * 2, 4);
@@ -395,9 +395,14 @@ export type RasterPrecision = "f32" | "f16";
 
 export async function gramMatrixGpu(
   channels: readonly ChannelCloud[],
-  p: GramParams & { readonly precision?: RasterPrecision },
+  p: GramParams & {
+    readonly precision?: RasterPrecision;
+    /** The device to run on, and the one `resident.buffer` is left on. Default: the library's own
+     *  (`getDevice()`). A renderer with its own device — a deck layer — passes it. */
+    readonly device?: GPUDevice;
+  },
 ): Promise<GramMatrixGpuResult> {
-  const { device, root, splat, sumChannels, gramPairs, reduceLayout } = await getCtx();
+  const { device, root, splat, sumChannels, gramPairs, reduceLayout } = await getCtx(p.device);
   const K = channels.length;
   const { width: w, height: h } = p;
   const [minX, minY, maxX, maxY] = p.bbox;
@@ -409,6 +414,10 @@ export async function gramMatrixGpu(
   const { data, offsets, mass, apronMass } = packChannels(channels, p);
   const precision: RasterPrecision = p.precision ?? "f32";
   const half = precision === "f16";
+  // The last await before the splat submit. The splat target is a shared scratch texture and the
+  // buffers written below are shared pools, so from here to that submit nothing may yield, or a
+  // concurrent call can destroy the target or overwrite the uniforms (`scratchTexture.ts`).
+  const narrow = half ? await halfNarrower(device) : undefined;
   // Row stride in 4-byte words. At f16 a row is half the bytes AND two texels share a word, so
   // the stride is roughly halved — which is where the memory goes.
   const rowWords = align256(w * (half ? 2 : 4)) / 4;
@@ -469,7 +478,7 @@ export async function gramMatrixGpu(
     // At f16 the accumulated raster is narrowed into a half target first — one rounding — and
     // THAT is what lands in the slice. Accumulating in f16 instead would lose most of a dense
     // channel's mass; see `../halfTexture.ts`.
-    if (half) await narrowToHalf(device, enc, tex.tex, halfTex!, w, h);
+    if (narrow) narrow(enc, tex.tex, halfTex!, w, h);
     enc.copyTextureToBuffer(
       { texture: half ? halfTex! : tex.tex },
       { buffer: rasters, offset: k * h * rowWords * 4, bytesPerRow: rowWords * 4, rowsPerImage: h },

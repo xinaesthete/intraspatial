@@ -22,7 +22,7 @@
 // Third axis: a lattice with `depth`/`minZ` (from `latticeFor(…, zs)`) makes the kernel take z as
 // well, which needs `stride: 3`. `stride: 3` on a 2D lattice still indexes xy only.
 import { type Bounds2, type Bounds3, type BucketGrid, type GridLattice, latticeFor, numCells } from "../../spatial/bucketGrid";
-import { checkBindingSize, compileShader, dispatchGrid, getDevice, MAX_WORKGROUPS_PER_DIM, sized } from "../device";
+import { checkBindingSize, compileShader, deviceScoped, dispatchGrid, MAX_WORKGROUPS_PER_DIM, sized } from "../device";
 import { encodeScan, ensureBuf, getScanCtx, readBack, type ScanCtx } from "../scan/prefixSum";
 
 /** One thread per point in the histogram and scatter passes. */
@@ -47,6 +47,9 @@ export interface GridIndexOptions {
   /** Pool namespace. Two indexes recorded into one command buffer need distinct prefixes or
    *  the second overwrites the first's buffers — see `encodeScan`. */
   readonly keyPrefix?: string;
+  /** The device the index is built on. Default: the library's own (`getDevice()`). Only the
+   *  host-array build takes it; `encodeGridIndex` already has one, in its context. */
+  readonly device?: GPUDevice;
 }
 
 /** The index as it lives on the device. The buffers are pooled (grow-only, never destroyed)
@@ -128,30 +131,27 @@ export interface GridIndexCtx {
   scatter: GPUComputePipeline;
 }
 
-let ctxCache: Promise<GridIndexCtx> | undefined;
-
-export function getGridIndexCtx(): Promise<GridIndexCtx> {
-  ctxCache ??= (async () => {
-    const scan = await getScanCtx();
-    const { device } = scan;
-    // One explicit layout for both entry points (each leaves one binding untouched, which
-    // `layout: "auto"` would drop from that entry point's derived layout).
-    const layout = device.createBindGroupLayout({
-      entries: [
-        { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: "uniform" } },
-        { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
-        { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
-        { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
-        { binding: 4, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
-      ],
-    });
-    const pipelineLayout = device.createPipelineLayout({ bindGroupLayouts: [layout] });
-    const module = await compileShader(device, SHADER, "gridIndex");
-    const mk = (entryPoint: string) => device.createComputePipeline({ layout: pipelineLayout, compute: { module, entryPoint } });
-    return { scan, layout, histogram: mk("histogram"), scatter: mk("scatter") };
-  })();
-  return ctxCache;
-}
+/** The index pipelines on `device` (default: the library's own), over that device's scan context.
+ *  Per device for the reason `getScanCtx` is: every index-walking kernel (k-NN, NN distance, PCF,
+ *  TCM) records this build into its own encoder, so they must agree on the device. */
+export const getGridIndexCtx = deviceScoped(async (device: GPUDevice): Promise<GridIndexCtx> => {
+  const scan = await getScanCtx(device);
+  // One explicit layout for both entry points (each leaves one binding untouched, which
+  // `layout: "auto"` would drop from that entry point's derived layout).
+  const layout = device.createBindGroupLayout({
+    entries: [
+      { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: "uniform" } },
+      { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
+      { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
+      { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
+      { binding: 4, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
+    ],
+  });
+  const pipelineLayout = device.createPipelineLayout({ bindGroupLayouts: [layout] });
+  const module = await compileShader(device, SHADER, "gridIndex");
+  const mk = (entryPoint: string) => device.createComputePipeline({ layout: pipelineLayout, compute: { module, entryPoint } });
+  return { scan, layout, histogram: mk("histogram"), scatter: mk("scatter") };
+});
 
 const storageRw = () => GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST;
 
@@ -166,7 +166,7 @@ export function encodeGridIndex(
   n: number,
   lattice: GridLattice,
   enc: GPUCommandEncoder,
-  opts: Omit<GridIndexOptions, "cell" | "bounds"> = {},
+  opts: Omit<GridIndexOptions, "cell" | "bounds" | "device"> = {},
 ): GridIndexResident {
   const { device } = ctx.scan;
   const stride = opts.stride ?? 2;
@@ -248,7 +248,7 @@ export function encodeGridIndex(
  * `encodeGridIndex` and never bring `cellOffsets`/`pointIds` to the host.
  */
 export async function buildGridIndexGpu(points: Float32Array, opts: GridIndexOptions): Promise<BucketGrid> {
-  const ctx = await getGridIndexCtx();
+  const ctx = await getGridIndexCtx(opts.device);
   const { device } = ctx.scan;
   const stride = opts.stride ?? 2;
   const dims = opts.dims ?? 2;

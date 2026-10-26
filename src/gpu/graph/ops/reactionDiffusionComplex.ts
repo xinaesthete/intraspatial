@@ -67,8 +67,13 @@ export const reactionDiffusionComplexOp: OpType = {
     }
     return [COMPLEX];
   },
-  async execute(_ctx, inputs, params) {
-    const next = await grayScottStepsGpu(complexStateOf(inputs[0]!), params.steps as number, rdParams(params));
+  async execute(ctx, inputs, params) {
+    const next = await grayScottStepsGpu(
+      complexStateOf(inputs[0]!),
+      params.steps as number,
+      rdParams(params),
+      await ctx.backend.getDevice(),
+    );
     return complexOutputs(next);
   },
   cpuGolden(inputs, params) {

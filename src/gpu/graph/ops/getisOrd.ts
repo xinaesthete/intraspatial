@@ -18,9 +18,12 @@ export const getisOrdOp: OpType = {
   inferShapes(inputs) {
     return [inputs[0]!];
   },
-  async execute(_ctx, inputs, params) {
+  async execute(ctx, inputs, params) {
     const { width, height } = gridShape(inputs[0]!.shape);
-    const { z } = await getisOrdGpu(inputs[0]!.data!, width, height, { radius: params.radius as number });
+    const { z } = await getisOrdGpu(inputs[0]!.data!, width, height, {
+      radius: params.radius as number,
+      device: await ctx.backend.getDevice(),
+    });
     return [{ shape: { kind: "grid", width, height }, dtype: "f32", data: z }];
   },
 };

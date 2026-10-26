@@ -14,7 +14,7 @@
 import tgpu from "typegpu";
 import * as d from "typegpu/data";
 import * as std from "typegpu/std";
-import { getDevice, writeView } from "../device";
+import { deviceScoped, writeView } from "../device";
 
 const WG = 64;
 
@@ -78,19 +78,15 @@ interface Pipe {
   root: ReturnType<typeof tgpu.initFromDevice>;
   pipeline: GPUComputePipeline;
 }
-let pipeCache: Promise<Pipe> | undefined;
-function getPipe(): Promise<Pipe> {
-  pipeCache ??= (async () => {
-    const device = await getDevice();
-    const root = tgpu.initFromDevice({ device });
-    const { code, usedBindGroupLayouts } = tgpu.resolveWithContext([stepFn], { names: "strict" });
-    const module = device.createShaderModule({ code });
-    const pipeLayout = device.createPipelineLayout({ bindGroupLayouts: usedBindGroupLayouts.map((l) => root.unwrap(l)) });
-    const pipeline = device.createComputePipeline({ layout: pipeLayout, compute: { module, entryPoint: "grayScottStep" } });
-    return { device, root, pipeline };
-  })();
-  return pipeCache;
-}
+/** Per device (default: the library's own) — `deviceScoped` in `../device` says why. */
+const getPipe = deviceScoped(async (device: GPUDevice): Promise<Pipe> => {
+  const root = tgpu.initFromDevice({ device });
+  const { code, usedBindGroupLayouts } = tgpu.resolveWithContext([stepFn], { names: "strict" });
+  const module = device.createShaderModule({ code });
+  const pipeLayout = device.createPipelineLayout({ bindGroupLayouts: usedBindGroupLayouts.map((l) => root.unwrap(l)) });
+  const pipeline = device.createComputePipeline({ layout: pipeLayout, compute: { module, entryPoint: "grayScottStep" } });
+  return { device, root, pipeline };
+});
 
 type Root = Pipe["root"];
 function makePool(root: Root, n: number) {
@@ -98,10 +94,13 @@ function makePool(root: Root, n: number) {
   const sbuf = () => root.createBuffer(d.arrayOf(d.f32, cap)).$usage("storage");
   return { n, uA: sbuf(), vA: sbuf(), uB: sbuf(), vB: sbuf(), params: root.createBuffer(Params).$usage("uniform") };
 }
-let pool: ReturnType<typeof makePool> | undefined;
+/** Per root, so per device: a pool's buffers belong to the device its root wraps. */
+const pools = new WeakMap<Root, ReturnType<typeof makePool>>();
 function ensurePool(root: Root, n: number) {
+  let pool = pools.get(root);
   if (pool && pool.n >= n) return pool;
   pool = makePool(root, Math.max(n, pool?.n ?? 0));
+  pools.set(root, pool);
   return pool;
 }
 
@@ -130,19 +129,25 @@ export interface GrayScottState {
 const DEFAULTS: Required<GrayScottParams> = { du: 0.16, dv: 0.08, feed: 0.06, kill: 0.062, dt: 1 };
 
 /** Advance a Gray–Scott state by `steps` explicit-Euler steps on the GPU. State
- *  grids ping-pong in a pooled pair; only the final state is read back. */
-export async function grayScottStepsGpu(state: GrayScottState, steps: number, params: GrayScottParams = {}): Promise<GrayScottState> {
+ *  grids ping-pong in a pooled pair; only the final state is read back. `device` defaults to the
+ *  library's own. */
+export async function grayScottStepsGpu(
+  state: GrayScottState,
+  steps: number,
+  params: GrayScottParams = {},
+  device?: GPUDevice,
+): Promise<GrayScottState> {
   const { width: w, height: h } = state;
   const n = w * h;
   if (state.u.length !== n || state.v.length !== n) throw new Error("grayScott: u/v length != width*height");
   if (steps < 1) return state;
   const p = { ...DEFAULTS, ...params };
 
-  const { device, root, pipeline } = await getPipe();
+  const { device: dev, root, pipeline } = await getPipe(device);
   const pool = ensurePool(root, n);
 
-  writeView(device.queue, root.unwrap(pool.uA), Float32Array.from(state.u));
-  writeView(device.queue, root.unwrap(pool.vA), Float32Array.from(state.v));
+  writeView(dev.queue, root.unwrap(pool.uA), Float32Array.from(state.u));
+  writeView(dev.queue, root.unwrap(pool.vA), Float32Array.from(state.v));
   pool.params.write({ w, h, du: p.du, dv: p.dv, feed: p.feed, kill: p.kill, dt: p.dt });
 
   const groups = Math.ceil(n / WG);
@@ -152,13 +157,13 @@ export async function grayScottStepsGpu(state: GrayScottState, steps: number, pa
     vOut = pool.vB;
   for (let s = 0; s < steps; s++) {
     const bind = root.unwrap(root.createBindGroup(layout, { params: pool.params, uIn, vIn, uOut, vOut }));
-    const enc = device.createCommandEncoder();
+    const enc = dev.createCommandEncoder();
     const pass = enc.beginComputePass();
     pass.setPipeline(pipeline);
     pass.setBindGroup(0, bind);
     pass.dispatchWorkgroups(groups);
     pass.end();
-    device.queue.submit([enc.finish()]); // per-step submit (resource-sync baseline)
+    dev.queue.submit([enc.finish()]); // per-step submit (resource-sync baseline)
     [uIn, uOut] = [uOut, uIn];
     [vIn, vOut] = [vOut, vIn];
   }

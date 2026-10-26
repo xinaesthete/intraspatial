@@ -396,7 +396,7 @@ async function runTick(graph: Graph, field: GpuField, o: TickOptions): Promise<M
     if (v.texture) {
       o.onBridge?.(k, "detexture");
       const res = await o.ctx.backend.lease(v.texture.width * v.texture.height * 4);
-      await textureToBuffer(v.texture, res.buffer);
+      await textureToBuffer(v.texture, res.buffer, await o.ctx.backend.getDevice());
       const bridged: FieldValue = { ...v, buffer: res };
       pulled.set(k, bridged);
       own(k, res); // the tick leased it, so the tick returns it — alongside the texture

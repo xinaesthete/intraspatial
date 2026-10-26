@@ -93,6 +93,9 @@ export interface IndexedQueryOptions {
   readonly cell?: number;
   /** `[minX, minY, maxX, maxY]` for the lattice; default is the points' own bounds. */
   readonly bounds?: readonly [number, number, number, number];
+  /** The device to run on. Default: the library's own (`getDevice()`). The index, when built, is
+   *  built on the same one. */
+  readonly device?: GPUDevice;
 }
 
 /** What a query kernel binds after `encodeQueryIndex`: the lattice uniform and the index. */
