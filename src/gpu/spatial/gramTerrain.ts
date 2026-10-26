@@ -275,6 +275,7 @@ function getCtx(): Promise<Ctx> {
     const format = navigator.gpu.getPreferredCanvasFormat();
     const module = await compileShader(device, TERRAIN_SHADER, "gramTerrain.surface");
     const pipeline = device.createRenderPipeline({
+      label: "gramTerrain:surface",
       layout: "auto",
       vertex: { module, entryPoint: "vs" },
       fragment: { module, entryPoint: "fs", targets: [{ format }] },
@@ -282,7 +283,11 @@ function getCtx(): Promise<Ctx> {
       depthStencil: { format: "depth24plus", depthWriteEnabled: true, depthCompare: "less" },
     });
     const probeModule = await compileShader(device, PROBE_SHADER, "gramTerrain.probe");
-    const probe = device.createComputePipeline({ layout: "auto", compute: { module: probeModule, entryPoint: "probe" } });
+    const probe = device.createComputePipeline({
+      label: "gramTerrain:probe",
+      layout: "auto",
+      compute: { module: probeModule, entryPoint: "probe" },
+    });
     return { device, pipeline, probe, format };
   })();
   return ctxCache;
@@ -298,10 +303,10 @@ let wandCap = 0;
 
 // Pooled and grow-only; `.destroy()` segfaults Dawn-on-Node's teardown, the constraint every module
 // in this directory works under.
-function ensure(device: GPUDevice, buf: GPUBuffer | undefined, cap: number, want: number, usage: number) {
+function ensure(device: GPUDevice, label: string, buf: GPUBuffer | undefined, cap: number, want: number, usage: number) {
   if (buf && cap >= want) return { buf, cap };
   const grown = Math.max(want, cap * 2, 16);
-  return { buf: device.createBuffer({ size: grown * 4, usage }), cap: grown };
+  return { buf: device.createBuffer({ label, size: grown * 4, usage }), cap: grown };
 }
 
 /**
@@ -395,12 +400,20 @@ export async function probeChannels(res: GramMatrixGpuResult, col: number, row: 
     throw new Error('gramTerrain: f16 rasters are not supported here yet — rebuild the Gram with precision "f32"');
   }
   const { buffer, rowWords: rowFloats } = res.resident;
-  probeUni ??= device.createBuffer({ size: 32, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+  probeUni ??= device.createBuffer({
+    label: "gramTerrain:probeUniforms",
+    size: 32,
+    usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+  });
   if (!probeOut || probeOut.cap < K) {
     const cap = Math.max(K, 64);
     probeOut = {
-      raw: device.createBuffer({ size: cap * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC }),
-      staging: device.createBuffer({ size: cap * 4, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST }),
+      raw: device.createBuffer({ label: "gramTerrain:probeOut", size: cap * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC }),
+      staging: device.createBuffer({
+        label: "gramTerrain:probeStaging",
+        size: cap * 4,
+        usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
+      }),
       cap,
     };
   }
@@ -408,6 +421,7 @@ export async function probeChannels(res: GramMatrixGpuResult, col: number, row: 
   const r = Math.max(0, Math.min(res.height - 1, Math.round(row)));
   device.queue.writeBuffer(probeUni, 0, new Float32Array([K, c, r, rowFloats, res.height, 0, 0, 0]));
   const bind = device.createBindGroup({
+    label: "gramTerrain:probe",
     layout: probe.getBindGroupLayout(0),
     entries: [
       { binding: 0, resource: { buffer: probeUni, size: 32 } },
@@ -415,8 +429,8 @@ export async function probeChannels(res: GramMatrixGpuResult, col: number, row: 
       { binding: 2, resource: { buffer: probeOut.raw } },
     ],
   });
-  const enc = device.createCommandEncoder();
-  const pass = enc.beginComputePass();
+  const enc = device.createCommandEncoder({ label: "gramTerrain:probe" });
+  const pass = enc.beginComputePass({ label: "gramTerrain:probe" });
   pass.setPipeline(probe);
   pass.setBindGroup(0, bind);
   pass.dispatchWorkgroups(Math.ceil(K / 64));
@@ -500,6 +514,7 @@ export async function paintGramTerrain(canvas: HTMLCanvasElement, res: GramMatri
   const ch = canvas.height;
   if (!depth || depth.w !== cw || depth.h !== ch) {
     const tex = device.createTexture({
+      label: "gramTerrain:depth",
       size: { width: cw, height: ch },
       format: "depth24plus",
       usage: GPUTextureUsage.RENDER_ATTACHMENT,
@@ -507,11 +522,15 @@ export async function paintGramTerrain(canvas: HTMLCanvasElement, res: GramMatri
     depth = { tex, view: tex.createView(), w: cw, h: ch };
   }
 
-  uniBuf ??= device.createBuffer({ size: UNI_FLOATS * 4, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
-  const gotChan = ensure(device, chanBuf, chanCap, chan.length, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST);
+  uniBuf ??= device.createBuffer({
+    label: "gramTerrain:uniforms",
+    size: UNI_FLOATS * 4,
+    usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+  });
+  const gotChan = ensure(device, "gramTerrain:channels", chanBuf, chanCap, chan.length, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST);
   chanBuf = gotChan.buf;
   chanCap = gotChan.cap;
-  const gotWand = ensure(device, wandBuf, wandCap, wandData.length, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST);
+  const gotWand = ensure(device, "gramTerrain:wand", wandBuf, wandCap, wandData.length, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST);
   wandBuf = gotWand.buf;
   wandCap = gotWand.cap;
 
@@ -598,6 +617,7 @@ export async function paintGramTerrain(canvas: HTMLCanvasElement, res: GramMatri
   device.queue.writeBuffer(wandBuf, 0, wandData);
 
   const bind = device.createBindGroup({
+    label: "gramTerrain:surface",
     layout: pipeline.getBindGroupLayout(0),
     entries: [
       { binding: 0, resource: { buffer: uniBuf, size: UNI_FLOATS * 4 } },
@@ -609,8 +629,9 @@ export async function paintGramTerrain(canvas: HTMLCanvasElement, res: GramMatri
     ],
   });
 
-  const enc = device.createCommandEncoder();
+  const enc = device.createCommandEncoder({ label: "gramTerrain:surface" });
   const pass = enc.beginRenderPass({
+    label: "gramTerrain:surface",
     colorAttachments: [
       {
         view: ctx.getCurrentTexture().createView(),

@@ -30,11 +30,13 @@ const Params = d.struct({
   maxD2: d.f32, // squared support radius; contributions beyond it are 0
 });
 
-const layout = tgpu.bindGroupLayout({
-  params: { uniform: Params },
-  pts: { storage: (n: number) => d.arrayOf(d.f32, n), access: "readonly" }, // x,y per point
-  out: { storage: (n: number) => d.arrayOf(d.f32, n), access: "mutable" }, // n*n membership
-});
+const layout = tgpu
+  .bindGroupLayout({
+    params: { uniform: Params },
+    pts: { storage: (n: number) => d.arrayOf(d.f32, n), access: "readonly" }, // x,y per point
+    out: { storage: (n: number) => d.arrayOf(d.f32, n), access: "mutable" }, // n*n membership
+  })
+  .$name("fuzzyAdjacency");
 
 const fuzzyFn = tgpu
   .computeFn({ in: { gid: d.builtin.globalInvocationId }, workgroupSize: [WG] })((input) => {
@@ -69,9 +71,16 @@ interface Pipe {
 const getPipe = deviceScoped(async (device: GPUDevice): Promise<Pipe> => {
   const root = tgpu.initFromDevice({ device });
   const { code, usedBindGroupLayouts } = tgpu.resolveWithContext([fuzzyFn], { names: "strict" });
-  const module = device.createShaderModule({ code });
-  const pipeLayout = device.createPipelineLayout({ bindGroupLayouts: usedBindGroupLayouts.map((l) => root.unwrap(l)) });
-  const pipeline = device.createComputePipeline({ layout: pipeLayout, compute: { module, entryPoint: "fuzzyAdj" } });
+  const module = device.createShaderModule({ label: "fuzzyAdjacency", code });
+  const pipeLayout = device.createPipelineLayout({
+    label: "fuzzyAdjacency",
+    bindGroupLayouts: usedBindGroupLayouts.map((l) => root.unwrap(l)),
+  });
+  const pipeline = device.createComputePipeline({
+    label: "fuzzyAdjacency",
+    layout: pipeLayout,
+    compute: { module, entryPoint: "fuzzyAdj" },
+  });
   return { device, root, pipeline };
 });
 
@@ -79,9 +88,15 @@ type Root = Pipe["root"];
 function makePool(root: Root, n: number) {
   return {
     n,
-    pts: root.createBuffer(d.arrayOf(d.f32, 2 * n)).$usage("storage"),
-    out: root.createBuffer(d.arrayOf(d.f32, n * n)).$usage("storage"),
-    params: root.createBuffer(Params).$usage("uniform"),
+    pts: root
+      .createBuffer(d.arrayOf(d.f32, 2 * n))
+      .$usage("storage")
+      .$name("fuzzyAdjacency:pts"),
+    out: root
+      .createBuffer(d.arrayOf(d.f32, n * n))
+      .$usage("storage")
+      .$name("fuzzyAdjacency:out"),
+    params: root.createBuffer(Params).$usage("uniform").$name("fuzzyAdjacency:params"),
   };
 }
 /** Per root, so per device: a pool's buffers belong to the device its root wraps. */
@@ -135,8 +150,8 @@ export async function fuzzyAdjacencyGpu(
   p.params.write({ n, inv2s2: 1 / (2 * opts.sigma * opts.sigma), maxD2: support * support });
 
   const bind = root.unwrap(root.createBindGroup(layout, { params: p.params, pts: p.pts, out: p.out }));
-  const enc = device.createCommandEncoder();
-  const pass = enc.beginComputePass();
+  const enc = device.createCommandEncoder({ label: "fuzzyAdjacency" });
+  const pass = enc.beginComputePass({ label: "fuzzyAdjacency" });
   pass.setPipeline(pipeline);
   pass.setBindGroup(0, bind);
   pass.dispatchWorkgroups(Math.ceil(n / WG));

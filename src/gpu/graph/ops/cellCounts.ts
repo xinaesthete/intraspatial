@@ -45,6 +45,7 @@ interface Ctx {
 /** Per device: the op runs on its backend's device, the one the index it reads was built on. */
 const getCtx = deviceScoped(async (device: GPUDevice): Promise<Ctx> => {
   const layout = device.createBindGroupLayout({
+    label: "cellCounts",
     entries: [
       { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: "uniform" } },
       { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
@@ -53,7 +54,8 @@ const getCtx = deviceScoped(async (device: GPUDevice): Promise<Ctx> => {
   });
   const module = await compileShader(device, SHADER, "cellCounts");
   const pipeline = device.createComputePipeline({
-    layout: device.createPipelineLayout({ bindGroupLayouts: [layout] }),
+    label: "cellCounts",
+    layout: device.createPipelineLayout({ label: "cellCounts", bindGroupLayouts: [layout] }),
     compute: { module, entryPoint: "cellCounts" },
   });
   return { device, layout, pipeline };
@@ -119,6 +121,7 @@ export const cellCountsOp: OpType = {
     device.queue.writeBuffer(uni, 0, new Uint32Array([cells, gridX, 0, 0]));
 
     const bind = device.createBindGroup({
+      label: "cellCounts",
       layout,
       entries: [
         { binding: 0, resource: sized(uni, 16) },
@@ -127,7 +130,7 @@ export const cellCountsOp: OpType = {
       ],
     });
     const enc = device.createCommandEncoder({ label: "cellCounts" });
-    const pass = enc.beginComputePass();
+    const pass = enc.beginComputePass({ label: "cellCounts" });
     pass.setPipeline(pipeline);
     pass.setBindGroup(0, bind);
     pass.dispatchWorkgroups(gridX, gridY);

@@ -62,16 +62,18 @@ const Params = d.struct({
   gridX: d.u32,
 });
 
-const layout = tgpu.bindGroupLayout({
-  params: { uniform: Params },
-  emb: { storage: (n: number) => d.arrayOf(d.f32, n), access: "mutable" }, // n * dim
-  head: { storage: (n: number) => d.arrayOf(d.u32, n), access: "readonly" },
-  tail: { storage: (n: number) => d.arrayOf(d.u32, n), access: "readonly" },
-  epochsPerSample: { storage: (n: number) => d.arrayOf(d.f32, n), access: "readonly" },
-  epochsPerNeg: { storage: (n: number) => d.arrayOf(d.f32, n), access: "readonly" },
-  nextSample: { storage: (n: number) => d.arrayOf(d.f32, n), access: "mutable" },
-  nextNeg: { storage: (n: number) => d.arrayOf(d.f32, n), access: "mutable" },
-});
+const layout = tgpu
+  .bindGroupLayout({
+    params: { uniform: Params },
+    emb: { storage: (n: number) => d.arrayOf(d.f32, n), access: "mutable" }, // n * dim
+    head: { storage: (n: number) => d.arrayOf(d.u32, n), access: "readonly" },
+    tail: { storage: (n: number) => d.arrayOf(d.u32, n), access: "readonly" },
+    epochsPerSample: { storage: (n: number) => d.arrayOf(d.f32, n), access: "readonly" },
+    epochsPerNeg: { storage: (n: number) => d.arrayOf(d.f32, n), access: "readonly" },
+    nextSample: { storage: (n: number) => d.arrayOf(d.f32, n), access: "mutable" },
+    nextNeg: { storage: (n: number) => d.arrayOf(d.f32, n), access: "mutable" },
+  })
+  .$name("umapLayoutGpu");
 
 // WGSL template rather than `"use gpu"`: the kernel needs an integer hash RNG and
 // unbounded-ish control flow, which this TypeGPU version does not express in TGSL
@@ -197,9 +199,16 @@ function getPipe(): Promise<Pipe> {
       externals: { ...layout.bound },
       names: "strict",
     });
-    const module = device.createShaderModule({ code });
-    const pipeLayout = device.createPipelineLayout({ bindGroupLayouts: usedBindGroupLayouts.map((l) => root.unwrap(l)) });
-    const pipeline = device.createComputePipeline({ layout: pipeLayout, compute: { module, entryPoint: "layoutStep" } });
+    const module = device.createShaderModule({ label: "umapLayoutGpu", code });
+    const pipeLayout = device.createPipelineLayout({
+      label: "umapLayoutGpu",
+      bindGroupLayouts: usedBindGroupLayouts.map((l) => root.unwrap(l)),
+    });
+    const pipeline = device.createComputePipeline({
+      label: "umapLayoutGpu",
+      layout: pipeLayout,
+      compute: { module, entryPoint: "layoutStep" },
+    });
     return { device, root, pipeline };
   })();
   return pipeCache;
@@ -350,8 +359,8 @@ export class GpuUmapLayout {
         seed: this.opts.seed,
         gridX,
       });
-      const enc = device.createCommandEncoder();
-      const pass = enc.beginComputePass();
+      const enc = device.createCommandEncoder({ label: "umapLayoutGpu" });
+      const pass = enc.beginComputePass({ label: "umapLayoutGpu" });
       pass.setPipeline(pipeline);
       pass.setBindGroup(0, bind);
       pass.dispatchWorkgroups(gridX, gridY);
@@ -391,13 +400,13 @@ export class GpuUmapLayout {
 type Root = Pipe["root"];
 function makeBuffers(root: Root, embLen: number, nEdges: number) {
   return {
-    params: root.createBuffer(Params).$usage("uniform"),
-    emb: root.createBuffer(d.arrayOf(d.f32, embLen)).$usage("storage"),
-    head: root.createBuffer(d.arrayOf(d.u32, nEdges)).$usage("storage"),
-    tail: root.createBuffer(d.arrayOf(d.u32, nEdges)).$usage("storage"),
-    epochsPerSample: root.createBuffer(d.arrayOf(d.f32, nEdges)).$usage("storage"),
-    epochsPerNeg: root.createBuffer(d.arrayOf(d.f32, nEdges)).$usage("storage"),
-    nextSample: root.createBuffer(d.arrayOf(d.f32, nEdges)).$usage("storage"),
-    nextNeg: root.createBuffer(d.arrayOf(d.f32, nEdges)).$usage("storage"),
+    params: root.createBuffer(Params).$usage("uniform").$name("umapLayoutGpu:params"),
+    emb: root.createBuffer(d.arrayOf(d.f32, embLen)).$usage("storage").$name("umapLayoutGpu:emb"),
+    head: root.createBuffer(d.arrayOf(d.u32, nEdges)).$usage("storage").$name("umapLayoutGpu:head"),
+    tail: root.createBuffer(d.arrayOf(d.u32, nEdges)).$usage("storage").$name("umapLayoutGpu:tail"),
+    epochsPerSample: root.createBuffer(d.arrayOf(d.f32, nEdges)).$usage("storage").$name("umapLayoutGpu:epochsPerSample"),
+    epochsPerNeg: root.createBuffer(d.arrayOf(d.f32, nEdges)).$usage("storage").$name("umapLayoutGpu:epochsPerNeg"),
+    nextSample: root.createBuffer(d.arrayOf(d.f32, nEdges)).$usage("storage").$name("umapLayoutGpu:nextSample"),
+    nextNeg: root.createBuffer(d.arrayOf(d.f32, nEdges)).$usage("storage").$name("umapLayoutGpu:nextNeg"),
   };
 }

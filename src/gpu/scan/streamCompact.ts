@@ -184,6 +184,7 @@ export const getCompactCtx = deviceScoped(async (device: GPUDevice): Promise<Com
   // 4 storage bindings. Nine would make the layout invalid and every dispatch a silent
   // no-op — the failure that reads as a maths bug.
   const layout = device.createBindGroupLayout({
+    label: "compact",
     entries: [
       { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: "uniform" } },
       { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
@@ -192,8 +193,9 @@ export const getCompactCtx = deviceScoped(async (device: GPUDevice): Promise<Com
       { binding: 4, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
     ],
   });
-  const pipelineLayout = device.createPipelineLayout({ bindGroupLayouts: [layout] });
-  const mk = (entryPoint: string) => device.createComputePipeline({ layout: pipelineLayout, compute: { module, entryPoint } });
+  const pipelineLayout = device.createPipelineLayout({ label: "compact", bindGroupLayouts: [layout] });
+  const mk = (entryPoint: string) =>
+    device.createComputePipeline({ label: `compact:${entryPoint}`, layout: pipelineLayout, compute: { module, entryPoint } });
   return { scan, layout, predicate: mk("predicate"), scatter: mk("scatter") };
 });
 
@@ -234,6 +236,7 @@ interface Bindings {
  *  past `maxStorageBufferBindingSize` that is a silent no-op (see `sized` in `device.ts`). */
 function bindGroup(ctx: CompactCtx, b: Bindings): GPUBindGroup {
   return ctx.scan.device.createBindGroup({
+    label: "compact",
     layout: ctx.layout,
     entries: [
       { binding: 0, resource: sized(b.uni, 32) },
@@ -370,7 +373,7 @@ export async function streamCompactGpu(mask: MaskArray, opts: CompactOptions = {
   // --- pass 1 + 2: predicate, then scan the flags in the same command buffer ------------
   // `offsets` and `outIdx` do not exist yet — the scan has not run and the output is not
   // yet sized, which is the point of the two submits — so the predicate binds scratch.
-  const enc1 = device.createCommandEncoder();
+  const enc1 = device.createCommandEncoder({ label: "compact:predicate" });
   const s = scratch(device);
   encodePass(
     enc1,
@@ -387,7 +390,7 @@ export async function streamCompactGpu(mask: MaskArray, opts: CompactOptions = {
 
   // --- pass 3: scatter, into a buffer sized to the answer -------------------------------
   const outBuf = ensureBuf(device, "compact:out", count * 4, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC);
-  const enc2 = device.createCommandEncoder();
+  const enc2 = device.createCommandEncoder({ label: "compact:scatter" });
   encodePass(
     enc2,
     "compact:scatter",

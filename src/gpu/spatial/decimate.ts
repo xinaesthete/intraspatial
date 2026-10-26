@@ -31,11 +31,13 @@ const Params = d.struct({
   mode: d.u32,
 });
 
-const layout = tgpu.bindGroupLayout({
-  params: { uniform: Params },
-  src: { storage: (n: number) => d.arrayOf(d.f32, n), access: "readonly" },
-  dst: { storage: (n: number) => d.arrayOf(d.f32, n), access: "mutable" },
-});
+const layout = tgpu
+  .bindGroupLayout({
+    params: { uniform: Params },
+    src: { storage: (n: number) => d.arrayOf(d.f32, n), access: "readonly" },
+    dst: { storage: (n: number) => d.arrayOf(d.f32, n), access: "mutable" },
+  })
+  .$name("decimate");
 
 const decimateFn = tgpu
   .computeFn({
@@ -89,11 +91,13 @@ interface Pipe {
 const getPipe = deviceScoped(async (device: GPUDevice): Promise<Pipe> => {
   const root = tgpu.initFromDevice({ device });
   const { code, usedBindGroupLayouts } = tgpu.resolveWithContext([decimateFn], { names: "strict" });
-  const module = device.createShaderModule({ code });
+  const module = device.createShaderModule({ label: "decimate", code });
   const pipeLayout = device.createPipelineLayout({
+    label: "decimate",
     bindGroupLayouts: usedBindGroupLayouts.map((l) => root.unwrap(l)),
   });
   const pipeline = device.createComputePipeline({
+    label: "decimate",
     layout: pipeLayout,
     compute: { module, entryPoint: "decimateBlock" },
   });
@@ -101,11 +105,14 @@ const getPipe = deviceScoped(async (device: GPUDevice): Promise<Pipe> => {
 });
 
 type Root = Pipe["root"];
-function buf(root: Root, n: number) {
-  return root.createBuffer(d.arrayOf(d.f32, Math.max(1, n))).$usage("storage");
+function buf(root: Root, n: number, label: string) {
+  return root
+    .createBuffer(d.arrayOf(d.f32, Math.max(1, n)))
+    .$usage("storage")
+    .$name(label);
 }
 function makeParams(root: Root) {
-  return root.createBuffer(Params).$usage("uniform");
+  return root.createBuffer(Params).$usage("uniform").$name("decimate:params");
 }
 /** Per root, so per device, like the pipeline. */
 const params = new WeakMap<Root, ReturnType<typeof makeParams>>();
@@ -151,10 +158,10 @@ export async function decimateResident(
   const { device: dev, root, pipeline } = pipe;
   const p = ensureParams(root);
   p.write({ w: width, h: height, ow, oh, factor, mode: modeFlag(mode) });
-  const bind = rawBindGroup(dev, root, layout, [p, src, dst]);
+  const bind = rawBindGroup(dev, root, layout, [p, src, dst], "decimate");
   const { x, y } = dispatchGrid(Math.ceil((ow * oh) / WG));
-  const enc = dev.createCommandEncoder();
-  const pass = enc.beginComputePass();
+  const enc = dev.createCommandEncoder({ label: "decimate" });
+  const pass = enc.beginComputePass({ label: "decimate" });
   pass.setPipeline(pipeline);
   pass.setBindGroup(0, bind);
   pass.dispatchWorkgroups(x, y);
@@ -191,7 +198,7 @@ function ensureIo(root: Root, cellsIn: number, cellsOut: number) {
   if (io && io.capIn >= cellsIn && io.capOut >= cellsOut) return io;
   const capIn = Math.max(cellsIn, io?.capIn ?? 0, 1);
   const capOut = Math.max(cellsOut, io?.capOut ?? 0, 1);
-  io = { capIn, capOut, src: buf(root, capIn), dst: buf(root, capOut) };
+  io = { capIn, capOut, src: buf(root, capIn, "decimate:src"), dst: buf(root, capOut, "decimate:dst") };
   ios.set(root, io);
   return io;
 }

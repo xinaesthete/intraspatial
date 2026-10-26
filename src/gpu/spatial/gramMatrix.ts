@@ -211,9 +211,10 @@ interface Ctx {
  *  its own pass, so it must be able to run this on deck's device (`deviceScoped` in `../device`). */
 const getCtx = deviceScoped(async (device: GPUDevice): Promise<Ctx> => {
   const root = tgpu.initFromDevice({ device });
-  const splatModule = device.createShaderModule({ code: SPLAT_SHADER });
-  const reduceModule = device.createShaderModule({ code: REDUCE_SHADER });
+  const splatModule = device.createShaderModule({ label: "gramMatrix:splat", code: SPLAT_SHADER });
+  const reduceModule = device.createShaderModule({ label: "gramMatrix:reduce", code: REDUCE_SHADER });
   const splat = device.createRenderPipeline({
+    label: "gramMatrix:splat",
     layout: "auto",
     vertex: { module: splatModule, entryPoint: "vsSplat" },
     fragment: {
@@ -239,6 +240,7 @@ const getCtx = deviceScoped(async (device: GPUDevice): Promise<Ctx> => {
     buffer: { type },
   });
   const reduceLayout = device.createBindGroupLayout({
+    label: "gramMatrix:reduce",
     entries: [
       { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: "uniform" } },
       storage(1, "read-only-storage"), // rasters
@@ -248,9 +250,13 @@ const getCtx = deviceScoped(async (device: GPUDevice): Promise<Ctx> => {
       storage(5, "storage"), // centred
     ],
   });
-  const pipelineLayout = device.createPipelineLayout({ bindGroupLayouts: [reduceLayout] });
+  const pipelineLayout = device.createPipelineLayout({ label: "gramMatrix:reduce", bindGroupLayouts: [reduceLayout] });
   const mk = (entryPoint: string) =>
-    device.createComputePipeline({ layout: pipelineLayout, compute: { module: reduceModule, entryPoint } });
+    device.createComputePipeline({
+      label: `gramMatrix:${entryPoint}`,
+      layout: pipelineLayout,
+      compute: { module: reduceModule, entryPoint },
+    });
   return { device, root, splat, sumChannels: mk("sumChannels"), gramPairs: mk("gramPairs"), reduceLayout };
 });
 
@@ -264,7 +270,7 @@ function ensureBuf(device: GPUDevice, key: string, floats: number, usage: number
   const got = bufPool.get(key);
   if (got && got.cap >= floats) return got.buf;
   const cap = Math.max(floats, (got?.cap ?? 0) * 2, 4);
-  const buf = device.createBuffer({ size: cap * 4, usage });
+  const buf = device.createBuffer({ label: `gramMatrix:${key}`, size: cap * 4, usage });
   bufPool.set(key, { buf, cap });
   return buf;
 }
@@ -300,6 +306,7 @@ function ensureReadback(device: GPUDevice, root: Root, key: string, floats: numb
   if (got && got.cap >= floats) return got;
   const cap = Math.max(floats, (got?.cap ?? 0) * 2, 4);
   const raw = device.createBuffer({
+    label: `gramMatrix:${key}`,
     size: cap * 4,
     usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
   });
@@ -452,6 +459,7 @@ export async function gramMatrixGpu(
   // COPY_SRC as well as RENDER_ATTACHMENT: this one is copied into the raster slice.
   const halfTex = half ? ensureHalfTex(device, "gramMatrix", w, h, GPUTextureUsage.COPY_SRC) : undefined;
   const splatBind = device.createBindGroup({
+    label: "gramMatrix:splat",
     layout: splat.getBindGroupLayout(0),
     entries: [
       { binding: 0, resource: sized(uniSplat, SPLAT_UNI_FLOATS * 4) },
@@ -462,9 +470,10 @@ export async function gramMatrixGpu(
   // One encoder for the whole splat phase: render channel k, copy it into its slice, clear and
   // reuse the same target for k+1. Sequential within an encoder is well-defined, and it keeps the
   // texture footprint at one raster regardless of K.
-  const enc = device.createCommandEncoder();
+  const enc = device.createCommandEncoder({ label: "gramMatrix:splat" });
   for (let k = 0; k < K; k++) {
     const pass = enc.beginRenderPass({
+      label: "gramMatrix:splat",
       colorAttachments: [{ view: tex.view, loadOp: "clear", storeOp: "store", clearValue: { r: 0, g: 0, b: 0, a: 0 } }],
     });
     // The target may be a larger reused scratch (see ../scratchTexture.ts); without this the
@@ -489,6 +498,7 @@ export async function gramMatrixGpu(
 
   const reduceBind = () =>
     device.createBindGroup({
+      label: "gramMatrix:reduce",
       layout: reduceLayout,
       entries: [
         { binding: 0, resource: sized(uniReduce, REDUCE_UNI_FLOATS * 4) },
@@ -500,8 +510,8 @@ export async function gramMatrixGpu(
       ],
     });
 
-  const enc2 = device.createCommandEncoder();
-  const pass1 = enc2.beginComputePass();
+  const enc2 = device.createCommandEncoder({ label: "gramMatrix:sumChannels" });
+  const pass1 = enc2.beginComputePass({ label: "gramMatrix:sumChannels" });
   pass1.setPipeline(sumChannels);
   pass1.setBindGroup(0, reduceBind());
   pass1.dispatchWorkgroups(K);
@@ -515,8 +525,8 @@ export async function gramMatrixGpu(
   for (let k = 0; k < K; k++) mean[k] = (sumVals[k] ?? 0) / P;
   device.queue.writeBuffer(meansBuf, 0, Float32Array.from(mean));
 
-  const enc3 = device.createCommandEncoder();
-  const pass2 = enc3.beginComputePass();
+  const enc3 = device.createCommandEncoder({ label: "gramMatrix:gramPairs" });
+  const pass2 = enc3.beginComputePass({ label: "gramMatrix:gramPairs" });
   pass2.setPipeline(gramPairs);
   pass2.setBindGroup(0, reduceBind());
   pass2.dispatchWorkgroups(K * K);

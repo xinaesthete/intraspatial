@@ -34,9 +34,10 @@ function raw(root: Root, b: BindEntry): GPUBuffer {
  *
  *  `entries` are positional and must be listed in the same order the layout declares them —
  *  TypeGPU assigns binding indices in declaration order, and this is where that correspondence
- *  is relied on. */
-export function rawBindGroup(device: GPUDevice, root: Root, layout: unknown, entries: BindEntry[]): GPUBindGroup {
+ *  is relied on. `label` names it in validation errors — pass the kernel's `<kernel>:<role>`. */
+export function rawBindGroup(device: GPUDevice, root: Root, layout: unknown, entries: BindEntry[], label = "rawBindGroup"): GPUBindGroup {
   return device.createBindGroup({
+    label: label,
     layout: (root.unwrap as unknown as Unwrap)(layout) as GPUBindGroupLayout,
     entries: entries.map((e, binding) => ({ binding, resource: { buffer: raw(root, e) } })),
   });

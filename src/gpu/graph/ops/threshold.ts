@@ -19,11 +19,13 @@ const WG = 64;
 
 const ThreshParams = d.struct({ n: d.u32, thresh: d.f32, soft: d.u32, softness: d.f32 });
 
-const layout = tgpu.bindGroupLayout({
-  params: { uniform: ThreshParams },
-  src: { storage: (n: number) => d.arrayOf(d.f32, n), access: "readonly" },
-  dst: { storage: (n: number) => d.arrayOf(d.f32, n), access: "mutable" },
-});
+const layout = tgpu
+  .bindGroupLayout({
+    params: { uniform: ThreshParams },
+    src: { storage: (n: number) => d.arrayOf(d.f32, n), access: "readonly" },
+    dst: { storage: (n: number) => d.arrayOf(d.f32, n), access: "mutable" },
+  })
+  .$name("threshold");
 
 const threshFn = tgpu
   .computeFn({ in: { gid: d.builtin.globalInvocationId }, workgroupSize: [WG] })((input) => {
@@ -53,7 +55,7 @@ interface Pipe {
 }
 
 function makeParams(root: Root) {
-  return root.createBuffer(ThreshParams).$usage("uniform");
+  return root.createBuffer(ThreshParams).$usage("uniform").$name("threshold:params");
 }
 
 // One pipeline + uniform block per backend root (roots are device singletons).
@@ -64,9 +66,16 @@ function getPipe(device: GPUDevice, root: Root): Promise<Pipe> {
   if (!p) {
     p = (async () => {
       const { code, usedBindGroupLayouts } = tgpu.resolveWithContext([threshFn], { names: "strict" });
-      const module = device.createShaderModule({ code });
-      const pipeLayout = device.createPipelineLayout({ bindGroupLayouts: usedBindGroupLayouts.map((l) => root.unwrap(l)) });
-      const pipeline = device.createComputePipeline({ layout: pipeLayout, compute: { module, entryPoint: "threshold" } });
+      const module = device.createShaderModule({ label: "threshold", code });
+      const pipeLayout = device.createPipelineLayout({
+        label: "threshold",
+        bindGroupLayouts: usedBindGroupLayouts.map((l) => root.unwrap(l)),
+      });
+      const pipeline = device.createComputePipeline({
+        label: "threshold",
+        layout: pipeLayout,
+        compute: { module, entryPoint: "threshold" },
+      });
       return { pipeline, params: makeParams(root) };
     })();
     pipes.set(root as object, p);
@@ -123,9 +132,9 @@ export const thresholdOp: OpType = {
 
     // Raw bind group over the pooled buffers — see residentBind.ts for why these are not
     // wrapped as TypeGPU buffers. Order matches the `layout` declaration: params, src, dst.
-    const bind = rawBindGroup(device, root, layout, [pipe.params, src.buffer, dst.buffer]);
-    const enc = device.createCommandEncoder();
-    const pass = enc.beginComputePass();
+    const bind = rawBindGroup(device, root, layout, [pipe.params, src.buffer, dst.buffer], "threshold");
+    const enc = device.createCommandEncoder({ label: "threshold" });
+    const pass = enc.beginComputePass({ label: "threshold" });
     pass.setPipeline(pipe.pipeline);
     pass.setBindGroup(0, bind);
     pass.dispatchWorkgroups(Math.ceil(n / WG));

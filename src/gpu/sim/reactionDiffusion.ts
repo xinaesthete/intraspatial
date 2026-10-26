@@ -28,13 +28,15 @@ const Params = d.struct({
   dt: d.f32,
 });
 
-const layout = tgpu.bindGroupLayout({
-  params: { uniform: Params },
-  uIn: { storage: (n: number) => d.arrayOf(d.f32, n), access: "readonly" },
-  vIn: { storage: (n: number) => d.arrayOf(d.f32, n), access: "readonly" },
-  uOut: { storage: (n: number) => d.arrayOf(d.f32, n), access: "mutable" },
-  vOut: { storage: (n: number) => d.arrayOf(d.f32, n), access: "mutable" },
-});
+const layout = tgpu
+  .bindGroupLayout({
+    params: { uniform: Params },
+    uIn: { storage: (n: number) => d.arrayOf(d.f32, n), access: "readonly" },
+    vIn: { storage: (n: number) => d.arrayOf(d.f32, n), access: "readonly" },
+    uOut: { storage: (n: number) => d.arrayOf(d.f32, n), access: "mutable" },
+    vOut: { storage: (n: number) => d.arrayOf(d.f32, n), access: "mutable" },
+  })
+  .$name("reactionDiffusion");
 
 const stepFn = tgpu
   .computeFn({ in: { gid: d.builtin.globalInvocationId }, workgroupSize: [WG] })((input) => {
@@ -82,17 +84,31 @@ interface Pipe {
 const getPipe = deviceScoped(async (device: GPUDevice): Promise<Pipe> => {
   const root = tgpu.initFromDevice({ device });
   const { code, usedBindGroupLayouts } = tgpu.resolveWithContext([stepFn], { names: "strict" });
-  const module = device.createShaderModule({ code });
-  const pipeLayout = device.createPipelineLayout({ bindGroupLayouts: usedBindGroupLayouts.map((l) => root.unwrap(l)) });
-  const pipeline = device.createComputePipeline({ layout: pipeLayout, compute: { module, entryPoint: "grayScottStep" } });
+  const module = device.createShaderModule({ label: "reactionDiffusion", code });
+  const pipeLayout = device.createPipelineLayout({
+    label: "reactionDiffusion",
+    bindGroupLayouts: usedBindGroupLayouts.map((l) => root.unwrap(l)),
+  });
+  const pipeline = device.createComputePipeline({
+    label: "reactionDiffusion",
+    layout: pipeLayout,
+    compute: { module, entryPoint: "grayScottStep" },
+  });
   return { device, root, pipeline };
 });
 
 type Root = Pipe["root"];
 function makePool(root: Root, n: number) {
   const cap = Math.max(1, n);
-  const sbuf = () => root.createBuffer(d.arrayOf(d.f32, cap)).$usage("storage");
-  return { n, uA: sbuf(), vA: sbuf(), uB: sbuf(), vB: sbuf(), params: root.createBuffer(Params).$usage("uniform") };
+  const sbuf = (role: string) => root.createBuffer(d.arrayOf(d.f32, cap)).$usage("storage").$name(`reactionDiffusion:${role}`);
+  return {
+    n,
+    uA: sbuf("uA"),
+    vA: sbuf("vA"),
+    uB: sbuf("uB"),
+    vB: sbuf("vB"),
+    params: root.createBuffer(Params).$usage("uniform").$name("reactionDiffusion:params"),
+  };
 }
 /** Per root, so per device: a pool's buffers belong to the device its root wraps. */
 const pools = new WeakMap<Root, ReturnType<typeof makePool>>();
@@ -157,8 +173,8 @@ export async function grayScottStepsGpu(
     vOut = pool.vB;
   for (let s = 0; s < steps; s++) {
     const bind = root.unwrap(root.createBindGroup(layout, { params: pool.params, uIn, vIn, uOut, vOut }));
-    const enc = dev.createCommandEncoder();
-    const pass = enc.beginComputePass();
+    const enc = dev.createCommandEncoder({ label: "reactionDiffusion" });
+    const pass = enc.beginComputePass({ label: "reactionDiffusion" });
     pass.setPipeline(pipeline);
     pass.setBindGroup(0, bind);
     pass.dispatchWorkgroups(groups);

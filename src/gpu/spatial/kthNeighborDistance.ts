@@ -25,20 +25,24 @@ const MAX_K = 32;
 
 const Params = d.struct({ n: d.u32, k: d.u32 });
 
-const layout = tgpu.bindGroupLayout({
-  params: { uniform: Params },
-  pts: { storage: (n: number) => d.arrayOf(d.f32, n), access: "readonly" }, // x,y per point
-  out: { storage: (n: number) => d.arrayOf(d.f32, n), access: "mutable" }, // ρ_i per point
-});
+const layout = tgpu
+  .bindGroupLayout({
+    params: { uniform: Params },
+    pts: { storage: (n: number) => d.arrayOf(d.f32, n), access: "readonly" }, // x,y per point
+    out: { storage: (n: number) => d.arrayOf(d.f32, n), access: "mutable" }, // ρ_i per point
+  })
+  .$name("kthNeighborDistance");
 
-const layoutIdx = tgpu.bindGroupLayout({
-  params: { uniform: Params },
-  lat: { uniform: Lattice },
-  pts: { storage: (n: number) => d.arrayOf(d.f32, n), access: "readonly" },
-  start: { storage: StartArray, access: "readonly" },
-  items: { storage: StartArray, access: "readonly" },
-  out: { storage: (n: number) => d.arrayOf(d.f32, n), access: "mutable" },
-});
+const layoutIdx = tgpu
+  .bindGroupLayout({
+    params: { uniform: Params },
+    lat: { uniform: Lattice },
+    pts: { storage: (n: number) => d.arrayOf(d.f32, n), access: "readonly" },
+    start: { storage: StartArray, access: "readonly" },
+    items: { storage: StartArray, access: "readonly" },
+    out: { storage: (n: number) => d.arrayOf(d.f32, n), access: "mutable" },
+  })
+  .$name("kthNeighborDistance:indexed");
 
 // The per-candidate body, shared by both entry points: keep the k smallest.
 const CONSIDER = /* wgsl */ `
@@ -121,9 +125,16 @@ const getPipe = deviceScoped(async (device: GPUDevice): Promise<Pipe> => {
   const root = tgpu.initFromDevice({ device });
   const build = (template: string, externals: Record<string, object>, entryPoint: string) => {
     const { code, usedBindGroupLayouts } = tgpu.resolveWithContext({ template, externals, names: "strict" });
-    const module = device.createShaderModule({ code });
-    const pipeLayout = device.createPipelineLayout({ bindGroupLayouts: usedBindGroupLayouts.map((l) => root.unwrap(l)) });
-    return device.createComputePipeline({ layout: pipeLayout, compute: { module, entryPoint } });
+    const module = device.createShaderModule({ label: "kthNeighborDistance", code });
+    const pipeLayout = device.createPipelineLayout({
+      label: "kthNeighborDistance",
+      bindGroupLayouts: usedBindGroupLayouts.map((l) => root.unwrap(l)),
+    });
+    return device.createComputePipeline({
+      label: `kthNeighborDistance:${entryPoint}`,
+      layout: pipeLayout,
+      compute: { module, entryPoint },
+    });
   };
   const indexCtx = await getGridIndexCtx(device);
   return {
@@ -139,9 +150,12 @@ type Root = Pipe["root"];
 function makePool(root: Root, n: number) {
   return {
     n,
-    pts: root.createBuffer(d.arrayOf(d.f32, 2 * n)).$usage("storage"),
-    out: root.createBuffer(d.arrayOf(d.f32, n)).$usage("storage"),
-    params: root.createBuffer(Params).$usage("uniform"),
+    pts: root
+      .createBuffer(d.arrayOf(d.f32, 2 * n))
+      .$usage("storage")
+      .$name("kthNeighborDistance:pts"),
+    out: root.createBuffer(d.arrayOf(d.f32, n)).$usage("storage").$name("kthNeighborDistance:out"),
+    params: root.createBuffer(Params).$usage("uniform").$name("kthNeighborDistance:params"),
   };
 }
 /** Per root, so per device: a pool's buffers belong to the device its root wraps. */
@@ -184,13 +198,14 @@ export async function kthNeighborDistanceGpu(
   writeView(device.queue, root.unwrap(p.pts), flat);
   p.params.write({ n, k });
 
-  const enc = device.createCommandEncoder();
+  const enc = device.createCommandEncoder({ label: "kthNeighborDistance" });
   let bind: GPUBindGroup;
   if (opts.cell === undefined) {
     bind = root.unwrap(root.createBindGroup(layout, { params: p.params, pts: p.pts, out: p.out }));
   } else {
     const q = encodeQueryIndex(indexCtx, root.unwrap(p.pts), n, xs, ys, opts.cell, opts.bounds, enc, "kthNeighborDistance:index");
     bind = device.createBindGroup({
+      label: "kthNeighborDistance",
       layout: root.unwrap(layoutIdx),
       entries: [
         { binding: 0, resource: { buffer: root.unwrap(p.params) } },
@@ -202,7 +217,7 @@ export async function kthNeighborDistanceGpu(
       ],
     });
   }
-  const pass = enc.beginComputePass();
+  const pass = enc.beginComputePass({ label: "kthNeighborDistance" });
   pass.setPipeline(opts.cell === undefined ? pipeline : pipelineIdx);
   pass.setBindGroup(0, bind);
   pass.dispatchWorkgroups(Math.ceil(n / WG));

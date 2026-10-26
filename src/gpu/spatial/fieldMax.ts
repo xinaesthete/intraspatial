@@ -58,7 +58,7 @@ async function getCtx(device?: GPUDevice): Promise<Ctx> {
   if (!ctx) {
     ctx = (async () => {
       const module = await compileShader(dev, SHADER, "fieldMax");
-      const pipeline = dev.createComputePipeline({ layout: "auto", compute: { module, entryPoint: "fieldMax" } });
+      const pipeline = dev.createComputePipeline({ label: "fieldMax", layout: "auto", compute: { module, entryPoint: "fieldMax" } });
       const uni = dev.createBuffer({ label: "fieldMax:uniforms", size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
       return { device: dev, pipeline, uni };
     })();
@@ -77,12 +77,13 @@ export async function fieldMaxResident(src: GPUBuffer, n: number, dst: GPUBuffer
   const groups = Math.max(1, Math.min(MAX_GROUPS, Math.ceil(n / WG)));
   dev.queue.writeBuffer(uni, 0, new Uint32Array([n, groups * WG]));
   dev.queue.writeBuffer(dst, 0, new Uint32Array([0]));
-  const enc = dev.createCommandEncoder();
-  const pass = enc.beginComputePass();
+  const enc = dev.createCommandEncoder({ label: "fieldMax" });
+  const pass = enc.beginComputePass({ label: "fieldMax" });
   pass.setPipeline(pipeline);
   pass.setBindGroup(
     0,
     dev.createBindGroup({
+      label: "fieldMax",
       layout: pipeline.getBindGroupLayout(0),
       entries: [
         { binding: 0, resource: { buffer: uni } },

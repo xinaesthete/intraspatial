@@ -17,12 +17,14 @@ const FAR = 3.4e38;
 
 const Params = d.struct({ n: d.u32, m: d.u32 });
 
-const layout = tgpu.bindGroupLayout({
-  params: { uniform: Params },
-  data: { storage: (n: number) => d.arrayOf(d.f32, n), access: "readonly" }, // x,y per data point
-  query: { storage: (n: number) => d.arrayOf(d.f32, n), access: "readonly" }, // x,y per sample
-  out: { storage: (n: number) => d.arrayOf(d.f32, n), access: "mutable" }, // min dist per sample
-});
+const layout = tgpu
+  .bindGroupLayout({
+    params: { uniform: Params },
+    data: { storage: (n: number) => d.arrayOf(d.f32, n), access: "readonly" }, // x,y per data point
+    query: { storage: (n: number) => d.arrayOf(d.f32, n), access: "readonly" }, // x,y per sample
+    out: { storage: (n: number) => d.arrayOf(d.f32, n), access: "mutable" }, // min dist per sample
+  })
+  .$name("emptySpace");
 
 const esFn = tgpu
   .computeFn({ in: { gid: d.builtin.globalInvocationId }, workgroupSize: [WG] })((input) => {
@@ -53,23 +55,40 @@ function getPipe(): Promise<Pipe> {
     const device = await getDevice();
     const root = tgpu.initFromDevice({ device });
     const { code, usedBindGroupLayouts } = tgpu.resolveWithContext([esFn], { names: "strict" });
-    const module = device.createShaderModule({ code });
-    const pipeLayout = device.createPipelineLayout({ bindGroupLayouts: usedBindGroupLayouts.map((l) => root.unwrap(l)) });
-    const pipeline = device.createComputePipeline({ layout: pipeLayout, compute: { module, entryPoint: "emptySpace" } });
+    const module = device.createShaderModule({ label: "emptySpace", code });
+    const pipeLayout = device.createPipelineLayout({
+      label: "emptySpace",
+      bindGroupLayouts: usedBindGroupLayouts.map((l) => root.unwrap(l)),
+    });
+    const pipeline = device.createComputePipeline({
+      label: "emptySpace",
+      layout: pipeLayout,
+      compute: { module, entryPoint: "emptySpace" },
+    });
     return { device, root, pipeline };
   })();
   return pipeCache;
 }
 
 type Root = Pipe["root"];
-function sb(root: Root, n: number) {
-  return root.createBuffer(d.arrayOf(d.f32, Math.max(1, n))).$usage("storage");
+function sb(root: Root, n: number, label: string) {
+  return root
+    .createBuffer(d.arrayOf(d.f32, Math.max(1, n)))
+    .$usage("storage")
+    .$name(label);
 }
 function makeParams(root: Root) {
-  return root.createBuffer(Params).$usage("uniform");
+  return root.createBuffer(Params).$usage("uniform").$name("emptySpace:params");
 }
 function makePool(root: Root, nCap: number, mCap: number, params: ReturnType<typeof makeParams>) {
-  return { nCap, mCap, data: sb(root, 2 * nCap), query: sb(root, 2 * mCap), out: sb(root, mCap), params };
+  return {
+    nCap,
+    mCap,
+    data: sb(root, 2 * nCap, "emptySpace:data"),
+    query: sb(root, 2 * mCap, "emptySpace:query"),
+    out: sb(root, mCap, "emptySpace:out"),
+    params,
+  };
 }
 let pool: ReturnType<typeof makePool> | undefined;
 function ensurePool(root: Root, n: number, m: number) {
@@ -148,8 +167,8 @@ export async function emptySpaceGpu(xs: ArrayLike<number>, ys: ArrayLike<number>
   p.params.write({ n, m });
 
   const bind = root.unwrap(root.createBindGroup(layout, { params: p.params, data: p.data, query: p.query, out: p.out }));
-  const enc = device.createCommandEncoder();
-  const pass = enc.beginComputePass();
+  const enc = device.createCommandEncoder({ label: "emptySpace" });
+  const pass = enc.beginComputePass({ label: "emptySpace" });
   pass.setPipeline(pipeline);
   pass.setBindGroup(0, bind);
   pass.dispatchWorkgroups(Math.ceil(m / WG));

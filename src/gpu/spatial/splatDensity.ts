@@ -96,11 +96,13 @@ const DEPAD_WG = 64;
 
 const DepadParams = d.struct({ w: d.u32, h: d.u32, rowFloats: d.u32 });
 
-const depadLayout = tgpu.bindGroupLayout({
-  params: { uniform: DepadParams },
-  src: { storage: (n: number) => d.arrayOf(d.f32, n), access: "readonly" },
-  dst: { storage: (n: number) => d.arrayOf(d.f32, n), access: "mutable" },
-});
+const depadLayout = tgpu
+  .bindGroupLayout({
+    params: { uniform: DepadParams },
+    src: { storage: (n: number) => d.arrayOf(d.f32, n), access: "readonly" },
+    dst: { storage: (n: number) => d.arrayOf(d.f32, n), access: "mutable" },
+  })
+  .$name("splatDensity:depad");
 
 const depadFn = tgpu
   .computeFn({ in: { gid: d.builtin.globalInvocationId }, workgroupSize: [DEPAD_WG] })((input) => {
@@ -173,8 +175,9 @@ function buildGpu(device: GPUDevice): Gpu {
   const root = tgpu.initFromDevice({ device });
   const base = { device, root, ptsCap: 0, texW: 0, texH: 0, bytesPerRow: 0, rbCap: 0 };
   if (!device.features.has("float32-blendable")) return base;
-  const module = device.createShaderModule({ code: SHADER });
+  const module = device.createShaderModule({ label: "splatDensity:splat", code: SHADER });
   const pipeline = device.createRenderPipeline({
+    label: "splatDensity:splat",
     layout: "auto",
     vertex: { module, entryPoint: "vs" },
     primitive: { topology: "triangle-strip" },
@@ -202,9 +205,12 @@ const align256 = (n: number) => Math.ceil(n / 256) * 256;
 function getDepad(g: Gpu) {
   g.depad ??= (async () => {
     const { code, usedBindGroupLayouts } = tgpu.resolveWithContext([depadFn], { names: "strict" });
-    const module = g.device.createShaderModule({ code });
-    const layout = g.device.createPipelineLayout({ bindGroupLayouts: usedBindGroupLayouts.map((l) => g.root.unwrap(l)) });
-    const pipeline = g.device.createComputePipeline({ layout, compute: { module, entryPoint: "splatDepad" } });
+    const module = g.device.createShaderModule({ label: "splatDensity:depad", code });
+    const layout = g.device.createPipelineLayout({
+      label: "splatDensity:depad",
+      bindGroupLayouts: usedBindGroupLayouts.map((l) => g.root.unwrap(l)),
+    });
+    const pipeline = g.device.createComputePipeline({ label: "splatDensity:depad", layout, compute: { module, entryPoint: "splatDepad" } });
     return { pipeline, params: g.root.createBuffer(DepadParams).$usage("uniform").$name("splatDensity:depadParams") };
   })();
   return g.depad;
@@ -346,7 +352,7 @@ function renderToStaging(
   const rowFloats = g.bytesPerRow / 4;
   ensureReadback(g, rowFloats * h);
 
-  const enc = g.device.createCommandEncoder();
+  const enc = g.device.createCommandEncoder({ label: "splatDensity:toStaging" });
   renderPoints(g, enc, target.createView(), pts, sigma, radiusSigma, bbox);
   enc.copyTextureToBuffer({ texture: target }, { buffer: g.rbRaw!, bytesPerRow: g.bytesPerRow }, { width: w, height: h });
   g.device.queue.submit([enc.finish()]);
@@ -396,6 +402,7 @@ function renderPoints(
   });
   device.queue.writeBuffer(g.uniBuf, 0, uni);
   const pass = enc.beginRenderPass({
+    label: "splatDensity:splat",
     colorAttachments: [{ view, clearValue: { r: 0, g: 0, b: 0, a: 0 }, loadOp: "clear", storeOp: "store" }],
   });
   if (extent) pass.setViewport(0, 0, extent.width, extent.height, 0, 1);
@@ -403,6 +410,7 @@ function renderPoints(
   pass.setBindGroup(
     0,
     device.createBindGroup({
+      label: "splatDensity:splat",
       layout: pipeline.getBindGroupLayout(0),
       entries: [
         { binding: 0, resource: { buffer: g.uniBuf } },
@@ -474,7 +482,7 @@ export async function splatDensityToTexture(points: GPUBuffer, n: number, target
   const narrow = half ? await halfNarrower(device) : undefined;
   const accum = half ? ensureAccum(device, w, h) : target;
 
-  const enc = device.createCommandEncoder();
+  const enc = device.createCommandEncoder({ label: "splatDensity:toTexture" });
   renderPoints(g, enc, accum.createView(), { buffer: points, n, stride: 2, defaultWeight: 1 }, sigma, opts.radiusSigma ?? 4, opts.bbox, {
     width: w,
     height: h,
@@ -544,7 +552,7 @@ export async function splatDensityResident(points: GPUBuffer, n: number, dst: GP
   // queue.writeBuffer lands before the submit below, and after any earlier caller's submit.
   depad.params.write({ w, h, rowFloats });
 
-  const enc = device.createCommandEncoder();
+  const enc = device.createCommandEncoder({ label: "splatDensity:resident" });
   renderPoints(
     g,
     enc,
@@ -556,9 +564,9 @@ export async function splatDensityResident(points: GPUBuffer, n: number, dst: GP
   );
   enc.copyTextureToBuffer({ texture: target }, { buffer: g.rbRaw!, bytesPerRow: g.bytesPerRow }, { width: w, height: h });
   // Strip the 256-byte row padding on-device, straight into the caller's buffer.
-  const pass = enc.beginComputePass();
+  const pass = enc.beginComputePass({ label: "splatDensity:depad" });
   pass.setPipeline(depad.pipeline);
-  pass.setBindGroup(0, rawBindGroup(device, root, depadLayout, [depad.params, g.rbRaw!, dst]));
+  pass.setBindGroup(0, rawBindGroup(device, root, depadLayout, [depad.params, g.rbRaw!, dst], "splatDensity:depad"));
   pass.dispatchWorkgroups(Math.ceil((w * h) / DEPAD_WG));
   pass.end();
   device.queue.submit([enc.finish()]);

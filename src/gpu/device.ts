@@ -65,7 +65,9 @@ export function getDevice(): Promise<GPUDevice> {
     // blend density into an r32float render target (the no-atomics splat path).
     // Harmless for the compute kernels; falls back cleanly if unsupported.
     const requiredFeatures = (["float32-blendable"] as GPUFeatureName[]).filter((f) => adapter.features.has(f));
-    const device = await adapter.requestDevice({ requiredFeatures });
+    // Labelled so validation errors on a device intraspatial created itself say so. A host's device
+    // (`adoptDevice`) keeps the host's labels — its queue is shared with everything on the page.
+    const device = await adapter.requestDevice({ label: "intraspatial", requiredFeatures, defaultQueue: { label: "intraspatial" } });
     reportUncapturedErrors(device);
     return device;
   })();
@@ -324,7 +326,7 @@ export async function readBackBytes(
     staging = device.createBuffer({ size: cap, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST, label: key });
     pool.set(key, { buf: staging, cap });
   }
-  const enc = device.createCommandEncoder();
+  const enc = device.createCommandEncoder({ label: `${key}:readBack` });
   enc.copyBufferToBuffer(src, srcOffset, staging!, 0, bytes);
   device.queue.submit([enc.finish()]);
   await staging!.mapAsync(GPUMapMode.READ, 0, bytes);

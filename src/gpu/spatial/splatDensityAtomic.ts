@@ -104,8 +104,16 @@ function getCtx(device: GPUDevice): Promise<Ctx> {
         compileShader(device, RESOLVE, "splatDensityAtomic:resolve"),
       ]);
       return {
-        splat: device.createComputePipeline({ layout: "auto", compute: { module: splatModule, entryPoint: "splat" } }),
-        resolve: device.createComputePipeline({ layout: "auto", compute: { module: resolveModule, entryPoint: "resolve" } }),
+        splat: device.createComputePipeline({
+          label: "splatDensityAtomic:splat",
+          layout: "auto",
+          compute: { module: splatModule, entryPoint: "splat" },
+        }),
+        resolve: device.createComputePipeline({
+          label: "splatDensityAtomic:resolve",
+          layout: "auto",
+          compute: { module: resolveModule, entryPoint: "resolve" },
+        }),
         splatUni: device.createBuffer({
           label: "splatDensityAtomic:splatUniforms",
           size: 64,
@@ -180,13 +188,14 @@ export async function splatDensityAtomic(
   new Float32Array(ru, 8, 1).set([1 / scale]);
   device.queue.writeBuffer(ctx.resolveUni, 0, ru);
 
-  const enc = device.createCommandEncoder();
+  const enc = device.createCommandEncoder({ label: "splatDensityAtomic" });
   enc.clearBuffer(ctx.acc, 0, bytes);
-  const splat = enc.beginComputePass();
+  const splat = enc.beginComputePass({ label: "splatDensityAtomic:splat" });
   splat.setPipeline(ctx.splat);
   splat.setBindGroup(
     0,
     device.createBindGroup({
+      label: "splatDensityAtomic:splat",
       layout: ctx.splat.getBindGroupLayout(0),
       entries: [
         { binding: 0, resource: { buffer: ctx.splatUni } },
@@ -197,11 +206,12 @@ export async function splatDensityAtomic(
   );
   if (n > 0) splat.dispatchWorkgroups(splatGrid.x, splatGrid.y);
   splat.end();
-  const resolve = enc.beginComputePass();
+  const resolve = enc.beginComputePass({ label: "splatDensityAtomic:resolve" });
   resolve.setPipeline(ctx.resolve);
   resolve.setBindGroup(
     0,
     device.createBindGroup({
+      label: "splatDensityAtomic:resolve",
       layout: ctx.resolve.getBindGroupLayout(0),
       entries: [
         { binding: 0, resource: { buffer: ctx.resolveUni } },

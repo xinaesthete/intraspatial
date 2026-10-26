@@ -32,12 +32,14 @@ import { kthNeighborDistanceGpu } from "./kthNeighborDistance";
 const WG = 64;
 const Params = d.struct({ n: d.u32 });
 
-const layout = tgpu.bindGroupLayout({
-  params: { uniform: Params },
-  pts: { storage: (n: number) => d.arrayOf(d.f32, n), access: "readonly" },
-  rho: { storage: (n: number) => d.arrayOf(d.f32, n), access: "readonly" },
-  out: { storage: (n: number) => d.arrayOf(d.f32, n), access: "mutable" }, // n*n
-});
+const layout = tgpu
+  .bindGroupLayout({
+    params: { uniform: Params },
+    pts: { storage: (n: number) => d.arrayOf(d.f32, n), access: "readonly" },
+    rho: { storage: (n: number) => d.arrayOf(d.f32, n), access: "readonly" },
+    out: { storage: (n: number) => d.arrayOf(d.f32, n), access: "mutable" }, // n*n
+  })
+  .$name("cknn");
 
 const cknnFn = tgpu
   .computeFn({ in: { gid: d.builtin.globalInvocationId }, workgroupSize: [WG] })((input) => {
@@ -74,9 +76,9 @@ function getPipe(): Promise<Pipe> {
     const device = await getDevice();
     const root = tgpu.initFromDevice({ device });
     const { code, usedBindGroupLayouts } = tgpu.resolveWithContext([cknnFn], { names: "strict" });
-    const module = device.createShaderModule({ code });
-    const pipeLayout = device.createPipelineLayout({ bindGroupLayouts: usedBindGroupLayouts.map((l) => root.unwrap(l)) });
-    const pipeline = device.createComputePipeline({ layout: pipeLayout, compute: { module, entryPoint: "cknnRescaled" } });
+    const module = device.createShaderModule({ label: "cknn", code });
+    const pipeLayout = device.createPipelineLayout({ label: "cknn", bindGroupLayouts: usedBindGroupLayouts.map((l) => root.unwrap(l)) });
+    const pipeline = device.createComputePipeline({ label: "cknn", layout: pipeLayout, compute: { module, entryPoint: "cknnRescaled" } });
     return { device, root, pipeline };
   })();
   return pipeCache;
@@ -86,10 +88,16 @@ type Root = Pipe["root"];
 function makePool(root: Root, n: number) {
   return {
     n,
-    pts: root.createBuffer(d.arrayOf(d.f32, 2 * n)).$usage("storage"),
-    rho: root.createBuffer(d.arrayOf(d.f32, n)).$usage("storage"),
-    out: root.createBuffer(d.arrayOf(d.f32, n * n)).$usage("storage"),
-    params: root.createBuffer(Params).$usage("uniform"),
+    pts: root
+      .createBuffer(d.arrayOf(d.f32, 2 * n))
+      .$usage("storage")
+      .$name("cknn:pts"),
+    rho: root.createBuffer(d.arrayOf(d.f32, n)).$usage("storage").$name("cknn:rho"),
+    out: root
+      .createBuffer(d.arrayOf(d.f32, n * n))
+      .$usage("storage")
+      .$name("cknn:out"),
+    params: root.createBuffer(Params).$usage("uniform").$name("cknn:params"),
   };
 }
 let pool: ReturnType<typeof makePool> | undefined;
@@ -134,8 +142,8 @@ export async function cknnRescaledDistanceGpu(
   p.params.write({ n });
 
   const bind = root.unwrap(root.createBindGroup(layout, { params: p.params, pts: p.pts, rho: p.rho, out: p.out }));
-  const enc = device.createCommandEncoder();
-  const pass = enc.beginComputePass();
+  const enc = device.createCommandEncoder({ label: "cknn" });
+  const pass = enc.beginComputePass({ label: "cknn" });
   pass.setPipeline(pipeline);
   pass.setBindGroup(0, bind);
   pass.dispatchWorkgroups(Math.ceil(n / WG));

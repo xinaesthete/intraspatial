@@ -18,12 +18,14 @@ const WG = 64;
 const Params = d.struct({ count: d.u32, _p0: d.u32, _p1: d.u32, _p2: d.u32 });
 
 // Binding order fixes the WGSL `@binding` indices below: params=0, inPts=1, outDist=2, P=3.
-const layout = tgpu.bindGroupLayout({
-  params: { uniform: Params },
-  inPts: { storage: (n: number) => d.arrayOf(d.f32, n), access: "readonly" },
-  outDist: { storage: (n: number) => d.arrayOf(d.f32, n), access: "mutable" },
-  pbuf: { storage: (n: number) => d.arrayOf(d.f32, n), access: "readonly" },
-});
+const layout = tgpu
+  .bindGroupLayout({
+    params: { uniform: Params },
+    inPts: { storage: (n: number) => d.arrayOf(d.f32, n), access: "readonly" },
+    outDist: { storage: (n: number) => d.arrayOf(d.f32, n), access: "mutable" },
+    pbuf: { storage: (n: number) => d.arrayOf(d.f32, n), access: "readonly" },
+  })
+  .$name("implicitGpu");
 
 // P is declared here (before `sdScene` uses it) so the codegen'd body can read param values.
 const BINDINGS = /* wgsl */ `
@@ -53,9 +55,9 @@ function getPipe(device: GPUDevice, root: Root, code: string): GPUComputePipelin
   }
   let pipe = byCode.get(code);
   if (!pipe) {
-    const module = device.createShaderModule({ code });
-    const pipeLayout = device.createPipelineLayout({ bindGroupLayouts: [root.unwrap(layout)] });
-    pipe = device.createComputePipeline({ layout: pipeLayout, compute: { module, entryPoint: "main" } });
+    const module = device.createShaderModule({ label: "implicitGpu", code });
+    const pipeLayout = device.createPipelineLayout({ label: "implicitGpu", bindGroupLayouts: [root.unwrap(layout)] });
+    pipe = device.createComputePipeline({ label: "implicitGpu", layout: pipeLayout, compute: { module, entryPoint: "main" } });
     byCode.set(code, pipe);
   }
   return pipe;
@@ -71,18 +73,24 @@ export async function sampleSdfGpu(device: GPUDevice, root: Root, g: Implicit, p
   const code = `${BINDINGS}\n${g.toWgsl()}\n${MAIN}`;
   const pipeline = getPipe(device, root, code);
 
-  const dims = root.createBuffer(Params).$usage("uniform");
+  const dims = root.createBuffer(Params).$usage("uniform").$name("implicitGpu:dims");
   dims.write({ count, _p0: 0, _p1: 0, _p2: 0 });
-  const inPts = root.createBuffer(d.arrayOf(d.f32, Math.max(3, points.length))).$usage("storage");
+  const inPts = root
+    .createBuffer(d.arrayOf(d.f32, Math.max(3, points.length)))
+    .$usage("storage")
+    .$name("implicitGpu:inPts");
   inPts.write(points.length >= 3 ? points : Float32Array.from({ length: 3 }, (_, i) => points[i] ?? 0));
-  const outDist = root.createBuffer(d.arrayOf(d.f32, Math.max(1, count))).$usage("storage");
-  const pbuf = root.createBuffer(d.arrayOf(d.f32, paramCount)).$usage("storage");
+  const outDist = root
+    .createBuffer(d.arrayOf(d.f32, Math.max(1, count)))
+    .$usage("storage")
+    .$name("implicitGpu:outDist");
+  const pbuf = root.createBuffer(d.arrayOf(d.f32, paramCount)).$usage("storage").$name("implicitGpu:pbuf");
   pbuf.write(paramVec.length === paramCount ? paramVec : Float32Array.from({ length: paramCount }, (_, i) => paramVec[i] ?? 0));
 
   const bind = root.unwrap(root.createBindGroup(layout, { params: dims, inPts, outDist, pbuf }));
 
-  const enc = device.createCommandEncoder();
-  const pass = enc.beginComputePass();
+  const enc = device.createCommandEncoder({ label: "implicitGpu" });
+  const pass = enc.beginComputePass({ label: "implicitGpu" });
   pass.setPipeline(pipeline);
   pass.setBindGroup(0, bind);
   pass.dispatchWorkgroups(Math.ceil(Math.max(1, count) / WG));

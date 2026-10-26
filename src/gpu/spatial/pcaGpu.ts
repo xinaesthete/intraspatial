@@ -68,24 +68,28 @@ const Params = d.struct({
   rowOffset: d.u32,
 });
 
-const covLayout = tgpu.bindGroupLayout({
-  params: { uniform: Params },
-  data: { storage: (n: number) => d.arrayOf(d.f32, n), access: "readonly" }, // [rows, dim]
-  mean: { storage: (n: number) => d.arrayOf(d.f32, n), access: "readonly" }, // [dim]
-  scale: { storage: (n: number) => d.arrayOf(d.f32, n), access: "readonly" }, // [dim]
-  cov: { storage: (n: number) => d.arrayOf(d.f32, n), access: "mutable" }, // [dim, dim], accumulated
-});
+const covLayout = tgpu
+  .bindGroupLayout({
+    params: { uniform: Params },
+    data: { storage: (n: number) => d.arrayOf(d.f32, n), access: "readonly" }, // [rows, dim]
+    mean: { storage: (n: number) => d.arrayOf(d.f32, n), access: "readonly" }, // [dim]
+    scale: { storage: (n: number) => d.arrayOf(d.f32, n), access: "readonly" }, // [dim]
+    cov: { storage: (n: number) => d.arrayOf(d.f32, n), access: "mutable" }, // [dim, dim], accumulated
+  })
+  .$name("pcaGpu:covariance");
 
-const projectLayout = tgpu.bindGroupLayout({
-  params: { uniform: Params },
-  data: { storage: (n: number) => d.arrayOf(d.f32, n), access: "readonly" }, // [rows, dim]
-  mean: { storage: (n: number) => d.arrayOf(d.f32, n), access: "readonly" },
-  scale: { storage: (n: number) => d.arrayOf(d.f32, n), access: "readonly" },
-  /** Components TRANSPOSED to `[dim, nComp]`, so the 32 lanes of a half-warp read 32
-   *  consecutive floats instead of 32 addresses `dim` apart. */
-  compT: { storage: (n: number) => d.arrayOf(d.f32, n), access: "readonly" },
-  scores: { storage: (n: number) => d.arrayOf(d.f32, n), access: "mutable" }, // [n, nComp]
-});
+const projectLayout = tgpu
+  .bindGroupLayout({
+    params: { uniform: Params },
+    data: { storage: (n: number) => d.arrayOf(d.f32, n), access: "readonly" }, // [rows, dim]
+    mean: { storage: (n: number) => d.arrayOf(d.f32, n), access: "readonly" },
+    scale: { storage: (n: number) => d.arrayOf(d.f32, n), access: "readonly" },
+    /** Components TRANSPOSED to `[dim, nComp]`, so the 32 lanes of a half-warp read 32
+     *  consecutive floats instead of 32 addresses `dim` apart. */
+    compT: { storage: (n: number) => d.arrayOf(d.f32, n), access: "readonly" },
+    scores: { storage: (n: number) => d.arrayOf(d.f32, n), access: "mutable" }, // [n, nComp]
+  })
+  .$name("pcaGpu:project");
 
 const COV_TEMPLATE = /* wgsl */ `
 var<workgroup> As: array<f32, ${TILE * TILE}u>;
@@ -185,11 +189,12 @@ function getPipes(): Promise<Pipes> {
     const device = await getDevice();
     const root = tgpu.initFromDevice({ device });
     const finish = (resolved: ReturnType<typeof tgpu.resolveWithContext>, entryPoint: string): GPUComputePipeline => {
-      const module = device.createShaderModule({ code: resolved.code });
+      const module = device.createShaderModule({ label: "pcaGpu", code: resolved.code });
       const layout = device.createPipelineLayout({
+        label: "pcaGpu",
         bindGroupLayouts: resolved.usedBindGroupLayouts.map((l) => root.unwrap(l)),
       });
-      return device.createComputePipeline({ layout, compute: { module, entryPoint } });
+      return device.createComputePipeline({ label: `pcaGpu:${entryPoint}`, layout, compute: { module, entryPoint } });
     };
     return {
       device,
@@ -212,8 +217,8 @@ function getPipes(): Promise<Pipes> {
 type Root = Pipes["root"];
 // Written as helpers so the buffer types stay concrete: `ReturnType<Root["createBuffer"]>`
 // widens to `TgpuBuffer<AnyData>`, which no bind group will accept.
-const makeF32 = (root: Root, cap: number) => root.createBuffer(d.arrayOf(d.f32, cap)).$usage("storage");
-const makeParams = (root: Root) => root.createBuffer(Params).$usage("uniform");
+const makeF32 = (root: Root, cap: number, label: string) => root.createBuffer(d.arrayOf(d.f32, cap)).$usage("storage").$name(label);
+const makeParams = (root: Root) => root.createBuffer(Params).$usage("uniform").$name("pcaGpu:params");
 type F32Buf = ReturnType<typeof makeF32>;
 
 const pool = new Map<string, { buf: F32Buf; cap: number }>();
@@ -222,7 +227,7 @@ function ensure(root: Root, key: string, floats: number): F32Buf {
   const got = pool.get(key);
   if (got && got.cap >= floats) return got.buf;
   const cap = Math.max(floats, (got?.cap ?? 0) * 2, 4);
-  const buf = makeF32(root, cap);
+  const buf = makeF32(root, cap, `pcaGpu:${key}`);
   pool.set(key, { buf, cap });
   return buf;
 }
@@ -335,8 +340,8 @@ export async function covarianceGpu(
     const rows = Math.min(rowsPerTile, n - start);
     device.queue.writeBuffer(root.unwrap(dataBuf), 0, sliceRows(data, dim, start, rows, staging), 0, rows * dim);
     params.write({ rows, dim, nComp: 0, rowOffset: start });
-    const enc = device.createCommandEncoder();
-    const pass = enc.beginComputePass();
+    const enc = device.createCommandEncoder({ label: "pcaGpu:covariance" });
+    const pass = enc.beginComputePass({ label: "pcaGpu:covariance" });
     pass.setPipeline(covariance);
     pass.setBindGroup(0, bind);
     pass.dispatchWorkgroups(tiles, tiles);
@@ -400,8 +405,8 @@ export async function projectScoresGpu(
     const rows = Math.min(rowsPerTile, n - start);
     device.queue.writeBuffer(root.unwrap(dataBuf), 0, sliceRows(data, dim, start, rows, staging), 0, rows * dim);
     params.write({ rows, dim, nComp, rowOffset: start });
-    const enc = device.createCommandEncoder();
-    const pass = enc.beginComputePass();
+    const enc = device.createCommandEncoder({ label: "pcaGpu:project" });
+    const pass = enc.beginComputePass({ label: "pcaGpu:project" });
     pass.setPipeline(project);
     pass.setBindGroup(0, bind);
     pass.dispatchWorkgroups(Math.ceil(rows / 2));

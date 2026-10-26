@@ -177,6 +177,7 @@ export const getScanCtx = deviceScoped(async (device: GPUDevice): Promise<ScanCt
   // point happens to touch — so no single bind group could satisfy `addOffsets`, which
   // never mentions `blockSums`.
   const layout = device.createBindGroupLayout({
+    label: "scan",
     entries: [
       { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: "uniform" } },
       { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
@@ -184,10 +185,11 @@ export const getScanCtx = deviceScoped(async (device: GPUDevice): Promise<ScanCt
       { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
     ],
   });
-  const pipelineLayout = device.createPipelineLayout({ bindGroupLayouts: [layout] });
+  const pipelineLayout = device.createPipelineLayout({ label: "scan", bindGroupLayouts: [layout] });
   const build = async (elem: ScanElement): Promise<ScanPipes> => {
     const module = await compileShader(device, scanShader(elem), `prefixSum:${elem}`);
-    const mk = (entryPoint: string) => device.createComputePipeline({ layout: pipelineLayout, compute: { module, entryPoint } });
+    const mk = (entryPoint: string) =>
+      device.createComputePipeline({ label: `scan:${elem}:${entryPoint}`, layout: pipelineLayout, compute: { module, entryPoint } });
     return { scanBlocks: mk("scanBlocks"), addOffsets: mk("addOffsets") };
   };
   return { device, layout, pipes: { u32: await build("u32"), f32: await build("f32") } };
@@ -229,7 +231,7 @@ const storageRw = () => GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBu
  *  for the worst case would move 140 MB to return a thousand indices. */
 export async function readBack(device: GPUDevice, key: string, src: GPUBuffer, srcOffset: number, bytes: number): Promise<ArrayBuffer> {
   const staging = ensureBuf(device, key, bytes, GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST);
-  const enc = device.createCommandEncoder();
+  const enc = device.createCommandEncoder({ label: `${key}:readBack` });
   enc.copyBufferToBuffer(src, srcOffset, staging, 0, bytes);
   device.queue.submit([enc.finish()]);
   await staging.mapAsync(GPUMapMode.READ, 0, bytes);
@@ -317,6 +319,7 @@ export function encodeScan(
     // reported a plausible wrong count in 7 ms.
     const group = (srcBuf: GPUBuffer, srcBytes: number) =>
       device.createBindGroup({
+        label: "scan",
         layout: ctx.layout,
         entries: [
           { binding: 0, resource: sized(uni, 16) },
@@ -386,7 +389,7 @@ export async function exclusiveScanGpu(
   const input = ensureBuf(device, `scan:${elem}:in`, n * 4, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST);
   device.queue.writeBuffer(input, 0, values.buffer, values.byteOffset, n * 4);
 
-  const enc = device.createCommandEncoder();
+  const enc = device.createCommandEncoder({ label: `scan:${elem}` });
   const { dst, totalBuf } = encodeScan(ctx, elem, input, n, enc, opts.maxWorkgroupsPerDim);
   device.queue.submit([enc.finish()]);
 

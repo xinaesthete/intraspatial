@@ -482,7 +482,7 @@ function getCtx(): Promise<Ctx> {
   ctxCache ??= (async () => {
     const device = await getDevice();
     const root = tgpu.initFromDevice({ device });
-    const module = device.createShaderModule({ code: SHADER });
+    const module = device.createShaderModule({ label: "quadratCorrelationGpu", code: SHADER });
     const storage = (binding: number, type: GPUBufferBindingType): GPUBindGroupLayoutEntry => ({
       binding,
       visibility: GPUShaderStage.COMPUTE,
@@ -492,6 +492,7 @@ function getCtx(): Promise<Ctx> {
     // layout per entry point — only the bindings it happens to touch — so no single bind group
     // could satisfy them all.
     const layout = device.createBindGroupLayout({
+      label: "quadratCorrelationGpu",
       entries: [
         { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: "uniform" } },
         storage(1, "read-only-storage"),
@@ -504,8 +505,13 @@ function getCtx(): Promise<Ctx> {
         storage(8, "storage"),
       ],
     });
-    const pipelineLayout = device.createPipelineLayout({ bindGroupLayouts: [layout] });
-    const mk = (entryPoint: string) => device.createComputePipeline({ layout: pipelineLayout, compute: { module, entryPoint } });
+    const pipelineLayout = device.createPipelineLayout({ label: "quadratCorrelationGpu", bindGroupLayouts: [layout] });
+    const mk = (entryPoint: string) =>
+      device.createComputePipeline({
+        label: `quadratCorrelationGpu:${entryPoint}`,
+        layout: pipelineLayout,
+        compute: { module, entryPoint },
+      });
     return {
       device,
       root,
@@ -531,7 +537,7 @@ function ensureBuf(device: GPUDevice, key: string, bytes: number, usage: number)
   const got = bufPool.get(key);
   if (got && got.cap >= bytes) return got.buf;
   const cap = Math.max(bytes, (got?.cap ?? 0) * 2, 256);
-  const buf = device.createBuffer({ size: cap, usage });
+  const buf = device.createBuffer({ label: `quadratCorrelation:${key}`, size: cap, usage });
   bufPool.set(key, { buf, cap });
   return buf;
 }
@@ -543,6 +549,7 @@ function ensureReadback(device: GPUDevice, root: Root, key: string, floats: numb
   if (got && got.cap >= floats) return got;
   const cap = Math.max(floats, (got?.cap ?? 0) * 2, 4);
   const raw = device.createBuffer({
+    label: `quadratCorrelation:${key}`,
     size: cap * 4,
     usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
   });
@@ -659,6 +666,7 @@ export async function quadratCorrelationGpu(cells: LabelledCells, p: QuadratCorr
   device.queue.writeBuffer(accRb.raw, 0, new Float32Array(K * K * 6));
 
   const bind = device.createBindGroup({
+    label: "quadratCorrelationGpu",
     layout,
     entries: [
       { binding: 0, resource: sized(uniBuf, 32) },
@@ -691,8 +699,8 @@ export async function quadratCorrelationGpu(cells: LabelledCells, p: QuadratCorr
     // Uniforms are rewritten per batch and the batch is submitted before the next write — the
     // writeBuffer-before-submit ordering that a single fused command buffer would get wrong.
     device.queue.writeBuffer(uniBuf, 0, new Uint32Array([n, K, Q, batch, (seed + done) >>> 0, halfBits, halfMask, burnIn]));
-    let enc = device.createCommandEncoder();
-    let pass = enc.beginComputePass();
+    let enc = device.createCommandEncoder({ label: "quadratCorrelationGpu" });
+    let pass = enc.beginComputePass({ label: "quadratCorrelationGpu" });
     pass.setBindGroup(0, bind);
     if (swap) {
       // Seed ONCE. Each slot is its own continuous chain: it is burnt in on the first batch and only
@@ -727,16 +735,16 @@ export async function quadratCorrelationGpu(cells: LabelledCells, p: QuadratCorr
           0,
           new Uint32Array([n, K, Q, batch, (seed + done + 0x9e3779b9 * (1 + step / SWAP_CHUNK)) >>> 0, halfBits, halfMask, chunk]),
         );
-        const cenc = device.createCommandEncoder();
-        const cpass = cenc.beginComputePass();
+        const cenc = device.createCommandEncoder({ label: "quadratCorrelationGpu" });
+        const cpass = cenc.beginComputePass({ label: "quadratCorrelationGpu:swapChain" });
         cpass.setBindGroup(0, bind);
         cpass.setPipeline(pipes.swapChain);
         cpass.dispatchWorkgroups(Math.ceil(batch / PAIR_WG));
         cpass.end();
         device.queue.submit([cenc.finish()]);
         await device.queue.onSubmittedWorkDone();
-        enc = device.createCommandEncoder();
-        pass = enc.beginComputePass();
+        enc = device.createCommandEncoder({ label: "quadratCorrelationGpu" });
+        pass = enc.beginComputePass({ label: "quadratCorrelationGpu:rowMoments" });
         pass.setBindGroup(0, bind);
       }
     }

@@ -80,40 +80,46 @@ const Params = d.struct({
   dt: d.f32,
 });
 
-const layout = tgpu.bindGroupLayout({
-  params: { uniform: Params },
-  posSnap: { storage: (n: number) => d.arrayOf(d.vec3f, n), access: "mutable" },
-  pos: { storage: (n: number) => d.arrayOf(d.vec3f, n), access: "mutable" },
-  vel: { storage: (n: number) => d.arrayOf(d.vec3f, n), access: "mutable" },
-  accel: { storage: (n: number) => d.arrayOf(d.vec3f, n), access: "mutable" },
-  angPos: { storage: (n: number) => d.arrayOf(d.vec3f, n), access: "mutable" },
-  angVel: { storage: (n: number) => d.arrayOf(d.vec3f, n), access: "mutable" },
-  // 5·N packing of the five blocks for a SINGLE readback (Dawn-under-Node segfaults once a
-  // handful of separate `.read()` staging buffers accumulate — one read sidesteps it).
-  snapshot: { storage: (n: number) => d.arrayOf(d.vec3f, n), access: "mutable" },
-});
+const layout = tgpu
+  .bindGroupLayout({
+    params: { uniform: Params },
+    posSnap: { storage: (n: number) => d.arrayOf(d.vec3f, n), access: "mutable" },
+    pos: { storage: (n: number) => d.arrayOf(d.vec3f, n), access: "mutable" },
+    vel: { storage: (n: number) => d.arrayOf(d.vec3f, n), access: "mutable" },
+    accel: { storage: (n: number) => d.arrayOf(d.vec3f, n), access: "mutable" },
+    angPos: { storage: (n: number) => d.arrayOf(d.vec3f, n), access: "mutable" },
+    angVel: { storage: (n: number) => d.arrayOf(d.vec3f, n), access: "mutable" },
+    // 5·N packing of the five blocks for a SINGLE readback (Dawn-under-Node segfaults once a
+    // handful of separate `.read()` staging buffers accumulate — one read sidesteps it).
+    snapshot: { storage: (n: number) => d.arrayOf(d.vec3f, n), access: "mutable" },
+  })
+  .$name("dancerGpu");
 
 // A separate binding for the render bridge: read pos + angPos, write a per-instance model
 // matrix into `mtx` (three.js's StorageInstancedBufferAttribute buffer) — so three renders the
 // swarm's position AND orientation straight off the GPU, no readback (the camera-drag fix).
 const MatrixDims = d.struct({ n: d.u32, scale: d.f32 });
-const matrixLayout = tgpu.bindGroupLayout({
-  dims: { uniform: MatrixDims },
-  mpos: { storage: (n: number) => d.arrayOf(d.vec3f, n), access: "readonly" },
-  mang: { storage: (n: number) => d.arrayOf(d.vec3f, n), access: "readonly" },
-  mtx: { storage: (n: number) => d.arrayOf(d.mat4x4f, n), access: "mutable" },
-});
+const matrixLayout = tgpu
+  .bindGroupLayout({
+    dims: { uniform: MatrixDims },
+    mpos: { storage: (n: number) => d.arrayOf(d.vec3f, n), access: "readonly" },
+    mang: { storage: (n: number) => d.arrayOf(d.vec3f, n), access: "readonly" },
+    mtx: { storage: (n: number) => d.arrayOf(d.mat4x4f, n), access: "mutable" },
+  })
+  .$name("dancerGpu:matrix");
 
 // Trail history bridge: each step appends the current position into a per-agent ring inside a
 // buffer three.js renders the motion trails from — so trails live on the GPU (no CPU snapshot).
 // Layout: agent i owns the contiguous slots [i*cap .. i*cap+cap); `head` is the slot written
 // this frame. The renderer reads it back with linear/cubic interpolation (ringBuffer.ts math).
 const TrailDims = d.struct({ n: d.u32, cap: d.u32, head: d.u32 });
-const trailLayout = tgpu.bindGroupLayout({
-  tdims: { uniform: TrailDims },
-  tpos: { storage: (n: number) => d.arrayOf(d.vec3f, n), access: "readonly" },
-  thist: { storage: (n: number) => d.arrayOf(d.vec3f, n), access: "mutable" },
-});
+const trailLayout = tgpu
+  .bindGroupLayout({
+    tdims: { uniform: TrailDims },
+    tpos: { storage: (n: number) => d.arrayOf(d.vec3f, n), access: "readonly" },
+    thist: { storage: (n: number) => d.arrayOf(d.vec3f, n), access: "mutable" },
+  })
+  .$name("dancerGpu:trail");
 
 // ── device-function helpers (mirror src/gpu/sim/vec3.ts + quat.ts) ────────────────────────
 
@@ -460,24 +466,54 @@ function getDancerPipe(device: GPUDevice): DancerPipe {
   if (cached) return cached;
   const root = tgpu.initFromDevice({ device });
   const { code, usedBindGroupLayouts } = tgpu.resolveWithContext([copyFn, gatherFn, stepFn], { names: "strict" });
-  const module = device.createShaderModule({ code });
-  const pipeLayout = device.createPipelineLayout({ bindGroupLayouts: usedBindGroupLayouts.map((l) => root.unwrap(l)) });
-  const copyPipeline = device.createComputePipeline({ layout: pipeLayout, compute: { module, entryPoint: "dancerCopy" } });
-  const stepPipeline = device.createComputePipeline({ layout: pipeLayout, compute: { module, entryPoint: "dancerStep" } });
-  const gatherPipeline = device.createComputePipeline({ layout: pipeLayout, compute: { module, entryPoint: "dancerGather" } });
+  const module = device.createShaderModule({ label: "dancerGpu", code });
+  const pipeLayout = device.createPipelineLayout({ label: "dancerGpu", bindGroupLayouts: usedBindGroupLayouts.map((l) => root.unwrap(l)) });
+  const copyPipeline = device.createComputePipeline({
+    label: "dancerGpu:copy",
+    layout: pipeLayout,
+    compute: { module, entryPoint: "dancerCopy" },
+  });
+  const stepPipeline = device.createComputePipeline({
+    label: "dancerGpu:step",
+    layout: pipeLayout,
+    compute: { module, entryPoint: "dancerStep" },
+  });
+  const gatherPipeline = device.createComputePipeline({
+    label: "dancerGpu:gather",
+    layout: pipeLayout,
+    compute: { module, entryPoint: "dancerGather" },
+  });
 
   // The render-bridge kernel uses its own bind-group layout (matrixLayout) — resolve it into a
   // separate module so matrixLayout sits at group 0.
   const mres = tgpu.resolveWithContext([matrixFn], { names: "strict" });
-  const mmodule = device.createShaderModule({ code: mres.code });
-  const mLayout = device.createPipelineLayout({ bindGroupLayouts: mres.usedBindGroupLayouts.map((l) => root.unwrap(l)) });
-  const matrixPipeline = device.createComputePipeline({ layout: mLayout, compute: { module: mmodule, entryPoint: "dancerMatrix" } });
+  const mmodule = device.createShaderModule({ label: "dancerGpu:matrix", code: mres.code });
+  const mLayout = device.createPipelineLayout({
+    label: "dancerGpu:matrix",
+    bindGroupLayouts: mres.usedBindGroupLayouts.map((l) => root.unwrap(l)),
+  });
+  const matrixPipeline = device.createComputePipeline({
+    label: "dancerGpu:matrix",
+    layout: mLayout,
+    compute: { module: mmodule, entryPoint: "dancerMatrix" },
+  });
 
   const tres = tgpu.resolveWithContext([trailWriteFn, trailSeedFn], { names: "strict" });
-  const tmodule = device.createShaderModule({ code: tres.code });
-  const tLayout = device.createPipelineLayout({ bindGroupLayouts: tres.usedBindGroupLayouts.map((l) => root.unwrap(l)) });
-  const trailPipeline = device.createComputePipeline({ layout: tLayout, compute: { module: tmodule, entryPoint: "dancerTrailWrite" } });
-  const trailSeedPipeline = device.createComputePipeline({ layout: tLayout, compute: { module: tmodule, entryPoint: "dancerTrailSeed" } });
+  const tmodule = device.createShaderModule({ label: "dancerGpu:trail", code: tres.code });
+  const tLayout = device.createPipelineLayout({
+    label: "dancerGpu:trail",
+    bindGroupLayouts: tres.usedBindGroupLayouts.map((l) => root.unwrap(l)),
+  });
+  const trailPipeline = device.createComputePipeline({
+    label: "dancerGpu:trail",
+    layout: tLayout,
+    compute: { module: tmodule, entryPoint: "dancerTrailWrite" },
+  });
+  const trailSeedPipeline = device.createComputePipeline({
+    label: "dancerGpu:trailSeed",
+    layout: tLayout,
+    compute: { module: tmodule, entryPoint: "dancerTrailSeed" },
+  });
 
   const pipe: DancerPipe = { root, copyPipeline, stepPipeline, gatherPipeline, matrixPipeline, trailPipeline, trailSeedPipeline };
   pipeCache.set(device, pipe);
@@ -580,7 +616,7 @@ export class DancerGpuSim {
         buf.write(seed);
         return buf;
       }
-      return root.createBuffer(d.arrayOf(d.vec3f, n), seed).$usage("storage");
+      return root.createBuffer(d.arrayOf(d.vec3f, n), seed).$usage("storage").$name(`dancerGpu:${block}`);
     };
     this.posBuf = mk("pos", render?.pos);
     this.posSnap = mk("pos"); // internal read-old buffer, seeded to the initial positions
@@ -588,8 +624,11 @@ export class DancerGpuSim {
     this.accelBuf = mk("accel"); // internal (not read by the render)
     this.angPosBuf = mk("angPos"); // internal — the render faces from velocity, not angPos
     this.angVelBuf = mk("angVel", render?.angVel);
-    this.snapshotBuf = root.createBuffer(d.arrayOf(d.vec3f, 5 * n)).$usage("storage");
-    this.paramsBuf = root.createBuffer(Params).$usage("uniform");
+    this.snapshotBuf = root
+      .createBuffer(d.arrayOf(d.vec3f, 5 * n))
+      .$usage("storage")
+      .$name("dancerGpu:snapshot");
+    this.paramsBuf = root.createBuffer(Params).$usage("uniform").$name("dancerGpu:params");
 
     this.bind = root.unwrap(
       root.createBindGroup(layout, {
@@ -656,13 +695,13 @@ export class DancerGpuSim {
   step(): void {
     this.writeParams();
     const { device } = this;
-    const enc = device.createCommandEncoder();
-    const copy = enc.beginComputePass();
+    const enc = device.createCommandEncoder({ label: "dancerGpu:step" });
+    const copy = enc.beginComputePass({ label: "dancerGpu:copy" });
     copy.setPipeline(this.copyPipeline);
     copy.setBindGroup(0, this.bind);
     copy.dispatchWorkgroups(this.groups);
     copy.end();
-    const s = enc.beginComputePass();
+    const s = enc.beginComputePass({ label: "dancerGpu:step" });
     s.setPipeline(this.stepPipeline);
     s.setBindGroup(0, this.bind);
     s.dispatchWorkgroups(this.groups);
@@ -670,7 +709,7 @@ export class DancerGpuSim {
     // If a render target is bound, refresh its per-instance model matrices in the same submit
     // (so three renders the new pose with no readback).
     if (this.matrixBind) {
-      const m = enc.beginComputePass();
+      const m = enc.beginComputePass({ label: "dancerGpu:matrix" });
       m.setPipeline(this.matrixPipeline);
       m.setBindGroup(0, this.matrixBind);
       m.dispatchWorkgroups(this.groups);
@@ -679,7 +718,7 @@ export class DancerGpuSim {
     if (this.trailBind && this.trailDimsBuf) {
       // append the just-computed position into each agent's ring at head = frame % cap
       this.trailDimsBuf.write({ n: this.n, cap: this.trailCap, head: this.frame % this.trailCap });
-      const t = enc.beginComputePass();
+      const t = enc.beginComputePass({ label: "dancerGpu:trail" });
       t.setPipeline(this.trailPipeline);
       t.setBindGroup(0, this.trailBind);
       t.dispatchWorkgroups(this.groups);
@@ -708,7 +747,7 @@ export class DancerGpuSim {
   setMatrixTarget(rawMatrixBuffer: GPUBuffer, scale = 1): void {
     const root = this.root;
     const n = this.n;
-    this.matrixDimsBuf ??= root.createBuffer(MatrixDims).$usage("uniform");
+    this.matrixDimsBuf ??= root.createBuffer(MatrixDims).$usage("uniform").$name("dancerGpu:matrixDims");
     this.matrixDimsBuf.write({ n, scale });
     const mtx = root.createBuffer(d.arrayOf(d.mat4x4f, n), rawMatrixBuffer).$usage("storage");
     this.matrixBind = root.unwrap(
@@ -721,8 +760,8 @@ export class DancerGpuSim {
    *  without advancing (e.g. right after seeding). */
   writeMatrices(): void {
     if (!this.matrixBind) return;
-    const enc = this.device.createCommandEncoder();
-    const m = enc.beginComputePass();
+    const enc = this.device.createCommandEncoder({ label: "dancerGpu:writeMatrices" });
+    const m = enc.beginComputePass({ label: "dancerGpu:matrix" });
     m.setPipeline(this.matrixPipeline);
     m.setBindGroup(0, this.matrixBind);
     m.dispatchWorkgroups(this.groups);
@@ -744,13 +783,13 @@ export class DancerGpuSim {
     const root = this.root;
     const n = this.n;
     this.trailCap = Math.max(1, cap);
-    this.trailDimsBuf ??= root.createBuffer(TrailDims).$usage("uniform");
+    this.trailDimsBuf ??= root.createBuffer(TrailDims).$usage("uniform").$name("dancerGpu:trailDims");
     const thist = root.createBuffer(d.arrayOf(d.vec3f, n * this.trailCap), rawHistoryBuffer).$usage("storage");
     this.trailBind = root.unwrap(root.createBindGroup(trailLayout, { tdims: this.trailDimsBuf, tpos: this.posBuf, thist }));
     this.trailDimsBuf.write({ n, cap: this.trailCap, head: 0 });
     // seed every slot with the current position in one pass (no streak from the origin)
-    const enc = this.device.createCommandEncoder();
-    const p = enc.beginComputePass();
+    const enc = this.device.createCommandEncoder({ label: "dancerGpu:setTrailTarget" });
+    const p = enc.beginComputePass({ label: "dancerGpu:trailSeed" });
     p.setPipeline(this.trailSeedPipeline);
     p.setBindGroup(0, this.trailBind);
     p.dispatchWorkgroups(this.groups);
@@ -773,8 +812,8 @@ export class DancerGpuSim {
    *  (distance matrix / hover-pick), NOT the render hot path. */
   async readBlocks(): Promise<DancerBlocks> {
     const { device, n } = this;
-    const enc = device.createCommandEncoder();
-    const g = enc.beginComputePass();
+    const enc = device.createCommandEncoder({ label: "dancerGpu:readBlocks" });
+    const g = enc.beginComputePass({ label: "dancerGpu:gather" });
     g.setPipeline(this.gatherPipeline);
     g.setBindGroup(0, this.bind);
     g.dispatchWorkgroups(this.groups);
