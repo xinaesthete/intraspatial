@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { columnStats, denseToColumns, type SparseMatrix, sparseColumnCost, sparseToColumns } from "./sparseColumns";
 
 // One small matrix, written out densely, then encoded both ways. Every test compares against the

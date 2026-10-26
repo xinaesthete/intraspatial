@@ -133,6 +133,7 @@ let ctxImage: { img: ContextImage; uvFromWorld: Float64Array } | null = null;
 
 /** The last simulated null, held so the scree chart can keep its band across repaints. Cleared by a
  *  recompute: a band drawn against a different channel set or window would be a false claim. */
+// oxlint-disable-next-line no-unused-vars -- written, not yet read: the scree band it is for is unwired
 let lastEnvelope: SpectrumEnvelopeResult | null = null;
 
 /** What both views pass to their shaders. One source, so the flat map and the terrain cannot

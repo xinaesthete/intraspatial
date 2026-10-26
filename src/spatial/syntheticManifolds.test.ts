@@ -4,7 +4,7 @@
 // — the swiss roll must actually be rolled, the rings must actually be linked, the null
 // control must actually be null — rather than against fixed numbers.
 
-import { describe, expect, test } from "vitest";
+import { describe, expect, test } from "vite-plus/test";
 import { expressManifold, MANIFOLDS, makeManifold } from "./syntheticManifolds";
 import { umap } from "./umap";
 import { trustworthiness } from "./umapLayout";

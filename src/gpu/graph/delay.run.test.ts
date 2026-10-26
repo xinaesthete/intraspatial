@@ -2,7 +2,7 @@
 // on the FieldRing history primitive. We drive an incrementing scalar (a feedback counter)
 // through a depth-3 delay and confirm the output lags by three ticks, then check the
 // resident memory the delay holds.
-import { beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vite-plus/test";
 import type { FieldValue } from "./handle";
 import { advance, createSimState, Graph, registerElementOps, simStateBytes } from "./index";
 

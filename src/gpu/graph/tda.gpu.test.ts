@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import type { PersistenceResult } from "../../spatial/persistence";
 import { Graph, pull } from "./index";
 

@@ -1,4 +1,4 @@
-import { beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vite-plus/test";
 import type { Affine3 } from "../../coords";
 import { getDevice } from "../device";
 import { splatDensityGpu } from "../spatial/splatDensity";

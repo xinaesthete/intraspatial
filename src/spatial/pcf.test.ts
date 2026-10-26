@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { crossPCF, crossPCFBinMembership, crossPCFMatrix, type LabelledCells } from "./pcf";
 import type { CellCloud } from "./tcm";
 

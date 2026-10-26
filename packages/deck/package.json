@@ -46,7 +46,8 @@
     "@types/node": "^22.0.0",
     "@webgpu/types": "^0.1.40",
     "typegpu": "catalog:",
-    "typescript": "catalog:"
+    "typescript": "catalog:",
+    "vite-plus": "catalog:"
   },
   "publishConfig": {
     "access": "public"

@@ -1,4 +1,4 @@
-import { beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vite-plus/test";
 import { getDevice, readBackBytes, writeView } from "./device";
 import { Graph, pullData, registerBuiltinOps } from "./graph/index";
 import { textureToBuffer } from "./graph/textureBridge";

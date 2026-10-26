@@ -2,7 +2,7 @@
 // placement `splatDensity` constructs from bbox + resolution, and `hashSource` folding placement
 // into source identity. All three are build-time / pure-function checks, so they live on the CPU
 // path (the splat's *value* correctness under placement is in `splatPlacement.gpu.test.ts`).
-import { beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vite-plus/test";
 import type { Affine3 } from "../../coords";
 import type { FieldValue, ResolvedPlacement } from "./handle";
 import { Graph, registerElementOps } from "./index";

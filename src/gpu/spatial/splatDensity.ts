@@ -300,10 +300,6 @@ export async function splatDensityGpu(xs: ArrayLike<number>, ys: ArrayLike<numbe
     const pad = sigma * radiusSigma;
     bbox = [minX - pad, minY - pad, maxX + pad, maxY + pad];
   }
-  const [minX, minY, maxX, maxY] = bbox;
-  const spanX = maxX - minX || 1;
-  const spanY = maxY - minY || 1;
-
   const pbuf = ensurePts(g, 3 * n);
   const flat = new Float32Array(3 * Math.max(n, 1));
   for (let i = 0; i < n; i++) {
@@ -346,10 +342,6 @@ function renderToStaging(
   radiusSigma: number,
   bbox: [number, number, number, number],
 ): number {
-  const [minX, minY, maxX, maxY] = bbox;
-  const spanX = maxX - minX || 1;
-  const spanY = maxY - minY || 1;
-
   const target = ensureTarget(g, w, h);
   const rowFloats = g.bytesPerRow / 4;
   ensureReadback(g, rowFloats * h);

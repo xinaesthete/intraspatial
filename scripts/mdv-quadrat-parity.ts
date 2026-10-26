@@ -63,7 +63,8 @@ function parseArgs(argv: string[]): Args {
     else if (t.startsWith("--")) throw new Error(`unknown option ${t}`);
     else pos.push(t);
   }
-  if (pos.length !== 1) throw new Error("usage: pnpm mdv:quadrat <store.zarr> [--quadrat n] [--sims n] [--limit n] [--quiet] [--null label|swap]");
+  if (pos.length !== 1)
+    throw new Error("usage: pnpm mdv:quadrat <store.zarr> [--quadrat n] [--sims n] [--limit n] [--quiet] [--null label|swap]");
   a.store = pos[0]!;
   return a;
 }
@@ -140,7 +141,14 @@ async function main() {
     // quadrat grid is only reproducible if its origin is too.
     const bbox = [0, 0, Math.max(maxX, 1), Math.max(maxY, 1)] as [number, number, number, number];
 
-    const qc = quadratCorrelation(cells, { bbox, quadratSize: args.quadrat, nTypes: K, simulations: args.sims, seed: 1, nullModel: args.nullModel });
+    const qc = quadratCorrelation(cells, {
+      bbox,
+      quadratSize: args.quadrat,
+      nTypes: K,
+      simulations: args.sims,
+      seed: 1,
+      nullModel: args.nullModel,
+    });
     const nets = new Map(RADII.map((r) => [r, contactNetwork(cells, { radius: r, nTypes: K })]));
 
     const regionQcm: number[] = [];

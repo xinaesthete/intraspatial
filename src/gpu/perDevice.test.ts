@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { deviceScoped, perDevice } from "./device";
 
 // The property the per-device kernel caches rest on, which no GPU test here can show: the GPU suite

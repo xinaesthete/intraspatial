@@ -3,7 +3,7 @@
 // integrate → back), then `advance` the loop and confirm the swarm evolves and stays
 // bounded. Exercises the real executor path — multi-input ops, vec3 element inference, the
 // 5N-block body field, and the feedback state-carry — without a GPU device (mode "cpu").
-import { beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vite-plus/test";
 import { BODY_BLOCK_COUNT, seedSwarmBody } from "../../sim/body";
 import { advance, createSimState, type GpuField, Graph, getOp, hasOp, registerElementOps } from "../index";
 import { registerForceOps } from "./danceForces";

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { annulusAreasInto, annulusRectArea, cornerArea, diskRectArea } from "./edgeCorrection";
 
 // The closed forms in edgeCorrection.ts are checked two ways: against the handful of configurations

@@ -1,4 +1,4 @@
-import { beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vite-plus/test";
 import { getDevice } from "../../device";
 import { Graph, pull, pullData } from "../index";
 

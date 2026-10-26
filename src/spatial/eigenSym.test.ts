@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { eigenSym, psdDefect, symmetrise } from "./eigenSym";
 
 // The eigensolver is load-bearing for a *claim* ("this matrix is not PSD, so the projection is

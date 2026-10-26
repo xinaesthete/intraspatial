@@ -2,7 +2,7 @@
 // equivalent to the legacy two-feedback-node (U,V) loop — same Gray–Scott kernel,
 // one signal instead of two. Run in CPU mode so this stays a fast `*.test.ts` (no
 // Dawn); correctness of the collapse is backend-independent.
-import { beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vite-plus/test";
 import { seedGrayScott } from "../sim/reactionDiffusion";
 import { packComplex } from "./elementMath";
 import { advance, createSimState, Graph, registerElementOps } from "./index";

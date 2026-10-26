@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { deg } from "./angle";
 import { applyNormal, applyPoint, compose, IDENTITY, mul, rotZ, scaleUniform, translate } from "./placement";
 import { branchPlacements, Structured, stackPlacements } from "./structured";

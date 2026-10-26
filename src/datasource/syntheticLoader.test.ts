@@ -1,6 +1,6 @@
 // The SyntheticLoader: deterministic, in-memory, bounded output. Proves getChunk
 // returns correctly-sized, in-range, reproducible tiles (ADR-0008 Milestone 1).
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { chunkCounts, chunkVoxelExtent } from "./multiscale";
 import { mandelbrotField, mandelbulbField, syntheticPlane, syntheticVolume } from "./syntheticLoader";
 import { hostSamples } from "./types";

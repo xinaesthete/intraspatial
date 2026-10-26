@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { inGamut, oklabToLinear, oklchToOklab, srgbToOklab, srgbToOklch } from "./oklab";
 import { categoricalHues, deg, diverging, oklchToSrgbMapped, sequential } from "./ramps";
 

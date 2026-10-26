@@ -1,5 +1,5 @@
 /** biome-ignore-all lint/style/noNonNullAssertion: test noise */
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { distanceField, gaussianKdeField } from "./scalarField";
 import { fieldBettiNumbers, sublevelsetPersistence } from "./sublevelsetPersistence";
 

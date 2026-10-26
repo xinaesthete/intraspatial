@@ -1,5 +1,5 @@
 // B1b (pure half) — `imageFacets` mapping (docs/stream-b-bridge-plan.md). Pure, no sd.js / no GPU.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import type { Affine3 } from "../coords";
 import { channelAxisFrom, placementFromMatrix, type ResolvedChannel, rgbToHex } from "./imageFacets";
 

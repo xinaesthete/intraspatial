@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { getDevice, readBackBytes, writeView } from "../device";
 import { fieldMaxResident } from "./fieldMax";
 import { splatDensityGpu, splatDensityResident } from "./splatDensity";

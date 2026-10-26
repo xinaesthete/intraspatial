@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { besselJ, kernelHankel, kernelSpectrumMin } from "./kernelSpectrum";
 import { EPANECHNIKOV, GAUSSIAN, KERNELS, kernelAt, kernelLabel, QUARTIC, TOPHAT, TRIWEIGHT } from "./kernels";
 

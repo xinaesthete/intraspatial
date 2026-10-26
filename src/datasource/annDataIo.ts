@@ -134,7 +134,8 @@ export async function readExpressionMatrix(loc: zarr.Location<never>, opts: Read
 
   const group = await tryOpenGroup(loc, path);
   if (!group) throw new Error(`annDataIo: no ${path} in this store (neither array nor group)`);
-  const enc = String(group.attrs["encoding-type"] ?? "");
+  const encodingType = group.attrs["encoding-type"];
+  const enc = typeof encodingType === "string" ? encodingType : "";
   const shape = group.attrs.shape;
   if (!Array.isArray(shape) || shape.length < 2) {
     throw new Error(`annDataIo: ${path} is a group with no usable 'shape' attribute (encoding-type: ${enc || "absent"})`);

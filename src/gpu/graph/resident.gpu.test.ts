@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import { getDevice } from "../device";
 import { nodeBackend } from "./backend.node";
 import { advance, createSimState, disposeSimState, Graph, pull, pullResident, simStateBytes } from "./index";

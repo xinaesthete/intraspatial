@@ -7,7 +7,7 @@
 //
 // Note: the minimum attainable value is 1/iters, not 0 — the orbit starts at the origin
 // (radius 0), which can never escape on iteration 0.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { nodeBackend } from "../graph/index";
 import { type MandelbulbRegion, mandelbulbBrickCpu, mandelbulbBrickGpu } from "./mandelbulb";
 

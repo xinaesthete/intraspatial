@@ -42,7 +42,7 @@
 import { cssRgb, deg, diverging, oklchToSrgbMapped, rgbBytes, type Srgb, sequential } from "../../src/color/ramps";
 import { Graph, pullResident, registerBuiltinOps } from "../../src/gpu/graph";
 import { browserBackend } from "../../src/gpu/graph/backend.browser";
-import type { FieldValue, GpuField } from "../../src/gpu/graph/handle";
+import type { GpuField } from "../../src/gpu/graph/handle";
 import { paintFieldTexture } from "../../src/gpu/spatial/paintField";
 import { quadratCorrelationGpu, quadratCorrelationGpuSupported } from "../../src/gpu/spatial/quadratCorrelationGpu";
 import { computeTcmRender, renderTcm, type TcmRenderParams } from "../../src/gpu/spatial/tcmRender";

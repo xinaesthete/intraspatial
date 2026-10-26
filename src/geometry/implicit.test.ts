@@ -1,7 +1,7 @@
 // CPU golden tests for the Implicit (signed-distance) geometry-kind (ADR-0010): analytic distances,
 // boolean semantics, exact transforms, the structure/value split (codegen slots line up with the
 // param vector), and surface-nets extraction. GPU parity lives in `implicit.gpu.test.ts`.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { constant } from "./expr";
 import { box, type Implicit, type IsoMesh, plane, sphere } from "./implicit";
 import type { Vec3 } from "./superellipsoid";

@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it } from "vite-plus/test";
 import * as zarr from "zarrita";
 import { fuzzySimplicialSet, knnBruteForceCpu } from "../spatial/umapGraph";
 import { fuzzyGraphToCsr, knnToCsr, openStore, readExpressionMatrix, readNObs, writeNeighborsUns, writeObsm, writeObsp } from "./annDataIo";

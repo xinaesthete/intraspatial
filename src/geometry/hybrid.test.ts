@@ -2,9 +2,9 @@
 // the "region where the BSP won't work". That region's whole point is its range — nothing (planar),
 // a finite box (local growth), or unbounded (a displaced/blended half-space).
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { type AABB, aabbFinite, aabbOverlaps, boundsSdf, isPlanar, nonPlanarRegions, planarSkeleton, UNBOUNDED } from "./hybrid";
-import { box, evalSdf, plane, type Sdf, sphere } from "./index";
+import { box, evalSdf, plane, sphere } from "./index";
 
 const contains = (a: AABB, p: [number, number, number], eps = 1e-9) =>
   p[0] >= a.min[0] - eps &&

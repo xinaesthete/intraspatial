@@ -1,6 +1,6 @@
 // Build-time behaviour of the `decimate` graph op: output shape and DERIVED placement (ADR-0018).
 // CPU-only on purpose — shape/placement inference runs at graph build, no device needed.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import type { Affine3 } from "../../../coords";
 import { applyAffine } from "../../../datasource/math";
 import type { ResolvedPlacement } from "../handle";

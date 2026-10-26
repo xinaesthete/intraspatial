@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import { getDevice } from "../device";
 import { Graph, pullData } from "./index";
 import { installReadbackCounter, measureReadbacks, uninstallReadbackCounter } from "./instrument";

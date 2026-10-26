@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { getDevice } from "../device";
 import { type BodyState, INTEGRATE_DEFAULTS, integrateBody, readBodyState, seedSwarmBody, tapBlock, writeBodyState } from "./body";
 import { type DancerGpuParams, DancerGpuSim } from "./dancerGpu";

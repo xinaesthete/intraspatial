@@ -1,6 +1,6 @@
 import tgpu from "typegpu";
 import * as d from "typegpu/data";
-import { expect, test } from "vitest";
+import { expect, test } from "vite-plus/test";
 import { getDevice } from "../src/gpu/device";
 
 test("typegpu buffer write/read roundtrip (Node + Dawn)", async () => {

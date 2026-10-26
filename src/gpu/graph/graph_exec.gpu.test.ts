@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { Graph, pull, pullData } from "./index";
 
 // Executor-semantics tests: validate/fallback equivalence and fork-join dedup.

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { type ModeSource, modeBasis, modeParams } from "./gramModes";
 
 // Two channels with corr [[1, .5], [.5, 1]]: modes (1, 1)/√2 with λ = 1.5 and (1, −1)/√2 with λ = .5.

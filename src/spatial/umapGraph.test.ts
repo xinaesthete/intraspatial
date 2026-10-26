@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { fuzzySimplicialSet, type KnnResult, knnBruteForceCpu, smoothKnnDist } from "./umapGraph";
+import { describe, expect, it } from "vite-plus/test";
+import { fuzzySimplicialSet, knnBruteForceCpu, smoothKnnDist } from "./umapGraph";
 import { mulberry32 } from "./umapLayout";
 
 /** Two well-separated Gaussian blobs in `dim` dimensions — the standard smoke shape:

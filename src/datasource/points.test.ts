@@ -1,7 +1,7 @@
 // Points tiling: the grid, window selection, and half-open ownership. The load-bearing claim is
 // that a window streamed tile by tile holds EXACTLY the points a single load of it would — no edge
 // point lost or doubled, even though the reader's own bounds filter is closed.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import {
   bucketPoints,
   clampWindow,

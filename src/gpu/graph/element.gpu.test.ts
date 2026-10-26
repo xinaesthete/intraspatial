@@ -7,7 +7,7 @@
 // `"use gpu"` module into the registry's module graph destabilised Dawn teardown in
 // unrelated forks, so `mulFields` stays CPU Tier-1 and the kernel is validated in
 // isolation in this dedicated GPU fork instead.
-import { beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vite-plus/test";
 import { seedGrayScott } from "../sim/reactionDiffusion";
 import { mulFields, packComplex } from "./elementMath";
 import type { ElementType } from "./index";

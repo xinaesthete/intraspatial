@@ -14,10 +14,10 @@
 import { readdirSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
 import typegpu from "unplugin-typegpu/vite";
-import { defineConfig } from "vite";
+import { defineConfig } from "vite-plus";
 
 const SRC = "src";
-const isTest = (f: string) => /\.test\.ts$/.test(f);
+const isTest = (f: string) => f.endsWith(".test.ts");
 
 function entries(dir: string, out: Record<string, string> = {}): Record<string, string> {
   for (const name of readdirSync(dir)) {

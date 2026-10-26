@@ -1,5 +1,5 @@
 // B2a — `centroidsToField` converter (docs/stream-b-bridge-plan.md). Pure, no zarr / sd.js / GPU.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { Graph } from "../gpu/graph/graph";
 import type { FieldProvenance, ResolvedPlacement } from "../gpu/graph/handle";
 import { unpackPoints } from "../gpu/graph/handle";

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { forward, fromAxisAngle, IDENTITY, integrateQuat, mulQuat, normalizeQuat, rotateVec3, unpackQuat } from "./quat";
 
 // f32 precision (Quat is now Float32Array, matching WGSL) — ~1e-7 relative error, not f64-exact.

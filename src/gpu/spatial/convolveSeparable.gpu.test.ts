@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { boxKernel, convolveSeparableGpu, gaussianKernel } from "./convolveSeparable";
 
 // CPU golden: separable convolution with clamp-to-edge.

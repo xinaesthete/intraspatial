@@ -5,7 +5,7 @@
 // tests here are the CPU-golden counterparts of the wavelet basis-propagation tests: the
 // pass-through defaults, the `systemsAgree` agreement helper (all three branches), and a
 // placement round-trip through a facet-unaware op.
-import { beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vite-plus/test";
 import type { Affine3 } from "../../coords";
 import type { FieldRole, FieldValue, ResolvedPlacement, TensorAxis } from "./handle";
 import { placementOf, systemsAgree } from "./handle";

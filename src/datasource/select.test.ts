@@ -1,7 +1,7 @@
 // Golden tests for the pure `Select` heuristic (ADR-0008 §4): frustum culling,
 // nearest-point Nyquist level pick, the receding-resolution gradient across an
 // oblique plane, and the degrade-to-fit budget policy. CPU-only (no GPU, no I/O).
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import type { Camera } from "./math";
 import { select, selectWithinBudget } from "./select";
 import { axisAlignedMultiscale } from "./syntheticLoader";

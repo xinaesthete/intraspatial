@@ -1,6 +1,6 @@
 import tgpu from "typegpu";
 import * as d from "typegpu/data";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { getDevice } from "../device";
 import { type DancerGpuParams, DancerGpuSim } from "./dancerGpu";
 

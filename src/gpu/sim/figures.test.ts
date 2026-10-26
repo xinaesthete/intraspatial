@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { FIGURE_SEQUENCE, figureAt, figureTargetVel, partnerIndex } from "./figures";
 import { dot, length, type Vec3In } from "./vec3";
 

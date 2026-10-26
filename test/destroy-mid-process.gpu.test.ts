@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { getDevice } from "../src/gpu/device";
 import { exclusiveScanGpu } from "../src/gpu/scan/prefixSum";
 import { releaseScratchTextures, scratchTexture, scratchTextureBytes } from "../src/gpu/scratchTexture";

@@ -3,7 +3,7 @@
 // land allele frequencies, non-negative weights, and an Africa-ish geographic extent.
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { scaffoldFromGeoTIFFs } from "./scaffold";
 
 async function asset(name: string): Promise<ArrayBuffer> {

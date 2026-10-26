@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { eigenSym, psdDefect } from "../../spatial/eigenSym";
 import { type ChannelCloud, channelsFromLabels } from "../../spatial/gram";
 import { EPANECHNIKOV, TOPHAT } from "../../spatial/kernels";

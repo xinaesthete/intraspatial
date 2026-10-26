@@ -1,5 +1,5 @@
 // adoptDevice: a renderer's device becomes the one getDevice() returns, so resources can be shared.
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import { adoptDevice, getDevice, releaseDevice } from "./device";
 
 /** Just the members adoptDevice and releaseDevice touch; identity is what the tests check. */

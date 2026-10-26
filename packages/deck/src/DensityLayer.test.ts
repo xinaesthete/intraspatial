@@ -5,7 +5,7 @@
 // two kernels stubbed to wait on the test before they touch their buffers.
 
 import { OrthographicViewport } from "@deck.gl/core";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 type FakeBuffer = { label?: string; size: number; destroyed: boolean; destroy(): void };
 
@@ -162,7 +162,7 @@ describe("DensityLayer teardown", () => {
 
   it("labels every buffer with the layer id, so a device error names its layer", async () => {
     const { handle } = mountLayer();
-    expect(handle.buffers.map((b) => b.label).sort()).toEqual(
+    expect(handle.buffers.map((b) => b.label ?? "").sort()).toEqual(
       ["density-7:field", "density-7:max", "density-7:points", "density-7:ramp"].sort(),
     );
   });

@@ -1,5 +1,5 @@
 // B1a — `tileToField` converter (docs/stream-b-bridge-plan.md). Pure, no sd.js / no GPU device.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { Graph } from "../gpu/graph/graph";
 import type { FieldRole, ResolvedPlacement, TensorAxis } from "../gpu/graph/handle";
 import { sourceFromTile, tileToField } from "./tileToField";

@@ -1,7 +1,7 @@
 // Targeted correctness for the fiddly HsPf per-cell math + a few structural invariants
 // (ADR-0011, decision 5) — the silent-wrong-math failure mode (offspring-table indexing,
 // fitness blend, LD denominator, gather normalisation) caught without a whole-field golden.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { blendFitness, DEFAULT_FITNESS, gatherCell, ld, OFFSPRING, reactBite, recombine, selectionWeights, sum4, type Vec4 } from "./math";
 import { betaOneC, makeNeighbourhood } from "./neighbourhood";
 

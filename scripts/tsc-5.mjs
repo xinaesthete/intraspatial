@@ -19,13 +19,13 @@ import { existsSync, readdirSync } from "node:fs";
 const STORE = "node_modules/.pnpm";
 const dir = existsSync(STORE)
   ? readdirSync(STORE)
-      .filter((d) => /^typescript@5\./.test(d))
+      .filter((d) => d.startsWith("typescript@5."))
       .sort()
       .pop()
   : undefined;
 
 if (!dir) {
-  console.error("tsc-5: no typescript@5.x found in node_modules/.pnpm — add `\"typescript-5\": \"npm:typescript@5.9.3\"` as a devDependency.");
+  console.error('tsc-5: no typescript@5.x found in node_modules/.pnpm — add `"typescript-5": "npm:typescript@5.9.3"` as a devDependency.');
   process.exit(2);
 }
 

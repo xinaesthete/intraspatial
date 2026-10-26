@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { fuzzyAdjacencyGpu } from "./fuzzyAdjacency";
 
 function cpu(xs: number[], ys: number[], sigma: number, radiusSigma: number): Float32Array {

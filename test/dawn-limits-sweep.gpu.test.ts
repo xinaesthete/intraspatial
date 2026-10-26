@@ -8,7 +8,7 @@
 // has hit before is silent zeroes rather than an error.
 import tgpu from "typegpu";
 import * as d from "typegpu/data";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { getDevice } from "../src/gpu/device";
 import { nearestNeighborDistancesGpu } from "../src/gpu/spatial/nnDistance";
 

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { cknnGraph, cknnRescaledDistanceGpu, selfTuningWeights } from "./cknn";
 
 function rhoCpu(xs: number[], ys: number[], k: number): Float32Array {

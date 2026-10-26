@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { grayScottStepsGpu, seedGrayScott } from "../sim/reactionDiffusion";
 import { advance, createSimState, Graph, pull } from "./index";
 

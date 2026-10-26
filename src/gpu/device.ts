@@ -48,7 +48,9 @@ let devicePromise: Promise<GPUDevice> | undefined;
  * The adapter is retained for the same reason: it sits between the Instance and the
  * device and is likewise dropped by the spec-shaped API once a device exists.
  */
+// oxlint-disable-next-line no-unused-vars -- never read: holding the reference IS the point (see above)
 let instanceRef: GPU | undefined;
+// oxlint-disable-next-line no-unused-vars -- likewise
 let adapterRef: GPUAdapter | undefined;
 
 /** Get (and cache) a headless GPUDevice. */

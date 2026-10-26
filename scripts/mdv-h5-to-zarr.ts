@@ -236,7 +236,9 @@ async function main() {
           // Mirror the numeric-branch guard: a short/long dump would silently misalign every
           // row against the declared [rows, width] shape, corrupting the column.
           if (bytes.length !== rows * m.stringWidth)
-            throw new Error(`${group}/${m.name}: dumped ${bytes.length} bytes, expected ${rows * m.stringWidth} (${rows} rows × ${m.stringWidth} width)`);
+            throw new Error(
+              `${group}/${m.name}: dumped ${bytes.length} bytes, expected ${rows * m.stringWidth} (${rows} rows × ${m.stringWidth} width)`,
+            );
           const arr = await zarr.create(dsLoc.resolve(col.key), {
             shape: [rows, m.stringWidth],
             chunkShape: [Math.min(rows, ROWS_PER_CHUNK), m.stringWidth],

@@ -237,7 +237,15 @@ async function main() {
     const sp = summarise(regionPlain);
     const sc = summarise(regionCorr);
     const sb = summarise(regionBbox);
-    perRegion.push({ name, n: sc.n, cells: cells.xs.length, area: roiArea, plain: sp.medianAbsPct, corr: sc.medianAbsPct, bbox: sb.medianAbsPct });
+    perRegion.push({
+      name,
+      n: sc.n,
+      cells: cells.xs.length,
+      area: roiArea,
+      plain: sp.medianAbsPct,
+      corr: sc.medianAbsPct,
+      bbox: sb.medianAbsPct,
+    });
     if (!args.quiet) {
       console.log(
         `${name.padEnd(26)} cells=${String(cells.xs.length).padStart(6)} pairs=${String(sc.n).padStart(5)}  ` +

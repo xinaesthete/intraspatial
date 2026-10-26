@@ -2,7 +2,7 @@
 // `(s, θ)` loop (ADR-0003 / ADR-0010). Because both lower the *same* Swept IR, they are the
 // same closed-form function twice — this test pins them numerically. Kept tiny: Dawn-on-Node
 // teardown segfaults past enough cumulative GPU work, so use a small grid (ADR-0002/0003).
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 // Import the backend directly (not via the ops barrel) so the built-in op registry — and any
 // `"use gpu"` kernel modules it pulls in — stays out of this Dawn test process (element.gpu note).
 import { nodeBackend } from "../gpu/graph/backend.node";

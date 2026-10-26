@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { morphologyGpu, openingGpu } from "./morphology";
 
 // CPU oracle: the NON-separable definition — a direct (2r+1)² square window with

@@ -1,5 +1,5 @@
 // TileCache LRU behaviour and Resolve memoisation (ADR-0008 §6–7).
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { chunkKey, resolve, TileCache } from "./tileCache";
 import type { ChunkId, Loader, Selection, Tile } from "./types";
 

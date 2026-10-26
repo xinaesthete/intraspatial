@@ -1,6 +1,6 @@
 // Transcript channels from points tiles: membership by weight vector, reach, the quality floor,
 // and the refusal of overlapping channels (which gram.ts would otherwise mis-handle silently).
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import type { PointsTile } from "../datasource/points";
 import { gramMatrix, maxWindowSide, radiusToCover, rasterSizeForRadius } from "./gram";
 import { transcriptChannels, type WeightedChannel } from "./transcriptChannels";
