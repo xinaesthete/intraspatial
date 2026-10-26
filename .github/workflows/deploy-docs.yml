@@ -26,7 +26,7 @@ jobs:
       group: docs-build-${{ github.ref }}
       cancel-in-progress: ${{ github.event_name == 'pull_request' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       # Vite+ toolchain: the Node in .node-version, the pnpm in `packageManager`, then a full
       # workspace `vp install` with the pnpm store cached. The `webgpu` native addon ships a

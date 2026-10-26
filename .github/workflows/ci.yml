@@ -21,7 +21,7 @@ jobs:
     name: Format, lint, typecheck
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       # Installs Vite+, the Node in .node-version and the pnpm in `packageManager`, then runs
       # `vp install` (pnpm install, frozen on CI) with the pnpm store cached.
@@ -44,7 +44,7 @@ jobs:
     name: Tests (CPU)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: voidzero-dev/setup-vp@v1.22.0
         with:
           node-version-file: .node-version
@@ -57,7 +57,7 @@ jobs:
     # Debian bookworm's 2.36 fails to dlopen it).
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       # Hosted runners have no GPU. Dawn (the `webgpu` addon) runs on Mesa's lavapipe, a CPU
       # Vulkan driver, and the kernels, the TGSL transform and the readback paths are the same
@@ -76,7 +76,7 @@ jobs:
     name: Library build + publish checks
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: voidzero-dev/setup-vp@v1.22.0
         with:
           node-version-file: .node-version
@@ -97,11 +97,14 @@ jobs:
     # attributed. Non-blocking until the committed baselines are trusted.
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v4
+      # Full history: the audit diffs against the merge base with main, which a depth-1 clone
+      # does not have ("no merge base").
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
       - uses: voidzero-dev/setup-vp@v1.22.0
         with:
           node-version-file: .node-version
           cache: true
       - run: |
-          git fetch --no-tags --depth=1 origin "${{ github.base_ref }}"
           vp exec fallow audit --base "origin/${{ github.base_ref }}" --format github-annotations
