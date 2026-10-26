@@ -7,7 +7,8 @@
 
 import tgpu from "typegpu";
 import * as d from "typegpu/data";
-import { writeView } from "../../device";
+import { submitDispatch, writeView } from "../../device";
+import { typegpuComputePipeline } from "../../typegpuPipeline";
 import type { Root } from "../backend";
 
 const WG = 64;
@@ -62,17 +63,13 @@ function getPipe(device: GPUDevice, root: Root): Promise<Pipe> {
   let p = pipes.get(root as object);
   if (!p) {
     p = (async () => {
-      const { code, usedBindGroupLayouts } = tgpu.resolveWithContext([cmulFn], { names: "strict" });
-      const module = device.createShaderModule({ label: "complexMulGpu", code });
-      const pipeLayout = device.createPipelineLayout({
-        label: "complexMulGpu",
-        bindGroupLayouts: usedBindGroupLayouts.map((l) => root.unwrap(l)),
-      });
-      const pipeline = device.createComputePipeline({
-        label: "complexMulGpu",
-        layout: pipeLayout,
-        compute: { module, entryPoint: "complexMul" },
-      });
+      const pipeline = typegpuComputePipeline(
+        device,
+        root,
+        tgpu.resolveWithContext([cmulFn], { names: "strict" }),
+        "complexMul",
+        "complexMulGpu",
+      );
       return { pipeline, pool: makePool(root, 2) };
     })();
     pipes.set(root as object, p);
@@ -99,13 +96,7 @@ export async function complexMulGpu(device: GPUDevice, root: Root, a: Float32Arr
   pool.params.write({ n });
 
   const bind = root.unwrap(root.createBindGroup(layout, { params: pool.params, a: pool.a, b: pool.b, dst: pool.dst }));
-  const enc = device.createCommandEncoder({ label: "complexMulGpu" });
-  const pass = enc.beginComputePass({ label: "complexMulGpu" });
-  pass.setPipeline(pipe.pipeline);
-  pass.setBindGroup(0, bind);
-  pass.dispatchWorkgroups(Math.ceil(n / WG));
-  pass.end();
-  device.queue.submit([enc.finish()]);
+  submitDispatch(device, "complexMulGpu", pipe.pipeline, bind, Math.ceil(n / WG));
 
   const got = (await pool.dst.read()) as ArrayLike<number>;
   return Float32Array.from({ length: len }, (_, i) => got[i]!);

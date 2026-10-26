@@ -30,7 +30,8 @@ import * as d from "typegpu/data";
 import { buildCandidates, type DescentOptions, finalise, initialiseHeap } from "../../spatial/knnDescent";
 import type { KnnResult } from "../../spatial/umapGraph";
 import { mulberry32 } from "../../spatial/umapLayout";
-import { getDevice, writeView } from "../device";
+import { getDevice, submitDispatch, writeView } from "../device";
+import { typegpuComputePipeline } from "../typegpuPipeline";
 
 const WG = 64;
 /** Compile-time bound on the private heap, matching `knn.ts`. */
@@ -135,17 +136,13 @@ function getPipe(): Promise<Pipe> {
   pipeCache ??= (async () => {
     const device = await getDevice();
     const root = tgpu.initFromDevice({ device });
-    const { code, usedBindGroupLayouts } = tgpu.resolveWithContext({ template: TEMPLATE, externals: { ...layout.bound }, names: "strict" });
-    const module = device.createShaderModule({ label: "knnDescentGpu", code });
-    const pipeLayout = device.createPipelineLayout({
-      label: "knnDescentGpu",
-      bindGroupLayouts: usedBindGroupLayouts.map((l) => root.unwrap(l)),
-    });
-    const pipeline = device.createComputePipeline({
-      label: "knnDescentGpu",
-      layout: pipeLayout,
-      compute: { module, entryPoint: "localJoin" },
-    });
+    const pipeline = typegpuComputePipeline(
+      device,
+      root,
+      tgpu.resolveWithContext({ template: TEMPLATE, externals: { ...layout.bound }, names: "strict" }),
+      "localJoin",
+      "knnDescentGpu",
+    );
     return { device, root, pipeline };
   })();
   return pipeCache;
@@ -236,13 +233,7 @@ export async function knnDescentGpu(data: ArrayLike<number>, n: number, dim: num
     for (let start = 0; start < n; start += rowsPerTile) {
       const count = Math.min(rowsPerTile, n - start);
       buf.params.write({ n, dim, k, width, rowOffset: start, _pad0: 0, _pad1: 0, _pad2: 0 });
-      const enc = device.createCommandEncoder({ label: "knnDescentGpu" });
-      const pass = enc.beginComputePass({ label: "knnDescentGpu" });
-      pass.setPipeline(pipeline);
-      pass.setBindGroup(0, bind);
-      pass.dispatchWorkgroups(Math.ceil(count / WG));
-      pass.end();
-      device.queue.submit([enc.finish()]);
+      submitDispatch(device, "knnDescentGpu", pipeline, bind, Math.ceil(count / WG));
       await device.queue.onSubmittedWorkDone();
     }
 

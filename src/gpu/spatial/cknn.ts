@@ -26,7 +26,8 @@
 import tgpu from "typegpu";
 import * as d from "typegpu/data";
 import * as std from "typegpu/std";
-import { getDevice, writeView } from "../device";
+import { getDevice, submitDispatch, writeView } from "../device";
+import { typegpuComputePipeline } from "../typegpuPipeline";
 import { kthNeighborDistanceGpu } from "./kthNeighborDistance";
 
 const WG = 64;
@@ -75,10 +76,7 @@ function getPipe(): Promise<Pipe> {
   pipeCache ??= (async () => {
     const device = await getDevice();
     const root = tgpu.initFromDevice({ device });
-    const { code, usedBindGroupLayouts } = tgpu.resolveWithContext([cknnFn], { names: "strict" });
-    const module = device.createShaderModule({ label: "cknn", code });
-    const pipeLayout = device.createPipelineLayout({ label: "cknn", bindGroupLayouts: usedBindGroupLayouts.map((l) => root.unwrap(l)) });
-    const pipeline = device.createComputePipeline({ label: "cknn", layout: pipeLayout, compute: { module, entryPoint: "cknnRescaled" } });
+    const pipeline = typegpuComputePipeline(device, root, tgpu.resolveWithContext([cknnFn], { names: "strict" }), "cknnRescaled", "cknn");
     return { device, root, pipeline };
   })();
   return pipeCache;
@@ -142,13 +140,7 @@ export async function cknnRescaledDistanceGpu(
   p.params.write({ n });
 
   const bind = root.unwrap(root.createBindGroup(layout, { params: p.params, pts: p.pts, rho: p.rho, out: p.out }));
-  const enc = device.createCommandEncoder({ label: "cknn" });
-  const pass = enc.beginComputePass({ label: "cknn" });
-  pass.setPipeline(pipeline);
-  pass.setBindGroup(0, bind);
-  pass.dispatchWorkgroups(Math.ceil(n / WG));
-  pass.end();
-  device.queue.submit([enc.finish()]);
+  submitDispatch(device, "cknn", pipeline, bind, Math.ceil(n / WG));
 
   const got = (await p.out.read()) as ArrayLike<number>;
   return { rescaled: Float32Array.from({ length: n * n }, (_, i) => got[i]!), rho, n };

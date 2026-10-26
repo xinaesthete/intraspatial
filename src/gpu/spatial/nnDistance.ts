@@ -24,6 +24,7 @@ import tgpu from "typegpu";
 import * as d from "typegpu/data";
 import * as std from "typegpu/std";
 import { deviceScoped, sized, writeView } from "../device";
+import { typegpuComputePipeline } from "../typegpuPipeline";
 import { type GridIndexCtx, getGridIndexCtx } from "./gridIndex";
 import { cellCoord, cellRange, encodeQueryIndex, type IndexedQueryOptions, LATTICE_BYTES, Lattice, StartArray } from "./gridIndexQuery";
 
@@ -119,13 +120,7 @@ interface Pipe {
 const getPipe = deviceScoped(async (device: GPUDevice): Promise<Pipe> => {
   const root = tgpu.initFromDevice({ device });
   const build = (fn: typeof nnFn, entryPoint: string) => {
-    const { code, usedBindGroupLayouts } = tgpu.resolveWithContext([fn], { names: "strict" });
-    const module = device.createShaderModule({ label: "nnDistance", code });
-    const pipeLayout = device.createPipelineLayout({
-      label: "nnDistance",
-      bindGroupLayouts: usedBindGroupLayouts.map((l) => root.unwrap(l)),
-    });
-    return device.createComputePipeline({ label: `nnDistance:${entryPoint}`, layout: pipeLayout, compute: { module, entryPoint } });
+    return typegpuComputePipeline(device, root, tgpu.resolveWithContext([fn], { names: "strict" }), entryPoint, `nnDistance:${entryPoint}`);
   };
   const indexCtx = await getGridIndexCtx(device);
   return { root, device, pipeline: build(nnFn, "nnDist"), pipelineIdx: build(nnIdxFn, "nnDistIdx"), indexCtx };

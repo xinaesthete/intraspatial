@@ -10,7 +10,8 @@
 import tgpu from "typegpu";
 import * as d from "typegpu/data";
 import * as std from "typegpu/std";
-import { getDevice, writeView } from "../device";
+import { getDevice, submitDispatch, writeView } from "../device";
+import { typegpuComputePipeline } from "../typegpuPipeline";
 
 const WG = 64;
 const FAR = 3.4e38;
@@ -54,17 +55,7 @@ function getPipe(): Promise<Pipe> {
   pipeCache ??= (async () => {
     const device = await getDevice();
     const root = tgpu.initFromDevice({ device });
-    const { code, usedBindGroupLayouts } = tgpu.resolveWithContext([esFn], { names: "strict" });
-    const module = device.createShaderModule({ label: "emptySpace", code });
-    const pipeLayout = device.createPipelineLayout({
-      label: "emptySpace",
-      bindGroupLayouts: usedBindGroupLayouts.map((l) => root.unwrap(l)),
-    });
-    const pipeline = device.createComputePipeline({
-      label: "emptySpace",
-      layout: pipeLayout,
-      compute: { module, entryPoint: "emptySpace" },
-    });
+    const pipeline = typegpuComputePipeline(device, root, tgpu.resolveWithContext([esFn], { names: "strict" }), "emptySpace", "emptySpace");
     return { device, root, pipeline };
   })();
   return pipeCache;
@@ -167,13 +158,7 @@ export async function emptySpaceGpu(xs: ArrayLike<number>, ys: ArrayLike<number>
   p.params.write({ n, m });
 
   const bind = root.unwrap(root.createBindGroup(layout, { params: p.params, data: p.data, query: p.query, out: p.out }));
-  const enc = device.createCommandEncoder({ label: "emptySpace" });
-  const pass = enc.beginComputePass({ label: "emptySpace" });
-  pass.setPipeline(pipeline);
-  pass.setBindGroup(0, bind);
-  pass.dispatchWorkgroups(Math.ceil(m / WG));
-  pass.end();
-  device.queue.submit([enc.finish()]);
+  submitDispatch(device, "emptySpace", pipeline, bind, Math.ceil(m / WG));
 
   const got = (await p.out.read()) as ArrayLike<number>;
   const distances = Float32Array.from({ length: m }, (_, i) => got[i]!);

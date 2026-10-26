@@ -15,6 +15,7 @@ import tgpu from "typegpu";
 import * as d from "typegpu/data";
 import * as std from "typegpu/std";
 import { deviceScoped, writeView } from "../device";
+import { typegpuComputePipeline } from "../typegpuPipeline";
 
 const WG = 64;
 
@@ -83,17 +84,13 @@ interface Pipe {
 /** Per device (default: the library's own) — `deviceScoped` in `../device` says why. */
 const getPipe = deviceScoped(async (device: GPUDevice): Promise<Pipe> => {
   const root = tgpu.initFromDevice({ device });
-  const { code, usedBindGroupLayouts } = tgpu.resolveWithContext([stepFn], { names: "strict" });
-  const module = device.createShaderModule({ label: "reactionDiffusion", code });
-  const pipeLayout = device.createPipelineLayout({
-    label: "reactionDiffusion",
-    bindGroupLayouts: usedBindGroupLayouts.map((l) => root.unwrap(l)),
-  });
-  const pipeline = device.createComputePipeline({
-    label: "reactionDiffusion",
-    layout: pipeLayout,
-    compute: { module, entryPoint: "grayScottStep" },
-  });
+  const pipeline = typegpuComputePipeline(
+    device,
+    root,
+    tgpu.resolveWithContext([stepFn], { names: "strict" }),
+    "grayScottStep",
+    "reactionDiffusion",
+  );
   return { device, root, pipeline };
 });
 

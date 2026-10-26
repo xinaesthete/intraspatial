@@ -15,7 +15,9 @@
 import tgpu from "typegpu";
 import * as d from "typegpu/data";
 import * as std from "typegpu/std";
+import { submitDispatch } from "../device";
 import type { GpuBackend, Root } from "../graph/backend";
+import { typegpuComputePipeline } from "../typegpuPipeline";
 
 /** A brick request: sample a `dims`-sized grid whose voxel (i,j,k) centre maps to the
  *  normalised unit-cube coordinate `origin + (idx + 0.5)·step` per axis. For a chunk of
@@ -137,17 +139,13 @@ function getPipe(device: GPUDevice, root: Root): Promise<Pipe> {
   let p = pipes.get(root as object);
   if (!p) {
     p = (async () => {
-      const { code, usedBindGroupLayouts } = tgpu.resolveWithContext([mandelbulbFn], { names: "strict" });
-      const module = device.createShaderModule({ label: "mandelbulb", code });
-      const pipeLayout = device.createPipelineLayout({
-        label: "mandelbulb",
-        bindGroupLayouts: usedBindGroupLayouts.map((l) => root.unwrap(l)),
-      });
-      const pipeline = device.createComputePipeline({
-        label: "mandelbulb",
-        layout: pipeLayout,
-        compute: { module, entryPoint: "mandelbulb" },
-      });
+      const pipeline = typegpuComputePipeline(
+        device,
+        root,
+        tgpu.resolveWithContext([mandelbulbFn], { names: "strict" }),
+        "mandelbulb",
+        "mandelbulb",
+      );
       return { pipeline, pool: makePool(root, 1) };
     })();
     pipes.set(root as object, p);
@@ -189,13 +187,7 @@ export async function mandelbulbBrickGpu(backend: GpuBackend, region: Mandelbulb
   });
 
   const bind = root.unwrap(root.createBindGroup(layout, { params: pool.params, dst: pool.dst }));
-  const enc = device.createCommandEncoder({ label: "mandelbulb" });
-  const pass = enc.beginComputePass({ label: "mandelbulb" });
-  pass.setPipeline(pipe.pipeline);
-  pass.setBindGroup(0, bind);
-  pass.dispatchWorkgroups(Math.ceil(nx / WG[0]), Math.ceil(ny / WG[1]), Math.ceil(nz / WG[2]));
-  pass.end();
-  device.queue.submit([enc.finish()]);
+  submitDispatch(device, "mandelbulb", pipe.pipeline, bind, Math.ceil(nx / WG[0]), Math.ceil(ny / WG[1]), Math.ceil(nz / WG[2]));
 
   const got = (await pool.dst.read()) as ArrayLike<number>;
   return Float32Array.from({ length: n }, (_, idx) => got[idx] ?? 0);

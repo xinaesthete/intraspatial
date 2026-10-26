@@ -23,6 +23,7 @@ import * as std from "typegpu/std";
 import { latticeFor } from "../../spatial/bucketGrid";
 import type { CellCloud, TcmParams } from "../../spatial/tcm";
 import { getDevice, writeView } from "../device";
+import { typegpuComputePipeline } from "../typegpuPipeline";
 import { encodeGridIndex, type GridIndexCtx, getGridIndexCtx } from "./gridIndex";
 
 const WG = 64;
@@ -209,10 +210,7 @@ function getCtx(): Promise<Ctx> {
     const device = await getDevice();
     const root = tgpu.initFromDevice({ device });
     const build = (fn: typeof marksFn | typeof splatFn, entryPoint: string) => {
-      const { code, usedBindGroupLayouts } = tgpu.resolveWithContext([fn], { names: "strict" });
-      const module = device.createShaderModule({ label: "tcm", code });
-      const layout = device.createPipelineLayout({ label: "tcm", bindGroupLayouts: usedBindGroupLayouts.map((l) => root.unwrap(l)) });
-      return device.createComputePipeline({ label: `tcm:${entryPoint}`, layout, compute: { module, entryPoint } });
+      return typegpuComputePipeline(device, root, tgpu.resolveWithContext([fn], { names: "strict" }), entryPoint, `tcm:${entryPoint}`);
     };
     return {
       device,

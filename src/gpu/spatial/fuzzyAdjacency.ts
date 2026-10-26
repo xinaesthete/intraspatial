@@ -20,7 +20,8 @@
 import tgpu from "typegpu";
 import * as d from "typegpu/data";
 import * as std from "typegpu/std";
-import { deviceScoped, writeView } from "../device";
+import { deviceScoped, submitDispatch, writeView } from "../device";
+import { typegpuComputePipeline } from "../typegpuPipeline";
 
 const WG = 64;
 
@@ -70,17 +71,13 @@ interface Pipe {
 /** Per device (default: the library's own) — `deviceScoped` in `../device` says why. */
 const getPipe = deviceScoped(async (device: GPUDevice): Promise<Pipe> => {
   const root = tgpu.initFromDevice({ device });
-  const { code, usedBindGroupLayouts } = tgpu.resolveWithContext([fuzzyFn], { names: "strict" });
-  const module = device.createShaderModule({ label: "fuzzyAdjacency", code });
-  const pipeLayout = device.createPipelineLayout({
-    label: "fuzzyAdjacency",
-    bindGroupLayouts: usedBindGroupLayouts.map((l) => root.unwrap(l)),
-  });
-  const pipeline = device.createComputePipeline({
-    label: "fuzzyAdjacency",
-    layout: pipeLayout,
-    compute: { module, entryPoint: "fuzzyAdj" },
-  });
+  const pipeline = typegpuComputePipeline(
+    device,
+    root,
+    tgpu.resolveWithContext([fuzzyFn], { names: "strict" }),
+    "fuzzyAdj",
+    "fuzzyAdjacency",
+  );
   return { device, root, pipeline };
 });
 
@@ -150,13 +147,7 @@ export async function fuzzyAdjacencyGpu(
   p.params.write({ n, inv2s2: 1 / (2 * opts.sigma * opts.sigma), maxD2: support * support });
 
   const bind = root.unwrap(root.createBindGroup(layout, { params: p.params, pts: p.pts, out: p.out }));
-  const enc = device.createCommandEncoder({ label: "fuzzyAdjacency" });
-  const pass = enc.beginComputePass({ label: "fuzzyAdjacency" });
-  pass.setPipeline(pipeline);
-  pass.setBindGroup(0, bind);
-  pass.dispatchWorkgroups(Math.ceil(n / WG));
-  pass.end();
-  device.queue.submit([enc.finish()]);
+  submitDispatch(device, "fuzzyAdjacency", pipeline, bind, Math.ceil(n / WG));
 
   const got = (await p.out.read()) as ArrayLike<number>;
   return { membership: Float32Array.from({ length: n * n }, (_, i) => got[i]!), n };

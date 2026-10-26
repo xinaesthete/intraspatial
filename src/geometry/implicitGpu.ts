@@ -10,7 +10,9 @@
 // kernel — and bind it through TypeGPU's Dawn-stable path (ADR-0003), never TSL.
 import tgpu from "typegpu";
 import * as d from "typegpu/data";
+import { submitDispatch } from "../gpu/device";
 import type { Root } from "../gpu/graph/backend";
+import { typegpuComputePipeline } from "../gpu/typegpuPipeline";
 import type { Implicit } from "./implicit";
 
 const WG = 64;
@@ -55,9 +57,7 @@ function getPipe(device: GPUDevice, root: Root, code: string): GPUComputePipelin
   }
   let pipe = byCode.get(code);
   if (!pipe) {
-    const module = device.createShaderModule({ label: "implicitGpu", code });
-    const pipeLayout = device.createPipelineLayout({ label: "implicitGpu", bindGroupLayouts: [root.unwrap(layout)] });
-    pipe = device.createComputePipeline({ label: "implicitGpu", layout: pipeLayout, compute: { module, entryPoint: "main" } });
+    pipe = typegpuComputePipeline(device, root, { code, usedBindGroupLayouts: [layout] }, "main", "implicitGpu");
     byCode.set(code, pipe);
   }
   return pipe;
@@ -89,13 +89,7 @@ export async function sampleSdfGpu(device: GPUDevice, root: Root, g: Implicit, p
 
   const bind = root.unwrap(root.createBindGroup(layout, { params: dims, inPts, outDist, pbuf }));
 
-  const enc = device.createCommandEncoder({ label: "implicitGpu" });
-  const pass = enc.beginComputePass({ label: "implicitGpu" });
-  pass.setPipeline(pipeline);
-  pass.setBindGroup(0, bind);
-  pass.dispatchWorkgroups(Math.ceil(Math.max(1, count) / WG));
-  pass.end();
-  device.queue.submit([enc.finish()]);
+  submitDispatch(device, "implicitGpu", pipeline, bind, Math.ceil(Math.max(1, count) / WG));
 
   const got = (await outDist.read()) as ArrayLike<number>;
   return Float32Array.from({ length: count }, (_, i) => got[i] ?? 0);

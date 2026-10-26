@@ -17,7 +17,9 @@
 // backend, never TSL.
 import tgpu from "typegpu";
 import * as d from "typegpu/data";
+import { submitDispatch } from "../gpu/device";
 import type { Root } from "../gpu/graph/backend";
+import { typegpuComputePipeline } from "../gpu/typegpuPipeline";
 import type { Mesh, Swept } from "./swept";
 import { gridIndices } from "./sweptGrid";
 
@@ -46,9 +48,7 @@ function getPipe(device: GPUDevice, root: Root, code: string): GPUComputePipelin
   }
   let pipe = byCode.get(code);
   if (!pipe) {
-    const module = device.createShaderModule({ label: "sweptGpu", code });
-    const pipeLayout = device.createPipelineLayout({ label: "sweptGpu", bindGroupLayouts: [root.unwrap(layout)] });
-    pipe = device.createComputePipeline({ label: "sweptGpu", layout: pipeLayout, compute: { module, entryPoint: "main" } });
+    pipe = typegpuComputePipeline(device, root, { code, usedBindGroupLayouts: [layout] }, "main", "sweptGpu");
     byCode.set(code, pipe);
   }
   return pipe;
@@ -93,13 +93,7 @@ export function createSweptGpu(device: GPUDevice, root: Root, g: Swept, slices: 
 
   function update(params: Float32Array): void {
     pbuf.write(params.length === paramCount ? params : Float32Array.from({ length: paramCount }, (_, i) => params[i] ?? 0));
-    const enc = device.createCommandEncoder({ label: "sweptGpu" });
-    const pass = enc.beginComputePass({ label: "sweptGpu" });
-    pass.setPipeline(pipeline);
-    pass.setBindGroup(0, bind);
-    pass.dispatchWorkgroups(Math.ceil(vertexCount / WG));
-    pass.end();
-    device.queue.submit([enc.finish()]);
+    submitDispatch(device, "sweptGpu", pipeline, bind, Math.ceil(vertexCount / WG));
   }
   update(g.paramVector());
 

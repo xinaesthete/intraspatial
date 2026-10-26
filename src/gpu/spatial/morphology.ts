@@ -15,8 +15,9 @@
 import tgpu from "typegpu";
 import * as d from "typegpu/data";
 import * as std from "typegpu/std";
-import { deviceScoped, writeView } from "../device";
+import { deviceScoped, submitDispatch, writeView } from "../device";
 import { type BindEntry, rawBindGroup } from "../graph/residentBind";
+import { typegpuComputePipeline } from "../typegpuPipeline";
 
 const WG = 64;
 
@@ -76,13 +77,7 @@ interface Pipe {
 /** Per device (default: the library's own) — `deviceScoped` in `../device` says why. */
 const getPipe = deviceScoped(async (device: GPUDevice): Promise<Pipe> => {
   const root = tgpu.initFromDevice({ device });
-  const { code, usedBindGroupLayouts } = tgpu.resolveWithContext([morphFn], { names: "strict" });
-  const module = device.createShaderModule({ label: "morphology", code });
-  const pipeLayout = device.createPipelineLayout({
-    label: "morphology",
-    bindGroupLayouts: usedBindGroupLayouts.map((l) => root.unwrap(l)),
-  });
-  const pipeline = device.createComputePipeline({ label: "morphology", layout: pipeLayout, compute: { module, entryPoint: "morphSep" } });
+  const pipeline = typegpuComputePipeline(device, root, tgpu.resolveWithContext([morphFn], { names: "strict" }), "morphSep", "morphology");
   return { device, root, pipeline };
 });
 
@@ -135,13 +130,7 @@ function runPasses(
   const run = (from: BindEntry, to: BindEntry, stepX: number, stepY: number) => {
     params.write({ w: width, h: height, r, stepX, stepY, mode: modeFlag(mode) });
     const bind = rawBindGroup(device, root, layout, [params, from, to], "morphology");
-    const enc = device.createCommandEncoder({ label: "morphology" });
-    const pass = enc.beginComputePass({ label: "morphology" });
-    pass.setPipeline(pipeline);
-    pass.setBindGroup(0, bind);
-    pass.dispatchWorkgroups(groups);
-    pass.end();
-    device.queue.submit([enc.finish()]);
+    submitDispatch(device, "morphology", pipeline, bind, groups);
   };
   run(src, scratch, 1, 0); // horizontal: src -> scratch
   run(scratch, dst, 0, 1); // vertical:   scratch -> dst

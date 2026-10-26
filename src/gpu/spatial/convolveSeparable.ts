@@ -13,6 +13,7 @@ import * as d from "typegpu/data";
 import * as std from "typegpu/std";
 import { deviceScoped, writeView } from "../device";
 import { type BindEntry, rawBindGroup } from "../graph/residentBind";
+import { typegpuComputePipeline } from "../typegpuPipeline";
 
 const WG = 64;
 
@@ -62,17 +63,13 @@ interface Pipe {
 /** Per device (default: the library's own) — `deviceScoped` in `../device` says why. */
 const getPipe = deviceScoped(async (device: GPUDevice): Promise<Pipe> => {
   const root = tgpu.initFromDevice({ device });
-  const { code, usedBindGroupLayouts } = tgpu.resolveWithContext([convFn], { names: "strict" });
-  const module = device.createShaderModule({ label: "convolveSeparable", code });
-  const pipeLayout = device.createPipelineLayout({
-    label: "convolveSeparable",
-    bindGroupLayouts: usedBindGroupLayouts.map((l) => root.unwrap(l)),
-  });
-  const pipeline = device.createComputePipeline({
-    label: "convolveSeparable",
-    layout: pipeLayout,
-    compute: { module, entryPoint: "convSep" },
-  });
+  const pipeline = typegpuComputePipeline(
+    device,
+    root,
+    tgpu.resolveWithContext([convFn], { names: "strict" }),
+    "convSep",
+    "convolveSeparable",
+  );
   return { device, root, pipeline };
 });
 

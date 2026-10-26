@@ -15,6 +15,8 @@
 import tgpu, { type StorageFlag, type TgpuBuffer, type UniformFlag } from "typegpu";
 import * as d from "typegpu/data";
 import * as std from "typegpu/std";
+import { submitDispatch } from "../device";
+import { typegpuComputePipeline } from "../typegpuPipeline";
 import { INTEGRATE_DEFAULTS, seedSwarmBody, tapBlock } from "./body";
 import { type Figure, figureAt, partnerIndex } from "./figures";
 
@@ -487,17 +489,7 @@ function getDancerPipe(device: GPUDevice): DancerPipe {
   // The render-bridge kernel uses its own bind-group layout (matrixLayout) — resolve it into a
   // separate module so matrixLayout sits at group 0.
   const mres = tgpu.resolveWithContext([matrixFn], { names: "strict" });
-  const mmodule = device.createShaderModule({ label: "dancerGpu:matrix", code: mres.code });
-  const mLayout = device.createPipelineLayout({
-    label: "dancerGpu:matrix",
-    bindGroupLayouts: mres.usedBindGroupLayouts.map((l) => root.unwrap(l)),
-  });
-  const matrixPipeline = device.createComputePipeline({
-    label: "dancerGpu:matrix",
-    layout: mLayout,
-    compute: { module: mmodule, entryPoint: "dancerMatrix" },
-  });
-
+  const matrixPipeline = typegpuComputePipeline(device, root, mres, "dancerMatrix", "dancerGpu:matrix");
   const tres = tgpu.resolveWithContext([trailWriteFn, trailSeedFn], { names: "strict" });
   const tmodule = device.createShaderModule({ label: "dancerGpu:trail", code: tres.code });
   const tLayout = device.createPipelineLayout({
@@ -760,13 +752,7 @@ export class DancerGpuSim {
    *  without advancing (e.g. right after seeding). */
   writeMatrices(): void {
     if (!this.matrixBind) return;
-    const enc = this.device.createCommandEncoder({ label: "dancerGpu:writeMatrices" });
-    const m = enc.beginComputePass({ label: "dancerGpu:matrix" });
-    m.setPipeline(this.matrixPipeline);
-    m.setBindGroup(0, this.matrixBind);
-    m.dispatchWorkgroups(this.groups);
-    m.end();
-    this.device.queue.submit([enc.finish()]);
+    submitDispatch(this.device, "dancerGpu:writeMatrices", this.matrixPipeline, this.matrixBind, this.groups);
   }
 
   /** The Ceilidh figure called at the current frame (for the HUD). */
@@ -788,13 +774,7 @@ export class DancerGpuSim {
     this.trailBind = root.unwrap(root.createBindGroup(trailLayout, { tdims: this.trailDimsBuf, tpos: this.posBuf, thist }));
     this.trailDimsBuf.write({ n, cap: this.trailCap, head: 0 });
     // seed every slot with the current position in one pass (no streak from the origin)
-    const enc = this.device.createCommandEncoder({ label: "dancerGpu:setTrailTarget" });
-    const p = enc.beginComputePass({ label: "dancerGpu:trailSeed" });
-    p.setPipeline(this.trailSeedPipeline);
-    p.setBindGroup(0, this.trailBind);
-    p.dispatchWorkgroups(this.groups);
-    p.end();
-    this.device.queue.submit([enc.finish()]);
+    submitDispatch(this.device, "dancerGpu:setTrailTarget", this.trailSeedPipeline, this.trailBind, this.groups);
   }
 
   /** Raw GPUBuffer of current positions — hand to three.js to render from (no readback). */
@@ -812,13 +792,7 @@ export class DancerGpuSim {
    *  (distance matrix / hover-pick), NOT the render hot path. */
   async readBlocks(): Promise<DancerBlocks> {
     const { device, n } = this;
-    const enc = device.createCommandEncoder({ label: "dancerGpu:readBlocks" });
-    const g = enc.beginComputePass({ label: "dancerGpu:gather" });
-    g.setPipeline(this.gatherPipeline);
-    g.setBindGroup(0, this.bind);
-    g.dispatchWorkgroups(this.groups);
-    g.end();
-    device.queue.submit([enc.finish()]);
+    submitDispatch(device, "dancerGpu:readBlocks", this.gatherPipeline, this.bind, this.groups);
 
     // Read via a wrapper over the RAW buffer — the Dawn-on-Node-stable path (a direct `.read()`
     // on a created buffer can segfault the Node binding; see backend.node.ts).

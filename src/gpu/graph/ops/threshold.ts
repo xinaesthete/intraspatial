@@ -11,6 +11,8 @@
 import tgpu from "typegpu";
 import * as d from "typegpu/data";
 import * as std from "typegpu/std";
+import { submitDispatch } from "../../device";
+import { typegpuComputePipeline } from "../../typegpuPipeline";
 import type { Root } from "../backend";
 import type { OpType, Params } from "../op";
 import { rawBindGroup } from "../residentBind";
@@ -65,17 +67,13 @@ function getPipe(device: GPUDevice, root: Root): Promise<Pipe> {
   let p = pipes.get(root as object);
   if (!p) {
     p = (async () => {
-      const { code, usedBindGroupLayouts } = tgpu.resolveWithContext([threshFn], { names: "strict" });
-      const module = device.createShaderModule({ label: "threshold", code });
-      const pipeLayout = device.createPipelineLayout({
-        label: "threshold",
-        bindGroupLayouts: usedBindGroupLayouts.map((l) => root.unwrap(l)),
-      });
-      const pipeline = device.createComputePipeline({
-        label: "threshold",
-        layout: pipeLayout,
-        compute: { module, entryPoint: "threshold" },
-      });
+      const pipeline = typegpuComputePipeline(
+        device,
+        root,
+        tgpu.resolveWithContext([threshFn], { names: "strict" }),
+        "threshold",
+        "threshold",
+      );
       return { pipeline, params: makeParams(root) };
     })();
     pipes.set(root as object, p);
@@ -133,13 +131,7 @@ export const thresholdOp: OpType = {
     // Raw bind group over the pooled buffers — see residentBind.ts for why these are not
     // wrapped as TypeGPU buffers. Order matches the `layout` declaration: params, src, dst.
     const bind = rawBindGroup(device, root, layout, [pipe.params, src.buffer, dst.buffer], "threshold");
-    const enc = device.createCommandEncoder({ label: "threshold" });
-    const pass = enc.beginComputePass({ label: "threshold" });
-    pass.setPipeline(pipe.pipeline);
-    pass.setBindGroup(0, bind);
-    pass.dispatchWorkgroups(Math.ceil(n / WG));
-    pass.end();
-    device.queue.submit([enc.finish()]);
+    submitDispatch(device, "threshold", pipe.pipeline, bind, Math.ceil(n / WG));
 
     // No readback — the value stays resident and the next op binds this buffer directly.
     return [{ shape: inField.shape, dtype: "f32", buffer: dst }];

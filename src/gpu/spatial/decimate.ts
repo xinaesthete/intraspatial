@@ -16,6 +16,7 @@ import * as d from "typegpu/data";
 import * as std from "typegpu/std";
 import { deviceScoped, dispatchGrid, writeView } from "../device";
 import { rawBindGroup } from "../graph/residentBind";
+import { typegpuComputePipeline } from "../typegpuPipeline";
 
 const WG = 64;
 
@@ -90,17 +91,13 @@ interface Pipe {
 /** Per device (default: the library's own) — `deviceScoped` in `../device` says why. */
 const getPipe = deviceScoped(async (device: GPUDevice): Promise<Pipe> => {
   const root = tgpu.initFromDevice({ device });
-  const { code, usedBindGroupLayouts } = tgpu.resolveWithContext([decimateFn], { names: "strict" });
-  const module = device.createShaderModule({ label: "decimate", code });
-  const pipeLayout = device.createPipelineLayout({
-    label: "decimate",
-    bindGroupLayouts: usedBindGroupLayouts.map((l) => root.unwrap(l)),
-  });
-  const pipeline = device.createComputePipeline({
-    label: "decimate",
-    layout: pipeLayout,
-    compute: { module, entryPoint: "decimateBlock" },
-  });
+  const pipeline = typegpuComputePipeline(
+    device,
+    root,
+    tgpu.resolveWithContext([decimateFn], { names: "strict" }),
+    "decimateBlock",
+    "decimate",
+  );
   return { device, root, pipeline };
 });
 

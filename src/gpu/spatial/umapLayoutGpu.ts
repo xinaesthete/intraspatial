@@ -29,7 +29,8 @@ import tgpu from "typegpu";
 import * as d from "typegpu/data";
 import type { AbParams, LayoutOptions } from "../../spatial/umapLayout";
 import { fitAB, makeEpochsPerSample, mulberry32 } from "../../spatial/umapLayout";
-import { getDevice, writeView } from "../device";
+import { getDevice, submitDispatch, writeView } from "../device";
+import { typegpuComputePipeline } from "../typegpuPipeline";
 
 const WG = 64;
 /** WebGPU's floor guarantee for `maxComputeWorkgroupsPerDimension`. Used rather than the
@@ -194,21 +195,17 @@ function getPipe(): Promise<Pipe> {
   pipeCache ??= (async () => {
     const device = await getDevice();
     const root = tgpu.initFromDevice({ device });
-    const { code, usedBindGroupLayouts } = tgpu.resolveWithContext({
-      template: TEMPLATE,
-      externals: { ...layout.bound },
-      names: "strict",
-    });
-    const module = device.createShaderModule({ label: "umapLayoutGpu", code });
-    const pipeLayout = device.createPipelineLayout({
-      label: "umapLayoutGpu",
-      bindGroupLayouts: usedBindGroupLayouts.map((l) => root.unwrap(l)),
-    });
-    const pipeline = device.createComputePipeline({
-      label: "umapLayoutGpu",
-      layout: pipeLayout,
-      compute: { module, entryPoint: "layoutStep" },
-    });
+    const pipeline = typegpuComputePipeline(
+      device,
+      root,
+      tgpu.resolveWithContext({
+        template: TEMPLATE,
+        externals: { ...layout.bound },
+        names: "strict",
+      }),
+      "layoutStep",
+      "umapLayoutGpu",
+    );
     return { device, root, pipeline };
   })();
   return pipeCache;
@@ -359,13 +356,7 @@ export class GpuUmapLayout {
         seed: this.opts.seed,
         gridX,
       });
-      const enc = device.createCommandEncoder({ label: "umapLayoutGpu" });
-      const pass = enc.beginComputePass({ label: "umapLayoutGpu" });
-      pass.setPipeline(pipeline);
-      pass.setBindGroup(0, bind);
-      pass.dispatchWorkgroups(gridX, gridY);
-      pass.end();
-      device.queue.submit([enc.finish()]);
+      submitDispatch(device, "umapLayoutGpu", pipeline, bind, gridX, gridY);
     }
     this.epoch += epochs;
   }

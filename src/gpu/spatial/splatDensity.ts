@@ -26,6 +26,7 @@ import { getDevice, MAX_WORKGROUPS_PER_DIM, sized } from "../device";
 import { rawBindGroup } from "../graph/residentBind";
 import { halfNarrower } from "../halfTexture";
 import { scratchTexture } from "../scratchTexture";
+import { typegpuComputePipeline } from "../typegpuPipeline";
 import { splatDensityAtomic } from "./splatDensityAtomic";
 
 const SHADER = /* wgsl */ `
@@ -204,13 +205,13 @@ const align256 = (n: number) => Math.ceil(n / 256) * 256;
 /** The de-pad pipeline and its uniform block, built once per device like the render pipeline. */
 function getDepad(g: Gpu) {
   g.depad ??= (async () => {
-    const { code, usedBindGroupLayouts } = tgpu.resolveWithContext([depadFn], { names: "strict" });
-    const module = g.device.createShaderModule({ label: "splatDensity:depad", code });
-    const layout = g.device.createPipelineLayout({
-      label: "splatDensity:depad",
-      bindGroupLayouts: usedBindGroupLayouts.map((l) => g.root.unwrap(l)),
-    });
-    const pipeline = g.device.createComputePipeline({ label: "splatDensity:depad", layout, compute: { module, entryPoint: "splatDepad" } });
+    const pipeline = typegpuComputePipeline(
+      g.device,
+      g.root,
+      tgpu.resolveWithContext([depadFn], { names: "strict" }),
+      "splatDepad",
+      "splatDensity:depad",
+    );
     return { pipeline, params: g.root.createBuffer(DepadParams).$usage("uniform").$name("splatDensity:depadParams") };
   })();
   return g.depad;

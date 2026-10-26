@@ -203,6 +203,29 @@ export function dispatchGrid(workgroups: number, maxPerDim: number = MAX_WORKGRO
 }
 
 /**
+ * Encode one compute pass — one pipeline, one bind group at slot 0, one dispatch — and submit it.
+ * The encoder and the pass share `label`, so a validation error from either names the kernel.
+ * Multi-pass encodes are written out where they happen.
+ */
+export function submitDispatch(
+  device: GPUDevice,
+  label: string,
+  pipeline: GPUComputePipeline,
+  bindGroup: GPUBindGroup,
+  x: number,
+  y = 1,
+  z = 1,
+): void {
+  const enc = device.createCommandEncoder({ label });
+  const pass = enc.beginComputePass({ label });
+  pass.setPipeline(pipeline);
+  pass.setBindGroup(0, bindGroup);
+  pass.dispatchWorkgroups(x, y, z);
+  pass.end();
+  device.queue.submit([enc.finish()]);
+}
+
+/**
  * Refuse a storage binding larger than the device allows, rather than discovering it as a
  * wrong answer.
  *

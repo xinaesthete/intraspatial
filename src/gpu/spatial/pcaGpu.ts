@@ -49,7 +49,8 @@ import {
   pcaBasis,
   pcaComponentCount,
 } from "../../spatial/pca";
-import { getDevice, writeView } from "../device";
+import { getDevice, submitDispatch, writeView } from "../device";
+import { typegpuComputePipeline } from "../typegpuPipeline";
 
 /** Output tile edge, and the row block staged in workgroup memory. 16x16 = 256 threads,
  *  the same shape as a textbook shared-memory matmul; 16 f32 is also one 64-byte burst per
@@ -188,14 +189,8 @@ function getPipes(): Promise<Pipes> {
   pipeCache ??= (async () => {
     const device = await getDevice();
     const root = tgpu.initFromDevice({ device });
-    const finish = (resolved: ReturnType<typeof tgpu.resolveWithContext>, entryPoint: string): GPUComputePipeline => {
-      const module = device.createShaderModule({ label: "pcaGpu", code: resolved.code });
-      const layout = device.createPipelineLayout({
-        label: "pcaGpu",
-        bindGroupLayouts: resolved.usedBindGroupLayouts.map((l) => root.unwrap(l)),
-      });
-      return device.createComputePipeline({ label: `pcaGpu:${entryPoint}`, layout, compute: { module, entryPoint } });
-    };
+    const finish = (resolved: ReturnType<typeof tgpu.resolveWithContext>, entryPoint: string): GPUComputePipeline =>
+      typegpuComputePipeline(device, root, resolved, entryPoint, `pcaGpu:${entryPoint}`);
     return {
       device,
       root,
@@ -340,13 +335,7 @@ export async function covarianceGpu(
     const rows = Math.min(rowsPerTile, n - start);
     device.queue.writeBuffer(root.unwrap(dataBuf), 0, sliceRows(data, dim, start, rows, staging), 0, rows * dim);
     params.write({ rows, dim, nComp: 0, rowOffset: start });
-    const enc = device.createCommandEncoder({ label: "pcaGpu:covariance" });
-    const pass = enc.beginComputePass({ label: "pcaGpu:covariance" });
-    pass.setPipeline(covariance);
-    pass.setBindGroup(0, bind);
-    pass.dispatchWorkgroups(tiles, tiles);
-    pass.end();
-    device.queue.submit([enc.finish()]);
+    submitDispatch(device, "pcaGpu:covariance", covariance, bind, tiles, tiles);
     // One tile in flight at a time: `params` is a single uniform rewritten per tile, and
     // the accumulate into `cov` is only race-free because the dispatches are serialised.
     await device.queue.onSubmittedWorkDone();
@@ -405,13 +394,7 @@ export async function projectScoresGpu(
     const rows = Math.min(rowsPerTile, n - start);
     device.queue.writeBuffer(root.unwrap(dataBuf), 0, sliceRows(data, dim, start, rows, staging), 0, rows * dim);
     params.write({ rows, dim, nComp, rowOffset: start });
-    const enc = device.createCommandEncoder({ label: "pcaGpu:project" });
-    const pass = enc.beginComputePass({ label: "pcaGpu:project" });
-    pass.setPipeline(project);
-    pass.setBindGroup(0, bind);
-    pass.dispatchWorkgroups(Math.ceil(rows / 2));
-    pass.end();
-    device.queue.submit([enc.finish()]);
+    submitDispatch(device, "pcaGpu:project", project, bind, Math.ceil(rows / 2));
     await device.queue.onSubmittedWorkDone();
   }
 

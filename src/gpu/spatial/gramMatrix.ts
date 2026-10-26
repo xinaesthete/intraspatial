@@ -29,7 +29,7 @@ import tgpu from "typegpu";
 import * as d from "typegpu/data";
 import type { ChannelCloud, GramParams, GramResult } from "../../spatial/gram";
 import { EPANECHNIKOV, kernelCode, roughness } from "../../spatial/kernels";
-import { checkBindingSize, deviceScoped, perDevice, sized } from "../device";
+import { checkBindingSize, deviceScoped, perDevice, sized, submitDispatch } from "../device";
 import { ensureHalfTex, halfNarrower } from "../halfTexture";
 import { scratchTexture } from "../scratchTexture";
 import { KERNEL_WGSL } from "./kernelWgsl";
@@ -510,13 +510,7 @@ export async function gramMatrixGpu(
       ],
     });
 
-  const enc2 = device.createCommandEncoder({ label: "gramMatrix:sumChannels" });
-  const pass1 = enc2.beginComputePass({ label: "gramMatrix:sumChannels" });
-  pass1.setPipeline(sumChannels);
-  pass1.setBindGroup(0, reduceBind());
-  pass1.dispatchWorkgroups(K);
-  pass1.end();
-  device.queue.submit([enc2.finish()]);
+  submitDispatch(device, "gramMatrix:sumChannels", sumChannels, reduceBind(), K);
 
   // The means round-trip to the host. It is K floats — the whole point of pass 1 is that this is
   // the ONLY readback between the two reductions, not a per-pixel one.
@@ -525,13 +519,7 @@ export async function gramMatrixGpu(
   for (let k = 0; k < K; k++) mean[k] = (sumVals[k] ?? 0) / P;
   device.queue.writeBuffer(meansBuf, 0, Float32Array.from(mean));
 
-  const enc3 = device.createCommandEncoder({ label: "gramMatrix:gramPairs" });
-  const pass2 = enc3.beginComputePass({ label: "gramMatrix:gramPairs" });
-  pass2.setPipeline(gramPairs);
-  pass2.setBindGroup(0, reduceBind());
-  pass2.dispatchWorkgroups(K * K);
-  pass2.end();
-  device.queue.submit([enc3.finish()]);
+  submitDispatch(device, "gramMatrix:gramPairs", gramPairs, reduceBind(), K * K);
 
   const rawVals = (await rawOut.wrap.read()) as ArrayLike<number>;
   const cenVals = (await cenOut.wrap.read()) as ArrayLike<number>;
