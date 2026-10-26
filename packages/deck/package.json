@@ -23,7 +23,7 @@
     "./package.json": "./package.json"
   },
   "scripts": {
-    "build": "node ../../scripts/guarded.mjs -- tsc -p tsconfig.build.json",
+    "build": "node ../../scripts/guarded.mjs -- tsc -p tsconfig.build.json && node ../../scripts/fix-esm-specifiers.mjs dist",
     "typecheck": "node ../../scripts/guarded.mjs -- tsc --noEmit -p tsconfig.json",
     "prepack": "pnpm build"
   },
@@ -47,5 +47,8 @@
     "@webgpu/types": "^0.1.40",
     "typegpu": "catalog:",
     "typescript": "catalog:"
+  },
+  "publishConfig": {
+    "access": "public"
   }
 }

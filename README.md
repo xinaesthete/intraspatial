@@ -60,7 +60,8 @@ Subpaths: `intraspatial` (engine), `/graph`, `/device`, `/datasource`, `/geometr
 its `src/` path (`intraspatial/gpu/spatial/anni`). The `"use gpu"` kernels ship **pre-transformed**,
 so no bundler plugin is needed — see
 [ADR-0019](docs/decisions/0019-package-surface-and-prebuilt-kernels.md). Not yet on npm; build
-locally with `pnpm build:lib` and `pnpm pack`.
+locally with `pnpm build:lib` and `pnpm pack`. deck.gl layers over the same compute are
+[`@intraspatial/deck`](packages/deck/).
 
 ## Layout
 
@@ -94,10 +95,10 @@ locally with `pnpm build:lib` and `pnpm pack`.
 pnpm install
 ```
 
-The external `openjph-wasm` sibling (`../codecs/openjph-wasm`, a test-only reference
-fixture) is an `optionalDependency`; it is skipped cleanly in worktrees and CI where the
-sibling checkout isn't present. The playground depends on the *published* `openjph-wasm`
-for its volume viewer.
+`openjph-wasm` (the HTJ2K reference decoder used by `scripts/bench-tile-assembly.ts`) is a
+devDependency on the *published* package, as in the playground's volume viewer. To try a local
+checkout of it, `pnpm link` it rather than editing `package.json`: a `file:` range would ship in
+the published manifest.
 
 ## Common tasks
 
@@ -118,8 +119,28 @@ All run from the repo root.
 | `pnpm typecheck` | `tsc --noEmit` over core and playground |
 | `pnpm lint` | Biome check |
 
+| `pnpm changeset` | Record a release note + bump type for the packages a change touches |
+| `pnpm check:publish` | Pack each publishable package and lint the tarballs (publint, arethetypeswrong) |
+
 The two front-end apps also have their own `pnpm dev` / `pnpm build` if you prefer to run
 them from inside `playground/` or `docs-site/`.
+
+## Releasing
+
+Published packages: `intraspatial` (the root) and `@intraspatial/deck`. The playground and
+docs-site are private. Versions and changelogs are managed by [Changesets](https://github.com/changesets/changesets):
+
+1. With a change that consumers would notice, run `pnpm changeset`, pick the packages and the bump
+   (patch / minor / major — at 0.x, minor is the breaking one), and commit the generated
+   `.changeset/*.md` with the change.
+2. To cut a release, `pnpm version-packages` folds the pending changesets into version bumps and
+   `CHANGELOG.md`s (and dependents' ranges, e.g. `@intraspatial/deck` → `intraspatial`); review and
+   commit.
+3. `pnpm release` builds both packages, runs `check:publish`, and `changeset publish`es every
+   package whose version isn't on npm yet (needs `npm login`), tagging each `name@version` in git.
+   Push the tags.
+
+The first publish needs no changeset: both packages are at `0.1.0`, unpublished.
 
 ## Docs & decisions
 
