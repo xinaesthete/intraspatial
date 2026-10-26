@@ -205,7 +205,7 @@ function getDepad(g: Gpu) {
     const module = g.device.createShaderModule({ code });
     const layout = g.device.createPipelineLayout({ bindGroupLayouts: usedBindGroupLayouts.map((l) => g.root.unwrap(l)) });
     const pipeline = g.device.createComputePipeline({ layout, compute: { module, entryPoint: "splatDepad" } });
-    return { pipeline, params: g.root.createBuffer(DepadParams).$usage("uniform") };
+    return { pipeline, params: g.root.createBuffer(DepadParams).$usage("uniform").$name("splatDensity:depadParams") };
   })();
   return g.depad;
 }
@@ -213,7 +213,11 @@ function getDepad(g: Gpu) {
 function ensurePts(g: Gpu, floats: number): GPUBuffer {
   if (g.ptsBuf && g.ptsCap >= floats) return g.ptsBuf;
   g.ptsCap = Math.max(floats, g.ptsCap * 2, 3);
-  g.ptsBuf = g.device.createBuffer({ size: g.ptsCap * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+  g.ptsBuf = g.device.createBuffer({
+    label: "splatDensity:points",
+    size: g.ptsCap * 4,
+    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+  });
   return g.ptsBuf;
 }
 
@@ -221,6 +225,7 @@ function ensureReadback(g: Gpu, floats: number): void {
   if (g.rbWrap && g.rbCap >= floats) return;
   g.rbCap = Math.max(floats, g.rbCap * 2, 1);
   g.rbRaw = g.device.createBuffer({
+    label: "splatDensity:readback",
     size: g.rbCap * 4,
     usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
   });
@@ -233,6 +238,7 @@ function ensureTarget(g: Gpu, w: number, h: number): GPUTexture {
   g.texH = h;
   g.bytesPerRow = align256(w * 4); // r32float = 4 bytes/texel; rows must be 256-aligned
   g.target = g.device.createTexture({
+    label: "splatDensity:target",
     size: { width: w, height: h },
     format: "r32float",
     usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
@@ -391,7 +397,11 @@ function renderPoints(
         "(splatDensityResident falls back to a compute splat; the host and texture paths do not)",
     );
   }
-  g.uniBuf ??= device.createBuffer({ size: uni.byteLength, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+  g.uniBuf ??= device.createBuffer({
+    label: "splatDensity:uniforms",
+    size: uni.byteLength,
+    usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+  });
   device.queue.writeBuffer(g.uniBuf, 0, uni);
   const pass = enc.beginRenderPass({
     colorAttachments: [{ view, clearValue: { r: 0, g: 0, b: 0, a: 0 }, loadOp: "clear", storeOp: "store" }],

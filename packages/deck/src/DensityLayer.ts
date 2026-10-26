@@ -306,8 +306,11 @@ type State = {
   busy: boolean;
   /** Set while busy when the field must be redone again (new data, a new view). */
   again: boolean;
-  /** Buffers replaced while a splat was in flight, freed once it has been submitted. */
+  /** Buffers replaced or released while a splat was in flight, freed once it has settled. A raw
+   *  buffer is destroyed only while no splat holds it: never `destroy()` one the splat uses directly. */
   retired: GPUBuffer[];
+  /** deck has finalized the layer. A splat still in flight stops at its next await. */
+  finalized: boolean;
   /** Bumped by every data or σ change: a plan made before it is no longer a cache of anything. */
   version: number;
   shownVersion: number;
@@ -343,6 +346,7 @@ export class DensityLayer extends Layer<DensityLayerProps> {
       busy: false,
       again: false,
       retired: [],
+      finalized: false,
       version: 0,
       shownVersion: -1,
       shownSigma: 1,
@@ -366,10 +370,15 @@ export class DensityLayer extends Layer<DensityLayerProps> {
       vertexCount: 6,
       shaderAssembler: this.context.shaderAssembler,
     });
-    s.max = handle.createBuffer({ size: 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
-    s.maxWrap = device.createBuffer({ handle: s.max, byteLength: 4, usage: Buffer.STORAGE });
+    s.max = handle.createBuffer({ label: this.label("max"), size: 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+    s.maxWrap = device.createBuffer({ id: this.label("max"), handle: s.max, byteLength: 4, usage: Buffer.STORAGE });
     s.model.setBindings({ fieldMax: s.maxWrap });
     s.ready = true;
+  }
+
+  /** A GPU resource's label: the layer id first, so a host can attribute a device error to its layer. */
+  private label(resource: string): string {
+    return `${this.props.id}:${resource}`;
   }
 
   /** Report a configuration problem once and stay inert. */
@@ -403,15 +412,16 @@ export class DensityLayer extends Layer<DensityLayerProps> {
 
   override finalizeState(context: Parameters<Layer["finalizeState"]>[0]): void {
     const s = this.state;
+    s.finalized = true;
     // Wrappers first: luma never destroys a handle it was given, so the raw buffers are ours to free.
     s.fieldWrap?.destroy();
     s.maxWrap?.destroy();
     s.rampWrap?.destroy();
-    s.field?.destroy();
-    s.max?.destroy();
-    s.ramp?.destroy();
-    s.points?.destroy();
-    for (const b of s.retired.splice(0)) b.destroy();
+    s.ramp?.destroy(); // only the draw reads it
+    // A splat in flight still holds these (its submits follow awaits): retire them, and `refresh`
+    // frees them when it settles. Destroying them here fails those submits.
+    for (const b of [s.field, s.max, s.points]) if (b) s.retired.push(b);
+    if (!s.busy) for (const b of s.retired.splice(0)) b.destroy();
     s.model?.destroy();
     super.finalizeState(context);
   }
@@ -429,7 +439,11 @@ export class DensityLayer extends Layer<DensityLayerProps> {
         if (s.busy) s.retired.push(s.points);
         else s.points.destroy();
       }
-      s.points = s.device!.createBuffer({ size: xyw.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+      s.points = s.device!.createBuffer({
+        label: this.label("points"),
+        size: xyw.byteLength,
+        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+      });
     }
     s.device!.queue.writeBuffer(s.points, 0, xyw.buffer, xyw.byteOffset, xyw.byteLength);
     s.pointCount = n;
@@ -444,8 +458,17 @@ export class DensityLayer extends Layer<DensityLayerProps> {
     if (!s.ramp || s.ramp.size < data.byteLength) {
       s.rampWrap?.destroy();
       s.ramp?.destroy();
-      s.ramp = s.device!.createBuffer({ size: MAX_STOPS * 16, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
-      s.rampWrap = this.context.device.createBuffer({ handle: s.ramp, byteLength: s.ramp.size, usage: Buffer.STORAGE });
+      s.ramp = s.device!.createBuffer({
+        label: this.label("ramp"),
+        size: MAX_STOPS * 16,
+        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+      });
+      s.rampWrap = this.context.device.createBuffer({
+        id: this.label("ramp"),
+        handle: s.ramp,
+        byteLength: s.ramp.size,
+        usage: Buffer.STORAGE,
+      });
       s.model?.setBindings({ ramp: s.rampWrap });
     }
     s.device!.queue.writeBuffer(s.ramp, 0, data);
@@ -502,6 +525,7 @@ export class DensityLayer extends Layer<DensityLayerProps> {
       .finally(() => {
         s.busy = false;
         for (const b of s.retired.splice(0)) b.destroy();
+        if (s.finalized) return;
         if (s.again) {
           s.again = false;
           this.refresh();
@@ -517,8 +541,17 @@ export class DensityLayer extends Layer<DensityLayerProps> {
       // referenced by nothing but the draw — which is rebound below, before the next frame.
       s.fieldWrap?.destroy();
       s.field?.destroy();
-      s.field = s.device!.createBuffer({ size: cells * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC });
-      s.fieldWrap = this.context.device.createBuffer({ handle: s.field, byteLength: s.field.size, usage: Buffer.STORAGE });
+      s.field = s.device!.createBuffer({
+        label: this.label("field"),
+        size: cells * 4,
+        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC,
+      });
+      s.fieldWrap = this.context.device.createBuffer({
+        id: this.label("field"),
+        handle: s.field,
+        byteLength: s.field.size,
+        usage: Buffer.STORAGE,
+      });
       s.model?.setBindings({ field: s.fieldWrap });
       s.shown = null; // the new buffer holds nothing yet
     }
@@ -532,7 +565,10 @@ export class DensityLayer extends Layer<DensityLayerProps> {
       device: s.device,
       maxWeight: s.maxWeight,
     });
+    // Finalized during an await: submit nothing more. What the kernels hold is retired, not destroyed.
+    if (s.finalized) return;
     await fieldMaxResident(s.field, cells, s.max!, s.device);
+    if (s.finalized) return;
     // Both submitted; queue order puts them before any draw recorded from here on.
     s.shown = plan;
     s.shownVersion = version;

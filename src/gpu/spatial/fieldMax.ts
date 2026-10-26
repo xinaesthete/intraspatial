@@ -59,7 +59,7 @@ async function getCtx(device?: GPUDevice): Promise<Ctx> {
     ctx = (async () => {
       const module = await compileShader(dev, SHADER, "fieldMax");
       const pipeline = dev.createComputePipeline({ layout: "auto", compute: { module, entryPoint: "fieldMax" } });
-      const uni = dev.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+      const uni = dev.createBuffer({ label: "fieldMax:uniforms", size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
       return { device: dev, pipeline, uni };
     })();
     perDevice.set(dev, ctx);

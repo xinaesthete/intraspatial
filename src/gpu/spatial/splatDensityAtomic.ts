@@ -106,8 +106,16 @@ function getCtx(device: GPUDevice): Promise<Ctx> {
       return {
         splat: device.createComputePipeline({ layout: "auto", compute: { module: splatModule, entryPoint: "splat" } }),
         resolve: device.createComputePipeline({ layout: "auto", compute: { module: resolveModule, entryPoint: "resolve" } }),
-        splatUni: device.createBuffer({ size: 64, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST }),
-        resolveUni: device.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST }),
+        splatUni: device.createBuffer({
+          label: "splatDensityAtomic:splatUniforms",
+          size: 64,
+          usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+        }),
+        resolveUni: device.createBuffer({
+          label: "splatDensityAtomic:resolveUniforms",
+          size: 16,
+          usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+        }),
       };
     })();
     perDevice.set(device, ctx);
@@ -145,7 +153,11 @@ export async function splatDensityAtomic(
   const bytes = cells * 8;
   if (!ctx.acc || ctx.acc.size < bytes) {
     ctx.acc?.destroy();
-    ctx.acc = device.createBuffer({ size: bytes, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+    ctx.acc = device.createBuffer({
+      label: "splatDensityAtomic:accumulator",
+      size: bytes,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+    });
   }
   const splatGrid = dispatchGrid(Math.ceil(Math.max(n, 1) / WG));
   const resolveGrid = dispatchGrid(Math.ceil(cells / WG));
