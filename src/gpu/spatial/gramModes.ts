@@ -176,6 +176,7 @@ function getCtx(): Promise<Ctx> {
     const format = navigator.gpu.getPreferredCanvasFormat();
     const module = await compileShader(device, PAINT_SHADER, "gramModes.paint");
     const pipeline = device.createRenderPipeline({
+      label: "gramModes",
       layout: "auto",
       vertex: { module, entryPoint: "vs" },
       fragment: { module, entryPoint: "fs", targets: [{ format }] },
@@ -376,14 +377,22 @@ export async function paintGramModes(canvas: HTMLCanvasElement, res: GramMatrixG
   // the bbox, hence the negative Y term.
   const [minX, minY, maxX, maxY] = res.bbox;
   const ov = overlayResources(device, opts.image, [(maxX - minX) / res.width, 0, minX, 0, -(maxY - minY) / res.height, maxY]);
-  uniBuf ??= device.createBuffer({ size: UNI_FLOATS * 4, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+  uniBuf ??= device.createBuffer({
+    label: "gramModes:uniforms",
+    size: UNI_FLOATS * 4,
+    usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+  });
   if (!chanBuf || chanCap < chan.length) {
     chanCap = Math.max(chan.length, chanCap * 2, 16);
-    chanBuf = device.createBuffer({ size: chanCap * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+    chanBuf = device.createBuffer({
+      label: "gramModes:channels",
+      size: chanCap * 4,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+    });
   }
   if (!wandBuf || wandCap < wandData.length) {
     wandCap = Math.max(wandData.length, wandCap * 2, 16);
-    wandBuf = device.createBuffer({ size: wandCap * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+    wandBuf = device.createBuffer({ label: "gramModes:wand", size: wandCap * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
   }
   device.queue.writeBuffer(
     uniBuf,
@@ -425,6 +434,7 @@ export async function paintGramModes(canvas: HTMLCanvasElement, res: GramMatrixG
   device.queue.writeBuffer(wandBuf, 0, wandData);
 
   const bind = device.createBindGroup({
+    label: "gramModes",
     layout: pipeline.getBindGroupLayout(0),
     entries: [
       { binding: 0, resource: { buffer: uniBuf, size: UNI_FLOATS * 4 } },
@@ -436,8 +446,9 @@ export async function paintGramModes(canvas: HTMLCanvasElement, res: GramMatrixG
     ],
   });
 
-  const enc = device.createCommandEncoder();
+  const enc = device.createCommandEncoder({ label: "gramModes" });
   const pass = enc.beginRenderPass({
+    label: "gramModes",
     colorAttachments: [
       { view: ctx.getCurrentTexture().createView(), loadOp: "clear", storeOp: "store", clearValue: { r: 0, g: 0, b: 0, a: 1 } },
     ],

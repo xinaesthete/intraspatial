@@ -94,6 +94,7 @@ export function scratchTexture(device: GPUDevice, key: string, d: ScratchDesc): 
   if (got && fits(got, d)) return got.tex;
   got?.tex.destroy();
   const tex = device.createTexture({
+    label: key,
     size: { width: d.width, height: d.height },
     format: d.format,
     usage: d.usage,

@@ -24,6 +24,7 @@ import tgpu from "typegpu";
 import * as d from "typegpu/data";
 import * as std from "typegpu/std";
 import { deviceScoped, sized, writeView } from "../device";
+import { typegpuComputePipeline } from "../typegpuPipeline";
 import { type GridIndexCtx, getGridIndexCtx } from "./gridIndex";
 import { cellCoord, cellRange, encodeQueryIndex, type IndexedQueryOptions, LATTICE_BYTES, Lattice, StartArray } from "./gridIndexQuery";
 
@@ -34,21 +35,25 @@ const Params = d.struct({ n: d.u32 });
 
 // Points stored flat: x at 2*i, y at 2*i+1. (Flat f32 dodges vec2f write-shape
 // quirks and writes cleanly via queue.writeBuffer.)
-const layout = tgpu.bindGroupLayout({
-  params: { uniform: Params },
-  pts: { storage: (n: number) => d.arrayOf(d.f32, n), access: "readonly" },
-  outb: { storage: (n: number) => d.arrayOf(d.f32, n), access: "mutable" },
-});
+const layout = tgpu
+  .bindGroupLayout({
+    params: { uniform: Params },
+    pts: { storage: (n: number) => d.arrayOf(d.f32, n), access: "readonly" },
+    outb: { storage: (n: number) => d.arrayOf(d.f32, n), access: "mutable" },
+  })
+  .$name("nnDistance");
 
 // The indexed kernel's bindings: the brute-force set plus the lattice and the index.
-const layoutIdx = tgpu.bindGroupLayout({
-  params: { uniform: Params },
-  lat: { uniform: Lattice },
-  pts: { storage: (n: number) => d.arrayOf(d.f32, n), access: "readonly" },
-  start: { storage: StartArray, access: "readonly" },
-  items: { storage: StartArray, access: "readonly" },
-  outb: { storage: (n: number) => d.arrayOf(d.f32, n), access: "mutable" },
-});
+const layoutIdx = tgpu
+  .bindGroupLayout({
+    params: { uniform: Params },
+    lat: { uniform: Lattice },
+    pts: { storage: (n: number) => d.arrayOf(d.f32, n), access: "readonly" },
+    start: { storage: StartArray, access: "readonly" },
+    items: { storage: StartArray, access: "readonly" },
+    outb: { storage: (n: number) => d.arrayOf(d.f32, n), access: "mutable" },
+  })
+  .$name("nnDistance:indexed");
 
 const nnIdxFn = tgpu
   .computeFn({ in: { gid: d.builtin.globalInvocationId }, workgroupSize: [WG] })((input) => {
@@ -115,12 +120,7 @@ interface Pipe {
 const getPipe = deviceScoped(async (device: GPUDevice): Promise<Pipe> => {
   const root = tgpu.initFromDevice({ device });
   const build = (fn: typeof nnFn, entryPoint: string) => {
-    const { code, usedBindGroupLayouts } = tgpu.resolveWithContext([fn], { names: "strict" });
-    const module = device.createShaderModule({ code });
-    const pipeLayout = device.createPipelineLayout({
-      bindGroupLayouts: usedBindGroupLayouts.map((l) => root.unwrap(l)),
-    });
-    return device.createComputePipeline({ layout: pipeLayout, compute: { module, entryPoint } });
+    return typegpuComputePipeline(device, root, tgpu.resolveWithContext([fn], { names: "strict" }), entryPoint, `nnDistance:${entryPoint}`);
   };
   const indexCtx = await getGridIndexCtx(device);
   return { root, device, pipeline: build(nnFn, "nnDist"), pipelineIdx: build(nnIdxFn, "nnDistIdx"), indexCtx };
@@ -131,9 +131,12 @@ type Root = Pipe["root"];
 function makePool(root: Root, cap: number) {
   return {
     cap,
-    pts: root.createBuffer(d.arrayOf(d.f32, 2 * cap)).$usage("storage"),
-    outb: root.createBuffer(d.arrayOf(d.f32, cap)).$usage("storage"),
-    params: root.createBuffer(Params).$usage("uniform"),
+    pts: root
+      .createBuffer(d.arrayOf(d.f32, 2 * cap))
+      .$usage("storage")
+      .$name("nnDistance:pts"),
+    outb: root.createBuffer(d.arrayOf(d.f32, cap)).$usage("storage").$name("nnDistance:outb"),
+    params: root.createBuffer(Params).$usage("uniform").$name("nnDistance:params"),
   };
 }
 /** Per root, so per device: a pool's buffers belong to the device its root wraps. */
@@ -173,13 +176,14 @@ export async function nearestNeighborDistancesGpu(
   writeView(device.queue, root.unwrap(p.pts), flat);
   p.params.write({ n });
 
-  const enc = device.createCommandEncoder();
+  const enc = device.createCommandEncoder({ label: "nnDistance" });
   let bind: GPUBindGroup;
   if (opts.cell === undefined) {
     bind = root.unwrap(root.createBindGroup(layout, { params: p.params, pts: p.pts, outb: p.outb }));
   } else {
     const q = encodeQueryIndex(indexCtx, root.unwrap(p.pts), n, xs, ys, opts.cell, opts.bounds, enc, "nnDistance:index");
     bind = device.createBindGroup({
+      label: "nnDistance",
       layout: root.unwrap(layoutIdx),
       entries: [
         { binding: 0, resource: { buffer: root.unwrap(p.params) } },
@@ -191,7 +195,7 @@ export async function nearestNeighborDistancesGpu(
       ],
     });
   }
-  const pass = enc.beginComputePass();
+  const pass = enc.beginComputePass({ label: "nnDistance" });
   pass.setPipeline(opts.cell === undefined ? pipeline : pipelineIdx);
   pass.setBindGroup(0, bind);
   pass.dispatchWorkgroups(Math.ceil(n / WG));

@@ -145,7 +145,11 @@ function getCtx(): Promise<Ctx> {
     const root = tgpu.initFromDevice({ device });
     const index = await getGridIndexCtx();
     const mk = (code: string, entryPoint: string) =>
-      device.createComputePipeline({ layout: "auto", compute: { module: device.createShaderModule({ code }), entryPoint } });
+      device.createComputePipeline({
+        label: `crossPcf:${entryPoint}`,
+        layout: "auto",
+        compute: { module: device.createShaderModule({ label: `crossPcf:${entryPoint}`, code }), entryPoint },
+      });
     return { device, root, index, hist: mk(HIST_SHADER, "pcfHist"), matrix: mk(MATRIX_SHADER, "pcfMatrix") };
   })();
   return ctxCache;
@@ -163,6 +167,7 @@ function ensure(device: GPUDevice, key: string, floats: number, extraUsage = 0):
   if (got && got.cap >= floats) return got.buf;
   const cap = Math.max(floats, (got?.cap ?? 0) * 2, 4);
   const buf = device.createBuffer({
+    label: `crossPcf:${key}`,
     size: cap * 4,
     usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | extraUsage,
   });
@@ -181,6 +186,7 @@ function ensureCounts(device: GPUDevice, root: Root, n: number) {
   if (countsWrap && countsCap >= n) return;
   countsCap = Math.max(n, countsCap * 2, 4);
   countsRaw = device.createBuffer({
+    label: "crossPcf:counts",
     size: countsCap * 4,
     usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
   });
@@ -228,10 +234,11 @@ async function runCounts(
 
   // Index build and query in one command buffer: the pass ordering inside a submit is what
   // makes `start`/`items` complete before the query pass reads them.
-  const enc = device.createCommandEncoder();
+  const enc = device.createCommandEncoder({ label: "crossPcf" });
   const grid = encodeGridIndex(indexCtx, index.over === "a" ? aBuf : bBuf, index.n, index.lattice, enc, { keyPrefix: "crossPcf:index" });
 
   const bind = device.createBindGroup({
+    label: "crossPcf",
     layout: pipeline.getBindGroupLayout(0),
     entries: [
       { binding: 0, resource: { buffer: uniBuf, size: UNI_FLOATS * 4 } },
@@ -245,7 +252,7 @@ async function runCounts(
       { binding: 5, resource: sized(countsRaw!, nCounts * 4) },
     ],
   });
-  const pass = enc.beginComputePass();
+  const pass = enc.beginComputePass({ label: "crossPcf" });
   pass.setPipeline(pipeline);
   pass.setBindGroup(0, bind);
   if (threads > 0) pass.dispatchWorkgroups(Math.ceil(threads / WG));

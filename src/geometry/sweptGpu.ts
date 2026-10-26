@@ -17,7 +17,9 @@
 // backend, never TSL.
 import tgpu from "typegpu";
 import * as d from "typegpu/data";
+import { submitDispatch } from "../gpu/device";
 import type { Root } from "../gpu/graph/backend";
+import { typegpuComputePipeline } from "../gpu/typegpuPipeline";
 import type { Mesh, Swept } from "./swept";
 import { gridIndices } from "./sweptGrid";
 
@@ -27,12 +29,14 @@ const Params = d.struct({ slices: d.u32, stacks: d.u32, vertexCount: d.u32, _pad
 
 // Binding order fixes the WGSL `@binding` indices in `sweptShaderWgsl`: params=0, pos=1, nor=2,
 // P (the param values)=3.
-const layout = tgpu.bindGroupLayout({
-  params: { uniform: Params },
-  outPos: { storage: (n: number) => d.arrayOf(d.f32, n), access: "mutable" },
-  outNor: { storage: (n: number) => d.arrayOf(d.f32, n), access: "mutable" },
-  pbuf: { storage: (n: number) => d.arrayOf(d.f32, n), access: "readonly" },
-});
+const layout = tgpu
+  .bindGroupLayout({
+    params: { uniform: Params },
+    outPos: { storage: (n: number) => d.arrayOf(d.f32, n), access: "mutable" },
+    outNor: { storage: (n: number) => d.arrayOf(d.f32, n), access: "mutable" },
+    pbuf: { storage: (n: number) => d.arrayOf(d.f32, n), access: "readonly" },
+  })
+  .$name("sweptGpu");
 
 // One compute pipeline per (device, shader-structure). Same-structure horns hit the cache.
 const pipes = new WeakMap<GPUDevice, Map<string, GPUComputePipeline>>();
@@ -44,9 +48,7 @@ function getPipe(device: GPUDevice, root: Root, code: string): GPUComputePipelin
   }
   let pipe = byCode.get(code);
   if (!pipe) {
-    const module = device.createShaderModule({ code });
-    const pipeLayout = device.createPipelineLayout({ bindGroupLayouts: [root.unwrap(layout)] });
-    pipe = device.createComputePipeline({ layout: pipeLayout, compute: { module, entryPoint: "main" } });
+    pipe = typegpuComputePipeline(device, root, { code, usedBindGroupLayouts: [layout] }, "main", "sweptGpu");
     byCode.set(code, pipe);
   }
   return pipe;
@@ -76,14 +78,14 @@ export function createSweptGpu(device: GPUDevice, root: Root, g: Swept, slices: 
 
   const pipeline = getPipe(device, root, g.toWgsl());
 
-  const dims = root.createBuffer(Params).$usage("uniform");
+  const dims = root.createBuffer(Params).$usage("uniform").$name("sweptGpu:dims");
   dims.write({ slices, stacks, vertexCount, _pad: 0 });
-  const pbuf = root.createBuffer(d.arrayOf(d.f32, paramCount)).$usage("storage");
+  const pbuf = root.createBuffer(d.arrayOf(d.f32, paramCount)).$usage("storage").$name("sweptGpu:pbuf");
 
   // Raw vertex/storage buffers so a render pass can bind them; wrapped for the compute bind group.
   const usage = GPUBufferUsage.STORAGE | GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_SRC;
-  const posRaw = device.createBuffer({ size: lanes * 4, usage });
-  const norRaw = device.createBuffer({ size: lanes * 4, usage });
+  const posRaw = device.createBuffer({ label: "sweptGpu:positions", size: lanes * 4, usage });
+  const norRaw = device.createBuffer({ label: "sweptGpu:normals", size: lanes * 4, usage });
   const outPos = root.createBuffer(d.arrayOf(d.f32, lanes), posRaw).$usage("storage");
   const outNor = root.createBuffer(d.arrayOf(d.f32, lanes), norRaw).$usage("storage");
 
@@ -91,13 +93,7 @@ export function createSweptGpu(device: GPUDevice, root: Root, g: Swept, slices: 
 
   function update(params: Float32Array): void {
     pbuf.write(params.length === paramCount ? params : Float32Array.from({ length: paramCount }, (_, i) => params[i] ?? 0));
-    const enc = device.createCommandEncoder();
-    const pass = enc.beginComputePass();
-    pass.setPipeline(pipeline);
-    pass.setBindGroup(0, bind);
-    pass.dispatchWorkgroups(Math.ceil(vertexCount / WG));
-    pass.end();
-    device.queue.submit([enc.finish()]);
+    submitDispatch(device, "sweptGpu", pipeline, bind, Math.ceil(vertexCount / WG));
   }
   update(g.paramVector());
 

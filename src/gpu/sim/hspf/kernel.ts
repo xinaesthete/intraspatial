@@ -156,6 +156,7 @@ async function getPipe(device: GPUDevice): Promise<Pipe> {
     const st = { type: "storage" } as const;
     const un = { type: "uniform" } as const;
     const bg0Layout = device.createBindGroupLayout({
+      label: "hspf:bg0",
       entries: [0, 1, 2, 3, 4, 5, 6].map((binding) => ({
         binding,
         visibility: GPUShaderStage.COMPUTE,
@@ -163,6 +164,7 @@ async function getPipe(device: GPUDevice): Promise<Pipe> {
       })),
     });
     const bg1Layout = device.createBindGroupLayout({
+      label: "hspf:bg1",
       entries: [
         { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: ro },
         { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: st },
@@ -170,7 +172,7 @@ async function getPipe(device: GPUDevice): Promise<Pipe> {
     });
     const pipeline = device.createComputePipeline({
       label: "hspf",
-      layout: device.createPipelineLayout({ bindGroupLayouts: [bg0Layout, bg1Layout] }),
+      layout: device.createPipelineLayout({ label: "hspf", bindGroupLayouts: [bg0Layout, bg1Layout] }),
       compute: { module, entryPoint: "hspfStep" },
     });
     return { device, root, pipeline, bg0Layout, bg1Layout };
@@ -292,24 +294,30 @@ export class HspfSim {
 
     const uni = GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST;
     const sto = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST;
-    const mk = (data: ArrayBufferView, use: number) => {
-      const buf = device.createBuffer({ size: data.byteLength, usage: use });
+    const mk = (label: string, data: ArrayBufferView, use: number) => {
+      const buf = device.createBuffer({ label, size: data.byteLength, usage: use });
       writeView(device.queue, buf, data);
       return buf;
     };
 
-    const paramsBuf = device.createBuffer({ size: 32, usage: uni });
+    const paramsBuf = device.createBuffer({ label: "hspf:params", size: 32, usage: uni });
     device.queue.writeBuffer(paramsBuf, 0, packParams(w, h, neighbourhood.count, numBarriers, tbr));
-    const fitnessBuf = mk(new Float32Array([...fit.A, ...fit.S]), uni);
-    const offspringBuf = mk(packVec4Array(OFFSPRING, 16), uni);
-    const barriersBuf = mk(packVec4Array(params.barriers ?? [], MAX_BARRIERS), uni);
-    const nbhdBuf = mk(neighbourhood.data, sto);
-    const hbsBuf = mk(scaffold.hbs, sto);
-    const weightsBuf = mk(scaffold.weights, sto);
+    const fitnessBuf = mk("hspf:fitness", new Float32Array([...fit.A, ...fit.S]), uni);
+    const offspringBuf = mk("hspf:offspring", packVec4Array(OFFSPRING, 16), uni);
+    const barriersBuf = mk("hspf:barriers", packVec4Array(params.barriers ?? [], MAX_BARRIERS), uni);
+    const nbhdBuf = mk("hspf:neighbourhood", neighbourhood.data, sto);
+    const hbsBuf = mk("hspf:hbs", scaffold.hbs, sto);
+    const weightsBuf = mk("hspf:weights", scaffold.weights, sto);
     // State (ping-pong) buffers are tgpu-managed so readback uses tgpu's `.read()` — a raw staging
     // `mapAsync` here trips Dawn-on-Node's exit-teardown segfault (see splatDensity notes).
-    const a = root.createBuffer(d.arrayOf(d.f32, NUM_LAYERS * n)).$usage("storage");
-    const b = root.createBuffer(d.arrayOf(d.f32, NUM_LAYERS * n)).$usage("storage");
+    const a = root
+      .createBuffer(d.arrayOf(d.f32, NUM_LAYERS * n))
+      .$usage("storage")
+      .$name("hspf:a");
+    const b = root
+      .createBuffer(d.arrayOf(d.f32, NUM_LAYERS * n))
+      .$usage("storage")
+      .$name("hspf:b");
     writeView(device.queue, root.unwrap(a), pfsa);
 
     return new HspfSim(
@@ -336,6 +344,7 @@ export class HspfSim {
 
   private buildBg0(): GPUBindGroup {
     return this.device.createBindGroup({
+      label: "hspf:bg0",
       layout: this.bg0Layout,
       entries: [
         { binding: 0, resource: { buffer: this.paramsBuf } },
@@ -353,13 +362,14 @@ export class HspfSim {
   step(steps = 1): void {
     const groups = Math.ceil(this.n / 64);
     for (let s = 0; s < steps; s++) {
-      const enc = this.device.createCommandEncoder();
-      const pass = enc.beginComputePass();
+      const enc = this.device.createCommandEncoder({ label: "hspf" });
+      const pass = enc.beginComputePass({ label: "hspf" });
       pass.setPipeline(this.pipeline);
       pass.setBindGroup(0, this.bg0);
       pass.setBindGroup(
         1,
         this.device.createBindGroup({
+          label: "hspf:bg1",
           layout: this.bg1Layout,
           entries: [
             { binding: 0, resource: { buffer: this.root.unwrap(this.src) } },
@@ -410,6 +420,7 @@ export class HspfSim {
    *  rebuilds the background bind group. Preserve `twoBiteRate` by passing it in `params`. */
   setNeighbourhood(neighbourhood: Neighbourhood, params: HspfParams = {}): void {
     this.nbhdBuf = this.device.createBuffer({
+      label: "hspf:neighbourhood",
       size: neighbourhood.data.byteLength,
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
     });

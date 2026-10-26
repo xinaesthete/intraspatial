@@ -7,19 +7,22 @@
 
 import tgpu from "typegpu";
 import * as d from "typegpu/data";
-import { writeView } from "#src/gpu/device";
+import { submitDispatch, writeView } from "#src/gpu/device";
+import { typegpuComputePipeline } from "#src/gpu/typegpuPipeline";
 import type { Root } from "../backend";
 
 const WG = 64;
 
 const CMulParams = d.struct({ n: d.u32 }); // n = sample count (array length = 2n)
 
-const layout = tgpu.bindGroupLayout({
-  params: { uniform: CMulParams },
-  a: { storage: (k: number) => d.arrayOf(d.f32, k), access: "readonly" },
-  b: { storage: (k: number) => d.arrayOf(d.f32, k), access: "readonly" },
-  dst: { storage: (k: number) => d.arrayOf(d.f32, k), access: "mutable" },
-});
+const layout = tgpu
+  .bindGroupLayout({
+    params: { uniform: CMulParams },
+    a: { storage: (k: number) => d.arrayOf(d.f32, k), access: "readonly" },
+    b: { storage: (k: number) => d.arrayOf(d.f32, k), access: "readonly" },
+    dst: { storage: (k: number) => d.arrayOf(d.f32, k), access: "mutable" },
+  })
+  .$name("complexMulGpu");
 
 const cmulFn = tgpu
   .computeFn({ in: { gid: d.builtin.globalInvocationId }, workgroupSize: [WG] })((input) => {
@@ -42,10 +45,10 @@ function makePool(root: Root, len: number) {
   const cap = Math.max(2, len);
   return {
     len,
-    a: root.createBuffer(d.arrayOf(d.f32, cap)).$usage("storage"),
-    b: root.createBuffer(d.arrayOf(d.f32, cap)).$usage("storage"),
-    dst: root.createBuffer(d.arrayOf(d.f32, cap)).$usage("storage"),
-    params: root.createBuffer(CMulParams).$usage("uniform"),
+    a: root.createBuffer(d.arrayOf(d.f32, cap)).$usage("storage").$name("complexMulGpu:a"),
+    b: root.createBuffer(d.arrayOf(d.f32, cap)).$usage("storage").$name("complexMulGpu:b"),
+    dst: root.createBuffer(d.arrayOf(d.f32, cap)).$usage("storage").$name("complexMulGpu:dst"),
+    params: root.createBuffer(CMulParams).$usage("uniform").$name("complexMulGpu:params"),
   };
 }
 
@@ -60,10 +63,13 @@ function getPipe(device: GPUDevice, root: Root): Promise<Pipe> {
   let p = pipes.get(root as object);
   if (!p) {
     p = (async () => {
-      const { code, usedBindGroupLayouts } = tgpu.resolveWithContext([cmulFn], { names: "strict" });
-      const module = device.createShaderModule({ code });
-      const pipeLayout = device.createPipelineLayout({ bindGroupLayouts: usedBindGroupLayouts.map((l) => root.unwrap(l)) });
-      const pipeline = device.createComputePipeline({ layout: pipeLayout, compute: { module, entryPoint: "complexMul" } });
+      const pipeline = typegpuComputePipeline(
+        device,
+        root,
+        tgpu.resolveWithContext([cmulFn], { names: "strict" }),
+        "complexMul",
+        "complexMulGpu",
+      );
       return { pipeline, pool: makePool(root, 2) };
     })();
     pipes.set(root as object, p);
@@ -90,13 +96,7 @@ export async function complexMulGpu(device: GPUDevice, root: Root, a: Float32Arr
   pool.params.write({ n });
 
   const bind = root.unwrap(root.createBindGroup(layout, { params: pool.params, a: pool.a, b: pool.b, dst: pool.dst }));
-  const enc = device.createCommandEncoder();
-  const pass = enc.beginComputePass();
-  pass.setPipeline(pipe.pipeline);
-  pass.setBindGroup(0, bind);
-  pass.dispatchWorkgroups(Math.ceil(n / WG));
-  pass.end();
-  device.queue.submit([enc.finish()]);
+  submitDispatch(device, "complexMulGpu", pipe.pipeline, bind, Math.ceil(n / WG));
 
   const got = (await pool.dst.read()) as ArrayLike<number>;
   return Float32Array.from({ length: len }, (_, i) => got[i]!);

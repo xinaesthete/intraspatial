@@ -12,7 +12,15 @@
 // The output grid inherits the LATTICE's placement, not the points': one cell of this grid is one
 // cell of the index, so it is already in world space via `worldFromArray · translate(origin) ·
 // scale(cell)`.
-import { checkBindingSize, compileShader, deviceScoped, dispatchGrid, MAX_WORKGROUPS_PER_DIM, sized } from "#src/gpu/device";
+import {
+  checkBindingSize,
+  compileShader,
+  deviceScoped,
+  dispatchGrid,
+  MAX_WORKGROUPS_PER_DIM,
+  sized,
+  submitDispatch,
+} from "#src/gpu/device";
 import { ensureBuf } from "#src/gpu/scan/prefixSum";
 import type { FieldValue, Shape } from "../handle";
 import type { ExecCtx, OpType, Params } from "../op";
@@ -45,6 +53,7 @@ interface Ctx {
 /** Per device: the op runs on its backend's device, the one the index it reads was built on. */
 const getCtx = deviceScoped(async (device: GPUDevice): Promise<Ctx> => {
   const layout = device.createBindGroupLayout({
+    label: "cellCounts",
     entries: [
       { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: "uniform" } },
       { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
@@ -53,7 +62,8 @@ const getCtx = deviceScoped(async (device: GPUDevice): Promise<Ctx> => {
   });
   const module = await compileShader(device, SHADER, "cellCounts");
   const pipeline = device.createComputePipeline({
-    layout: device.createPipelineLayout({ bindGroupLayouts: [layout] }),
+    label: "cellCounts",
+    layout: device.createPipelineLayout({ label: "cellCounts", bindGroupLayouts: [layout] }),
     compute: { module, entryPoint: "cellCounts" },
   });
   return { device, layout, pipeline };
@@ -119,6 +129,7 @@ export const cellCountsOp: OpType = {
     device.queue.writeBuffer(uni, 0, new Uint32Array([cells, gridX, 0, 0]));
 
     const bind = device.createBindGroup({
+      label: "cellCounts",
       layout,
       entries: [
         { binding: 0, resource: sized(uni, 16) },
@@ -126,13 +137,7 @@ export const cellCountsOp: OpType = {
         { binding: 2, resource: sized(out.buffer, cells * 4) },
       ],
     });
-    const enc = device.createCommandEncoder({ label: "cellCounts" });
-    const pass = enc.beginComputePass();
-    pass.setPipeline(pipeline);
-    pass.setBindGroup(0, bind);
-    pass.dispatchWorkgroups(gridX, gridY);
-    pass.end();
-    device.queue.submit([enc.finish()]);
+    submitDispatch(device, "cellCounts", pipeline, bind, gridX, gridY);
 
     return [
       {

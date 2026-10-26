@@ -13,6 +13,7 @@ import * as d from "typegpu/data";
 import * as std from "typegpu/std";
 import { deviceScoped, writeView } from "../device";
 import { type BindEntry, rawBindGroup } from "../graph/residentBind";
+import { typegpuComputePipeline } from "../typegpuPipeline";
 
 const WG = 64;
 
@@ -24,12 +25,14 @@ const Params = d.struct({
   stepY: d.i32,
 });
 
-const layout = tgpu.bindGroupLayout({
-  params: { uniform: Params },
-  src: { storage: (n: number) => d.arrayOf(d.f32, n), access: "readonly" },
-  wts: { storage: (n: number) => d.arrayOf(d.f32, n), access: "readonly" },
-  dst: { storage: (n: number) => d.arrayOf(d.f32, n), access: "mutable" },
-});
+const layout = tgpu
+  .bindGroupLayout({
+    params: { uniform: Params },
+    src: { storage: (n: number) => d.arrayOf(d.f32, n), access: "readonly" },
+    wts: { storage: (n: number) => d.arrayOf(d.f32, n), access: "readonly" },
+    dst: { storage: (n: number) => d.arrayOf(d.f32, n), access: "mutable" },
+  })
+  .$name("convolveSeparable");
 
 const convFn = tgpu
   .computeFn({ in: { gid: d.builtin.globalInvocationId }, workgroupSize: [WG] })((input) => {
@@ -60,24 +63,35 @@ interface Pipe {
 /** Per device (default: the library's own) — `deviceScoped` in `../device` says why. */
 const getPipe = deviceScoped(async (device: GPUDevice): Promise<Pipe> => {
   const root = tgpu.initFromDevice({ device });
-  const { code, usedBindGroupLayouts } = tgpu.resolveWithContext([convFn], { names: "strict" });
-  const module = device.createShaderModule({ code });
-  const pipeLayout = device.createPipelineLayout({
-    bindGroupLayouts: usedBindGroupLayouts.map((l) => root.unwrap(l)),
-  });
-  const pipeline = device.createComputePipeline({ layout: pipeLayout, compute: { module, entryPoint: "convSep" } });
+  const pipeline = typegpuComputePipeline(
+    device,
+    root,
+    tgpu.resolveWithContext([convFn], { names: "strict" }),
+    "convSep",
+    "convolveSeparable",
+  );
   return { device, root, pipeline };
 });
 
 type Root = Pipe["root"];
-function buf(root: Root, n: number) {
-  return root.createBuffer(d.arrayOf(d.f32, Math.max(1, n))).$usage("storage");
+function buf(root: Root, n: number, label: string) {
+  return root
+    .createBuffer(d.arrayOf(d.f32, Math.max(1, n)))
+    .$usage("storage")
+    .$name(label);
 }
 function makeParams(root: Root) {
-  return root.createBuffer(Params).$usage("uniform");
+  return root.createBuffer(Params).$usage("uniform").$name("convolveSeparable:params");
 }
 function makePool(root: Root, cap: number, wcap: number, params: ReturnType<typeof makeParams>) {
-  return { cap, wcap, a: buf(root, cap), b: buf(root, cap), w: buf(root, wcap), params };
+  return {
+    cap,
+    wcap,
+    a: buf(root, cap, "convolveSeparable:a"),
+    b: buf(root, cap, "convolveSeparable:b"),
+    w: buf(root, wcap, "convolveSeparable:w"),
+    params,
+  };
 }
 /** Per root, so per device: a pool's buffers belong to the device its root wraps. */
 const pools = new WeakMap<Root, ReturnType<typeof makePool>>();
@@ -136,8 +150,8 @@ export async function convolveSeparableGpu(
   const run = (src: typeof p.a, dst: typeof p.a, stepX: number, stepY: number) => {
     p.params.write({ w: width, h: height, r, stepX, stepY });
     const bind = root.unwrap(root.createBindGroup(layout, { params: p.params, src, wts: p.w, dst }));
-    const enc = dev.createCommandEncoder();
-    const pass = enc.beginComputePass();
+    const enc = dev.createCommandEncoder({ label: "convolveSeparable" });
+    const pass = enc.beginComputePass({ label: "convolveSeparable" });
     pass.setPipeline(pipeline);
     pass.setBindGroup(0, bind);
     pass.dispatchWorkgroups(groups);
@@ -182,9 +196,9 @@ export async function convolveSeparableResident(
   // as TypeGPU buffers. Order matches the `layout` declaration: params, src, wts, dst.
   const run = (from: BindEntry, to: BindEntry, stepX: number, stepY: number) => {
     p.params.write({ w: width, h: height, r, stepX, stepY });
-    const bind = rawBindGroup(dev, root, layout, [p.params, from, p.w, to]);
-    const enc = dev.createCommandEncoder();
-    const pass = enc.beginComputePass();
+    const bind = rawBindGroup(dev, root, layout, [p.params, from, p.w, to], "convolveSeparable");
+    const enc = dev.createCommandEncoder({ label: "convolveSeparable" });
+    const pass = enc.beginComputePass({ label: "convolveSeparable" });
     pass.setPipeline(pipeline);
     pass.setBindGroup(0, bind);
     pass.dispatchWorkgroups(groups);

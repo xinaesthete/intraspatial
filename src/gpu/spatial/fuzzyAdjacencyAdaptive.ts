@@ -19,7 +19,8 @@
 import tgpu from "typegpu";
 import * as d from "typegpu/data";
 import * as std from "typegpu/std";
-import { deviceScoped, writeView } from "../device";
+import { deviceScoped, submitDispatch, writeView } from "../device";
+import { typegpuComputePipeline } from "../typegpuPipeline";
 import { kthNeighborDistanceGpu } from "./kthNeighborDistance";
 
 const WG = 64;
@@ -30,12 +31,14 @@ const Params = d.struct({
   minSigma: d.f32, // floor so a zero ρ_i doesn't divide by zero
 });
 
-const layout = tgpu.bindGroupLayout({
-  params: { uniform: Params },
-  pts: { storage: (n: number) => d.arrayOf(d.f32, n), access: "readonly" }, // x,y per point
-  rho: { storage: (n: number) => d.arrayOf(d.f32, n), access: "readonly" }, // local bandwidth ρ_i
-  out: { storage: (n: number) => d.arrayOf(d.f32, n), access: "mutable" }, // n*n membership
-});
+const layout = tgpu
+  .bindGroupLayout({
+    params: { uniform: Params },
+    pts: { storage: (n: number) => d.arrayOf(d.f32, n), access: "readonly" }, // x,y per point
+    rho: { storage: (n: number) => d.arrayOf(d.f32, n), access: "readonly" }, // local bandwidth ρ_i
+    out: { storage: (n: number) => d.arrayOf(d.f32, n), access: "mutable" }, // n*n membership
+  })
+  .$name("fuzzyAdjacencyAdaptive");
 
 const adaptiveFn = tgpu
   .computeFn({ in: { gid: d.builtin.globalInvocationId }, workgroupSize: [WG] })((input) => {
@@ -73,10 +76,13 @@ interface Pipe {
 /** Per device (default: the library's own) — `deviceScoped` in `../device` says why. */
 const getPipe = deviceScoped(async (device: GPUDevice): Promise<Pipe> => {
   const root = tgpu.initFromDevice({ device });
-  const { code, usedBindGroupLayouts } = tgpu.resolveWithContext([adaptiveFn], { names: "strict" });
-  const module = device.createShaderModule({ code });
-  const pipeLayout = device.createPipelineLayout({ bindGroupLayouts: usedBindGroupLayouts.map((l) => root.unwrap(l)) });
-  const pipeline = device.createComputePipeline({ layout: pipeLayout, compute: { module, entryPoint: "fuzzyAdjAdaptive" } });
+  const pipeline = typegpuComputePipeline(
+    device,
+    root,
+    tgpu.resolveWithContext([adaptiveFn], { names: "strict" }),
+    "fuzzyAdjAdaptive",
+    "fuzzyAdjacencyAdaptive",
+  );
   return { device, root, pipeline };
 });
 
@@ -84,10 +90,16 @@ type Root = Pipe["root"];
 function makePool(root: Root, n: number) {
   return {
     n,
-    pts: root.createBuffer(d.arrayOf(d.f32, 2 * n)).$usage("storage"),
-    rho: root.createBuffer(d.arrayOf(d.f32, n)).$usage("storage"),
-    out: root.createBuffer(d.arrayOf(d.f32, n * n)).$usage("storage"),
-    params: root.createBuffer(Params).$usage("uniform"),
+    pts: root
+      .createBuffer(d.arrayOf(d.f32, 2 * n))
+      .$usage("storage")
+      .$name("fuzzyAdjacencyAdaptive:pts"),
+    rho: root.createBuffer(d.arrayOf(d.f32, n)).$usage("storage").$name("fuzzyAdjacencyAdaptive:rho"),
+    out: root
+      .createBuffer(d.arrayOf(d.f32, n * n))
+      .$usage("storage")
+      .$name("fuzzyAdjacencyAdaptive:out"),
+    params: root.createBuffer(Params).$usage("uniform").$name("fuzzyAdjacencyAdaptive:params"),
   };
 }
 /** Per root, so per device: a pool's buffers belong to the device its root wraps. */
@@ -140,13 +152,7 @@ export async function fuzzyAdjacencyAdaptiveFromRhoGpu(
   p.params.write({ n, scale: opts.scale ?? 1, minSigma: opts.minSigma ?? 1e-6 });
 
   const bind = root.unwrap(root.createBindGroup(layout, { params: p.params, pts: p.pts, rho: p.rho, out: p.out }));
-  const enc = device.createCommandEncoder();
-  const pass = enc.beginComputePass();
-  pass.setPipeline(pipeline);
-  pass.setBindGroup(0, bind);
-  pass.dispatchWorkgroups(Math.ceil(n / WG));
-  pass.end();
-  device.queue.submit([enc.finish()]);
+  submitDispatch(device, "fuzzyAdjacencyAdaptive", pipeline, bind, Math.ceil(n / WG));
 
   const got = (await p.out.read()) as ArrayLike<number>;
   return { membership: Float32Array.from({ length: n * n }, (_, i) => got[i]!), n };

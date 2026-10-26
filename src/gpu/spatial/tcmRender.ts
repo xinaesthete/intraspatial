@@ -157,9 +157,10 @@ function getCtx(): Promise<Ctx> {
   ctxCache ??= (async () => {
     const device = await getDevice();
     const root = tgpu.initFromDevice({ device });
-    const module = device.createShaderModule({ code: SHADER });
+    const module = device.createShaderModule({ label: "tcmRender", code: SHADER });
     const mk = (vs: string, fs: string) =>
       device.createRenderPipeline({
+        label: `tcmRender:${fs}`,
         layout: "auto",
         vertex: { module, entryPoint: vs },
         primitive: { topology: "triangle-strip" },
@@ -194,13 +195,17 @@ let ptsCap = 0;
 function ensurePts(device: GPUDevice, floats: number) {
   if (ptsBuf && ptsCap >= floats) return ptsBuf;
   ptsCap = Math.max(floats, ptsCap * 2, 4);
-  ptsBuf = device.createBuffer({ size: ptsCap * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+  ptsBuf = device.createBuffer({ label: "tcmRender:points", size: ptsCap * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
   return ptsBuf;
 }
 
 let uniBuf: GPUBuffer | undefined;
 function ensureUni(device: GPUDevice) {
-  uniBuf ??= device.createBuffer({ size: UNI_FLOATS * 4, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+  uniBuf ??= device.createBuffer({
+    label: "tcmRender:uniforms",
+    size: UNI_FLOATS * 4,
+    usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+  });
   return uniBuf;
 }
 
@@ -219,7 +224,7 @@ const texPool = new Map<string, Tex>();
 function ensureTex(device: GPUDevice, key: string, w: number, h: number, usage: number): Tex {
   const got = texPool.get(key);
   if (got && got.w === w && got.h === h) return got;
-  const tex = device.createTexture({ size: { width: w, height: h }, format: "r32float", usage });
+  const tex = device.createTexture({ label: `tcmRender:${key}`, size: { width: w, height: h }, format: "r32float", usage });
   const made: Tex = { tex, view: tex.createView(), w, h };
   texPool.set(key, made);
   return made;
@@ -232,6 +237,7 @@ function ensureReadback(device: GPUDevice, root: Root, floats: number) {
   if (rbWrap && rbCap >= floats) return;
   rbCap = Math.max(floats, rbCap * 2, 1);
   rbRaw = device.createBuffer({
+    label: "tcmRender:readback",
     size: rbCap * 4,
     usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
   });
@@ -251,6 +257,7 @@ let kernelBg: { bg: GPUBindGroup; ub: GPUBuffer; pb: GPUBuffer; floats: number }
 function kernelBindGroup(device: GPUDevice, pipeline: GPURenderPipeline, ub: GPUBuffer, pb: GPUBuffer, floats: number): GPUBindGroup {
   if (kernelBg && kernelBg.ub === ub && kernelBg.pb === pb && kernelBg.floats === floats) return kernelBg.bg;
   const bg = device.createBindGroup({
+    label: "tcmRender:kernel",
     layout: pipeline.getBindGroupLayout(0),
     entries: [
       { binding: 0, resource: { buffer: ub } },
@@ -272,6 +279,7 @@ function tcmBindGroup(
 ): GPUBindGroup {
   if (tcmBg && tcmBg.ub === ub && tcmBg.pb === pb && tcmBg.view === mark.view && tcmBg.floats === floats) return tcmBg.bg;
   const bg = device.createBindGroup({
+    label: "tcmRender:tcm",
     layout: pipeline.getBindGroupLayout(0),
     entries: [
       { binding: 0, resource: { buffer: ub } },
@@ -332,7 +340,7 @@ export async function renderKernelDensity(xs: ArrayLike<number>, ys: ArrayLike<n
     h,
     GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC | GPUTextureUsage.TEXTURE_BINDING,
   );
-  const enc = device.createCommandEncoder();
+  const enc = device.createCommandEncoder({ label: "tcmRender:renderKernelDensity" });
   drawKernel(device, enc, kernelPipe, tex, xs, ys, opts.radius, opts.kernel ?? TOPHAT, opts.bbox);
   device.queue.submit([enc.finish()]);
   return tex;
@@ -346,7 +354,7 @@ export async function kernelDensityGpu(xs: ArrayLike<number>, ys: ArrayLike<numb
   const tex = await renderKernelDensity(xs, ys, opts);
   const bytesPerRow = align256(w * 4);
   ensureReadback(device, root, (bytesPerRow / 4) * h);
-  const enc = device.createCommandEncoder();
+  const enc = device.createCommandEncoder({ label: "tcmRender:kernelDensityGpu" });
   enc.copyTextureToBuffer({ texture: tex.tex }, { buffer: rbRaw!, bytesPerRow }, { width: w, height: h });
   device.queue.submit([enc.finish()]);
   return unpad((await rbWrap!.read()) as ArrayLike<number>, w, h, bytesPerRow / 4);
@@ -374,6 +382,7 @@ function drawKernel(
   writeView(device.queue, pb, packXY(xs, ys));
 
   const pass = enc.beginRenderPass({
+    label: "tcmRender:kernel",
     colorAttachments: [{ view: target.view, clearValue: { r: 0, g: 0, b: 0, a: 0 }, loadOp: "clear", storeOp: "store" }],
   });
   pass.setPipeline(pipeline);
@@ -401,7 +410,7 @@ export async function computeTcmRender(a: CellCloud, b: CellCloud, p: TcmRenderP
   const outTex = await renderTcm(a, b, p);
   const bytesPerRow = align256(w * 4);
   ensureReadback(device, root, (bytesPerRow / 4) * h);
-  const enc = device.createCommandEncoder();
+  const enc = device.createCommandEncoder({ label: "tcmRender:computeTcmRender" });
   enc.copyTextureToBuffer({ texture: outTex.tex }, { buffer: rbRaw!, bytesPerRow }, { width: w, height: h });
   device.queue.submit([enc.finish()]);
   return unpad((await rbWrap!.read()) as ArrayLike<number>, w, h, bytesPerRow / 4);
@@ -433,7 +442,7 @@ export async function renderTcm(a: CellCloud, b: CellCloud, p: TcmRenderParams):
   // Pass 1 — B through the mark kernel. Encoded and SUBMITTED on its own: pass 2 samples this
   // texture, and the point/uniform buffers are pooled, so the two passes cannot share an encoder
   // without the second overwriting the first's inputs before it runs.
-  const enc1 = device.createCommandEncoder();
+  const enc1 = device.createCommandEncoder({ label: "tcmRender:renderTcm" });
   drawKernel(device, enc1, kernelPipe, markTex, b.xs, b.ys, p.radius, p.kernel ?? TOPHAT, p.bbox);
   device.queue.submit([enc1.finish()]);
 
@@ -459,8 +468,9 @@ export async function renderTcm(a: CellCloud, b: CellCloud, p: TcmRenderParams):
   const pb = ensurePts(device, ptFloats);
   writeView(device.queue, pb, packXY(a.xs, a.ys));
 
-  const enc2 = device.createCommandEncoder();
+  const enc2 = device.createCommandEncoder({ label: "tcmRender:renderTcm" });
   const pass = enc2.beginRenderPass({
+    label: "tcmRender:tcm",
     colorAttachments: [{ view: outTex.view, clearValue: { r: 0, g: 0, b: 0, a: 0 }, loadOp: "clear", storeOp: "store" }],
   });
   pass.setPipeline(tcmPipe);

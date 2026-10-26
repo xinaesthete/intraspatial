@@ -23,6 +23,7 @@ import * as std from "typegpu/std";
 import { latticeFor } from "#src/spatial/bucketGrid";
 import type { CellCloud, TcmParams } from "#src/spatial/tcm";
 import { getDevice, writeView } from "../device";
+import { typegpuComputePipeline } from "../typegpuPipeline";
 import { encodeGridIndex, type GridIndexCtx, getGridIndexCtx } from "./gridIndex";
 
 const WG = 64;
@@ -43,14 +44,16 @@ const MarkParams = d.struct({
   alpha: d.f32,
 });
 
-const markLayout = tgpu.bindGroupLayout({
-  params: { uniform: MarkParams },
-  aPts: { storage: (n: number) => d.arrayOf(d.f32, n), access: "readonly" },
-  bPts: { storage: (n: number) => d.arrayOf(d.f32, n), access: "readonly" },
-  bStart: { storage: (n: number) => d.arrayOf(d.u32, n), access: "readonly" },
-  bItems: { storage: (n: number) => d.arrayOf(d.u32, n), access: "readonly" },
-  marks: { storage: (n: number) => d.arrayOf(d.f32, n), access: "mutable" },
-});
+const markLayout = tgpu
+  .bindGroupLayout({
+    params: { uniform: MarkParams },
+    aPts: { storage: (n: number) => d.arrayOf(d.f32, n), access: "readonly" },
+    bPts: { storage: (n: number) => d.arrayOf(d.f32, n), access: "readonly" },
+    bStart: { storage: (n: number) => d.arrayOf(d.u32, n), access: "readonly" },
+    bItems: { storage: (n: number) => d.arrayOf(d.u32, n), access: "readonly" },
+    marks: { storage: (n: number) => d.arrayOf(d.f32, n), access: "mutable" },
+  })
+  .$name("tcm:marks");
 
 const marksFn = tgpu
   .computeFn({ in: { gid: d.builtin.globalInvocationId }, workgroupSize: [WG] })((input) => {
@@ -124,14 +127,16 @@ const SplatParams = d.struct({
   cell: d.f32,
 });
 
-const splatLayout = tgpu.bindGroupLayout({
-  params: { uniform: SplatParams },
-  aPts: { storage: (n: number) => d.arrayOf(d.f32, n), access: "readonly" },
-  marks: { storage: (n: number) => d.arrayOf(d.f32, n), access: "readonly" },
-  aStart: { storage: (n: number) => d.arrayOf(d.u32, n), access: "readonly" },
-  aItems: { storage: (n: number) => d.arrayOf(d.u32, n), access: "readonly" },
-  out: { storage: (n: number) => d.arrayOf(d.f32, n), access: "mutable" },
-});
+const splatLayout = tgpu
+  .bindGroupLayout({
+    params: { uniform: SplatParams },
+    aPts: { storage: (n: number) => d.arrayOf(d.f32, n), access: "readonly" },
+    marks: { storage: (n: number) => d.arrayOf(d.f32, n), access: "readonly" },
+    aStart: { storage: (n: number) => d.arrayOf(d.u32, n), access: "readonly" },
+    aItems: { storage: (n: number) => d.arrayOf(d.u32, n), access: "readonly" },
+    out: { storage: (n: number) => d.arrayOf(d.f32, n), access: "mutable" },
+  })
+  .$name("tcm:splat");
 
 const splatFn = tgpu
   .computeFn({ in: { gid: d.builtin.globalInvocationId }, workgroupSize: [WG] })((input) => {
@@ -186,8 +191,8 @@ type Root = ReturnType<typeof tgpu.initFromDevice>;
 
 // Concrete factories, so the cached handles keep their STRUCT type. `ReturnType<Root["createBuffer"]>`
 // erases to TgpuBuffer<AnyData>, which no longer satisfies the bind-group layout's uniform slot.
-const mkMarkParams = (root: Root) => root.createBuffer(MarkParams).$usage("uniform");
-const mkSplatParams = (root: Root) => root.createBuffer(SplatParams).$usage("uniform");
+const mkMarkParams = (root: Root) => root.createBuffer(MarkParams).$usage("uniform").$name("tcm:markParams");
+const mkSplatParams = (root: Root) => root.createBuffer(SplatParams).$usage("uniform").$name("tcm:splatParams");
 
 interface Ctx {
   device: GPUDevice;
@@ -205,10 +210,7 @@ function getCtx(): Promise<Ctx> {
     const device = await getDevice();
     const root = tgpu.initFromDevice({ device });
     const build = (fn: typeof marksFn | typeof splatFn, entryPoint: string) => {
-      const { code, usedBindGroupLayouts } = tgpu.resolveWithContext([fn], { names: "strict" });
-      const module = device.createShaderModule({ code });
-      const layout = device.createPipelineLayout({ bindGroupLayouts: usedBindGroupLayouts.map((l) => root.unwrap(l)) });
-      return device.createComputePipeline({ layout, compute: { module, entryPoint } });
+      return typegpuComputePipeline(device, root, tgpu.resolveWithContext([fn], { names: "strict" }), entryPoint, `tcm:${entryPoint}`);
     };
     return {
       device,
@@ -225,11 +227,11 @@ function getCtx(): Promise<Ctx> {
 
 // Grow-only buffer pools, keyed by role. Never `.destroy()`d: destroying buffers mid-process
 // segfaults Dawn-on-Node's teardown.
-function mkF32(root: Root, n: number) {
-  return root.createBuffer(d.arrayOf(d.f32, n)).$usage("storage");
+function mkF32(root: Root, n: number, label: string) {
+  return root.createBuffer(d.arrayOf(d.f32, n)).$usage("storage").$name(label);
 }
 function mkU32(root: Root, n: number) {
-  return root.createBuffer(d.arrayOf(d.u32, n)).$usage("storage");
+  return root.createBuffer(d.arrayOf(d.u32, n)).$usage("storage").$name("tcm:u32");
 }
 const f32Pool = new Map<string, { buf: ReturnType<typeof mkF32>; cap: number }>();
 
@@ -237,7 +239,7 @@ function ensureF32(root: Root, key: string, n: number) {
   const got = f32Pool.get(key);
   if (got && got.cap >= n) return got.buf;
   const cap = Math.max(n, (got?.cap ?? 0) * 2, 1);
-  const buf = mkF32(root, cap);
+  const buf = mkF32(root, cap, `tcm:${key}`);
   f32Pool.set(key, { buf, cap });
   return buf;
 }
@@ -284,7 +286,7 @@ export async function crossMarksGpu(a: CellCloud, b: CellCloud, p: TcmParams): P
   writeView(device.queue, root.unwrap(aPts), packXY(a.xs, a.ys));
   writeView(device.queue, root.unwrap(bPts), packXY(b.xs, b.ys));
   // The index over B is built on the device, in the same submit, from the B points just uploaded.
-  const enc = device.createCommandEncoder();
+  const enc = device.createCommandEncoder({ label: "tcm:crossMarks" });
   const bIdx = encodeGridIndex(index, root.unwrap(bPts), nB, grid, enc, { keyPrefix: "tcm:b" });
   const bStart = wrapU32(root, bIdx.cellOffsets);
   const bItems = wrapU32(root, bIdx.pointIds);
@@ -302,7 +304,7 @@ export async function crossMarksGpu(a: CellCloud, b: CellCloud, p: TcmParams): P
   });
 
   const bind = root.unwrap(root.createBindGroup(markLayout, { params: markParams, aPts, bPts, bStart, bItems, marks: out }));
-  const pass = enc.beginComputePass();
+  const pass = enc.beginComputePass({ label: "tcm:marks" });
   pass.setPipeline(pipeline);
   pass.setBindGroup(0, bind);
   if (nA > 0) pass.dispatchWorkgroups(Math.ceil(nA / WG));
@@ -342,7 +344,7 @@ export async function computeTcmGpu(a: CellCloud, b: CellCloud, p: TcmParams): P
   writeView(device.queue, root.unwrap(bPts), packXY(b.xs, b.ys));
   // Both indexes are built on the device in this one submit. Distinct `keyPrefix`es: the builds
   // share the scan pool, and under one prefix the second would overwrite the first's offsets.
-  const enc = device.createCommandEncoder();
+  const enc = device.createCommandEncoder({ label: "tcm:computeTcm" });
   const bIdx = encodeGridIndex(index, root.unwrap(bPts), nB, bGrid, enc, { keyPrefix: "tcm:b" });
   const aIdx = encodeGridIndex(index, root.unwrap(aPts), nA, aGrid, enc, { keyPrefix: "tcm:a" });
   const bStart = wrapU32(root, bIdx.cellOffsets);
@@ -379,7 +381,7 @@ export async function computeTcmGpu(a: CellCloud, b: CellCloud, p: TcmParams): P
 
   const markBind = root.unwrap(root.createBindGroup(markLayout, { params: markParams, aPts, bPts, bStart, bItems, marks }));
   const splatBind = root.unwrap(root.createBindGroup(splatLayout, { params: splatParams, aPts, marks, aStart, aItems, out }));
-  const pass = enc.beginComputePass();
+  const pass = enc.beginComputePass({ label: "tcm:marks" });
   pass.setPipeline(marksPipe);
   pass.setBindGroup(0, markBind);
   if (nA > 0) pass.dispatchWorkgroups(Math.ceil(nA / WG));

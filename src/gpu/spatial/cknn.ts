@@ -26,18 +26,21 @@
 import tgpu from "typegpu";
 import * as d from "typegpu/data";
 import * as std from "typegpu/std";
-import { getDevice, writeView } from "../device";
+import { getDevice, submitDispatch, writeView } from "../device";
+import { typegpuComputePipeline } from "../typegpuPipeline";
 import { kthNeighborDistanceGpu } from "./kthNeighborDistance";
 
 const WG = 64;
 const Params = d.struct({ n: d.u32 });
 
-const layout = tgpu.bindGroupLayout({
-  params: { uniform: Params },
-  pts: { storage: (n: number) => d.arrayOf(d.f32, n), access: "readonly" },
-  rho: { storage: (n: number) => d.arrayOf(d.f32, n), access: "readonly" },
-  out: { storage: (n: number) => d.arrayOf(d.f32, n), access: "mutable" }, // n*n
-});
+const layout = tgpu
+  .bindGroupLayout({
+    params: { uniform: Params },
+    pts: { storage: (n: number) => d.arrayOf(d.f32, n), access: "readonly" },
+    rho: { storage: (n: number) => d.arrayOf(d.f32, n), access: "readonly" },
+    out: { storage: (n: number) => d.arrayOf(d.f32, n), access: "mutable" }, // n*n
+  })
+  .$name("cknn");
 
 const cknnFn = tgpu
   .computeFn({ in: { gid: d.builtin.globalInvocationId }, workgroupSize: [WG] })((input) => {
@@ -73,10 +76,7 @@ function getPipe(): Promise<Pipe> {
   pipeCache ??= (async () => {
     const device = await getDevice();
     const root = tgpu.initFromDevice({ device });
-    const { code, usedBindGroupLayouts } = tgpu.resolveWithContext([cknnFn], { names: "strict" });
-    const module = device.createShaderModule({ code });
-    const pipeLayout = device.createPipelineLayout({ bindGroupLayouts: usedBindGroupLayouts.map((l) => root.unwrap(l)) });
-    const pipeline = device.createComputePipeline({ layout: pipeLayout, compute: { module, entryPoint: "cknnRescaled" } });
+    const pipeline = typegpuComputePipeline(device, root, tgpu.resolveWithContext([cknnFn], { names: "strict" }), "cknnRescaled", "cknn");
     return { device, root, pipeline };
   })();
   return pipeCache;
@@ -86,10 +86,16 @@ type Root = Pipe["root"];
 function makePool(root: Root, n: number) {
   return {
     n,
-    pts: root.createBuffer(d.arrayOf(d.f32, 2 * n)).$usage("storage"),
-    rho: root.createBuffer(d.arrayOf(d.f32, n)).$usage("storage"),
-    out: root.createBuffer(d.arrayOf(d.f32, n * n)).$usage("storage"),
-    params: root.createBuffer(Params).$usage("uniform"),
+    pts: root
+      .createBuffer(d.arrayOf(d.f32, 2 * n))
+      .$usage("storage")
+      .$name("cknn:pts"),
+    rho: root.createBuffer(d.arrayOf(d.f32, n)).$usage("storage").$name("cknn:rho"),
+    out: root
+      .createBuffer(d.arrayOf(d.f32, n * n))
+      .$usage("storage")
+      .$name("cknn:out"),
+    params: root.createBuffer(Params).$usage("uniform").$name("cknn:params"),
   };
 }
 let pool: ReturnType<typeof makePool> | undefined;
@@ -134,13 +140,7 @@ export async function cknnRescaledDistanceGpu(
   p.params.write({ n });
 
   const bind = root.unwrap(root.createBindGroup(layout, { params: p.params, pts: p.pts, rho: p.rho, out: p.out }));
-  const enc = device.createCommandEncoder();
-  const pass = enc.beginComputePass();
-  pass.setPipeline(pipeline);
-  pass.setBindGroup(0, bind);
-  pass.dispatchWorkgroups(Math.ceil(n / WG));
-  pass.end();
-  device.queue.submit([enc.finish()]);
+  submitDispatch(device, "cknn", pipeline, bind, Math.ceil(n / WG));
 
   const got = (await p.out.read()) as ArrayLike<number>;
   return { rescaled: Float32Array.from({ length: n * n }, (_, i) => got[i]!), rho, n };

@@ -139,6 +139,7 @@ export const getGridIndexCtx = deviceScoped(async (device: GPUDevice): Promise<G
   // One explicit layout for both entry points (each leaves one binding untouched, which
   // `layout: "auto"` would drop from that entry point's derived layout).
   const layout = device.createBindGroupLayout({
+    label: "gridIndex",
     entries: [
       { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: "uniform" } },
       { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
@@ -147,9 +148,10 @@ export const getGridIndexCtx = deviceScoped(async (device: GPUDevice): Promise<G
       { binding: 4, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
     ],
   });
-  const pipelineLayout = device.createPipelineLayout({ bindGroupLayouts: [layout] });
+  const pipelineLayout = device.createPipelineLayout({ label: "gridIndex", bindGroupLayouts: [layout] });
   const module = await compileShader(device, SHADER, "gridIndex");
-  const mk = (entryPoint: string) => device.createComputePipeline({ layout: pipelineLayout, compute: { module, entryPoint } });
+  const mk = (entryPoint: string) =>
+    device.createComputePipeline({ label: `gridIndex:${entryPoint}`, layout: pipelineLayout, compute: { module, entryPoint } });
   return { scan, layout, histogram: mk("histogram"), scatter: mk("scatter") };
 });
 
@@ -202,6 +204,7 @@ export function encodeGridIndex(
 
   const group = (heads: GPUBuffer) =>
     device.createBindGroup({
+      label: "gridIndex",
       layout: ctx.layout,
       entries: [
         { binding: 0, resource: sized(uni, UNI_BYTES) },
@@ -271,7 +274,7 @@ export async function buildGridIndexGpu(points: Float32Array, opts: GridIndexOpt
   // SharedArrayBuffer, which `BufferSource` excludes but `writeBuffer` itself allows.
   if (n > 0) device.queue.writeBuffer(ptsBuf, 0, points.buffer, points.byteOffset, n * stride * 4);
 
-  const enc = device.createCommandEncoder();
+  const enc = device.createCommandEncoder({ label: "gridIndex" });
   const idx = encodeGridIndex(ctx, ptsBuf, n, lattice, enc, opts);
   device.queue.submit([enc.finish()]);
 
