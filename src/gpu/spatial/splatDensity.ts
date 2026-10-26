@@ -24,7 +24,7 @@ import * as d from "typegpu/data";
 import * as std from "typegpu/std";
 import { getDevice, MAX_WORKGROUPS_PER_DIM, sized } from "../device";
 import { rawBindGroup } from "../graph/residentBind";
-import { narrowToHalf } from "../halfTexture";
+import { halfNarrower } from "../halfTexture";
 import { scratchTexture } from "../scratchTexture";
 import { splatDensityAtomic } from "./splatDensityAtomic";
 
@@ -465,6 +465,11 @@ export async function splatDensityToTexture(points: GPUBuffer, n: number, target
   // Dense data is exactly where a density field is worth computing, so that is the case that must
   // not quietly degrade.
   const half = target.format === "r16float";
+  // The last await. The accumulator is a scratch texture shared by every call on this device, and
+  // the uniforms `renderPoints` writes are shared too, so from here to the submit runs without
+  // yielding. A concurrent call that slipped into a later await destroyed this call's accumulator
+  // (a different size does not fit the slot) and overwrote its uniforms (`scratchTexture.ts`).
+  const narrow = half ? await halfNarrower(device) : undefined;
   const accum = half ? ensureAccum(device, w, h) : target;
 
   const enc = device.createCommandEncoder();
@@ -472,7 +477,7 @@ export async function splatDensityToTexture(points: GPUBuffer, n: number, target
     width: w,
     height: h,
   });
-  if (half) await narrowToHalf(device, enc, accum, target, w, h);
+  narrow?.(enc, accum, target, w, h);
   device.queue.submit([enc.finish()]);
 }
 

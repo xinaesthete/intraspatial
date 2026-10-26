@@ -30,7 +30,7 @@ import * as d from "typegpu/data";
 import type { ChannelCloud, GramParams, GramResult } from "../../spatial/gram";
 import { EPANECHNIKOV, kernelCode, roughness } from "../../spatial/kernels";
 import { checkBindingSize, deviceScoped, perDevice, sized } from "../device";
-import { ensureHalfTex, narrowToHalf } from "../halfTexture";
+import { ensureHalfTex, halfNarrower } from "../halfTexture";
 import { scratchTexture } from "../scratchTexture";
 import { KERNEL_WGSL } from "./kernelWgsl";
 
@@ -414,6 +414,10 @@ export async function gramMatrixGpu(
   const { data, offsets, mass, apronMass } = packChannels(channels, p);
   const precision: RasterPrecision = p.precision ?? "f32";
   const half = precision === "f16";
+  // The last await before the splat submit. The splat target is a shared scratch texture and the
+  // buffers written below are shared pools, so from here to that submit nothing may yield, or a
+  // concurrent call can destroy the target or overwrite the uniforms (`scratchTexture.ts`).
+  const narrow = half ? await halfNarrower(device) : undefined;
   // Row stride in 4-byte words. At f16 a row is half the bytes AND two texels share a word, so
   // the stride is roughly halved — which is where the memory goes.
   const rowWords = align256(w * (half ? 2 : 4)) / 4;
@@ -474,7 +478,7 @@ export async function gramMatrixGpu(
     // At f16 the accumulated raster is narrowed into a half target first — one rounding — and
     // THAT is what lands in the slice. Accumulating in f16 instead would lose most of a dense
     // channel's mass; see `../halfTexture.ts`.
-    if (half) await narrowToHalf(device, enc, tex.tex, halfTex!, w, h);
+    if (narrow) narrow(enc, tex.tex, halfTex!, w, h);
     enc.copyTextureToBuffer(
       { texture: half ? halfTex! : tex.tex },
       { buffer: rasters, offset: k * h * rowWords * 4, bytesPerRow: rowWords * 4, rowsPerImage: h },
