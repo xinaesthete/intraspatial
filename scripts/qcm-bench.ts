@@ -36,7 +36,13 @@ for (let i = 0; i < cells.xs.length; i++) {
   maxX = Math.max(maxX, cells.xs[i]!);
   maxY = Math.max(maxY, cells.ys[i]!);
 }
-const params = { bbox: [0, 0, maxX, maxY] as [number, number, number, number], quadratSize: 100, nTypes: K, simulations: SIMS, seed: 0x5eed };
+const params = {
+  bbox: [0, 0, maxX, maxY] as [number, number, number, number],
+  quadratSize: 100,
+  nTypes: K,
+  simulations: SIMS,
+  seed: 0x5eed,
+};
 
 // One warm-up pass builds the pipelines and pools; timing that would measure compilation.
 await quadratCorrelationGpu(cells, { ...params, simulations: 64 });
@@ -69,7 +75,8 @@ for (const a of present) {
     if (g && c) bothSig++;
     else if (g) onlyGpu++;
     else if (c) onlyCpu++;
-    if (Number.isFinite(gpu.pcSes[i]!) && Number.isFinite(cpu.pcSes[i]!)) worstSes = Math.max(worstSes, Math.abs(gpu.pcSes[i]! - cpu.pcSes[i]!));
+    if (Number.isFinite(gpu.pcSes[i]!) && Number.isFinite(cpu.pcSes[i]!))
+      worstSes = Math.max(worstSes, Math.abs(gpu.pcSes[i]! - cpu.pcSes[i]!));
   }
 }
 

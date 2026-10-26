@@ -69,12 +69,7 @@ const timer = setInterval(() => {
   if (!child.pid) return;
   const { pids, rssMB } = tree(child.pid);
   const elapsed = (Date.now() - start) / 1000;
-  const reason =
-    rssMB > MEM_MB
-      ? `RSS ${rssMB}MB > ${MEM_MB}MB cap`
-      : elapsed > TIME_S
-        ? `elapsed ${elapsed | 0}s > ${TIME_S}s cap`
-        : null;
+  const reason = rssMB > MEM_MB ? `RSS ${rssMB}MB > ${MEM_MB}MB cap` : elapsed > TIME_S ? `elapsed ${elapsed | 0}s > ${TIME_S}s cap` : null;
   if (reason) {
     console.error(`\nguarded: ${reason} — SIGKILL pid tree [${pids.join(",")}] running: ${cmd.join(" ")}`);
     for (const p of pids) {

@@ -618,7 +618,7 @@ export default function App() {
   // state, so a slider drag updates continuously in real time. Disabled for feedback
   // graphs, which use the transport (play/step) below instead.
   useEffect(() => {
-    sig; // this is the signal to run the effect
+    void sig; // this is the signal to run the effect
     if (!live || !selectedId || hasFeedback) return;
     runRef.current();
   }, [sig, live, selectedId, hasFeedback]);

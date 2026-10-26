@@ -15,7 +15,7 @@
 // `inferShapes` and by edge validation, so a runtime part name would cost per-part typing at
 // build time. A new bundle type is a few lines of registration.
 import type { FieldValue, Shape, ShapeKind } from "../handle";
-import type { OpType, Params } from "../op";
+import type { OpType } from "../op";
 
 /** One member of a bundle. The `kind` is what makes an extract op's output port properly typed
  *  rather than `any`: the part's exact SHAPE needs a run, but its kind never changes, so the
@@ -90,7 +90,7 @@ export function extractOp(spec: BundleSpec, part: string): OpType {
       if (!got) throw new Error(`${who}: the bundle has no part "${part}"`);
       return [got];
     },
-    inferPlacement(inputs) {
+    inferPlacement() {
       // A part carries its own placement; the bundle's (if any) is not it.
       return [undefined];
     },

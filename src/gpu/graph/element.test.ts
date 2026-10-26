@@ -1,7 +1,7 @@
 /** biome-ignore-all lint/style/noNonNullAssertion: test noise */
 // Element algebra (ADR-0004): the math kernels directly, plus the ops through the
 // executor in CPU mode (no GPU — fast `*.test.ts`, runs under vitest.config.ts).
-import { beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vite-plus/test";
 import type { ElementType, GpuField } from "./index";
 import { Graph, pull, registerElementOps } from "./index";
 

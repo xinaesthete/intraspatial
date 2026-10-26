@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { getDevice, readBackBytes, writeView } from "./device";
 import { textureToBuffer } from "./graph/textureBridge";
 import { adoptDevice } from "./interop/adoptDevice";

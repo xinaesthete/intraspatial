@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { decimateCpu, decimatedSize, decimateGpu } from "./decimate";
 
 // Aggregated assertions only (no per-element expect loops — they kill the Dawn fork).

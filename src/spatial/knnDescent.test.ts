@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { buildCandidates, initialiseHeap, knnDescentCpu, knnRecall, knnStrategyFor, offer, pickKnn } from "./knnDescent";
 import { umap } from "./umap";
 import { fuzzySimplicialSet, knnBruteForceCpu } from "./umapGraph";

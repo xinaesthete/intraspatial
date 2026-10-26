@@ -4,7 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import react from "@vitejs/plugin-react";
 import typegpu from "unplugin-typegpu/vite";
-import { defaultClientConditions, defineConfig, type Plugin } from "vite";
+import { defaultClientConditions, defineConfig, type Plugin } from "vite-plus";
 
 const require_ = createRequire(import.meta.url);
 

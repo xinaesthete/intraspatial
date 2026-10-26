@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { fuzzyAdjacencyAdaptiveFromRhoGpu } from "./fuzzyAdjacencyAdaptive";
 
 function adaptiveCpu(xs: number[], ys: number[], rho: number[], scale: number, minSigma: number): Float32Array {

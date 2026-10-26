@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { type CellCloud, computeTcm, computeTcmReference, crossMarks, markToM, type TcmParams } from "./tcm";
 
 describe("markToM (eqs 10–13, α=5)", () => {

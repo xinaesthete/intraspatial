@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { buildBucketGrid, latticeFor, numCells } from "./bucketGrid";
 
 // mulberry32 — a lattice-free PRNG (a plain LCG's consecutive values lie on 2D planes, which

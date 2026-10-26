@@ -1,5 +1,5 @@
 import typegpu from "unplugin-typegpu/vite";
-import { defineConfig } from "vitest/config";
+import { defineConfig } from "vite-plus";
 
 // GPU tests (`*.gpu.test.ts`) — run via the Dawn (`webgpu`) native addon.
 //

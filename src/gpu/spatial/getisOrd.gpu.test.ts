@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { getisOrdGpu, pointHotspotsGpu } from "./getisOrd";
 
 // CPU golden for Gi* with a clamp-to-edge box window (W constant).

@@ -295,12 +295,6 @@ async function runTick(graph: Graph, field: GpuField, o: TickOptions): Promise<M
     if (left <= 0) releaseIfDead(k);
   };
 
-  /** A port that no node in this tick reads (a sibling output, or a borrower whose consumers have
-   *  all run) still has to be swept, or its lease never returns. */
-  const sweep = (k: string) => {
-    if ((remaining.get(k) ?? 0) <= 0) releaseIfDead(k);
-  };
-
   /** Move a lease from one port key to another, when a node emits its input unchanged (a
    *  `delay` passing `init` straight through while its history fills). Without this the lease
    *  is stranded: the input key's refcount drops to zero and releases a buffer the output key

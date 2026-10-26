@@ -2,7 +2,7 @@
 // by B1a (`tileToField`), then run through `getisOrd` on the GPU. Verified against the repo's own
 // CPU Gi* golden. Uses the dep-free `syntheticLoader` (a genuine Loader, deterministic, no server) —
 // the LIVE-store variant runs in the playground demo (needs the browser + HTJ2K worker decode).
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { getisOrdGpu } from "../gpu/spatial/getisOrd";
 import { syntheticPlane } from "./syntheticLoader";
 import { tileToField } from "./tileToField";

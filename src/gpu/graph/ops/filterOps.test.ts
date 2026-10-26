@@ -4,7 +4,7 @@
 // "are these the right operators": the De Morgan and idempotence properties that made
 // ADR-0005's original `AND = a·b` with `OR = max` wrong, and that only bite once a filter
 // list becomes a filter graph.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import type { FieldValue } from "../handle";
 import type { OpType, Params } from "../op";
 import { invertFieldOp, maxFieldsOp, minFieldsOp } from "./fieldArithmetic";

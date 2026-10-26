@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { releaseScratchTextures, scratchTexture, scratchTextureBytes } from "./scratchTexture";
 
 // Slots are per device. The GPU suite has one device, so this uses stand-ins: `scratchTexture` only

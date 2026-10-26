@@ -3,7 +3,7 @@
 // numerically over a grid of sample points, and doubles as the backstop that the `P`-buffer slot
 // order matches `paramVector` (a mismatch smears distances). Kept small: Dawn-on-Node teardown
 // segfaults past enough cumulative GPU work (ADR-0002/0003).
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { nodeBackend } from "../gpu/graph/backend.node";
 import type { Implicit } from "./implicit";
 import { box, evalSdf, sphere } from "./implicit";

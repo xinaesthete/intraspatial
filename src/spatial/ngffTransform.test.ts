@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { type Affine2, compose2, IDENTITY2, invert2, micrometresPer, type NgffAxis, rectThrough2, resolveNgffXY } from "./ngffTransform";
 
 const XY: NgffAxis[] = [

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { type FuzzyGraph, fuzzySimplicialSet, type KnnResult } from "../../../spatial/umapGraph";
 import { trustworthiness } from "../../../spatial/umapLayout";
 import type { ExecCtx } from "../op";

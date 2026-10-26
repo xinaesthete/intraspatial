@@ -1,4 +1,4 @@
-import { beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vite-plus/test";
 import { getDevice } from "../device";
 import { adoptDevice } from "../interop/adoptDevice";
 import type { GpuBackend } from "./backend";

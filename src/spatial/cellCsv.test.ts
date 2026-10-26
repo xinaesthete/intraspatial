@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { groupCsvCells, inspectCsv, parseCsv } from "./cellCsv";
 
 describe("parseCsv", () => {

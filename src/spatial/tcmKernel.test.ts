@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { EPANECHNIKOV, equivalentRadius, GAUSSIAN, KERNELS, kernelLabel, QUARTIC, TOPHAT, TRIWEIGHT } from "./kernels";
 import { type CellCloud, computeTcmReference, crossMarks, type TcmParams } from "./tcm";
 import { kernelMarks, type TcmKernelParams, tcmKernelField } from "./tcmKernel";

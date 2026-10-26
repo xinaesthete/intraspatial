@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { emptySpaceGpu } from "./emptySpace";
 
 function nearestCpu(qx: number, qy: number, xs: number[], ys: number[]) {

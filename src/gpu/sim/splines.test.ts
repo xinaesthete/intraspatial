@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { calcGoalWeight, costvDown, costvUp, goalTightness, posVelSpline, velSpline } from "./splines";
 import type { Vec3In } from "./vec3";
 

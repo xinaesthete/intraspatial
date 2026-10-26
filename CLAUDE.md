@@ -9,6 +9,11 @@ alwaysApply: false
 > matched the sibling `psychogeo` toolchain. Use `pnpm install` / `pnpm test`, not `bun`.
 > See `docs/decisions/0002-runtime-node-not-bun.md`. The Bun guidance below is retained for
 > reference only and does not apply to runtime/test commands here.
+>
+> **Toolchain (2026-10-26):** Vite+ (`vite-plus`, the `vp` CLI) supplies Vite, Vitest, Oxlint and
+> Oxfmt; all are configured in the root `vite.config.ts`. Before finishing a change, run `pnpm check`
+> (format + lint), `pnpm lint:types`, `pnpm typecheck` and `pnpm test`, the same gates
+> `.github/workflows/ci.yml` runs. Import test APIs from `vite-plus/test`, not `vitest`.
 
 Default to using Bun instead of Node.js.
 

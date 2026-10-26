@@ -1,5 +1,5 @@
 // Geometry sanity: frustum corners and the AABB frustum test.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import {
   type Affine3,
   aabbOutsideFrustum,

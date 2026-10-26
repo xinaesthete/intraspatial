@@ -28,37 +28,25 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # pnpm workspace — pin the version the repo declares (packageManager: pnpm@11.9.0).
-      - uses: pnpm/action-setup@v4
-
-      - uses: actions/setup-node@v4
+      # Vite+ toolchain: the Node in .node-version, the pnpm in `packageManager`, then a full
+      # workspace `vp install` with the pnpm store cached. The `webgpu` native addon ships a
+      # prebuilt binary and its postinstall is a macOS-only no-op, and the `openjph-wasm` file:
+      # sibling is an optional dep that's skipped when absent — so neither is needed for the docs
+      # build. (The playground depends on the PUBLISHED openjph-wasm, which installs normally and
+      # the volume viewer needs.) The fallow code-health audit moved to ci.yml.
+      - uses: voidzero-dev/setup-vp@v1.22.0
         with:
-          node-version: 22
-          cache: pnpm
-
-      # Full workspace install. The `webgpu` native addon ships a prebuilt binary and its
-      # postinstall is a macOS-only no-op, and the `openjph-wasm` file: sibling is an optional
-      # dep that's skipped when absent — so neither is needed for the docs build. (The playground
-      # depends on the PUBLISHED openjph-wasm, which installs normally and the volume viewer needs.)
-      - run: pnpm install --frozen-lockfile
-
-      # Code-quality gate (fallow): dead code / complexity / duplication scoped to the changed files,
-      # new-vs-inherited attributed. Non-blocking until the committed baselines are trusted.
-      - name: fallow audit (non-blocking)
-        if: github.event_name == 'pull_request'
-        continue-on-error: true
-        run: |
-          git fetch --no-tags --depth=1 origin "${{ github.base_ref }}"
-          pnpm exec fallow audit --base "origin/${{ github.base_ref }}" --format github-annotations
+          node-version-file: .node-version
+          cache: true
 
       # The viewer prototypes are a separate Vite multi-page app. Build them first; the docs build's
       # sync-playground step copies the result into public/playground/ so Pages serves them at
       # <base>/playground/*.html.
       - name: Build viewer prototypes
-        run: pnpm build:playground
+        run: vp run build:playground
 
       - name: Build docs site
-        run: pnpm --filter docs-site build
+        run: vp run --filter docs-site --fail-if-no-match build
 
       # Assert the prototypes actually reached the published output. sync-playground deliberately
       # warns-and-skips when the playground dist is missing (so docs-only builds still pass), and a

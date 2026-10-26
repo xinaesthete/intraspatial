@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { deg, rad } from "./angle";
 import { linear, ramp } from "./expr";
 import type { Vec3 } from "./superellipsoid";

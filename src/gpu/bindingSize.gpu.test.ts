@@ -11,7 +11,7 @@
 // This is worse than the other silent-failure modes the repo has recorded, because it does not
 // produce zeroes: the non-zero assertion that catches the 65535 workgroup cap, the ~2 s
 // watchdog and the 9th storage binding does not catch this one.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { checkBindingSize, getDevice, sized } from "./device";
 
 describe("sized", () => {

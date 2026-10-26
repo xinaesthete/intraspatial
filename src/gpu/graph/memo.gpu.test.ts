@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { createMemo, Graph, pull } from "./index";
 
 // Memoisation: changing one node's param re-runs only that node and its dependents;

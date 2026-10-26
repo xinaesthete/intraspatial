@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { Graph, pullData } from "./index";
 
 // The headline vertical slice: a 3-node graph splat -> convolve -> threshold,

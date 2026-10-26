@@ -1,6 +1,6 @@
 // Wavelet-domain ops through the graph (ADR-0006): the fdwt/idwt pair round-trips,
 // and the headline `fdwt → thresholdDetail → idwt` chain denoises. CPU mode (fast).
-import { beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vite-plus/test";
 import { Graph, pull, registerElementOps, registerWaveletOps } from "./index";
 
 beforeAll(async () => {

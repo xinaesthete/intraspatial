@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { knnBruteForceCpu } from "../../spatial/umapGraph";
 import { mulberry32 } from "../../spatial/umapLayout";
 import { knnGpu } from "./knn";

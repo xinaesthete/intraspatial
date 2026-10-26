@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { mulberry32 } from "../../spatial/kernelAnalysis";
 import type { LabelledCells } from "../../spatial/pcf";
 import { partialCorrelation, quadratCorrelation, quadratCounts, rowCorrelation } from "../../spatial/quadratCorrelation";

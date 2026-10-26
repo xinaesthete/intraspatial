@@ -131,14 +131,21 @@ All run from the repo root.
 | `pnpm test:cpu` | CPU vitest suite only |
 | `pnpm test:gpu` | GPU vitest suite only (Dawn `webgpu`; one fork per file) |
 | `pnpm test:watch` | Watch-mode CPU tests |
-| `pnpm typecheck` | `tsc --noEmit` over core and playground |
-| `pnpm lint` | Biome check |
-
+| `pnpm typecheck` | `tsc --noEmit` over core, deck and playground |
+| `pnpm check` | `vp check`: Oxfmt format check + Oxlint, one pass (`check:fix` to apply fixes) |
+| `pnpm lint` | Oxlint only (`lint:fix` to apply fixes) |
+| `pnpm lint:types` | Type-aware Oxlint rules over `src`, `test` and `packages` (not the playground, whose types send the TS 7 checker past 8 GB) |
+| `pnpm format` | Format the workspace with Oxfmt |
 | `pnpm changeset` | Record a release note + bump type for the packages a change touches |
 | `pnpm check:publish` | Pack each publishable package and lint the tarballs (publint, arethetypeswrong) |
 
 The two front-end apps also have their own `pnpm dev` / `pnpm build` if you prefer to run
 them from inside `playground/` or `docs-site/`.
+
+The toolchain is [Vite+](https://viteplus.dev) (`vite-plus`, the `vp` CLI): Vite, Vitest, Oxlint and
+Oxfmt from one dependency, configured in the root `vite.config.ts`. The scripts above call `vp` through
+pnpm, so no global install is needed. CI (`.github/workflows/ci.yml`) runs `check`, `lint:types`,
+`typecheck`, both test suites (the GPU one on Mesa's software Vulkan) and the publish build on every PR.
 
 ### Releasing
 

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { splatDensityGpu } from "../spatial/splatDensity";
 import { nodeBackend } from "./backend.node";
 import { Graph, pull, pullResident, registerBuiltinOps } from "./index";

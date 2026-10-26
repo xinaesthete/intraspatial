@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { pca } from "./pca";
 import { subsetColumns, subsetRows, umap, umapGraphFor } from "./umap";
 import { mulberry32, trustworthiness } from "./umapLayout";

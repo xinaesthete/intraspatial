@@ -1,5 +1,5 @@
 /** biome-ignore-all lint/style/noNonNullAssertion: lots of noise otherwise */
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import type { ParamSpec } from "../gpu/graph/op";
 import { advance, breed, marry, mutate, steer, toward } from "./mutator";
 import { mulberry32 } from "./rng";

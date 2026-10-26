@@ -2,7 +2,7 @@
 // evaluated mesh must lie ON the field's zero-set and be oriented OUTWARD. Because both the mesh and
 // the raymarch consume the same `evalSdf`, these are the same red/green the render is judged by.
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { type Brep, brepEdges, brepToMesh, evaluateBrep, mergeCoplanar } from "./bsp";
 import { evalSdf, type Sdf } from "./implicit";
 import { box, plane, sphere } from "./index";

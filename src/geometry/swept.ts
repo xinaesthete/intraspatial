@@ -153,13 +153,7 @@ export class Swept {
   readonly transforms: readonly Transform[];
   readonly angleUnit: AngleUnit;
 
-  constructor(init: {
-    profileRadius: Expr;
-    exponent: number;
-    length: number;
-    transforms: readonly Transform[];
-    angleUnit: AngleUnit;
-  }) {
+  constructor(init: { profileRadius: Expr; exponent: number; length: number; transforms: readonly Transform[]; angleUnit: AngleUnit }) {
     this.profileRadius = init.profileRadius;
     this.exponent = init.exponent;
     this.length = init.length;

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { add, addScaled, clampLength, cross, dot, length, normalize, readVec3, scale, sub, unpack, writeVec3, ZERO3 } from "./vec3";
 
 describe("vec3", () => {

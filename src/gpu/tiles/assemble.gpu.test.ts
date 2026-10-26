@@ -1,7 +1,7 @@
 // The device-side tile assembly pass (docs/gpu-resident-loader.md §5) against the host loops it
 // replaces. The reference in each case is the exact JS the playground runs today, so a pass here
 // means the two paths are interchangeable, not merely "close".
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { getDevice } from "../device";
 import { adoptDevice } from "../interop/adoptDevice";
 import { assembleTile, assembleTileTexture, copyAssembledToTexture, destroyTileTexture, type SampleBits, uploadPlane } from "./assemble";

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { fuzzySimplicialSet, knnBruteForceCpu } from "../../spatial/umapGraph";
 import { mulberry32, optimizeLayout, trustworthiness } from "../../spatial/umapLayout";
 import { GpuUmapLayout } from "./umapLayoutGpu";

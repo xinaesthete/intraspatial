@@ -1,5 +1,5 @@
 // Vector-calculus ops on known fields (ADR-0004 element model in use). CPU, fast.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import type { FieldValue, Shape } from "./index";
 import { divergenceOp, gradientMagnitudeOp, gradientOp, laplacianOp, structureOrientationOp } from "./ops/fieldCalculus";
 

@@ -32,6 +32,11 @@ catalog:
   typegpu: ^0.11.9
   unplugin-typegpu: 0.11.6
   typescript: ^7.0.0
+  # Vite+ (`vp`): one toolchain for build, test (Vitest), lint (Oxlint) and format (Oxfmt). Its `vite`
+  # is VoidZero's core build of Vite 8, aliased here; the override below hands that same copy to every
+  # Vite consumer in the workspace (Astro, @vitejs/plugin-react, unplugin-typegpu), so there is one Vite.
+  vite: npm:@voidzero-dev/vite-plus-core@1.4.0
+  vite-plus: 1.4.0
 # Exact-version exemption from pnpm 11's minimum release age; drop once the release has aged.
 minimumReleaseAgeExclude:
   - '@spatialdata/avivatorish@0.12.0'
@@ -40,3 +45,11 @@ minimumReleaseAgeExclude:
   - '@spatialdata/react@0.12.0'
   - '@spatialdata/vis@0.12.0'
   - zarrextra@0.5.1
+overrides:
+  vite@*: 'catalog:'
+# The core alias reports its own version (1.x), not Vite's, so peers asking for `vite@^8` would warn.
+peerDependencyRules:
+  allowAny:
+    - vite
+  allowedVersions:
+    vite: '*'

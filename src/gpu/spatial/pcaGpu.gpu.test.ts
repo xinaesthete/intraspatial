@@ -8,7 +8,7 @@
 // would break while leaving the numbers plausible: symmetry, and the tile split being
 // invisible.
 
-import { beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vite-plus/test";
 import { columnStats, covarianceHost, pca, pcaBasis, projectScoresHost } from "../../spatial/pca";
 import { expressManifold, makeManifold } from "../../spatial/syntheticManifolds";
 import { covarianceGpu, pcaGpu, planTiles, projectScoresGpu } from "./pcaGpu";

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { type BucketGrid, buildBucketGrid, latticeFor, numCells } from "../../spatial/bucketGrid";
 import { buildGridIndexGpu, GRID_INDEX_WG, type GridIndexOptions } from "./gridIndex";
 

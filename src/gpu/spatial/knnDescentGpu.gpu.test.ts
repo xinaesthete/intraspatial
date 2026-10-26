@@ -11,7 +11,7 @@
 // does, and the property that survives is recall rather than exact agreement — measured
 // 0.951 for both host and device at n=100k, with the per-slot agreement at 81%.
 
-import { beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vite-plus/test";
 import { knnDescentCpu, knnRecall } from "../../spatial/knnDescent";
 import { expressManifold, makeManifold } from "../../spatial/syntheticManifolds";
 import { type KnnResult, knnBruteForceCpu } from "../../spatial/umapGraph";

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { type ChannelCloud, channelsFromExpression, channelsFromLabels, type GramParams, gramMatrix } from "./gram";
 import { EPANECHNIKOV } from "./kernels";
 import { channelPermuter, nullMeanGram, permuteChannels, randomPermutation } from "./permute";

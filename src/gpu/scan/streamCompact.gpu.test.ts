@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { getDevice } from "../device";
 import { ensureBuf, readBack, SCAN_BLOCK } from "./prefixSum";
 import {

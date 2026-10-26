@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { dispatchGrid, exclusiveScanGpu, SCAN_BLOCK, SCAN_WG } from "./prefixSum";
 
 // CPU golden — a serial loop, which is a different algorithm from the GPU's per-thread

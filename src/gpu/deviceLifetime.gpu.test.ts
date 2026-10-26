@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { knnGpu } from "./spatial/knn";
 
 // Regression guard for the Instance-lifetime bug that made Dawn-on-Node look unreliable

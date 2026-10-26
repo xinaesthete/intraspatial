@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { mulberry32 } from "../../spatial/kernelAnalysis";
 import { KNN_NO_NEIGHBOUR, knnGpu } from "./knn";
 import { kthNeighborDistanceGpu } from "./kthNeighborDistance";

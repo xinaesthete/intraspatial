@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { QUARTIC, TOPHAT } from "../../spatial/kernels";
 import type { CellCloud } from "../../spatial/tcm";
 import { computeTcmKernel } from "../../spatial/tcmKernel";

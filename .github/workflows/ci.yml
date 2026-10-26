@@ -1,0 +1,107 @@
+name: CI
+
+# The code gates. The docs site (and the playground build it embeds) has its own workflow,
+# deploy-docs.yml, because it also publishes to Pages.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A new push to a PR supersedes the run in flight; runs on main always finish.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  check:
+    name: Format, lint, typecheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Installs Vite+, the Node in .node-version and the pnpm in `packageManager`, then runs
+      # `vp install` (pnpm install, frozen on CI) with the pnpm store cached.
+      - uses: voidzero-dev/setup-vp@v1.22.0
+        with:
+          node-version-file: .node-version
+          cache: true
+
+      # Oxfmt format check + Oxlint, one pass.
+      - run: vp check
+
+      # Type-aware lint rules (tsgolint) over the engine. The playground is left out: its
+      # React/three type surface sends the TS 7 checker past 8 GB (see package.json `lint:types`).
+      - run: vp run lint:types
+
+      # tsc over core and deck (TS 7) and the playground (TS 5.9, see scripts/tsc-5.mjs).
+      - run: vp run typecheck
+
+  test-cpu:
+    name: Tests (CPU)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: voidzero-dev/setup-vp@v1.22.0
+        with:
+          node-version-file: .node-version
+          cache: true
+      - run: vp run test:cpu
+
+  test-gpu:
+    name: Tests (GPU, software Vulkan)
+    # Pinned, not ubuntu-latest: the prebuilt Dawn binary needs glibc >= 2.38 (24.04 has 2.39;
+    # Debian bookworm's 2.36 fails to dlopen it).
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      # Hosted runners have no GPU. Dawn (the `webgpu` addon) runs on Mesa's lavapipe, a CPU
+      # Vulkan driver, and the kernels, the TGSL transform and the readback paths are the same
+      # code a real adapter runs, so a correctness failure here is a real one. Measured in an
+      # Ubuntu 24.04 container (2026-10-26): the full suite passes (283 tests) in ~9 s.
+      - name: Install Mesa software Vulkan (lavapipe)
+        run: sudo apt-get update -q && sudo apt-get install -y -q --no-install-recommends mesa-vulkan-drivers libvulkan1
+
+      - uses: voidzero-dev/setup-vp@v1.22.0
+        with:
+          node-version-file: .node-version
+          cache: true
+      - run: vp run test:gpu
+
+  build:
+    name: Library build + publish checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: voidzero-dev/setup-vp@v1.22.0
+        with:
+          node-version-file: .node-version
+          cache: true
+
+      # What `pnpm release` builds before `changeset publish`, minus the publish: both packages'
+      # dist/ (pre-transformed kernels + declarations), then publint and arethetypeswrong over
+      # the packed tarballs.
+      - run: vp run build:lib
+      - run: vp run --filter @intraspatial/deck --fail-if-no-match build
+      - run: vp run check:publish
+
+  fallow:
+    name: Code health (fallow, non-blocking)
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    # Dead code / complexity / duplication scoped to the changed files, new-vs-inherited
+    # attributed. Non-blocking until the committed baselines are trusted.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: voidzero-dev/setup-vp@v1.22.0
+        with:
+          node-version-file: .node-version
+          cache: true
+      - run: |
+          git fetch --no-tags --depth=1 origin "${{ github.base_ref }}"
+          vp exec fallow audit --base "origin/${{ github.base_ref }}" --format github-annotations

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { auc, type KernelScore, makeAssociationScene, scoreKernels } from "./kernelAnalysis";
 import { EPANECHNIKOV, kernelLabel, TOPHAT } from "./kernels";
 

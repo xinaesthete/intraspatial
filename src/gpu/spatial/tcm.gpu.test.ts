@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { type CellCloud, computeTcmReference, crossMarks, type TcmParams } from "../../spatial/tcm";
 import { computeTcmGpu, crossMarksGpu } from "./tcm";
 
