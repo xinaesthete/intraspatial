@@ -34,6 +34,22 @@ function* walk(dir) {
   }
 }
 
+/** `#src/x` as the relative path from `file` to `<root>/x`; any other specifier unchanged. */
+function fromAlias(file, root, spec) {
+  if (!spec.startsWith("#src/")) return spec;
+  const rel = relative(dirname(file), join(root, spec.slice("#src/".length)));
+  return rel.startsWith(".") ? rel : `./${rel}`;
+}
+
+/** The relative `spec` with its `.js` / `/index.js` ending, or undefined when it resolves to nothing. */
+function withExtension(file, spec) {
+  const base = resolve(dirname(file), spec);
+  const ext = file.endsWith(".d.ts") ? ".d.ts" : ".js";
+  if (existsSync(`${base}${ext}`)) return `${spec}.js`;
+  if (existsSync(join(base, `index${ext}`))) return `${spec.replace(/\/$/, "")}/index.js`;
+  return undefined;
+}
+
 let files = 0;
 let rewritten = 0;
 const unresolved = [];
@@ -42,18 +58,10 @@ for (const dir of dirs) {
   for (const file of walk(root)) {
     const text = readFileSync(file, "utf8");
     const out = text.replace(SPECIFIER, (match, lead, quote, raw) => {
-      let spec = raw;
-      if (spec.startsWith("#src/")) {
-        spec = relative(dirname(file), join(root, spec.slice("#src/".length)));
-        if (!spec.startsWith(".")) spec = `./${spec}`;
-      }
+      const spec = fromAlias(file, root, raw);
       if (/\.(m?js|json)$/.test(spec)) return match;
-      const base = resolve(dirname(file), spec);
-      const ext = file.endsWith(".d.ts") ? ".d.ts" : ".js";
-      let fixed;
-      if (existsSync(`${base}${ext}`)) fixed = `${spec}.js`;
-      else if (existsSync(join(base, `index${ext}`))) fixed = `${spec.replace(/\/$/, "")}/index.js`;
-      else {
+      const fixed = withExtension(file, spec);
+      if (!fixed) {
         unresolved.push(`${file}: ${spec}`);
         return match;
       }
