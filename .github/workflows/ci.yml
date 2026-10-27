@@ -17,6 +17,33 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  # Whether this push/PR touches anything the test suites could notice. A Changesets version PR
+  # (versions + changelogs) or a docs-only change skips the tests and fallow; format/lint/typecheck
+  # and the publish checks still run. See scripts/ci-changes.mjs for what counts as inert.
+  changes:
+    name: Detect code changes
+    runs-on: ubuntu-latest
+    outputs:
+      code: ${{ steps.diff.outputs.code }}
+    steps:
+      # Depth 2: on a PR the checkout is the merge commit, whose first parent is the base tip, so
+      # HEAD^1..HEAD is exactly what merging would change.
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 2
+      - id: diff
+        env:
+          EVENT: ${{ github.event_name }}
+          BEFORE: ${{ github.event.before }}
+        run: |
+          case "$EVENT" in
+            pull_request) node scripts/ci-changes.mjs HEAD^1 HEAD ;;
+            # A diff needs only the two trees, not the history between them.
+            push) git fetch -q --depth=1 origin "$BEFORE" || true
+                  node scripts/ci-changes.mjs "$BEFORE" HEAD ;;
+            *) echo "code=true" >> "$GITHUB_OUTPUT" ;;
+          esac
+
   check:
     name: Format, lint, typecheck
     runs-on: ubuntu-latest
@@ -42,6 +69,8 @@ jobs:
 
   test-cpu:
     name: Tests (CPU)
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -53,6 +82,8 @@ jobs:
 
   test-gpu:
     name: Tests (GPU, software Vulkan)
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     # Pinned, not ubuntu-latest: the prebuilt Dawn binary needs glibc >= 2.38 (24.04 has 2.39;
     # Debian bookworm's 2.36 fails to dlopen it).
     runs-on: ubuntu-24.04
@@ -63,8 +94,42 @@ jobs:
       # Vulkan driver, and the kernels, the TGSL transform and the readback paths are the same
       # code a real adapter runs, so a correctness failure here is a real one. Measured in an
       # Ubuntu 24.04 container (2026-10-26): the full suite passes (283 tests) in ~9 s.
+      #
+      # The .debs are cached: the one apt fetches (mesa-vulkan-drivers, 17.5 MB) has taken from
+      # 9 s to 6.5 min depending on the Azure mirror. The key is the runner image, so the cached
+      # set is exactly what that image lacks and `dpkg -i` needs no dependency resolution; a new
+      # image (about weekly) refetches once.
+      - name: Runner image (lavapipe cache key)
+        id: image
+        run: echo "id=$ImageOS-$ImageVersion" >> "$GITHUB_OUTPUT"
+      - id: lavapipe
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/lavapipe-debs/*.deb
+          key: lavapipe-${{ steps.image.outputs.id }}
       - name: Install Mesa software Vulkan (lavapipe)
-        run: sudo apt-get update -q && sudo apt-get install -y -q --no-install-recommends mesa-vulkan-drivers libvulkan1
+        id: install
+        env:
+          HIT: ${{ steps.lavapipe.outputs.cache-hit }}
+        run: |
+          set -euo pipefail
+          debs="$HOME/lavapipe-debs"
+          if [ "$HIT" != true ]; then
+            mkdir -p "$debs/partial"
+            sudo apt-get update -q
+            sudo apt-get install -y -q --no-install-recommends --download-only \
+              -o Dir::Cache::archives="$debs" mesa-vulkan-drivers libvulkan1
+          fi
+          # Nothing downloaded means the image already has both.
+          if compgen -G "$debs/*.deb" > /dev/null; then
+            sudo dpkg -i "$debs"/*.deb
+            echo "debs=true" >> "$GITHUB_OUTPUT"
+          fi
+      - if: steps.lavapipe.outputs.cache-hit != 'true' && steps.install.outputs.debs == 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/lavapipe-debs/*.deb
+          key: ${{ steps.lavapipe.outputs.cache-primary-key }}
 
       - uses: voidzero-dev/setup-vp@v1.22.0
         with:
@@ -91,7 +156,8 @@ jobs:
 
   fallow:
     name: Code health (fallow, non-blocking)
-    if: github.event_name == 'pull_request'
+    needs: changes
+    if: github.event_name == 'pull_request' && needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     # Dead code / complexity / duplication scoped to the changed files, new-vs-inherited
     # attributed. Non-blocking until the committed baselines are trusted.
