@@ -1,0 +1,44 @@
+name: Version Packages
+
+# Opens (or updates) the "Version packages" PR whenever main has pending changesets. Merging that
+# PR is the version bump; publishing stays manual (`pnpm release`, see "Releasing" in README.md),
+# so there is no npm token in this repo and no `publish-script` here.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Pushes the version branch and opens the PR. Also needs the repo setting "Allow GitHub Actions
+# to create and approve pull requests" (Settings → Actions → General).
+permissions:
+  contents: write
+  pull-requests: write
+
+# Two quick merges must not race to rewrite the same version branch; let each run finish.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  version:
+    name: Create or update the version PR
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      # Same toolchain as ci.yml: the Node in .node-version, the pnpm in `packageManager`, then a
+      # frozen `vp install` with the pnpm store cached.
+      - uses: voidzero-dev/setup-vp@v1.22.0
+        with:
+          node-version-file: .node-version
+          cache: true
+
+      # changesets/action v2 requires @changesets/cli v3 (it hard-errors on v2) and uses the v2
+      # input names below; v1's `version` / `title` / `commit` would be silently ignored. Move
+      # the action's major and the root `@changesets/cli` devDependency together.
+      # With no pending changesets it skips the version script and does nothing.
+      - uses: changesets/action@v2
+        with:
+          version-script: pnpm version-packages
+          pr-title: Version packages
+          commit-message: Version packages

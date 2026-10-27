@@ -155,14 +155,20 @@ docs-site are private. Versions and changelogs are managed by [Changesets](https
 1. With a change that consumers would notice, run `pnpm changeset`, pick the packages and the bump
    (patch / minor / major — at 0.x, minor is the breaking one), and commit the generated
    `.changeset/*.md` with the change.
-2. To cut a release, `pnpm version-packages` folds the pending changesets into version bumps and
-   `CHANGELOG.md`s (and dependents' ranges, e.g. `@intraspatial/deck` → `intraspatial`); review and
-   commit.
-3. `pnpm release` builds both packages, runs `check:publish`, and `changeset publish`es every
-   package whose version isn't on npm yet (needs `npm login`), tagging each `name@version` in git.
-   Push the tags.
+2. Merge it. On every push to `main` with pending changesets, the `Version Packages` workflow
+   ([`release.yml`](.github/workflows/release.yml)) opens or updates a "Version packages" PR. That
+   PR runs `pnpm version-packages`, which folds the changesets into version bumps and
+   `CHANGELOG.md`s (and dependents' ranges, e.g. `@intraspatial/deck` → `intraspatial`). Review it
+   and merge it to cut the release. Running `pnpm version-packages` locally does the same; with
+   nothing pending, `changeset version` (v3) exits 1.
+3. Publishing is manual: CI holds no npm token. From a clean checkout of the merged version
+   commit, `pnpm release` builds both packages, runs `check:publish`, and `changeset publish`es
+   every package whose version isn't on npm yet (needs `npm login`), tagging each `name@version` in
+   git. Push the tags (`git push origin --tags`).
 
-The first publish needs no changeset: both packages are at `0.1.0`, unpublished.
+The workflow needs the repository setting "Allow GitHub Actions to create and approve pull
+requests" (Settings → Actions → General). `changesets/action@v2` only runs against
+`@changesets/cli` v3, so bump the two together.
 
 ### Docs & decisions
 
