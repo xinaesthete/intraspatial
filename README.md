@@ -176,7 +176,10 @@ One-time setup, outside the repo:
   requests". Under Settings → Environments, create `npm` with yourself as a required reviewer.
 - **npm:** for each of `intraspatial` and `@intraspatial/deck`, Settings → Trusted publishing →
   GitHub Actions: repository `xinaesthete/intraspatial`, workflow `release.yml`, environment `npm`.
-  Once a CI publish has worked, set publishing access to disallow tokens.
+  Under "Allowed actions", also allow `npm publish`: configs created after Sep 3, 2026 always
+  allow `npm stage publish`, but direct publishing is a separate permission, and without it
+  `changeset publish` fails with `E404 ... PUT`. Once a CI publish has worked, set publishing
+  access to disallow tokens.
 
 `changesets/action@v2` only runs against `@changesets/cli` v3, so bump the two together.
 
