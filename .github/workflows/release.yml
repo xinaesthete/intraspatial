@@ -36,9 +36,24 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      # The concurrency group serialises runs but doesn't order them: GitHub queues by when a job
+      # starts waiting, so an older push's run can go after a newer one and would rewrite the
+      # version PR from a stale main. If main has moved on, stop; the newer push's run covers it.
+      - id: fresh
+        run: |
+          set -euo pipefail
+          tip=$(git ls-remote origin refs/heads/main | cut -f1)
+          if [ "$tip" = "$GITHUB_SHA" ]; then
+            echo "fresh=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::main is at $tip, not $GITHUB_SHA; skipping (the run for the newer push takes over)"
+            echo "fresh=false" >> "$GITHUB_OUTPUT"
+          fi
+
       # Same toolchain as ci.yml: the Node in .node-version, the pnpm in `packageManager`, then a
       # frozen `vp install` with the pnpm store cached.
-      - uses: voidzero-dev/setup-vp@v1.22.0
+      - if: steps.fresh.outputs.fresh == 'true'
+        uses: voidzero-dev/setup-vp@v1.22.0
         with:
           node-version-file: .node-version
           cache: true
@@ -48,6 +63,7 @@ jobs:
       # the action's major and the root `@changesets/cli` devDependency together.
       # With no pending changesets it skips the version script and does nothing.
       - id: changesets
+        if: steps.fresh.outputs.fresh == 'true'
         uses: changesets/action@v2
         with:
           version-script: pnpm version-packages
@@ -59,7 +75,7 @@ jobs:
       # versions are the already-published ones. Only a 404 counts as unpublished; any other
       # failure (registry down, network) fails the job rather than guessing.
       - id: npm
-        if: steps.changesets.outputs.has-changesets == 'false'
+        if: steps.fresh.outputs.fresh == 'true' && steps.changesets.outputs.has-changesets == 'false'
         run: |
           set -euo pipefail
           unpublished=false
