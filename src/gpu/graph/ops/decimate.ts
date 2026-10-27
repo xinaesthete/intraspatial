@@ -18,8 +18,8 @@
 // (checked in the test). A partial edge block keeps the nominal full-block footprint — its
 // placement centre sits past the input edge — which is the honest geometry of a block that was
 // reduced over fewer cells; the value itself is the mean/min/max of the cells present.
-import type { Vec3 } from "../../../coords";
-import { type DecimateMode, decimateCpu, decimatedSize, decimateResident } from "../../spatial/decimate";
+import type { Vec3 } from "#src/coords";
+import { type DecimateMode, decimateCpu, decimatedSize, decimateResident } from "#src/gpu/spatial/decimate";
 import type { ResolvedPlacement, Shape } from "../handle";
 import type { OpType, Params } from "../op";
 

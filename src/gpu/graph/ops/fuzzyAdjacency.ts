@@ -1,6 +1,6 @@
 // Tier-1 graph node wrapping `fuzzyAdjacencyGpu` — the global-σ fuzzy (kernel-
 // weighted) adjacency matrix, the weighted 1-skeleton for fuzzier TDA.
-import { fuzzyAdjacencyGpu } from "../../spatial/fuzzyAdjacency";
+import { fuzzyAdjacencyGpu } from "#src/gpu/spatial/fuzzyAdjacency";
 import type { Shape } from "../handle";
 import { unpackPoints } from "../handle";
 import type { OpType } from "../op";

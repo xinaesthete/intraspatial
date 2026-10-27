@@ -1,5 +1,5 @@
 // Tier-1 graph node wrapping `getisOrdGpu` (grid -> Gi* z-score grid).
-import { getisOrdGpu } from "../../spatial/getisOrd";
+import { getisOrdGpu } from "#src/gpu/spatial/getisOrd";
 import type { Shape } from "../handle";
 import type { OpType } from "../op";
 

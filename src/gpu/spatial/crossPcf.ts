@@ -20,9 +20,9 @@
 // of the statistic rather than two.
 import tgpu from "typegpu";
 import * as d from "typegpu/data";
-import { type GridLattice, latticeFor } from "../../spatial/bucketGrid";
-import type { LabelledCells, PcfMatrixParams, PcfMatrixResult, PcfParams, PcfResult } from "../../spatial/pcf";
-import type { CellCloud } from "../../spatial/tcm";
+import { type GridLattice, latticeFor } from "#src/spatial/bucketGrid";
+import type { LabelledCells, PcfMatrixParams, PcfMatrixResult, PcfParams, PcfResult } from "#src/spatial/pcf";
+import type { CellCloud } from "#src/spatial/tcm";
 import { checkBindingSize, getDevice, sized } from "../device";
 import { encodeGridIndex, type GridIndexCtx, getGridIndexCtx } from "./gridIndex";
 

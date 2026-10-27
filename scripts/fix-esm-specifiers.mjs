@@ -7,10 +7,15 @@
 // consumers typechecking under `node16` / `nodenext`. Vite's lib build (the root package's JS)
 // already writes `.js` endings; tsc's declarations, and `packages/*` built by tsc alone, don't.
 //
+// It also turns `#src/…` into the equivalent relative path. `#src/*` is the root package.json
+// "imports" alias for src/*.ts — an in-repo convenience: src/ is not published, so dist/ must not
+// depend on it, and tsc copies it into the declarations verbatim. `<distDir>` mirrors src/
+// (rootDir / preserveModulesRoot), so `#src/x` is `<distDir>/x`.
+//
 // Usage:   node scripts/fix-esm-specifiers.mjs <distDir> [<distDir>...]
 
 import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 
 const dirs = process.argv.slice(2);
 if (dirs.length === 0) {
@@ -18,8 +23,8 @@ if (dirs.length === 0) {
   process.exit(2);
 }
 
-// `from "./x"`, `import("./x")`, `import "./x"` — relative specifiers with no extension.
-const SPECIFIER = /(\bfrom\s*|\bimport\s*\(\s*|\bimport\s+)(["'])(\.\.?\/[^"']*?)\2/g;
+// `from "./x"`, `import("./x")`, `import "./x"` — relative (or `#src/`) specifiers with no extension.
+const SPECIFIER = /(\bfrom\s*|\bimport\s*\(\s*|\bimport\s+)(["'])(\.\.?\/[^"']*?|#src\/[^"']*?)\2/g;
 
 function* walk(dir) {
   for (const name of readdirSync(dir)) {
@@ -29,20 +34,34 @@ function* walk(dir) {
   }
 }
 
+/** `#src/x` as the relative path from `file` to `<root>/x`; any other specifier unchanged. */
+function fromAlias(file, root, spec) {
+  if (!spec.startsWith("#src/")) return spec;
+  const rel = relative(dirname(file), join(root, spec.slice("#src/".length)));
+  return rel.startsWith(".") ? rel : `./${rel}`;
+}
+
+/** The relative `spec` with its `.js` / `/index.js` ending, or undefined when it resolves to nothing. */
+function withExtension(file, spec) {
+  const base = resolve(dirname(file), spec);
+  const ext = file.endsWith(".d.ts") ? ".d.ts" : ".js";
+  if (existsSync(`${base}${ext}`)) return `${spec}.js`;
+  if (existsSync(join(base, `index${ext}`))) return `${spec.replace(/\/$/, "")}/index.js`;
+  return undefined;
+}
+
 let files = 0;
 let rewritten = 0;
 const unresolved = [];
 for (const dir of dirs) {
-  for (const file of walk(resolve(dir))) {
+  const root = resolve(dir);
+  for (const file of walk(root)) {
     const text = readFileSync(file, "utf8");
-    const out = text.replace(SPECIFIER, (match, lead, quote, spec) => {
+    const out = text.replace(SPECIFIER, (match, lead, quote, raw) => {
+      const spec = fromAlias(file, root, raw);
       if (/\.(m?js|json)$/.test(spec)) return match;
-      const base = resolve(dirname(file), spec);
-      const ext = file.endsWith(".d.ts") ? ".d.ts" : ".js";
-      let fixed;
-      if (existsSync(`${base}${ext}`)) fixed = `${spec}.js`;
-      else if (existsSync(join(base, `index${ext}`))) fixed = `${spec.replace(/\/$/, "")}/index.js`;
-      else {
+      const fixed = withExtension(file, spec);
+      if (!fixed) {
         unresolved.push(`${file}: ${spec}`);
         return match;
       }

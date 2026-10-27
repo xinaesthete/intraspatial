@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vite-plus/test";
-import type { PersistenceResult } from "../../spatial/persistence";
+import type { PersistenceResult } from "#src/spatial/persistence";
 import { Graph, pull } from "./index";
 
 // A clean ring of points — one loop, no clusters. The membership-sweep filtration

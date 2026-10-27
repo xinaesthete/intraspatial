@@ -19,9 +19,9 @@
 // from the `minX`/`minY`/`maxX`/`maxY` params, exactly as `buildBucketGrid`'s optional `bounds`
 // does. Points outside are clamped into the edge cells (the CPU build's rule, and safe for a 3×3
 // query: a clamped point is at least as far away as its cell implies).
-import type { Vec3 } from "../../../coords";
-import { type BucketGrid, buildBucketGrid, type GridLattice, latticeFor, numCells } from "../../../spatial/bucketGrid";
-import { encodeGridIndex, getGridIndexCtx } from "../../spatial/gridIndex";
+import type { Vec3 } from "#src/coords";
+import { type BucketGrid, buildBucketGrid, type GridLattice, latticeFor, numCells } from "#src/spatial/bucketGrid";
+import { encodeGridIndex, getGridIndexCtx } from "#src/gpu/spatial/gridIndex";
 import type { FieldValue, ResolvedPlacement, Shape } from "../handle";
 import type { ExecCtx, OpType, Params } from "../op";
 import { type BundleSpec, bundleValue, combineOp, extractOp, partNames } from "./bundleOps";

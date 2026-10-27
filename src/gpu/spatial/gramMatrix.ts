@@ -27,8 +27,8 @@
 
 import tgpu from "typegpu";
 import * as d from "typegpu/data";
-import type { ChannelCloud, GramParams, GramResult } from "../../spatial/gram";
-import { EPANECHNIKOV, kernelCode, roughness } from "../../spatial/kernels";
+import type { ChannelCloud, GramParams, GramResult } from "#src/spatial/gram";
+import { EPANECHNIKOV, kernelCode, roughness } from "#src/spatial/kernels";
 import { checkBindingSize, deviceScoped, perDevice, sized, submitDispatch } from "../device";
 import { ensureHalfTex, halfNarrower } from "../halfTexture";
 import { scratchTexture } from "../scratchTexture";

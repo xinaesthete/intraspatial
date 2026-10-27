@@ -1,7 +1,7 @@
 // Tier-1 graph node wrapping `kthNeighborDistanceGpu` — each point's distance to
 // its k-th nearest neighbour (the local density estimate ρ_i / local bandwidth).
 // Output is an n×1 matrix, the per-point bandwidth that feeds fuzzyAdjacencyAdaptive.
-import { kthNeighborDistanceGpu } from "../../spatial/kthNeighborDistance";
+import { kthNeighborDistanceGpu } from "#src/gpu/spatial/kthNeighborDistance";
 import type { Shape } from "../handle";
 import { unpackPoints } from "../handle";
 import type { OpType } from "../op";

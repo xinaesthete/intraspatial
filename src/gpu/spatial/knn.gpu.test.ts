@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
-import { type KnnResult, knnBruteForceCpu } from "../../spatial/umapGraph";
-import { mulberry32 } from "../../spatial/umapLayout";
+import { type KnnResult, knnBruteForceCpu } from "#src/spatial/umapGraph";
+import { mulberry32 } from "#src/spatial/umapLayout";
 import { knnGpu } from "./knn";
 
 // Parity of `knnGpu` against the CPU golden. Structural invariants live in

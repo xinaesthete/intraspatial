@@ -11,8 +11,8 @@
 import tgpu from "typegpu";
 import * as d from "typegpu/data";
 import * as std from "typegpu/std";
-import { submitDispatch } from "../../device";
-import { typegpuComputePipeline } from "../../typegpuPipeline";
+import { submitDispatch } from "#src/gpu/device";
+import { typegpuComputePipeline } from "#src/gpu/typegpuPipeline";
 import type { Root } from "../backend";
 import type { OpType, Params } from "../op";
 import { rawBindGroup } from "../residentBind";

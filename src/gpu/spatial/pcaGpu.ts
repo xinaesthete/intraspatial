@@ -48,7 +48,7 @@ import {
   type PcaResult,
   pcaBasis,
   pcaComponentCount,
-} from "../../spatial/pca";
+} from "#src/spatial/pca";
 import { getDevice, submitDispatch, writeView } from "../device";
 import { typegpuComputePipeline } from "../typegpuPipeline";
 

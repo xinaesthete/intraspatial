@@ -20,8 +20,8 @@
 import tgpu from "typegpu";
 import * as d from "typegpu/data";
 import * as std from "typegpu/std";
-import { latticeFor } from "../../spatial/bucketGrid";
-import type { CellCloud, TcmParams } from "../../spatial/tcm";
+import { latticeFor } from "#src/spatial/bucketGrid";
+import type { CellCloud, TcmParams } from "#src/spatial/tcm";
 import { getDevice, writeView } from "../device";
 import { typegpuComputePipeline } from "../typegpuPipeline";
 import { encodeGridIndex, type GridIndexCtx, getGridIndexCtx } from "./gridIndex";

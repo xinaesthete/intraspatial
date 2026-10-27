@@ -31,7 +31,7 @@
 // Sign is not arbitrary here: `eigenSym` canonicalises each eigenvector's largest loading positive,
 // so re-running the analysis cannot flip the map's colours (see that module).
 
-import type { Oklab } from "../../color/oklab";
+import type { Oklab } from "#src/color/oklab";
 import { compileShader, getDevice } from "../device";
 import type { GramMatrixGpuResult, ResidentRasters } from "./gramMatrix";
 import { whiteningMatrix } from "./gramTerrain";

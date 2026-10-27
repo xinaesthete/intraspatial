@@ -79,7 +79,7 @@
 
 import tgpu from "typegpu";
 import * as d from "typegpu/data";
-import type { LabelledCells } from "../../spatial/pcf";
+import type { LabelledCells } from "#src/spatial/pcf";
 import {
   benjaminiHochbergMatrix,
   partialCorrelation,
@@ -89,7 +89,7 @@ import {
   rowCorrelation,
   SWAP_BETWEEN,
   SWAP_BURN_IN,
-} from "../../spatial/quadratCorrelation";
+} from "#src/spatial/quadratCorrelation";
 import { checkBindingSize, dispatchGrid, getDevice, MAX_WORKGROUPS_PER_DIM, sized } from "../device";
 
 /** Shuffles resident on the device at once. Bounds the count buffer (B·K·Q u32) and every dispatch,

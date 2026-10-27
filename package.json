@@ -95,6 +95,9 @@
     "LICENSE"
   ],
   "types": "./dist/index.d.ts",
+  "imports": {
+    "#src/*": "./src/*.ts"
+  },
   "exports": {
     ".": {
       "@intraspatial/source": "./src/index.ts",

@@ -4,8 +4,8 @@
 // loops). The reduction is inherently sequential, so it stays on the CPU — the GPU's
 // job ended at the distance matrix (see docs/concepts/fuzzy-tda.md).
 
-import type { PersistenceResult } from "../../../spatial/persistence";
-import { vietorisRipsPersistence } from "../../../spatial/persistence";
+import type { PersistenceResult } from "#src/spatial/persistence";
+import { vietorisRipsPersistence } from "#src/spatial/persistence";
 import type { Shape } from "../handle";
 import type { OpType } from "../op";
 

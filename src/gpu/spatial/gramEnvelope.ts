@@ -26,9 +26,9 @@
 // alone is analytic (see `nullMeanGram`) and is not what an envelope needs. At the demo's settings
 // that is ~140 ms each, so 99 simulations is around 15 seconds — a button, not a live control.
 
-import { type GlobalEnvelope, globalRankEnvelope } from "../../spatial/envelope";
-import { type ChannelCloud, coLocationModes, type GramParams } from "../../spatial/gram";
-import { channelPermuter, randomPermutation } from "../../spatial/permute";
+import { type GlobalEnvelope, globalRankEnvelope } from "#src/spatial/envelope";
+import { type ChannelCloud, coLocationModes, type GramParams } from "#src/spatial/gram";
+import { channelPermuter, randomPermutation } from "#src/spatial/permute";
 import { gramMatrixGpu } from "./gramMatrix";
 
 /** Deterministic RNG so a reported p-value can be reproduced. */

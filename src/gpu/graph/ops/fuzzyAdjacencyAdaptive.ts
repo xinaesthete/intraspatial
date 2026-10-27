@@ -1,6 +1,6 @@
 // Graph node for UMAP-style adaptive fuzzy adjacency: points + a per-point
 // bandwidth ρ (from kthNeighborDistance) -> n×n symmetrised membership.
-import { fuzzyAdjacencyAdaptiveFromRhoGpu } from "../../spatial/fuzzyAdjacencyAdaptive";
+import { fuzzyAdjacencyAdaptiveFromRhoGpu } from "#src/gpu/spatial/fuzzyAdjacencyAdaptive";
 import type { Shape } from "../handle";
 import { unpackPoints } from "../handle";
 import type { OpType } from "../op";

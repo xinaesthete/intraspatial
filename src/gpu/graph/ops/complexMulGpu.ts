@@ -7,8 +7,8 @@
 
 import tgpu from "typegpu";
 import * as d from "typegpu/data";
-import { submitDispatch, writeView } from "../../device";
-import { typegpuComputePipeline } from "../../typegpuPipeline";
+import { submitDispatch, writeView } from "#src/gpu/device";
+import { typegpuComputePipeline } from "#src/gpu/typegpuPipeline";
 import type { Root } from "../backend";
 
 const WG = 64;

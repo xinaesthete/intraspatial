@@ -1,5 +1,5 @@
 import { beforeAll, describe, expect, it } from "vite-plus/test";
-import type { Affine3 } from "../../coords";
+import type { Affine3 } from "#src/coords";
 import { getDevice } from "../device";
 import { splatDensityGpu } from "../spatial/splatDensity";
 import type { FieldValue } from "./handle";

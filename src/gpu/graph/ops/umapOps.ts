@@ -21,10 +21,10 @@
 // Distance/embedding conventions and the reference-semantics `nNeighbors` off-by-one are
 // documented in `src/spatial/umapGraph.ts`; this module only wires them up.
 
-import { pca } from "../../../spatial/pca";
-import { type FuzzyGraph, fuzzySimplicialSet, type KnnResult, knnBruteForceCpu } from "../../../spatial/umapGraph";
-import { fitAB, optimizeLayout } from "../../../spatial/umapLayout";
-import { KNN_MAX_K, knnGpu } from "../../spatial/knn";
+import { pca } from "#src/spatial/pca";
+import { type FuzzyGraph, fuzzySimplicialSet, type KnnResult, knnBruteForceCpu } from "#src/spatial/umapGraph";
+import { fitAB, optimizeLayout } from "#src/spatial/umapLayout";
+import { KNN_MAX_K, knnGpu } from "#src/gpu/spatial/knn";
 import type { Shape } from "../handle";
 import type { OpType, Params } from "../op";
 

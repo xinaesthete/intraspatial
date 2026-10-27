@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vite-plus/test";
-import { type BucketGrid, buildBucketGrid, latticeFor, numCells } from "../../spatial/bucketGrid";
+import { type BucketGrid, buildBucketGrid, latticeFor, numCells } from "#src/spatial/bucketGrid";
 import { buildGridIndexGpu, GRID_INDEX_WG, type GridIndexOptions } from "./gridIndex";
 
 // Dawn-on-Node house rules, as in the neighbouring suites: assertions are AGGREGATED (one

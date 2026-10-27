@@ -11,7 +11,7 @@
 //
 // Genotype leaf labels use the minus/plus-per-locus encoding mm/mp/pm/pp = [--, -+, +-, ++],
 // matching the original's data keys. See src/gpu/sim/hspf/CONTEXT.md.
-import type { ParamSpec, Params } from "../../graph/op";
+import type { ParamSpec, Params } from "#src/gpu/graph/op";
 import type { HspfParams } from "./kernel";
 import { DEFAULT_FITNESS, type Vec4 } from "./math";
 

@@ -47,7 +47,7 @@
 // why a brush should be a window with a falloff rather than a crisp box. It also makes the
 // mask usable as the weight vector for a weighted-permutation null, which a 0/1 byte
 // cannot be.
-import { gaussianKdeField } from "../../../spatial/scalarField";
+import { gaussianKdeField } from "#src/spatial/scalarField";
 import type { FieldValue, Shape } from "../handle";
 import { numCells } from "../handle";
 import type { OpType, Params } from "../op";

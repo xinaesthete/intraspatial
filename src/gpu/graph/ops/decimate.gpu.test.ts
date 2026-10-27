@@ -1,5 +1,5 @@
 import { beforeAll, describe, expect, it } from "vite-plus/test";
-import { getDevice } from "../../device";
+import { getDevice } from "#src/gpu/device";
 import { Graph, pull, pullData } from "../index";
 
 // The graph node must agree with its `cpuGolden` (min/max bit-exact, mean to f32 rounding), and a
