@@ -125,41 +125,6 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      # Does the same OIDC exchange `pnpm publish` will, once per package it is about to publish
-      # (the version job's list, so an already-published package's config can't block a release
-      # of the others), and fails with npm's reason if it's refused. pnpm only warns ("Skipped OIDC: ...") and publishes with no
-      # credentials, and `changeset publish` captures that warning, so all that reaches the log
-      # otherwise is "E404 ... PUT https://registry.npmjs.org/<name>". Tokens are masked and the
-      # exchanged token is discarded. A passing exchange doesn't prove `npm publish` is allowed:
-      # that is a separate "Allowed actions" permission on the trusted publisher (README).
-      - name: Check npm trusted publishing
-        env:
-          PACKAGES: ${{ needs.version.outputs.packages }}
-        run: |
-          set -euo pipefail
-          id_url=$(node -p 'const u = new URL(process.env.ACTIONS_ID_TOKEN_REQUEST_URL); u.searchParams.set("audience", "npm:registry.npmjs.org"); u.href')
-          id_token=$(curl -fsS --max-time 30 -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$id_url" | node -p 'JSON.parse(require("fs").readFileSync(0)).value')
-          echo "::add-mask::$id_token"
-          ok=true
-          for name in $PACKAGES; do
-            status=$(curl -sS --max-time 30 -o "$RUNNER_TEMP/exchange.json" -w '%{http_code}' -X POST \
-              -H "Authorization: Bearer $id_token" -H 'Content-Length: 0' \
-              "https://registry.npmjs.org/-/npm/v1/oidc/token/exchange/package/${name/\//%2f}")
-            # Any 2xx is success (npm documents 201; pnpm checks `response.ok`). A success body
-            # holds the unmasked publish token, so only a refusal's body is ever printed.
-            if [[ "$status" == 2?? ]]; then
-              echo "$name: OIDC exchange OK ($status)"
-            else
-              echo "::error::$name: npm refused the OIDC exchange ($status): $(cat "$RUNNER_TEMP/exchange.json")"
-              ok=false
-            fi
-            rm -f "$RUNNER_TEMP/exchange.json"
-          done
-          [ "$ok" = true ] || {
-            echo "Check each package's trusted publisher on npmjs.com: xinaesthete / intraspatial / release.yml / environment npm (case-sensitive), with npm publish allowed."
-            exit 1
-          }
-
       # No `registry-url`: that writes an .npmrc with a NODE_AUTH_TOKEN placeholder, and the
       # OIDC exchange needs no token. pnpm 11 performs the exchange itself.
       - uses: voidzero-dev/setup-vp@v1.22.0
@@ -170,6 +135,39 @@ jobs:
       # With no changesets pending, the action goes straight to `publish-script`: `pnpm release`
       # builds both packages, runs check:publish, and `changeset publish`es whatever isn't on npm.
       # The action then pushes the `name@version` tags and creates a GitHub Release for each.
-      - uses: changesets/action@v2
+      - id: release
+        uses: changesets/action@v2
         with:
           publish-script: pnpm release
+
+      # Only after a failed publish: explains it. If npm refuses the OIDC exchange, pnpm warns
+      # ("Skipped OIDC: ...") and publishes with no credentials, and `changeset publish` captures
+      # that warning, so all that reaches the log is "E404 ... PUT https://registry.npmjs.org/<name>".
+      # This repeats the exchange the way pnpm does it (a fresh GitHub ID token per package) for
+      # each package the version job found unpublished, and prints npm's reason. It runs after the
+      # publish rather than before so it can't affect the exchanges pnpm makes. Tokens are masked
+      # and the exchanged token is discarded. A passing exchange doesn't prove `npm publish` is
+      # allowed: that is a separate "Allowed actions" permission on the trusted publisher (README).
+      - name: Explain a failed npm publish
+        if: failure() && steps.release.outcome == 'failure'
+        env:
+          PACKAGES: ${{ needs.version.outputs.packages }}
+        run: |
+          set -euo pipefail
+          id_url=$(node -p 'const u = new URL(process.env.ACTIONS_ID_TOKEN_REQUEST_URL); u.searchParams.set("audience", "npm:registry.npmjs.org"); u.href')
+          for name in $PACKAGES; do
+            id_token=$(curl -fsS --max-time 30 -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$id_url" | node -p 'JSON.parse(require("fs").readFileSync(0)).value')
+            echo "::add-mask::$id_token"
+            status=$(curl -sS --max-time 30 -o "$RUNNER_TEMP/exchange.json" -w '%{http_code}' -X POST \
+              -H "Authorization: Bearer $id_token" -H 'Content-Length: 0' \
+              "https://registry.npmjs.org/-/npm/v1/oidc/token/exchange/package/${name/\//%2f}")
+            # Any 2xx is success (npm documents 201; pnpm checks `response.ok`). A success body
+            # holds the unmasked publish token, so only a refusal's body is ever printed.
+            if [[ "$status" == 2?? ]]; then
+              echo "$name: OIDC exchange OK ($status); if its publish failed, check that npm publish is allowed for it"
+            else
+              echo "::error::$name: npm refused the OIDC exchange ($status): $(cat "$RUNNER_TEMP/exchange.json")"
+            fi
+            rm -f "$RUNNER_TEMP/exchange.json"
+          done
+          echo "Each package's trusted publisher on npmjs.com should be xinaesthete / intraspatial / release.yml / environment npm (case-sensitive), with npm publish allowed."
