@@ -155,14 +155,30 @@ docs-site are private. Versions and changelogs are managed by [Changesets](https
 1. With a change that consumers would notice, run `pnpm changeset`, pick the packages and the bump
    (patch / minor / major — at 0.x, minor is the breaking one), and commit the generated
    `.changeset/*.md` with the change.
-2. To cut a release, `pnpm version-packages` folds the pending changesets into version bumps and
-   `CHANGELOG.md`s (and dependents' ranges, e.g. `@intraspatial/deck` → `intraspatial`); review and
-   commit.
-3. `pnpm release` builds both packages, runs `check:publish`, and `changeset publish`es every
-   package whose version isn't on npm yet (needs `npm login`), tagging each `name@version` in git.
-   Push the tags.
+2. Merge it. On every push to `main` with pending changesets, the `Version Packages` workflow
+   ([`release.yml`](.github/workflows/release.yml)) opens or updates a "Version packages" PR. That
+   PR runs `pnpm version-packages`, which folds the changesets into version bumps and
+   `CHANGELOG.md`s (and dependents' ranges, e.g. `@intraspatial/deck` → `intraspatial`). Review it
+   and merge it to cut the release. Running `pnpm version-packages` locally does the same; with
+   nothing pending, `changeset version` (v3) exits 1.
+3. Merging the version PR starts the workflow's `publish` job, which waits for approval on the
+   `npm` environment. Once approved, it runs `pnpm release`, which builds both packages, runs
+   `check:publish`, and `changeset publish`es every package whose version isn't on npm yet. The job
+   then pushes the `name@version` tags and a GitHub Release for each. It authenticates with npm
+   trusted publishing (OIDC), so the repo holds no npm token.
 
-The first publish needs no changeset: both packages are at `0.1.0`, unpublished.
+`pnpm release` still works locally (after `npm login`) as a fallback; push the tags it creates
+(`git push origin --tags`).
+
+One-time setup, outside the repo:
+
+- **GitHub:** Settings → Actions → General → "Allow GitHub Actions to create and approve pull
+  requests". Under Settings → Environments, create `npm` with yourself as a required reviewer.
+- **npm:** for each of `intraspatial` and `@intraspatial/deck`, Settings → Trusted publishing →
+  GitHub Actions: repository `xinaesthete/intraspatial`, workflow `release.yml`, environment `npm`.
+  Once a CI publish has worked, set publishing access to disallow tokens.
+
+`changesets/action@v2` only runs against `@changesets/cli` v3, so bump the two together.
 
 ### Docs & decisions
 
