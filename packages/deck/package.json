@@ -1,6 +1,6 @@
 {
   "name": "@intraspatial/deck",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "type": "module",
   "description": "deck.gl layers over IntraSpatial's GPU compute: density fields drawn on the device that computed them (WebGPU).",
   "license": "MIT",
