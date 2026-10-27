@@ -124,23 +124,24 @@ jobs:
       # reason if it's refused. pnpm only warns ("Skipped OIDC: ...") and publishes with no
       # credentials, and `changeset publish` captures that warning, so all that reaches the log
       # otherwise is "E404 ... PUT https://registry.npmjs.org/<name>". Tokens are masked and the
-      # exchanged token is discarded.
+      # exchanged token is discarded. A passing exchange doesn't prove `npm publish` is allowed:
+      # that is a separate "Allowed actions" permission on the trusted publisher (README).
       - name: Check npm trusted publishing
         run: |
           set -euo pipefail
           id_url=$(node -p 'const u = new URL(process.env.ACTIONS_ID_TOKEN_REQUEST_URL); u.searchParams.set("audience", "npm:registry.npmjs.org"); u.href')
-          id_token=$(curl -fsS -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$id_url" | node -p 'JSON.parse(require("fs").readFileSync(0)).value')
+          id_token=$(curl -fsS --max-time 30 -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$id_url" | node -p 'JSON.parse(require("fs").readFileSync(0)).value')
           echo "::add-mask::$id_token"
           ok=true
           for dir in . packages/deck; do
             name=$(node -p "require('./$dir/package.json').name")
-            status=$(curl -sS -o "$RUNNER_TEMP/exchange.json" -w '%{http_code}' -X POST \
+            status=$(curl -sS --max-time 30 -o "$RUNNER_TEMP/exchange.json" -w '%{http_code}' -X POST \
               -H "Authorization: Bearer $id_token" -H 'Content-Length: 0' \
               "https://registry.npmjs.org/-/npm/v1/oidc/token/exchange/package/${name/\//%2f}")
             # Any 2xx is success (npm documents 201; pnpm checks `response.ok`). A success body
             # holds the unmasked publish token, so only a refusal's body is ever printed.
             if [[ "$status" == 2?? ]]; then
-              echo "$name: trusted publishing OK ($status)"
+              echo "$name: OIDC exchange OK ($status)"
             else
               echo "::error::$name: npm refused the OIDC exchange ($status): $(cat "$RUNNER_TEMP/exchange.json")"
               ok=false
@@ -148,7 +149,7 @@ jobs:
             rm -f "$RUNNER_TEMP/exchange.json"
           done
           [ "$ok" = true ] || {
-            echo "Check each package's trusted publisher on npmjs.com: xinaesthete / intraspatial / release.yml / environment npm (case-sensitive)."
+            echo "Check each package's trusted publisher on npmjs.com: xinaesthete / intraspatial / release.yml / environment npm (case-sensitive), with npm publish allowed."
             exit 1
           }
 
