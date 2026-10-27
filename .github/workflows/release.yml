@@ -137,8 +137,10 @@ jobs:
             status=$(curl -sS -o "$RUNNER_TEMP/exchange.json" -w '%{http_code}' -X POST \
               -H "Authorization: Bearer $id_token" -H 'Content-Length: 0' \
               "https://registry.npmjs.org/-/npm/v1/oidc/token/exchange/package/${name/\//%2f}")
-            if [ "$status" = 200 ]; then
-              echo "$name: trusted publishing OK"
+            # Any 2xx is success (npm documents 201; pnpm checks `response.ok`). A success body
+            # holds the unmasked publish token, so only a refusal's body is ever printed.
+            if [[ "$status" == 2?? ]]; then
+              echo "$name: trusted publishing OK ($status)"
             else
               echo "::error::$name: npm refused the OIDC exchange ($status): $(cat "$RUNNER_TEMP/exchange.json")"
               ok=false
