@@ -161,14 +161,24 @@ docs-site are private. Versions and changelogs are managed by [Changesets](https
    `CHANGELOG.md`s (and dependents' ranges, e.g. `@intraspatial/deck` → `intraspatial`). Review it
    and merge it to cut the release. Running `pnpm version-packages` locally does the same; with
    nothing pending, `changeset version` (v3) exits 1.
-3. Publishing is manual: CI holds no npm token. From a clean checkout of the merged version
-   commit, `pnpm release` builds both packages, runs `check:publish`, and `changeset publish`es
-   every package whose version isn't on npm yet (needs `npm login`), tagging each `name@version` in
-   git. Push the tags (`git push origin --tags`).
+3. Merging the version PR starts the workflow's `publish` job, which waits for approval on the
+   `npm` environment. Once approved, it runs `pnpm release`, which builds both packages, runs
+   `check:publish`, and `changeset publish`es every package whose version isn't on npm yet. The job
+   then pushes the `name@version` tags and a GitHub Release for each. It authenticates with npm
+   trusted publishing (OIDC), so the repo holds no npm token.
 
-The workflow needs the repository setting "Allow GitHub Actions to create and approve pull
-requests" (Settings → Actions → General). `changesets/action@v2` only runs against
-`@changesets/cli` v3, so bump the two together.
+`pnpm release` still works locally (after `npm login`) as a fallback; push the tags it creates
+(`git push origin --tags`).
+
+One-time setup, outside the repo:
+
+- **GitHub:** Settings → Actions → General → "Allow GitHub Actions to create and approve pull
+  requests". Under Settings → Environments, create `npm` with yourself as a required reviewer.
+- **npm:** for each of `intraspatial` and `@intraspatial/deck`, Settings → Trusted publishing →
+  GitHub Actions: repository `xinaesthete/intraspatial`, workflow `release.yml`, environment `npm`.
+  Once a CI publish has worked, set publishing access to disallow tokens.
+
+`changesets/action@v2` only runs against `@changesets/cli` v3, so bump the two together.
 
 ### Docs & decisions
 

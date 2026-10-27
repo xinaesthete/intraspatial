@@ -1,28 +1,36 @@
 name: Version Packages
 
-# Opens (or updates) the "Version packages" PR whenever main has pending changesets. Merging that
-# PR is the version bump; publishing stays manual (`pnpm release`, see "Releasing" in README.md),
-# so there is no npm token in this repo and no `publish-script` here.
+# Two halves, both driven by changesets/action:
+#
+# - `version`: whenever main has pending changesets, opens (or updates) the "Version packages" PR.
+#   Merging that PR is the version bump.
+# - `publish`: once main carries a version that isn't on npm yet (i.e. that PR was merged), waits
+#   for approval on the `npm` environment, then runs `pnpm release` and pushes the tags and GitHub
+#   Releases. It authenticates by npm trusted publishing (OIDC): there is no npm token anywhere in
+#   this repo. See "Releasing" in README.md for the one-time npm and GitHub setup.
 on:
   push:
     branches: [main]
   workflow_dispatch:
 
-# Pushes the version branch and opens the PR. Also needs the repo setting "Allow GitHub Actions
-# to create and approve pull requests" (Settings → Actions → General).
 permissions:
-  contents: write
-  pull-requests: write
-
-# Two quick merges must not race to rewrite the same version branch; let each run finish.
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: false
+  contents: read
 
 jobs:
   version:
     name: Create or update the version PR
     runs-on: ubuntu-latest
+    # Pushes the version branch and opens the PR. Also needs the repo setting "Allow GitHub
+    # Actions to create and approve pull requests" (Settings → Actions → General).
+    permissions:
+      contents: write
+      pull-requests: write
+    # Two quick merges must not race to rewrite the same version branch; let each run finish.
+    concurrency:
+      group: release-version-${{ github.ref }}
+      cancel-in-progress: false
+    outputs:
+      unpublished: ${{ steps.npm.outputs.unpublished }}
     steps:
       - uses: actions/checkout@v5
 
@@ -37,8 +45,63 @@ jobs:
       # input names below; v1's `version` / `title` / `commit` would be silently ignored. Move
       # the action's major and the root `@changesets/cli` devDependency together.
       # With no pending changesets it skips the version script and does nothing.
-      - uses: changesets/action@v2
+      - id: changesets
+        uses: changesets/action@v2
         with:
           version-script: pnpm version-packages
           pr-title: Version packages
           commit-message: Version packages
+
+      # Decides whether `publish` runs, so that a push with nothing to release doesn't sit waiting
+      # for an approval. Only meaningful once no changesets are pending: until then, main's
+      # versions are the already-published ones.
+      - id: npm
+        if: steps.changesets.outputs.has-changesets == 'false'
+        run: |
+          set -euo pipefail
+          unpublished=false
+          for dir in . packages/deck; do
+            name=$(node -p "require('./$dir/package.json').name")
+            version=$(node -p "require('./$dir/package.json').version")
+            if [ "$(npm view "$name@$version" version 2>/dev/null || true)" != "$version" ]; then
+              echo "$name@$version is not on npm"
+              unpublished=true
+            fi
+          done
+          echo "unpublished=$unpublished" >> "$GITHUB_OUTPUT"
+
+  publish:
+    name: Publish to npm
+    needs: version
+    if: needs.version.outputs.unpublished == 'true'
+    runs-on: ubuntu-latest
+    # Required reviewers on this environment are the human checkpoint before anything reaches npm.
+    # The npm trusted-publisher entries name this workflow file and this environment.
+    environment:
+      name: npm
+      url: https://www.npmjs.com/package/intraspatial
+    permissions:
+      # Tags and GitHub Releases.
+      contents: write
+      # The OIDC token npm exchanges for a short-lived publish credential.
+      id-token: write
+    # Never two publishes at once; never cancel one in flight.
+    concurrency:
+      group: release-publish
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v5
+
+      # No `registry-url`: that writes an .npmrc with a NODE_AUTH_TOKEN placeholder, and the
+      # OIDC exchange needs no token. pnpm 11 performs the exchange itself.
+      - uses: voidzero-dev/setup-vp@v1.22.0
+        with:
+          node-version-file: .node-version
+          cache: true
+
+      # With no changesets pending, the action goes straight to `publish-script`: `pnpm release`
+      # builds both packages, runs check:publish, and `changeset publish`es whatever isn't on npm.
+      # The action then pushes the `name@version` tags and creates a GitHub Release for each.
+      - uses: changesets/action@v2
+        with:
+          publish-script: pnpm release
