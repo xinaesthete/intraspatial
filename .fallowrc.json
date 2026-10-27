@@ -19,6 +19,10 @@
   "dynamicallyLoaded": ["playground/src/datasource/htj2kWorkerPool.ts"],
 
   "duplicates": { "minOccurrences": 3 },
+  // Complexity/CRAP skip `scripts/`: one-off CLI tooling with no test coverage, so fallow's CRAP
+  // is just a branch count (it assumes zero coverage) and flags short linear functions. Dead code,
+  // unresolved imports and unused dependencies still cover these files.
+  "health": { "ignore": ["scripts/**"] },
   "rules": {
     "unused-dependencies": "warn"
   },
