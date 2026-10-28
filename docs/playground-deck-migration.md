@@ -14,6 +14,17 @@ layers we write here are the ones that later move into `@intraspatial/deck` for 
 layer must not read `res.resident` (the next `gramMatrixGpu`, or a null-envelope run, overwrites it);
 it reads a per-result snapshot (`modes/gramSnapshots.ts`).
 
+MDV has no pattern for several Decks sharing a device. Each chart creates its own Deck, which gets its
+own WebGL device, and none passes `device` or `deviceProps`. Its one external-resource case,
+`ImageArray`, is WebGL-only: it gets the same GL context by calling `getContext` on the same canvas.
+So a page with several views (serial sections, linked charts) needs one Deck with several deck
+`views`, or a library that supports more than one device. That is an open question, not decided
+here.
+
+A store need not have a `global` coordinate system (mibitof has one system per field of view). The
+page picks the system and offers only the images in it: sd.js draws nothing for an image outside
+the view's system, so `SpatialDeckView` would never frame.
+
 ## Order
 
 | # | Demo | Size | Why this order |

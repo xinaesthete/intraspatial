@@ -69,6 +69,7 @@ export function CellModes() {
   const [span, setSpan] = useState(1.2);
   const [opacity, setOpacity] = useState(0.8);
   const [imageName, setImageName] = useState<string>();
+  const [systemChoice, setSystem] = useState<string>();
   const [sims, setSims] = useState(99);
   const [envelope, setEnvelope] = useState<{ generation: number; result: SpectrumEnvelopeResult }>();
   const [envProgress, setEnvProgress] = useState<string>();
@@ -86,11 +87,18 @@ export function CellModes() {
   const usable = useMemo(() => (tables.value ?? []).filter((t) => t.hasCentroids), [tables.value]);
   const tableEl = tableName ?? usable[0]?.name;
   const tableInfo = usable.find((t) => t.name === tableEl);
-  const system = defaultSystem(sd.value);
+  // A store with no `global` (mibitof: one system per field of view) needs the system chosen, and
+  // only the images in it offered — sd.js draws nothing for an image outside the view's system.
+  const systems = sd.value?.coordinateSystems ?? [];
+  const system = systemChoice ?? defaultSystem(sd.value);
   const base = useCellTable(sd.value, tableEl, system);
   const catalog = useVarCatalog(sd.value, tableEl);
-  const imageNames = useAsync(() => (sd.value ? listImageElements(sd.value) : undefined), [sd.value], sd.value);
-  const imageEl = imageName === NO_IMAGE ? undefined : (imageName ?? imageNames.value?.[0]);
+  const allImages = useAsync(() => (sd.value ? listImageElements(sd.value) : undefined), [sd.value], sd.value);
+  const imageNames = useMemo(
+    () => (allImages.value ?? []).filter((n) => !system || (sd.value?.images?.[n]?.coordinateSystems.includes(system) ?? false)),
+    [allImages.value, sd.value, system],
+  );
+  const imageEl = imageName === NO_IMAGE ? undefined : (imageName ?? imageNames[0]);
 
   const obsColumns = useMemo(() => usableObsColumns(tableInfo?.columns), [tableInfo]);
   // A store with no annotation has only X to offer, whatever tab was last chosen.
@@ -205,6 +213,7 @@ export function CellModes() {
     setVars([]);
     setRangeUm(undefined);
     setImageName(undefined);
+    setSystem(undefined);
     setViewport(undefined);
   };
   const chooseTable = (name: string) => {
@@ -279,10 +288,26 @@ export function CellModes() {
             applied={vars}
             onApply={setVars}
           />
+          {systems.length > 1 && (
+            <label>
+              Coordinate system
+              <select
+                value={system ?? ""}
+                onChange={(e) => {
+                  setSystem(e.target.value);
+                  setImageName(undefined);
+                }}
+              >
+                {systems.map((n) => (
+                  <option key={n}>{n}</option>
+                ))}
+              </select>
+            </label>
+          )}
           <label>
             Image
             <select value={imageEl ?? NO_IMAGE} onChange={(e) => setImageName(e.target.value)}>
-              {(imageNames.value ?? []).map((n) => (
+              {imageNames.map((n) => (
                 <option key={n}>{n}</option>
               ))}
               <option value={NO_IMAGE}>(none)</option>
