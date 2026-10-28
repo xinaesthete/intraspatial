@@ -10,7 +10,7 @@
 
 import { PathLayer } from "@deck.gl/layers";
 import { Matrix4 } from "@math.gl/core";
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { clampWindow, type Rect } from "../../../src/datasource/points";
 import { type ModeBasis, modeBasis } from "../../../src/gpu/spatial/gramModes";
 import { type CoLocationModes, radiusToCover } from "../../../src/spatial/gram";
@@ -21,6 +21,8 @@ import { SpatialDeckView } from "../deck/SpatialDeckView";
 import { SHARED_DEVICE_PROPS, useSharedDevice } from "../deck/useSharedDevice";
 import { useAsync, useSettled } from "../hooks/useAsync";
 import { usePointsSource, usePointsTiles, useSpatialData } from "../hooks/useSpatialData";
+import { BoundaryLayer } from "./BoundaryLayer";
+import { type BoundaryField, boundaryStrength, laplacianCell, openCell, ppcaMetric, ridgeCell, ridges } from "./boundaryStrength";
 import { ChannelPicker } from "./ChannelPicker";
 import { buildChannels, NEGATIVE_CONTROLS, type Selection, STARTER_SETS } from "./channelModel";
 import { Explain } from "./Explain";
@@ -86,10 +88,16 @@ export function TranscriptModes() {
   const [lock, setLock] = useState<ModeLock>();
 
   const device = useSharedDevice();
+  // PROTOTYPE: a click seeds the ridge-bounded cell. Through a ref, so deck's props stay stable.
+  const onMapClick = useRef<(x: number, y: number) => void>(undefined);
   const deckProps = useMemo(
     () => ({ deviceProps: SHARED_DEVICE_PROPS, onDeviceInitialized: device.onDeviceInitialized }),
     [device.onDeviceInitialized],
   );
+  const onClick = useCallback((info: { coordinate?: number[] }) => {
+    const [x, y] = info.coordinate ?? [];
+    if (x !== undefined && y !== undefined) onMapClick.current?.(x, y);
+  }, []);
 
   const sd = useSpatialData(storeUrl);
   const pointsNames = useMemo(() => (sd.value ? listPointsElements(sd.value) : []), [sd.value]);
@@ -156,6 +164,72 @@ export function TranscriptModes() {
   const modes = locked?.modes ?? g?.modes;
   const toggleLock = (on: boolean) => setLock(on && g ? { basis: modeBasis(g.res), modes: g.modes, window: g.window } : undefined);
 
+  // PROTOTYPE (docs/wand-metric-and-regions.md, experiment 1): boundary strength in the PPCA metric.
+  const [showBounds, setShowBounds] = useState(false);
+  const [mainModes, setMainModes] = useState(3);
+  const [residualWeight, setResidualWeight] = useState(0);
+  /** σ, in kernel radii, of the blur the modes after q are differentiated through. */
+  const [residualSmooth, setResidualSmooth] = useState(0);
+  /** Undefined = follow the window's 90th percentile. */
+  const [theta, setTheta] = useState<number>();
+  const [bounds, setBounds] = useState<{ field: BoundaryField; sigma2: number; q: number; version: number; generation: number }>();
+  const boundsChain = useRef(Promise.resolve());
+  const boundsVersion = useRef(0);
+  useEffect(() => {
+    if (!showBounds || !g || !modes) return;
+    const K = g.res.labels.length;
+    const q = Math.min(mainModes, K);
+    const { A, sigma2 } = ppcaMetric(modes.vectors, modes.values, K, q, residualWeight);
+    const sd = locked?.basis.sd ?? g.res.resident.sd;
+    const mean = locked?.basis.mean ?? g.res.resident.mean;
+    // One at a time: the strength buffers are shared between calls.
+    boundsChain.current = boundsChain.current
+      .then(() => boundaryStrength(g.res, g.rasters, mean, sd, A, g.radius, q, residualSmooth))
+      .then((field) => setBounds({ field, sigma2, q, version: ++boundsVersion.current, generation: g.generation }))
+      .catch((err: unknown) => console.error("boundary strength", err));
+  }, [showBounds, g, modes, locked, mainModes, residualWeight, residualSmooth]);
+  const boundsNow = showBounds && bounds && g && bounds.generation === g.generation ? bounds : undefined;
+  const thetaNow = theta ?? boundsNow?.field.quantiles.p90 ?? 1;
+  const [boundLines, setBoundLines] = useState(true);
+  /** A click on the map, in the transcripts' frame: the seed of the ridge-bounded cell. */
+  const [cellSeed, setCellSeed] = useState<readonly [number, number]>();
+  /** How the clicked cell is bounded: the Laplacian of the wand distance, or the ridge lines. */
+  const [cellRule, setCellRule] = useState<"laplacian" | "ridges">("laplacian");
+  /** σ, in kernel radii, of the smoothing on d before its Laplacian (Marr–Hildreth's σ, on top of r). */
+  const [dSmooth, setDSmooth] = useState(1);
+  /** Also stop where d exceeds this; 0 = off. */
+  const [cellTol, setCellTol] = useState(0);
+  /** Opening radius, in kernel radii: parts of the cell narrower than this are dropped; 0 = off. */
+  const [cellOpen, setCellOpen] = useState(0);
+  const cell = useMemo(() => {
+    if (!boundsNow || !g || !cellSeed) return undefined;
+    const { width, height, bbox } = g.res;
+    const [minX, minY, maxX, maxY] = bbox;
+    const col = ((cellSeed[0] - minX) / (maxX - minX)) * width - 0.5;
+    const row = ((maxY - cellSeed[1]) / (maxY - minY)) * height - 0.5;
+    if (col < -0.5 || row < -0.5 || col > width - 0.5 || row > height - 0.5) return undefined;
+    let inside: Uint8Array;
+    let dEdge: number | undefined;
+    let gated: number | undefined;
+    let moved = false;
+    if (cellRule === "laplacian") {
+      ({ mask: inside, dEdge, gated } = laplacianCell(boundsNow.field, width, height, { col, row }, dSmooth, cellTol));
+      ({ mask: inside, moved } = openCell(inside, width, height, { col, row }, cellOpen * boundsNow.field.perR));
+    } else {
+      inside = ridgeCell(ridges(boundsNow.field.field, width, height, thetaNow), width, height, { col, row });
+    }
+    let count = 0;
+    for (const v of inside) count += v;
+    return { mask: Float32Array.from(inside), count, total: width * height, dEdge, gated, moved };
+  }, [boundsNow, g, cellSeed, thetaNow, cellRule, dSmooth, cellTol, cellOpen]);
+  useEffect(() => {
+    onMapClick.current = (x, y) => {
+      if (!showBounds || !toElement) return;
+      const m = toElement;
+      setCellSeed([m.a * x + m.c * y + m.tx, m.b * x + m.d * y + m.ty]);
+    };
+  }, [showBounds, toElement]);
+
   const layers = useMemo(
     () =>
       g && modelMatrix
@@ -172,6 +246,23 @@ export function TranscriptModes() {
               modelMatrix,
               pickable: false,
             }),
+            ...(boundsNow
+              ? [
+                  new BoundaryLayer({
+                    id: "gram-boundary",
+                    strength: boundsNow.field.buffer,
+                    version: boundsNow.version,
+                    bbox: g.res.bbox,
+                    width: g.res.width,
+                    height: g.res.height,
+                    theta: thetaNow,
+                    lines: boundLines,
+                    cell: cell?.mask ?? null,
+                    modelMatrix,
+                    pickable: false,
+                  }),
+                ]
+              : []),
             new PathLayer<{ path: [number, number][] }>({
               id: "gram-window",
               data: [{ path: outline(g.window) }],
@@ -199,7 +290,7 @@ export function TranscriptModes() {
               : []),
           ]
         : [],
-    [g, locked, modelMatrix, saturate, chromaWeight, opacity],
+    [g, locked, modelMatrix, saturate, chromaWeight, opacity, boundsNow, thetaNow, boundLines, cell],
   );
 
   const error = sd.error ?? source.error ?? tiles.error ?? gram.error;
@@ -344,6 +435,105 @@ export function TranscriptModes() {
             Map over image
             <input type="range" min={0} max={1} step={0.05} value={opacity} onChange={(e) => setOpacity(Number(e.target.value))} />
           </label>
+          <div className="picker">
+            <div className="picker-head">Boundaries (prototype): where the mixture of genes changes fastest</div>
+            <label className="check">
+              <input type="checkbox" checked={showBounds} onChange={(e) => setShowBounds(e.target.checked)} />
+              Show boundaries (then click the map to fill the cell the boundaries enclose)
+            </label>
+            <label className="check">
+              <input type="checkbox" checked={boundLines} onChange={(e) => setBoundLines(e.target.checked)} />
+              As thin lines (off: every place above θ)
+            </label>
+            <label>
+              Bound the clicked cell by
+              <select value={cellRule} onChange={(e) => setCellRule(e.target.value === "ridges" ? "ridges" : "laplacian")}>
+                <option value="laplacian">where the difference from the click stops speeding up (∇²d = 0)</option>
+                <option value="ridges">the boundary lines above θ</option>
+              </select>
+            </label>
+            <label>
+              Smooth the difference first (σ, in r): {dSmooth.toFixed(2)}
+              <input type="range" min={0} max={3} step={0.1} value={dSmooth} onChange={(e) => setDSmooth(Number(e.target.value))} />
+            </label>
+            <label>
+              …and no further than this difference (tolerance): {cellTol > 0 ? cellTol.toFixed(2) : "off"}
+              <input type="range" min={0} max={6} step={0.1} value={cellTol} onChange={(e) => setCellTol(Number(e.target.value))} />
+            </label>
+            <label>
+              Drop parts narrower than (in r): {cellOpen > 0 ? cellOpen.toFixed(2) : "off"}
+              <input type="range" min={0} max={4} step={0.1} value={cellOpen} onChange={(e) => setCellOpen(Number(e.target.value))} />
+            </label>
+            {cellSeed && (
+              <button type="button" onClick={() => setCellSeed(undefined)}>
+                clear the cell
+              </button>
+            )}
+            <label>
+              Main modes (q): {Math.min(mainModes, g?.res.labels.length ?? mainModes)}
+              {g && mainModes >= g.res.labels.length ? " = every mode" : ""}
+              <input
+                type="range"
+                min={1}
+                max={g?.res.labels.length ?? 32}
+                step={1}
+                value={mainModes}
+                onChange={(e) => setMainModes(Number(e.target.value))}
+              />
+            </label>
+            <label>
+              Count what the main modes leave out (w): {residualWeight.toFixed(2)}
+              <input
+                type="range"
+                min={0}
+                max={1}
+                step={0.05}
+                value={residualWeight}
+                onChange={(e) => setResidualWeight(Number(e.target.value))}
+              />
+            </label>
+            <label>
+              Smooth what they leave out first (σ, in r): {residualSmooth.toFixed(2)}
+              <input
+                type="range"
+                min={0}
+                max={3}
+                step={0.1}
+                value={residualSmooth}
+                onChange={(e) => setResidualSmooth(Number(e.target.value))}
+              />
+            </label>
+            <label>
+              Boundary strength (θ): {thetaNow.toPrecision(3)}
+              {theta === undefined ? " (this window's 90th percentile)" : ""}
+              <input
+                type="range"
+                min={0}
+                max={boundsNow ? boundsNow.field.quantiles.max : 10}
+                step={(boundsNow?.field.quantiles.max ?? 10) / 200}
+                value={thetaNow}
+                onChange={(e) => setTheta(Number(e.target.value))}
+              />
+            </label>
+            {theta !== undefined && (
+              <button type="button" onClick={() => setTheta(undefined)}>
+                follow the 90th percentile
+              </button>
+            )}
+            {boundsNow && (
+              <p className="hint">
+                Strength per radius r: median {boundsNow.field.quantiles.p50.toPrecision(3)} · 90%{" "}
+                {boundsNow.field.quantiles.p90.toPrecision(3)} · 99% {boundsNow.field.quantiles.p99.toPrecision(3)} · max{" "}
+                {boundsNow.field.quantiles.max.toPrecision(3)}
+                {cell
+                  ? ` · cell: ${cell.count.toLocaleString()} of ${cell.total.toLocaleString()} map pixels (${((100 * cell.count) / cell.total).toFixed(1)}%)${cell.dEdge !== undefined ? `, d at its edge ≈ ${cell.dEdge.toFixed(2)}${cell.gated ? `, ${(100 * cell.gated).toFixed(0)}% of the edge set by the tolerance` : ""}${cell.moved ? ", the click was on a dropped branch: showing the nearest piece" : ""}` : ""}`
+                  : ""}
+                {boundsNow.q < (g?.res.labels.length ?? 0)
+                  ? ` · noise floor σ² ${boundsNow.sigma2.toPrecision(3)} (λ₁ ${modes?.values[0]?.toPrecision(3)})`
+                  : ""}
+              </p>
+            )}
+          </div>
           {source.value && (
             <ChannelPicker features={source.value.features} selection={selection} onChange={setSelection} missing={built.missing} />
           )}
@@ -360,6 +550,7 @@ export function TranscriptModes() {
             layers={layers}
             deckProps={deckProps}
             onViewport={setViewport}
+            onClick={onClick}
             fallbackBounds={fallbackBounds}
           />
           <p className="status">
@@ -453,6 +644,16 @@ export function TranscriptModes() {
               ground already seen is fast. Turn off "follow the view" to keep one window while you look around it. Each mode's sign is kept
               consistent between windows so colours do not flip for no reason — but if two modes swap order, the colours change, and that
               change is real.
+            </Explain>
+            <Explain
+              title="What do the boundaries show? (prototype)"
+              math={String.raw`u = A z,\quad A_k = \begin{cases} v_k^\top/\sqrt{\lambda_k} & k \le q \\ \sqrt{w}\, v_k^\top/\sigma & k > q \end{cases},\quad \sigma^2 = \overline{\lambda_{k>q}},\qquad \text{strength} = r\,\sqrt{\lambda_{\max}\!\big(\textstyle\sum_k \nabla u_k \nabla u_k^\top\big)}`}
+            >
+              How fast the mixture of genes changes at each place, in the direction it changes fastest, measured the way the wand measures
+              difference. 1 means "one typical spread of difference across one radius". The <b>main modes</b> count in their own spread. The
+              rest are counted at the noise level, scaled by <b>w</b>: at 0 they are ignored (only what the colours show), at 1 they count
+              as much as noise does. Setting q to every mode is the old "full Mahalanobis" metric, where the faintest modes count most.
+              Amber marks places at or above θ, where a wand patch bounded by edges would stop. White shows weaker change.
             </Explain>
             <Explain title="What is the quality filter?">
               Every molecule has a quality score, qv. At 20, the chance that it was read as the wrong gene is about 1 in 100. Molecules

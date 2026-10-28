@@ -25,6 +25,9 @@ interface Props {
   readonly deckProps?: object;
   /** The visible rectangle in the canvas's world frame, whenever the view or its size changes. */
   readonly onViewport?: (r: Rect) => void;
+  /** A click on the canvas, with the world-frame coordinate under it. Not in `deckProps`: the
+   *  viewer sets deck's `onClick` from its own prop, which would override one there. */
+  readonly onClick?: (info: { coordinate?: number[] }) => void;
   /** What to frame when no sd.js layer has bounds — e.g. a store with no image — in the world frame. */
   readonly fallbackBounds?: Rect;
   readonly className?: string;
@@ -48,7 +51,17 @@ function useImageInputs(image: string | undefined) {
   }, [image]);
 }
 
-export function SpatialDeckView({ sdata, coordinateSystem, image, layers, deckProps, onViewport, fallbackBounds, className }: Props) {
+export function SpatialDeckView({
+  sdata,
+  coordinateSystem,
+  image,
+  layers,
+  deckProps,
+  onViewport,
+  onClick,
+  fallbackBounds,
+  className,
+}: Props) {
   const box = useRef<HTMLDivElement>(null);
   const { width, height } = useElementSize(box);
   const [viewState, setViewState] = useState<ViewState | null>(null);
@@ -115,6 +128,7 @@ export function SpatialDeckView({ sdata, coordinateSystem, image, layers, deckPr
           layerOrder={renderer.layerOrder}
           vivLayerProps={renderer.vivLayerProps.length > 0 ? renderer.vivLayerProps : undefined}
           deckProps={deckProps}
+          onClick={onClick}
         />
       ) : (
         <p className="status">{isBlocking ? "Loading image…" : "Framing view…"}</p>
