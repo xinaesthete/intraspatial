@@ -143,7 +143,9 @@ export function TranscriptModes() {
     [selection, source.value],
   );
   // No compute until deck's device is ours: resources made on another device could not be drawn.
-  const channels = device.ready ? built.channels : [];
+  // Memoised by hand (no React Compiler here): a fresh `[]` each render is a new dep for the Gram,
+  // which reruns, sets state, renders…
+  const channels = useMemo(() => (device.ready ? built.channels : []), [device.ready, built.channels]);
   // Scoped to the source: a result stands in for the next only while it is about the same transcripts.
   const gram = useTranscriptGram(tiles.value, channels, { radius: rEff, qvMin: qvApplied, rasterSide, halfRasters }, source.value);
   const g = gram.value;
