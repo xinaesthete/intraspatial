@@ -10,7 +10,7 @@ Three scripts in `package.json`, one config file, three baselines.
 
 | Command | When | What it does |
 | --- | --- | --- |
-| `pnpm lint:fallow` (`fallow audit --base main`) | every PR | The gate. `audit.gate: "new-only"` means only findings a changeset *introduces* fail it; inherited findings are reported with attribution but do not block. Exit 0 on a branch that adds no new dead code. |
+| `pnpm lint:fallow` (`scripts/fallow-gate.mjs`, over `fallow audit --base main`) | every PR | The gate. Fails only on dead code a changeset *introduces*. Introduced complexity and duplication are warnings, never failures: with no coverage data fallow's CRAP is CC² + CC, so any five-branch function would fail. Inherited findings are counted in the job summary, not annotated. |
 | `pnpm fallow:baseline` | after a cleanup PR lands | Re-saves `.fallow-baseline/{dead-code,health,dupes}.json`. Whole-repo runs (`pnpm fallow:report`) then report deltas against those, so the noise floor stays at zero and a regression is visible. |
 | `pnpm fallow:report` | ad hoc | `fallow dead-code` + `fallow health --hotspots --targets`, the full picture this note is drawn from. |
 

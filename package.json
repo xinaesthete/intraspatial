@@ -37,7 +37,7 @@
     "lint": "vp lint",
     "lint:fix": "vp lint --fix",
     "lint:types": "node scripts/guarded.mjs -- vp lint --type-aware src test packages",
-    "lint:fallow": "fallow audit --base main",
+    "lint:fallow": "node scripts/fallow-gate.mjs main",
     "fallow:report": "fallow dead-code && fallow health --hotspots --targets",
     "fallow:baseline": "fallow dead-code --save-baseline .fallow-baseline/dead-code.json; fallow health --save-baseline .fallow-baseline/health.json; fallow dupes --save-baseline .fallow-baseline/dupes.json; echo baselines saved",
     "format": "vp fmt",
