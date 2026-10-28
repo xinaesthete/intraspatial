@@ -1,8 +1,9 @@
 # Statistics on arbitrarily shaped domains
 
 Status: **design note** (2026-10-27). **Slice 1 is built** (2026-10-28): `src/spatial/domain.ts`,
-threaded through `crossPCF`, `crossPCFMatrixBinned` and `crossPCFBinMembership`. Slices 2–4 are
-not. Every error number below comes from `pnpm bench:domain-mask --all`
+threaded through `crossPCF`, `crossPCFMatrixBinned` and `crossPCFBinMembership`. So are masks taken
+from density fields and the Gram wand, with their selection bias measured (see "Masks from the
+data"). Slices 2–4 are not. Every error number below comes from `pnpm bench:domain-mask --all`
 (`scripts/bench-domain-mask.ts`).
 
 ## Decision
@@ -106,6 +107,68 @@ weights, TCM and highlights honest.
 - The ~0.6% scatter in bin `[0,10)` on the disk is sampling noise, from few pairs at short range.
   It is not a trend.
 
+## Masks from the data
+
+**Decision:** any raster can become a mask with `maskWhere(field, keep, { derivedFrom })`. That
+covers a density field, a mode projection, or the Gram wand's `similarityField` ("places like this
+one"). `derivedFrom` names the types whose cells built the field. `crossPCFMatrixBinned` then flags
+every pair with *both* members in it as `confounded`, because those g values are biased.
+`pnpm bench:domain-selection` reproduces everything below.
+
+**Why: a mask chosen by the cells is not a drawn ROI.** The test patterns use three mutually
+independent types A, B and C, so every cross-g is truly 1. Every mask keeps about 40% of the window,
+and the domain-aware estimator corrects the mask's geometry exactly, so whatever bias remains is
+selection. These are the independently clustered patterns (σ 30, 120 parents per type), bin
+`[10,20)`, 20 realisations, ± 2 SE:
+
+| mask                                 | g_AB (truth 1)  | g_AC (truth 1)  | g_AA          | flagged     |
+| ------------------------------------ | --------------- | --------------- | ------------- | ----------- |
+| window, no mask (baseline)           | 0.980 ± 0.032   | 0.972 ± 0.026   | 2.07 ± 0.08   | —           |
+| density of all cells, top 40%        | **0.838 ± 0.026** | **0.832 ± 0.024** | 1.64 ± 0.06 | all pairs   |
+| density of A                         | 0.976 ± 0.019   | 0.990 ± 0.026   | 1.25 ± 0.02   | AA only     |
+| density of C (independent of A, B)   | 0.997 ± 0.052   | 1.015 ± 0.022   | 2.09 ± 0.09   | none of these |
+| wand at a spot rich in both A and B  | **0.845 ± 0.051** | 0.994 ± 0.037 | 1.33 ± 0.08   | all pairs   |
+| wand at a random spot                | 1.045 ± 0.050   | 1.017 ± 0.045   | 1.40 ± 0.10   | all pairs   |
+| density of all but B                 | 0.965 ± 0.040   | **0.769 ± 0.022** | 1.52 ± 0.04 | AC, AA      |
+| wand at the A+B spot, B's channel left out | 0.979 ± 0.022 | 0.985 ± 0.035 | 1.15 ± 0.04 | AC, AA     |
+| thinned 50/50: density of all        | **0.862 ± 0.036** | **0.842 ± 0.040** | 1.67 ± 0.07 | —         |
+| thinned 50/50: wand at the A+B spot  | **0.887 ± 0.055** | 0.977 ± 0.056 | 1.52 ± 0.10   | —           |
+
+The other two bins agree to within a few percent. The "flagged" column shows what the
+`confounded` flag reports for each mask, given its `derivedFrom`.
+
+- **A mask built from both members of a pair biases that pair's g low, by 14–23% here.** A mask cut
+  from "where A or B is dense" includes A-territory and B-territory but drops the background where
+  both are sparse. Inside it, independent types look segregated relative to the mask's own average
+  density. That is a false "avoidance" result, and it is the flag's reason for existing.
+- **A mask that never saw B's cells leaves g_AB unbiased** (the "density of A", "density of C" and
+  "B left out" rows). The reason: for any fixed A and mask, independent B cells land in each
+  anchor's clipped annulus at exactly the rate the edge correction expects.
+  - Leaving out the anchor type A instead of B is weaker. "Density of C" reads g_AC 2–4% high at
+    `[20,30)` in both pattern sets.
+  - For this reason `confounded` flags only pairs with both members in `derivedFrom`; it does not
+    flag the weaker one-sided case.
+- **An auto-g measured inside a mask built from that type answers a different question.** g_AA
+  falls from 2.07 to 1.25 under "density of A": this is clustering *relative to A's own territory*.
+  That is legitimate if it's the question being asked. It is flagged so it isn't mistaken for the
+  window-wide value.
+- **Splitting cells into halves only rescues random (Poisson) patterns.** On CSR, every thinned row
+  is within noise of 1, because thinning a Poisson process gives independent halves. On clustered
+  patterns the two halves share cluster centres, so the mask still knows where the other half's
+  clusters are (0.86–0.89). It is not offered as a fix.
+- **On CSR every effect is smaller**: cross-g within ±5%, and auto-g down to 0.75 under the
+  random-spot wand. Weak spatial structure is no protection, though, because tissue is rarely CSR.
+- **The flag is conservative.** The random-spot wand reads close to 1 here but is still flagged:
+  "both members built this mask" means "not guaranteed", not "measured biased".
+
+**Practical rule:** to ask about A–B association inside "regions like this", build the
+region from channels that exclude B. For the wand, leave B's channel out of the similarity. Pass
+`derivedFrom` so the matrix flags the pairs that can't be read.
+
+**Explainer candidate:** why "where A or B is dense" makes independent types look segregated. Draw
+A's and B's clusters on a background, then the union mask, then the same cells measured against the
+mask's average density.
+
 ## Interface (built)
 
 ```ts
@@ -117,7 +180,21 @@ domainArea(d): number
 domainContains(d, x, y): boolean
 domainAnnulusAreasInto(out, d, x, y, dr, nBins): void   // rect → existing annulusAreasInto
 inverseAnnulusAreas(d, rMax, nBins): (x, y) => Float64Array   // 1/A_k, with the interior fast path
+maskWhere(field, keep, { derivedFrom? }): MaskDomain     // any ScalarField-convention raster
+
+// gram.ts — the wand on the CPU, the twin of similarityWgsl.ts's sampleWhitened().w
+pixelZ(gram, col, row): Float64Array                      // reference from a pixel
+similarityField(gram, whiteningMatrix(...), m, zRef): Float64Array   // d at every window pixel
 ```
+
+- **Build fields over the observation window.** `maskWhere` takes the field's `bbox` as the domain's,
+  so a field padded past the window (`gaussianKdeField`'s default) can mark unobserved ground as
+  inside. That is the loose-boundary bias of source 4.
+- **`whiteningMatrix` and `standardise` moved from `gpu/spatial/gramTerrain.ts` to `gram.ts`**, so
+  the CPU and GPU wands share one definition. `gramTerrain` re-exports them.
+- **`similarityField` is checked against a direct solve of corr·x = Δz**, not against the GPU.
+  CPU/GPU parity at the level set is unchecked: a mask from the CPU field and the outline from the
+  GPU field can disagree by f32 rounding for pixels right at `d = tolerance`.
 
 - **The mask uses the `ScalarField` raster convention:** row-major, row 0 at the top (maxY), and
   pixels need not be square. Non-zero means inside.

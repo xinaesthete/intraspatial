@@ -40,6 +40,11 @@ export interface MaskDomain {
   readonly height: number;
   /** Row-major, row 0 = top (maxY). Non-zero = inside. */
   readonly data: Uint8Array;
+  /** Type ids whose cells the mask was BUILT from — a density threshold, a wand similarity — when
+   *  it came from the data rather than being drawn. A cross-PCF pair with both members in here is
+   *  measured through a window its own cells chose, and `crossPCFMatrixBinned` flags it as
+   *  `confounded`. Absent for a drawn or external mask. */
+  readonly derivedFrom?: readonly number[];
 }
 
 export type Domain = RectDomain | MaskDomain;
@@ -51,13 +56,39 @@ export function rectDomain(bbox: Box): RectDomain {
 
 /** A mask domain, checked: a raster whose length disagrees with its shape would be read as a
  *  different, silently sheared region. */
-export function maskDomain(bbox: Box, width: number, height: number, data: Uint8Array): MaskDomain {
+export function maskDomain(bbox: Box, width: number, height: number, data: Uint8Array, derivedFrom?: readonly number[]): MaskDomain {
   if (!(bbox[2] > bbox[0] && bbox[3] > bbox[1])) throw new Error(`maskDomain: bbox [${bbox.join(", ")}] has no positive extent`);
   if (!(Number.isInteger(width) && Number.isInteger(height) && width > 0 && height > 0)) {
     throw new Error(`maskDomain: ${width}×${height} is not a raster shape`);
   }
   if (data.length !== width * height) throw new Error(`maskDomain: ${data.length} pixels for a ${width}×${height} raster`);
-  return { kind: "mask", bbox, width, height, data };
+  return derivedFrom ? { kind: "mask", bbox, width, height, data, derivedFrom } : { kind: "mask", bbox, width, height, data };
+}
+
+/**
+ * A mask from any raster in the `ScalarField` convention — a density field, a mode projection, the
+ * Gram wand's `similarityField` — inside wherever `keep(value)` holds.
+ *
+ * The raster's `bbox` becomes the domain's, so build the field over the OBSERVATION window: a field
+ * padded past it (as `gaussianKdeField` pads by default) can mark unobserved ground as inside, which
+ * is the loose-boundary bias of docs/stats-on-arbitrary-domains.md source 4.
+ *
+ * A mask built from the same cells the statistic is then measured on is a data-dependent window.
+ * Measured (docs/stats-on-arbitrary-domains.md, "Masks from the data"): on independently clustered
+ * types, a mask cut from both A's and B's densities reads g_AB 14–16% low, where the truth is 1. A
+ * mask that never saw B's cells leaves g_AB unbiased. Pass `derivedFrom` — the type ids whose cells
+ * built the field — so the PCF can flag the pairs this applies to.
+ */
+export function maskWhere(
+  field: { readonly data: ArrayLike<number>; readonly width: number; readonly height: number; readonly bbox: Box },
+  keep: (value: number) => boolean,
+  opts: { readonly derivedFrom?: readonly number[] } = {},
+): MaskDomain {
+  const n = field.width * field.height;
+  if (field.data.length !== n) throw new Error(`maskWhere: ${field.data.length} values for a ${field.width}×${field.height} raster`);
+  const data = new Uint8Array(n);
+  for (let i = 0; i < n; i++) data[i] = keep(field.data[i]!) ? 1 : 0;
+  return maskDomain(field.bbox, field.width, field.height, data, opts.derivedFrom);
 }
 
 /** |W|. For a mask, the area of its non-zero pixels. */

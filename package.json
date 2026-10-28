@@ -49,6 +49,7 @@
     "qcm:bench": "tsx scripts/qcm-bench.ts",
     "bench:density-precision": "tsx scripts/bench-density-precision.ts",
     "bench:domain-mask": "tsx scripts/bench-domain-mask.ts",
+    "bench:domain-selection": "tsx scripts/bench-domain-selection.ts",
     "bench:scan": "tsx scripts/bench-scan.ts",
     "bench:grid-index": "tsx scripts/bench-grid-index.ts",
     "bench:assembly": "tsx scripts/bench-tile-assembly.ts"

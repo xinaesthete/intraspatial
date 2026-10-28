@@ -387,6 +387,11 @@ export interface PcfMatrixBinnedResult {
   readonly pairs: Float64Array;
   /** Cells dropped for lying outside `domain`. Absent when no domain was given. */
   readonly outside?: number;
+  /** K×K, row-major: 1 where BOTH types of the pair are in the mask's `derivedFrom`, so the window
+   *  was chosen by the very cells being compared and `g` is not a fair estimate (measured 14–23% low
+   *  for independent clustered types; docs/stats-on-arbitrary-domains.md). The diagonal is 1 for
+   *  every type in `derivedFrom`. Absent unless the domain is a mask that records `derivedFrom`. */
+  readonly confounded?: Uint8Array;
 }
 
 /**
@@ -505,5 +510,9 @@ export function crossPCFMatrixBinned(all: LabelledCells, p: PcfMatrixBinnedParam
     }
   }
   if (!p.domain) return { nTypes: K, nBins: B, counts: nPer, r, g, pairs };
-  return { nTypes: K, nBins: B, counts: nPer, r, g, pairs, outside: all.xs.length - n };
+  const from = p.domain.kind === "mask" ? p.domain.derivedFrom : undefined;
+  if (!from) return { nTypes: K, nBins: B, counts: nPer, r, g, pairs, outside: all.xs.length - n };
+  const confounded = new Uint8Array(K * K);
+  for (const a of from) for (const b of from) if (a >= 0 && a < K && b >= 0 && b < K) confounded[a * K + b] = 1;
+  return { nTypes: K, nBins: B, counts: nPer, r, g, pairs, outside: all.xs.length - n, confounded };
 }

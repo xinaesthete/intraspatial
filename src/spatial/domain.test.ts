@@ -1,5 +1,14 @@
 import { describe, expect, it } from "vite-plus/test";
-import { domainAnnulusAreasInto, domainArea, domainContains, inverseAnnulusAreas, type MaskDomain, maskDomain, rectDomain } from "./domain";
+import {
+  domainAnnulusAreasInto,
+  domainArea,
+  domainContains,
+  inverseAnnulusAreas,
+  type MaskDomain,
+  maskDomain,
+  maskWhere,
+  rectDomain,
+} from "./domain";
 import { annulusAreasInto, diskRectArea } from "./edgeCorrection";
 import { mulberry32 } from "./kernelAnalysis";
 import { crossPCF, crossPCFBinMembership, crossPCFMatrixBinned, type LabelledCells } from "./pcf";
@@ -51,6 +60,23 @@ function tiltedSquare(side: number, deg: number) {
     return Math.abs(u) <= half && Math.abs(v) <= half;
   };
   return { half, inside, toFrame, fromFrame };
+}
+
+/** CSR cells of `nTypes` types inside `inside`, drawn over `[-extent, extent]²`. */
+function csrIn(inside: (x: number, y: number) => boolean, extent: number, n: number, nTypes: number, seed: number): LabelledCells {
+  const rnd = mulberry32(seed);
+  const xs: number[] = [];
+  const ys: number[] = [];
+  const typeId: number[] = [];
+  while (xs.length < n) {
+    const x = (rnd() * 2 - 1) * extent;
+    const y = (rnd() * 2 - 1) * extent;
+    if (!inside(x, y)) continue;
+    xs.push(x);
+    ys.push(y);
+    typeId.push(xs.length % nTypes);
+  }
+  return { xs, ys, typeId };
 }
 
 describe("rectDomain / maskDomain", () => {
@@ -200,23 +226,6 @@ describe("domainAnnulusAreasInto on a mask", () => {
 });
 
 describe("crossPCF / crossPCFMatrixBinned with a domain", () => {
-  /** CSR cells of `nTypes` types inside `inside`, drawn over `[-extent, extent]²`. */
-  function csrIn(inside: (x: number, y: number) => boolean, extent: number, n: number, nTypes: number, seed: number): LabelledCells {
-    const rnd = mulberry32(seed);
-    const xs: number[] = [];
-    const ys: number[] = [];
-    const typeId: number[] = [];
-    while (xs.length < n) {
-      const x = (rnd() * 2 - 1) * extent;
-      const y = (rnd() * 2 - 1) * extent;
-      if (!inside(x, y)) continue;
-      xs.push(x);
-      ys.push(y);
-      typeId.push(xs.length % nTypes);
-    }
-    return { xs, ys, typeId };
-  }
-
   it("matches the exact estimator on a tilted ROI, run in the ROI's own frame", () => {
     // ≈ the 648,000 µm² covid ROI, tilted 30°, 0.002 cells/µm² per type — the bench's source-3 case.
     const sq = tiltedSquare(805, 30);
@@ -298,5 +307,29 @@ describe("crossPCF / crossPCFMatrixBinned with a domain", () => {
     const cells = csrIn(() => true, 50, 200, 2, 9);
     const res = crossPCFMatrixBinned(cells, { bbox: [-50, -50, 50, 50], rMax: 10, nBins: 2, nTypes: 2 });
     expect(res.outside).toBeUndefined();
+  });
+});
+
+describe("maskWhere — masks from fields", () => {
+  it("keeps the field's raster and bbox, inside where the predicate holds", () => {
+    const field = { data: Float32Array.from([0.1, 0.9, 0.5, 0.7]), width: 2, height: 2, bbox: [0, 0, 2, 2] as const };
+    const m = maskWhere(field, (v) => v > 0.6);
+    expect(Array.from(m.data)).toEqual([0, 1, 0, 1]);
+    expect(m.bbox).toBe(field.bbox);
+    expect(domainArea(m)).toBe(2);
+    expect(m.derivedFrom).toBeUndefined();
+    expect(() => maskWhere({ ...field, width: 3 }, () => true)).toThrow(/4 values/);
+  });
+
+  it("flags exactly the pairs whose both members built the mask", () => {
+    const cells = csrIn(() => true, 50, 300, 3, 5);
+    const field = { data: new Float32Array(100).fill(1), width: 10, height: 10, bbox: [-50, -50, 50, 50] as const };
+    const mask = maskWhere(field, () => true, { derivedFrom: [0, 2] });
+    const res = crossPCFMatrixBinned(cells, { bbox: mask.bbox, domain: mask, rMax: 10, nBins: 2, nTypes: 3 });
+    expect(Array.from(res.confounded ?? [])).toEqual([1, 0, 1, 0, 0, 0, 1, 0, 1]);
+    // A drawn mask (no derivedFrom) and a rect flag nothing.
+    expect(
+      crossPCFMatrixBinned(cells, { bbox: mask.bbox, domain: maskWhere(field, () => true), rMax: 10, nBins: 2, nTypes: 3 }).confounded,
+    ).toBeUndefined();
   });
 });
