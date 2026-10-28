@@ -11,7 +11,7 @@
 import { PathLayer } from "@deck.gl/layers";
 import { Matrix4 } from "@math.gl/core";
 import { useCallback, useMemo, useState } from "react";
-import { clampWindow, type Rect } from "../../../src/datasource/points";
+import { clampWindow, type PointsTile, type Rect } from "../../../src/datasource/points";
 import { type ModeBasis, modeBasis } from "../../../src/gpu/spatial/gramModes";
 import { type CoLocationModes, radiusToCover } from "../../../src/spatial/gram";
 import { invert2, rectThrough2 } from "../../../src/spatial/ngffTransform";
@@ -75,6 +75,7 @@ export function TranscriptModes() {
   const [radius, setRadius] = useState(50);
   const [qvMin, setQvMin] = useState(20);
   const [untiledBudgetM, setUntiledBudgetM] = useState(DEFAULT_UNTILED_BUDGET / 1e6);
+  const [exact, setExact] = useState(false);
   const [rasterSide, setRasterSide] = useState(0);
   const [halfRasters, setHalfRasters] = useState(false);
   const [follow, setFollow] = useState(true);
@@ -94,7 +95,11 @@ export function TranscriptModes() {
   const sd = useSpatialData(storeUrl);
   const pointsNames = useMemo(() => (sd.value ? listPointsElements(sd.value) : []), [sd.value]);
   const pointsEl = pointsName ?? pointsNames.find((n) => /morton/.test(n) && !/feature_then/.test(n)) ?? pointsNames[0];
-  const source = usePointsSource(sd.value, pointsEl, { columns: ["qv"], untiledBudget: untiledBudgetM * 1e6 });
+  const source = usePointsSource(sd.value, pointsEl, {
+    columns: ["qv"],
+    untiledBudget: untiledBudgetM * 1e6,
+    tilePointBudget: exact ? Number.POSITIVE_INFINITY : undefined,
+  });
   // An element read whole has no qv column to filter on, so its filter is off rather than an error.
   const hasQv = source.value?.columns.includes("qv") ?? true;
   const qvApplied = hasQv ? qvMin : 0;
@@ -138,6 +143,7 @@ export function TranscriptModes() {
   );
 
   const tiles = usePointsTiles(source.value, window, rEff);
+  const sampled = sampleNote(tiles.value?.tiles);
   const built = useMemo(
     () => (source.value ? buildChannels(selection, source.value.features) : { channels: [], missing: {} }),
     [selection, source.value],
@@ -270,6 +276,12 @@ export function TranscriptModes() {
               onChange={(e) => setUntiledBudgetM(Math.max(0.5, Number(e.target.value) || 0.5))}
             />
           </label>
+          {source.value?.levelFractions && (
+            <label className="check">
+              <input type="checkbox" checked={exact} onChange={(e) => setExact(e.target.checked)} />
+              Every molecule, at any zoom (off: a zoomed-out view analyses a random sample — fast, approximate)
+            </label>
+          )}
           <label>
             Image
             <select value={imageEl ?? NO_IMAGE} onChange={(e) => setImageName(e.target.value)}>
@@ -368,7 +380,8 @@ export function TranscriptModes() {
               <>
                 window {span(g.window)} µm*{follow ? "" : " (kept)"} · r {g.radius} µm*
                 {raised !== undefined ? ` (raised from ${radius} to cover the view)` : ""} · {g.modes.labels.length} channels ·{" "}
-                {g.stats.perChannel.reduce((s, n) => s + n, 0).toLocaleString()} molecules in them ·{" "}
+                {g.stats.perChannel.reduce((s, n) => s + n, 0).toLocaleString()} molecules in them
+                {sampled ? ` (${sampled})` : ""} ·{" "}
                 {qvApplied > 0 ? `${g.stats.belowMinimum.toLocaleString()} below qv ${qvApplied} · ` : ""}map {g.raster.width}×
                 {g.raster.height} ·{" "}
                 {source.value?.tiled === false
@@ -464,4 +477,14 @@ export function TranscriptModes() {
       </div>
     </div>
   );
+}
+
+/** How much of the element the tiles hold, when any came from a sampled level: "≈25% sample". */
+function sampleNote(tiles: readonly PointsTile[] | undefined): string | undefined {
+  const fractions = (tiles ?? []).map((t) => t.sampleFraction ?? 1);
+  if (!fractions.some((f) => f < 1)) return undefined;
+  const pct = (f: number) => `${+(f * 100).toPrecision(2)}%`;
+  const lo = Math.min(...fractions);
+  const hi = Math.max(...fractions);
+  return lo === hi ? `≈${pct(lo)} sample` : `≈${pct(lo)}–${pct(hi)} sample, varying by tile`;
 }
