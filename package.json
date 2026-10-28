@@ -1,6 +1,6 @@
 {
   "name": "intraspatial",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "type": "module",
   "description": "IntraSpatial — an in-GPU operation-graph runtime and spatial-analysis toolbox on TypeGPU/WebGPU.",
   "license": "MIT",
