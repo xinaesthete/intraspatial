@@ -5,6 +5,9 @@
 // reader's bounds filter is closed, so `ownedTile` re-applies half-open ownership — without it a
 // point on a shared tile edge is counted twice.
 //
+// A points-zarr element (sd.js 0.13) is tiled too, through `loadPointsZarrInBounds` instead: its row
+// index plans each read, with no parquet involved.
+//
 // An element with no tiled layout has nothing to range-read, so it is read whole — if it fits a
 // row budget — and bucketed into the same grid in memory (`bucketPoints`). Everything downstream
 // sees the same tiles either way. What it cannot get is extra columns: sd.js's whole-element read
@@ -66,6 +69,7 @@ export async function openPointsSource(sdata: SpatialData, element: string, opts
   const el = sdata.points?.[element];
   if (!el) throw new Error(`No points element "${element}" (have: ${listPointsElements(sdata).join(", ") || "none"})`);
   const meta = await el.getPointsTilingMetadata();
+  if (meta?.kind === "points-zarr") return openPointsZarr(sdata, element, el, meta, opts);
   if (!meta?.bounds) return openUntiled(sdata, element, el, opts);
   const grid = pointsGrid(meta.bounds, meta.totalRows, { minRowsPerTile: opts.minRowsPerTile ?? 2 * meta.maxRowsPerGroup });
   const catalog = await el.listFeatures();
@@ -97,6 +101,55 @@ export async function openPointsSource(sdata: SpatialData, element: string, opts
     features,
     columns,
     missingColumns: [],
+    tiled: true,
+    totalRows: meta.totalRows,
+    space: elementSpace(sdata, element),
+  };
+}
+
+type PointsZarrMeta = Extract<NonNullable<Awaited<ReturnType<PointsElement["getPointsTilingMetadata"]>>>, { kind: "points-zarr" }>;
+
+/**
+ * A points-zarr element (sd.js 0.13, experimental), or a standard one with a points-zarr copy: each
+ * tile is one `loadPointsZarrInBounds`, which plans its reads from the row index. The budget is
+ * unbounded so every tile reads level 0 — the coarser levels are random samples, and the analyses
+ * downstream count molecules. The format copies no passthrough columns, so none are offered.
+ */
+async function openPointsZarr(
+  sdata: SpatialData,
+  element: string,
+  el: PointsElement,
+  meta: PointsZarrMeta,
+  opts: OpenPointsOptions,
+): Promise<PointsSource> {
+  const grid = pointsGrid(meta.bounds, meta.totalRows, { minRowsPerTile: opts.minRowsPerTile });
+  const catalog = await el.listFeatures();
+  const features = (catalog?.entries ?? []).map((e) => ({ code: e.code, name: e.name, count: e.count }));
+  // sd.js filters `[min, max)`, so the far edges are pushed out a hair: `ownedTile` keeps a point
+  // sitting exactly on the element's max edge, and sd.js must not have dropped it first.
+  const pad = grid.tileSize * 1e-6;
+  const loader: Loader<PointsTile> = {
+    async getChunk(id) {
+      const rect = tileRect(grid, id.x, id.y);
+      const bounds = {
+        ...rect,
+        maxX: id.x + 1 >= grid.cols ? rect.maxX + pad : rect.maxX,
+        maxY: id.y + 1 >= grid.rows ? rect.maxY + pad : rect.maxY,
+      };
+      const res = await el.loadPointsZarrInBounds({ bounds, pointBudget: Number.POSITIVE_INFINITY });
+      if (res.levels.some((l) => l !== 0)) throw new Error(`points/${element}: the points-zarr read was served from a sampled level`);
+      const [xs, ys] = res.data;
+      if (!xs || !ys) throw new Error(`points/${element}: the points-zarr read returned no coordinates`);
+      return ownedTile(grid, id, { xs, ys, codes: res.featureCodes });
+    },
+  };
+  return {
+    element,
+    grid,
+    loader,
+    features,
+    columns: [],
+    missingColumns: [...(opts.columns ?? [])],
     tiled: true,
     totalRows: meta.totalRows,
     space: elementSpace(sdata, element),
