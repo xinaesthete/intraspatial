@@ -37,6 +37,9 @@ export interface PointsSource {
   readonly missingColumns: readonly string[];
   /** False when the element has no tiled layout and was read whole into memory. */
   readonly tiled: boolean;
+  /** Per level, the share of the element's points it holds (`[1, ~0.25, …]`), for a multiscale
+   *  element whose tiles may be served from a sample; absent when every tile holds every point. */
+  readonly levelFractions?: readonly number[];
   readonly totalRows: number;
   /** Element space → its coordinate system, when the element declares one. */
   readonly space?: ResolvedSpace;
@@ -49,6 +52,10 @@ export interface OpenPointsOptions {
   readonly minRowsPerTile?: number;
   /** Most rows an element with no tiled layout may have and still be read whole. */
   readonly untiledBudget?: number;
+  /** Most points one tile of a multiscale (points-zarr) element should read. Past it, sd.js serves
+   *  the tile from a coarser level — a uniform random sample, tagged with its `sampleFraction`.
+   *  Default unbounded: every tile reads level 0, every point. */
+  readonly tilePointBudget?: number;
 }
 
 /** Default `untiledBudget`: about 100 MB of coordinates and codes, a few seconds to read and bucket. */
@@ -111,9 +118,10 @@ type PointsZarrMeta = Extract<NonNullable<Awaited<ReturnType<PointsElement["getP
 
 /**
  * A points-zarr element (sd.js 0.13, experimental), or a standard one with a points-zarr copy: each
- * tile is one `loadPointsZarrInBounds`, which plans its reads from the row index. The budget is
- * unbounded so every tile reads level 0 — the coarser levels are random samples, and the analyses
- * downstream count molecules. The format copies no passthrough columns, so none are offered.
+ * tile is one `loadPointsZarrInBounds`, which plans its reads from the row index. Within
+ * `tilePointBudget` (default unbounded) a tile reads level 0, every point; past it, a coarser level,
+ * which is a uniform random sample — a fast preview, so the tile says what share it holds. The
+ * format copies no passthrough columns, so none are offered.
  */
 async function openPointsZarr(
   sdata: SpatialData,
@@ -125,22 +133,29 @@ async function openPointsZarr(
   const grid = pointsGrid(meta.bounds, meta.totalRows, { minRowsPerTile: opts.minRowsPerTile });
   const catalog = await el.listFeatures();
   const features = (catalog?.entries ?? []).map((e) => ({ code: e.code, name: e.name, count: e.count }));
+  const levelFractions = pointsZarrLevelFractions(sdata, element);
+  const pointBudget = opts.tilePointBudget ?? Number.POSITIVE_INFINITY;
   // sd.js filters `[min, max)`, so the far edges are pushed out a hair: `ownedTile` keeps a point
   // sitting exactly on the element's max edge, and sd.js must not have dropped it first.
   const pad = grid.tileSize * 1e-6;
   const loader: Loader<PointsTile> = {
     async getChunk(id) {
       const rect = tileRect(grid, id.x, id.y);
-      const bounds = {
-        ...rect,
-        maxX: id.x + 1 >= grid.cols ? rect.maxX + pad : rect.maxX,
-        maxY: id.y + 1 >= grid.rows ? rect.maxY + pad : rect.maxY,
-      };
-      const res = await el.loadPointsZarrInBounds({ bounds, pointBudget: Number.POSITIVE_INFINITY });
-      if (res.levels.some((l) => l !== 0)) throw new Error(`points/${element}: the points-zarr read was served from a sampled level`);
+      const lastX = id.x + 1 >= grid.cols;
+      const lastY = id.y + 1 >= grid.rows;
+      const bounds = { ...rect, maxX: lastX ? rect.maxX + pad : rect.maxX, maxY: lastY ? rect.maxY + pad : rect.maxY };
+      // The level is chosen for the UNCLIPPED tile, so an edge tile samples like its neighbours.
+      const levelBounds = { ...rect, maxX: rect.minX + grid.tileSize, maxY: rect.minY + grid.tileSize };
+      const res = await el.loadPointsZarrInBounds({ bounds, levelBounds, pointBudget });
       const [xs, ys] = res.data;
       if (!xs || !ys) throw new Error(`points/${element}: the points-zarr read returned no coordinates`);
-      return ownedTile(grid, id, { xs, ys, codes: res.featureCodes });
+      const tile = ownedTile(grid, id, { xs, ys, codes: res.featureCodes });
+      // An all-features read is served from one level.
+      const level = res.levels[0] ?? 0;
+      if (level === 0) return tile;
+      const sampleFraction = levelFractions?.[level];
+      if (!sampleFraction) throw new Error(`points/${element}: tile served from level ${level}, whose share of the points is unknown`);
+      return { ...tile, sampleFraction };
     },
   };
   return {
@@ -151,9 +166,27 @@ async function openPointsZarr(
     columns: [],
     missingColumns: [...(opts.columns ?? [])],
     tiled: true,
+    ...(levelFractions ? { levelFractions } : {}),
     totalRows: meta.totalRows,
     space: elementSpace(sdata, element),
   };
+}
+
+/** Each level's `points:n_points` over level 0's, from the element's `multiscales` layout — on the
+ *  element itself, or on its points-zarr copy (`POINTS_ZARR_SIDECAR` in sd.js). */
+function pointsZarrLevelFractions(sdata: SpatialData, element: string): number[] | undefined {
+  // UPSTREAM(sd.js): `PointsZarrSource.levels` carries these, but the element keeps its source private.
+  const node = pointsNode(sdata, element);
+  const sidecar = node && typeof node === "object" ? (node as Record<string, unknown>)["experimental.points-zarr"] : undefined;
+  for (const n of [node, sidecar]) {
+    const attrs = n ? symbolAttrs(n, (v) => "multiscales" in v) : undefined;
+    const layout: unknown = (attrs?.multiscales as { layout?: unknown } | undefined)?.layout;
+    if (!Array.isArray(layout)) continue;
+    const counts = layout.map((l: unknown) => Number((l as Record<string, unknown> | null)?.["points:n_points"]));
+    const base = counts[0];
+    if (base && counts.every((c) => c > 0)) return counts.map((c) => c / base);
+  }
+  return undefined;
 }
 
 /** An element with no tiled layout: read whole, then served from memory through the same grid. */
@@ -215,9 +248,14 @@ function extentOf(xs: ArrayLike<number>, ys: ArrayLike<number>): Rect | undefine
 /** The element's own `coordinateTransformations`, resolved the way `cellTable` resolves a region. */
 function elementSpace(sdata: SpatialData, element: string): ResolvedSpace | undefined {
   // UPSTREAM(sd.js): the typed element API does not expose resolved transforms; read the tree.
-  const tree: unknown = sdata.rootStore.tree;
-  const points = tree && typeof tree === "object" ? (tree as Record<string, unknown>).points : undefined;
-  const node = points && typeof points === "object" ? (points as Record<string, unknown>)[element] : undefined;
+  const node = pointsNode(sdata, element);
   const attrs = node ? symbolAttrs(node, (v) => "coordinateTransformations" in v) : undefined;
   return resolveNgffXY(attrs?.coordinateTransformations);
+}
+
+/** The element's node in the store's zarr tree. */
+function pointsNode(sdata: SpatialData, element: string): unknown {
+  const tree: unknown = sdata.rootStore.tree;
+  const points = tree && typeof tree === "object" ? (tree as Record<string, unknown>).points : undefined;
+  return points && typeof points === "object" ? (points as Record<string, unknown>)[element] : undefined;
 }

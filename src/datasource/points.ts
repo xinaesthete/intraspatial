@@ -40,6 +40,9 @@ export interface PointsTile {
   readonly ys: Float32Array;
   readonly codes: Int32Array;
   readonly columns: Readonly<Record<string, Float32Array>>;
+  /** Share of the element's points this tile was read from, when it is a uniform random sample
+   *  (a coarser level of a multiscale element). Absent means every point. Counts scale by its inverse. */
+  readonly sampleFraction?: number;
 }
 
 /** Points as a reader returns them for a tile's (closed) bounds, before ownership is applied. */
