@@ -28,6 +28,8 @@ import { GramModesLayer } from "./GramModesLayer";
 import { MatrixView } from "./MatrixView";
 import { ModeLegend } from "./ModeLegend";
 import { useTranscriptGram } from "./useTranscriptGram";
+import { useWand, type WandSource } from "./useWand";
+import { WandControls, WandExplain, WandReadout } from "./WandPanel";
 
 /** The raster stack's size on the device, in MiB. `bytesPerWordRatio` of 2 reports what the same
  *  stack would cost at f32, which is the comparison the checkbox is making. */
@@ -154,6 +156,29 @@ export function TranscriptModes() {
   const modes = locked?.modes ?? g?.modes;
   const toggleLock = (on: boolean) => setLock(on && g ? { basis: modeBasis(g.res), modes: g.modes, window: g.window } : undefined);
 
+  // The wand's reference is standardised as the map is painted: with the lock's means, when locked.
+  const lockedBasis = locked?.basis;
+  const vectors = modes?.vectors;
+  const wandSource = useMemo<WandSource | undefined>(() => {
+    if (!g || !vectors) return undefined;
+    const { mean, sd } = lockedBasis ?? g.res.resident;
+    return { res: g.res, rasters: g.rasters, mean, sd, vectors, ...(lockedBasis ? { basis: lockedBasis } : {}) };
+  }, [g, lockedBasis, vectors]);
+  const wand = useWand(wandSource);
+  const sample = wand.sample;
+  // A position across the map → a place in the transcripts' frame: the canvas's world frame (the
+  // visible rectangle, y down as deck's orthographic view draws it), then the element's frame.
+  const toPlace = useCallback(
+    (u: number, v: number): readonly [number, number] | undefined => {
+      if (!viewport || !toElement) return undefined;
+      const wx = viewport.minX + u * (viewport.maxX - viewport.minX);
+      const wy = viewport.minY + v * (viewport.maxY - viewport.minY);
+      const m = toElement;
+      return [m.a * wx + m.c * wy + m.tx, m.b * wx + m.d * wy + m.ty];
+    },
+    [viewport, toElement],
+  );
+
   const layers = useMemo(
     () =>
       g && modelMatrix
@@ -164,6 +189,11 @@ export function TranscriptModes() {
               rasters: g.rasters,
               vectors: (locked?.modes ?? g.modes).vectors,
               basis: locked?.basis ?? null,
+              reference: sample?.z ?? null,
+              marker: sample ? { col: sample.col, row: sample.row } : null,
+              tolerance: wand.tolerance,
+              modesUsed: wand.modesUsed || g.modes.labels.length,
+              region: wand.region ?? null,
               saturate,
               chromaWeight,
               opacity,
@@ -197,7 +227,7 @@ export function TranscriptModes() {
               : []),
           ]
         : [],
-    [g, locked, modelMatrix, saturate, chromaWeight, opacity],
+    [g, locked, modelMatrix, saturate, chromaWeight, opacity, sample, wand.tolerance, wand.modesUsed, wand.region],
   );
 
   const error = sd.error ?? source.error ?? tiles.error ?? gram.error;
@@ -342,6 +372,7 @@ export function TranscriptModes() {
             Map over image
             <input type="range" min={0} max={1} step={0.05} value={opacity} onChange={(e) => setOpacity(Number(e.target.value))} />
           </label>
+          <WandControls wand={wand} />
           {source.value && (
             <ChannelPicker features={source.value.features} selection={selection} onChange={setSelection} missing={built.missing} />
           )}
@@ -349,17 +380,19 @@ export function TranscriptModes() {
         </aside>
 
         <main className="views">
-          {/* Always mounted, never keyed: see SpatialDeckView on why deck must outlive a store. */}
-          <SpatialDeckView
-            className="deck-canvas"
-            sdata={sd.value}
-            coordinateSystem={coordinateSystem}
-            image={imageEl}
-            layers={layers}
-            deckProps={deckProps}
-            onViewport={setViewport}
-            fallbackBounds={fallbackBounds}
-          />
+          <div {...wand.pointer(toPlace)}>
+            {/* Always mounted, never keyed: see SpatialDeckView on why deck must outlive a store. */}
+            <SpatialDeckView
+              className="deck-canvas"
+              sdata={sd.value}
+              coordinateSystem={coordinateSystem}
+              image={imageEl}
+              layers={layers}
+              deckProps={deckProps}
+              onViewport={setViewport}
+              fallbackBounds={fallbackBounds}
+            />
+          </div>
           <p className="status">
             {error ? <span className="error">{error.message}</span> : busy}
             {!error && !busy && g && (
@@ -376,6 +409,7 @@ export function TranscriptModes() {
               </>
             )}
           </p>
+          {g && <WandReadout wand={wand} labels={g.res.labels} />}
           <p className="hint">GPU: {device.status}</p>
           {coarse && (
             <p className="hint error">
@@ -429,6 +463,7 @@ export function TranscriptModes() {
               Mode 1 sets brightness and modes 2 and 3 set hue, so places with similar colours have similar mixtures of genes. The legend
               says which channels push each mode each way, and how much of the variation it carries.
             </Explain>
+            <WandExplain />
             <Explain title="Locking the modes">
               Normally each window gets its own modes, and each place is compared with the rest of its window: the same colour in two
               windows can mean different mixtures, and the strongest contrast in a window always gets the strongest colours. Locked, every
