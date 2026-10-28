@@ -14,7 +14,17 @@
 // returns coordinates and feature codes only.
 
 import type { SpatialData } from "@spatialdata/core";
-import { bucketPoints, ownedTile, type PointsGrid, type PointsTile, pointsGrid, type Rect, tileRect } from "../../../src/datasource/points";
+import {
+  bucketPoints,
+  expandRect,
+  ownedTile,
+  type PointsGrid,
+  type PointsTile,
+  pointsGrid,
+  pointsGridAtLevel,
+  type Rect,
+  tileRect,
+} from "../../../src/datasource/points";
 import type { ChunkId, Loader } from "../../../src/datasource/types";
 import { type ResolvedSpace, resolveNgffXY } from "../../../src/spatial/ngffTransform";
 import { symbolAttrs } from "./cellTable";
@@ -27,7 +37,11 @@ export interface PointsFeature {
 
 export interface PointsSource {
   readonly element: string;
+  /** The grid tiles are cut from — for a multiscale element, its finest. */
   readonly grid: PointsGrid;
+  /** For a multiscale element, the grid to cut `window ⊕ apron` with: bigger tiles for a bigger
+   *  window, each read at the level its budget allows. Absent: always {@link grid}. */
+  readonly gridFor?: (window: Rect, apron: number) => PointsGrid;
   readonly loader: Loader<PointsTile>;
   /** Feature catalog, in the code space the tiles carry. */
   readonly features: readonly PointsFeature[];
@@ -54,7 +68,7 @@ export interface OpenPointsOptions {
   readonly untiledBudget?: number;
   /** Most points one tile of a multiscale (points-zarr) element should read. Past it, sd.js serves
    *  the tile from a coarser level — a uniform random sample, tagged with its `sampleFraction`.
-   *  Default unbounded: every tile reads level 0, every point. */
+   *  Default sd.js's own `POINTS_TILE_TARGET_ROWS`; `Infinity` reads every point at any zoom. */
   readonly tilePointBudget?: number;
 }
 
@@ -116,12 +130,16 @@ export async function openPointsSource(sdata: SpatialData, element: string, opts
 
 type PointsZarrMeta = Extract<NonNullable<Awaited<ReturnType<PointsElement["getPointsTilingMetadata"]>>>, { kind: "points-zarr" }>;
 
+/** Tiles the window's long side spans, the way deck's 256–512 px tiles span a view. */
+const TILES_ACROSS = 8;
+
 /**
- * A points-zarr element (sd.js 0.13, experimental), or a standard one with a points-zarr copy: each
- * tile is one `loadPointsZarrInBounds`, which plans its reads from the row index. Within
- * `tilePointBudget` (default unbounded) a tile reads level 0, every point; past it, a coarser level,
- * which is a uniform random sample — a fast preview, so the tile says what share it holds. The
- * format copies no passthrough columns, so none are offered.
+ * A points-zarr element (sd.js 0.13, experimental), or a standard one with a points-zarr copy. The
+ * same scheme as sd.js's own tiled layer (`multiscaleTileGrid` + `createPointsZarrTiledPointsLoader`):
+ * the window picks the tile size — a quadtree level over the extent, from one tile for the whole of
+ * it down to the format's finest — and every tile reads within one point budget, so sd.js serves a
+ * big tile from a coarser level. A coarser level is a uniform random sample, and the tile says what
+ * share it holds. The format copies no passthrough columns, so none are offered.
  */
 async function openPointsZarr(
   sdata: SpatialData,
@@ -130,16 +148,33 @@ async function openPointsZarr(
   meta: PointsZarrMeta,
   opts: OpenPointsOptions,
 ): Promise<PointsSource> {
-  const grid = pointsGrid(meta.bounds, meta.totalRows, { minRowsPerTile: opts.minRowsPerTile });
+  const { bounds: extent, totalRows } = meta;
+  const span = Math.max(extent.maxX - extent.minX, extent.maxY - extent.minY);
+  // Finest: the first quadtree level at or under the format's own finest tile. Rounding the other way
+  // can leave it up to twice the side — four times the points — and out of budget for level 0.
+  const finest = Math.max(0, Math.ceil(Math.log2(span / meta.finestTileSize)));
+  const grids = new Map<number, PointsGrid>();
+  const gridAt = (level: number): PointsGrid => {
+    let g = grids.get(level);
+    if (!g) grids.set(level, (g = pointsGridAtLevel(extent, totalRows, level)));
+    return g;
+  };
+  const gridFor = (window: Rect, apron: number): PointsGrid => {
+    const need = expandRect(window, apron);
+    const long = Math.max(need.maxX - need.minX, need.maxY - need.minY);
+    const level = long > 0 ? Math.ceil(Math.log2((span * TILES_ACROSS) / long)) : finest;
+    return gridAt(Math.min(finest, Math.max(0, level)));
+  };
   const catalog = await el.listFeatures();
   const features = (catalog?.entries ?? []).map((e) => ({ code: e.code, name: e.name, count: e.count }));
   const levelFractions = pointsZarrLevelFractions(sdata, element);
-  const pointBudget = opts.tilePointBudget ?? Number.POSITIVE_INFINITY;
-  // sd.js filters `[min, max)`, so the far edges are pushed out a hair: `ownedTile` keeps a point
-  // sitting exactly on the element's max edge, and sd.js must not have dropped it first.
-  const pad = grid.tileSize * 1e-6;
+  const pointBudget = opts.tilePointBudget ?? (await import("@spatialdata/core")).POINTS_TILE_TARGET_ROWS;
   const loader: Loader<PointsTile> = {
     async getChunk(id) {
+      const grid = gridAt(id.level);
+      // sd.js filters `[min, max)`, so the far edges are pushed out a hair: `ownedTile` keeps a point
+      // sitting exactly on the element's max edge, and sd.js must not have dropped it first.
+      const pad = grid.tileSize * 1e-6;
       const rect = tileRect(grid, id.x, id.y);
       const lastX = id.x + 1 >= grid.cols;
       const lastY = id.y + 1 >= grid.rows;
@@ -160,7 +195,8 @@ async function openPointsZarr(
   };
   return {
     element,
-    grid,
+    grid: gridAt(finest),
+    gridFor,
     loader,
     features,
     columns: [],

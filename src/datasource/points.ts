@@ -66,10 +66,18 @@ export function pointsGrid(bounds: Rect, totalRows: number, opts: PointsGridOpti
   if (!(spanX > 0 && spanY > 0)) throw new Error(`pointsGrid: degenerate bounds ${JSON.stringify(bounds)}`);
   const minRows = opts.minRowsPerTile ?? 100_000;
   const density = totalRows / (spanX * spanY);
-  const maxSpan = Math.max(spanX, spanY);
   const minSide = Math.sqrt(minRows / Math.max(density, Number.MIN_VALUE));
-  const level = Math.max(0, Math.floor(Math.log2(maxSpan / minSide)));
-  const tileSize = maxSpan / 2 ** level;
+  return pointsGridAtLevel(bounds, totalRows, Math.max(0, Math.floor(Math.log2(Math.max(spanX, spanY) / minSide))));
+}
+
+/** The grid whose tiles are the longer span of `bounds` over `2^level` — one level of a quadtree
+ *  over the extent, so a tile at `level` is exactly four at `level + 1`. */
+export function pointsGridAtLevel(bounds: Rect, totalRows: number, level: number): PointsGrid {
+  const spanX = bounds.maxX - bounds.minX;
+  const spanY = bounds.maxY - bounds.minY;
+  if (!(spanX > 0 && spanY > 0)) throw new Error(`pointsGrid: degenerate bounds ${JSON.stringify(bounds)}`);
+  const density = totalRows / (spanX * spanY);
+  const tileSize = Math.max(spanX, spanY) / 2 ** level;
   return {
     bounds,
     level,

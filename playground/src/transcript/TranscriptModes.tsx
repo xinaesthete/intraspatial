@@ -75,7 +75,7 @@ export function TranscriptModes() {
   const [radius, setRadius] = useState(50);
   const [qvMin, setQvMin] = useState(20);
   const [untiledBudgetM, setUntiledBudgetM] = useState(DEFAULT_UNTILED_BUDGET / 1e6);
-  const [previewK, setPreviewK] = useState(0);
+  const [exact, setExact] = useState(false);
   const [rasterSide, setRasterSide] = useState(0);
   const [halfRasters, setHalfRasters] = useState(false);
   const [follow, setFollow] = useState(true);
@@ -98,7 +98,7 @@ export function TranscriptModes() {
   const source = usePointsSource(sd.value, pointsEl, {
     columns: ["qv"],
     untiledBudget: untiledBudgetM * 1e6,
-    tilePointBudget: previewK > 0 ? previewK * 1e3 : undefined,
+    tilePointBudget: exact ? Number.POSITIVE_INFINITY : undefined,
   });
   // An element read whole has no qv column to filter on, so its filter is off rather than an error.
   const hasQv = source.value?.columns.includes("qv") ?? true;
@@ -277,15 +277,9 @@ export function TranscriptModes() {
             />
           </label>
           {source.value?.levelFractions && (
-            <label>
-              Fast preview: most molecules per tile (thousands, 0 = every molecule)
-              <input
-                type="number"
-                min={0}
-                step={10}
-                value={previewK}
-                onChange={(e) => setPreviewK(Math.max(0, Number(e.target.value) || 0))}
-              />
+            <label className="check">
+              <input type="checkbox" checked={exact} onChange={(e) => setExact(e.target.checked)} />
+              Every molecule, at any zoom (off: a zoomed-out view analyses a random sample — fast, approximate)
             </label>
           )}
           <label>
