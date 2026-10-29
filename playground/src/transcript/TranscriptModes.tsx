@@ -10,7 +10,7 @@
 
 import { PathLayer } from "@deck.gl/layers";
 import { Matrix4 } from "@math.gl/core";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { type CSSProperties, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { clampWindow, type Rect } from "../../../src/datasource/points";
 import { type ModeBasis, modeBasis } from "../../../src/gpu/spatial/gramModes";
 import { type CoLocationModes, radiusToCover } from "../../../src/spatial/gram";
@@ -39,7 +39,9 @@ import { GramModesLayer } from "./GramModesLayer";
 import { MatrixView } from "./MatrixView";
 import { ModeLegend } from "./ModeLegend";
 import { useTranscriptGram } from "./useTranscriptGram";
+import { type MapTool, toolCursor, toolWidgets } from "./wandTools";
 import { apply, footprint, gridFor, type MaskOp, maskArea, onRaster, type WorldMask } from "./worldMask";
+import "@deck.gl/widgets/stylesheet.css";
 
 /** A press on the map: deck's click, or the start, moves and end of a drag. */
 type PressPhase = "click" | "start" | "move" | "end";
@@ -243,6 +245,13 @@ export function TranscriptModes() {
 
   // PROTOTYPE (docs/wand-metric-and-regions.md, experiment 1): boundary strength in the PPCA metric.
   const [showBounds, setShowBounds] = useState(false);
+  /** The map's tool. The wand needs the boundary field, so choosing it turns that on. */
+  const [tool, setTool] = useState<MapTool>("hand");
+  const chooseTool = useCallback((t: MapTool) => {
+    setTool(t);
+    if (t === "wand") setShowBounds(true);
+  }, []);
+  const wandOn = showBounds && tool === "wand";
   const [mainModes, setMainModes] = useState(3);
   const [residualWeight, setResidualWeight] = useState(0);
   /** σ, in kernel radii, of the blur the modes after q are differentiated through. */
@@ -385,12 +394,15 @@ export function TranscriptModes() {
    *  first move, which need not carry them. */
   const pressedWith = useRef({ shift: false, alt: false });
   const keysHeld = useRef({ shift: false, alt: false });
+  /** The same, as state: the cursor shows the op a press would apply. */
+  const [heldOp, setHeldOp] = useState<MaskOp>("replace");
   useEffect(() => {
     const press = (e: PointerEvent) => {
       pressedWith.current = { shift: e.shiftKey, alt: e.altKey };
     };
     const key = (e: KeyboardEvent) => {
       keysHeld.current = { shift: e.shiftKey, alt: e.altKey };
+      setHeldOp(e.shiftKey && e.altKey ? "intersect" : e.shiftKey ? "add" : e.altKey ? "subtract" : "replace");
     };
     globalThis.addEventListener("pointerdown", press, { capture: true });
     globalThis.addEventListener("keydown", key, { capture: true });
@@ -406,7 +418,7 @@ export function TranscriptModes() {
   useEffect(() => {
     /** The pointer's map pixel centre, in the transcripts' frame, or undefined off the map. */
     const pixelAt = (x: number, y: number): readonly [number, number] | undefined => {
-      if (!showBounds || !toElement || !g) return undefined;
+      if (!wandOn || !toElement || !g) return undefined;
       const m = toElement;
       const ex = m.a * x + m.c * y + m.tx;
       const ey = m.b * x + m.d * y + m.ty;
@@ -454,7 +466,7 @@ export function TranscriptModes() {
       stroke.current = s;
       s.want = enter(x, y, true);
     };
-  }, [showBounds, toElement, g]);
+  }, [wandOn, toElement, g]);
   // Each painted patch lands here once computed: into the stroke's union, then the mask is that union
   // combined with the mask as it was when the stroke began. The mask is judged by one metric, so the
   // first stroke locks the modes: otherwise every pan would change what "similar" means.
@@ -484,7 +496,7 @@ export function TranscriptModes() {
   // Space held: drag pans instead of painting, as Photoshop's temporary hand tool.
   const [spaceHeld, setSpaceHeld] = useState(false);
   useEffect(() => {
-    if (!showBounds) return;
+    if (!wandOn) return;
     const typing = (t: EventTarget | null) =>
       (t instanceof HTMLInputElement && !["checkbox", "radio", "range"].includes(t.type)) || t instanceof HTMLTextAreaElement;
     const down = (e: KeyboardEvent) => {
@@ -510,8 +522,24 @@ export function TranscriptModes() {
       globalThis.removeEventListener("keyup", up);
       globalThis.removeEventListener("blur", blur);
     };
-  }, [showBounds]);
-  const painting = showBounds && !spaceHeld;
+  }, [wandOn]);
+  // H and W pick the tool, as in Photoshop.
+  useEffect(() => {
+    const on = (e: KeyboardEvent) => {
+      const t = e.target;
+      if (e.metaKey || e.ctrlKey || e.altKey || t instanceof HTMLTextAreaElement) return;
+      if (t instanceof HTMLInputElement && !["checkbox", "radio", "range"].includes(t.type)) return;
+      if (e.key === "h" || e.key === "H") chooseTool("hand");
+      else if (e.key === "w" || e.key === "W") chooseTool("wand");
+    };
+    globalThis.addEventListener("keydown", on);
+    return () => globalThis.removeEventListener("keydown", on);
+  }, [chooseTool]);
+  // Until this window's field is ready the wand cannot paint, so a drag still pans rather than doing
+  // nothing (which reads as broken); the cursor says it is waiting.
+  const wandReady = wandOn && !!boundsNow;
+  const painting = wandReady && !spaceHeld;
+  const cursor = wandOn && !wandReady ? "progress" : toolCursor(wandOn ? "wand" : "hand", heldOp, spaceHeld);
   const deckProps = useMemo(
     () => ({
       deviceProps: SHARED_DEVICE_PROPS,
@@ -521,8 +549,9 @@ export function TranscriptModes() {
       onDragStart: press("start"),
       onDrag: press("move"),
       onDragEnd: press("end"),
+      widgets: toolWidgets(wandOn ? "wand" : "hand", chooseTool),
     }),
-    [device.onDeviceInitialized, painting, press],
+    [device.onDeviceInitialized, painting, press, wandOn, chooseTool],
   );
   const maskOnMap = useMemo(() => (mask && g && mask.keys.size > 0 ? onRaster(mask, g.res) : null), [mask, g]);
 
@@ -736,7 +765,7 @@ export function TranscriptModes() {
             <div className="picker-head">Boundaries (prototype): where the mixture of genes changes fastest</div>
             <label className="check">
               <input type="checkbox" checked={showBounds} onChange={(e) => setShowBounds(e.target.checked)} />
-              Show boundaries (then click the map to fill the cell the boundaries enclose)
+              Show boundaries (the wand, top left of the map, selects by them)
             </label>
             <label>
               Settings
@@ -756,8 +785,9 @@ export function TranscriptModes() {
             </label>
             <p className="hint">{activePreset ? BOUNDARY_PRESETS[activePreset].hint : "Your own settings: pick a preset to go back."}</p>
             <p className="hint">
-              Hover to preview the patch (cyan). Click or drag to paint: new mask · Shift: add · Alt: subtract · Shift+Alt: intersect · hold
-              Space to pan · <kbd>[</kbd> <kbd>]</kbd>: smaller / larger patch (σ {dSmooth.toFixed(2)}r).
+              Pick the wand (W) on the map: hover to preview the patch (cyan), click or drag to paint · Shift: add · Alt: subtract ·
+              Shift+Alt: intersect · Space: pan · H: back to the hand · <kbd>[</kbd> <kbd>]</kbd>: smaller / larger patch (σ{" "}
+              {dSmooth.toFixed(2)}r).
               {mask && mask.keys.size > 0 ? ` Mask: ${(maskArea(mask) / 1e6).toFixed(3)} mm² (amber).` : ""}
             </p>
             {mask && mask.keys.size > 0 && (
@@ -901,18 +931,21 @@ export function TranscriptModes() {
 
         <main className="views">
           {/* Always mounted, never keyed: see SpatialDeckView on why deck must outlive a store. */}
-          <SpatialDeckView
-            className="deck-canvas"
-            sdata={sd.value}
-            coordinateSystem={coordinateSystem}
-            image={imageEl}
-            layers={layers}
-            deckProps={deckProps}
-            onViewport={setViewport}
-            onClick={onClick}
-            onHover={onHover}
-            fallbackBounds={fallbackBounds}
-          />
+          {/* The tool's cursor, over deck's own (which it rewrites on the canvas every frame). */}
+          <div className="tool-cursor" data-tool={painting ? "wand" : "hand"} style={{ "--tool-cursor": cursor } as CSSProperties}>
+            <SpatialDeckView
+              className="deck-canvas"
+              sdata={sd.value}
+              coordinateSystem={coordinateSystem}
+              image={imageEl}
+              layers={layers}
+              deckProps={deckProps}
+              onViewport={setViewport}
+              onClick={onClick}
+              onHover={onHover}
+              fallbackBounds={fallbackBounds}
+            />
+          </div>
           <p className="status">
             {error ? <span className="error">{error.message}</span> : busy}
             {!error && !busy && g && (

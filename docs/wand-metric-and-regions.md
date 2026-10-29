@@ -125,11 +125,18 @@ surroundings) asks a genuinely different question and is still untried.
 
 ## 6. Interaction: hover, and a mask built from clicks (prototyped)
 
+Two tools, as deck `IconWidget`s on the map (stateless, so the page owns the tool and H/W stay in
+sync). **Hand** (H, default): drag pans, the map is as it was. **Wand** (W, turns boundaries on):
+
 | Input | Effect |
 |---|---|
 | hover | the patch under the pointer, recomputed only when the pointer enters a new map pixel |
 | click or drag (paint) | new mask; with Shift / Alt / Shift+Alt: add / subtract / intersect (Photoshop's bindings) |
 | Space + drag | pan (Photoshop's temporary hand tool); scroll still zooms |
+
+The cursor says what a press will do: a crosshair badged +, − or × with the keys held, a hand when a
+drag pans, "progress" while the window's field is computing (a drag then pans: a wand that can
+neither paint nor pan reads as broken).
 | `[` `]` | patch smaller / larger, through σ in 0.25r steps (E3: the patch grows with σ) |
 
 A drag is one stroke: the patches of the pixels it crosses are unioned, then combined with the mask as
