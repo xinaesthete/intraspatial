@@ -122,5 +122,81 @@ export function discOnRaster(c: readonly [number, number], r: number, res: Raste
   return out;
 }
 
+/** Squared distance to the nearest zero of `f` along one line (Felzenszwalb & Huttenlocher's lower
+ *  envelope of parabolas); `f` is 0 at targets and huge elsewhere. Writes into `d`. */
+function edt1(f: Float64Array, n: number, d: Float64Array, v: Int32Array, z: Float64Array): void {
+  let k = 0;
+  v[0] = 0;
+  z[0] = -Infinity;
+  z[1] = Infinity;
+  for (let q = 1; q < n; q++) {
+    let s = (f[q]! + q * q - (f[v[k]!]! + v[k]! * v[k]!)) / (2 * q - 2 * v[k]!);
+    while (s <= z[k]!) {
+      k--;
+      s = (f[q]! + q * q - (f[v[k]!]! + v[k]! * v[k]!)) / (2 * q - 2 * v[k]!);
+    }
+    k++;
+    v[k] = q;
+    z[k] = s;
+    z[k + 1] = Infinity;
+  }
+  k = 0;
+  for (let q = 0; q < n; q++) {
+    while (z[k + 1]! < q) k++;
+    d[q] = (q - v[k]!) * (q - v[k]!) + f[v[k]!]!;
+  }
+}
+
+/** Euclidean distance (pixels) from each pixel to the nearest pixel where `target` holds. */
+function distanceTo(target: (i: number) => boolean, width: number, height: number): Float64Array {
+  const BIG = 1e12;
+  const n = Math.max(width, height);
+  const f = new Float64Array(n);
+  const d = new Float64Array(n);
+  const v = new Int32Array(n);
+  const z = new Float64Array(n + 1);
+  const g = new Float64Array(width * height);
+  for (let i = 0; i < width * height; i++) g[i] = target(i) ? 0 : BIG;
+  for (let x = 0; x < width; x++) {
+    for (let y = 0; y < height; y++) f[y] = g[y * width + x]!;
+    edt1(f, height, d, v, z);
+    for (let y = 0; y < height; y++) g[y * width + x] = d[y]!;
+  }
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) f[x] = g[y * width + x]!;
+    edt1(f, width, d, v, z);
+    for (let x = 0; x < width; x++) g[y * width + x] = Math.sqrt(d[x]!);
+  }
+  return g;
+}
+
+/** A 0/1 raster as a smooth field whose 0.5 level is the region's outline with the pixel staircase
+ *  gone: the signed distance to the edge (half a pixel out from inside pixel centres), blurred at
+ *  σ = 1 px, mapped linearly so ±3 px spans 0 to 1. For drawing only: what is selected is unchanged. */
+export function smoothOutline(binary: ArrayLike<number>, width: number, height: number): Float32Array {
+  const n = width * height;
+  const toOut = distanceTo((i) => !binary[i], width, height);
+  const toIn = distanceTo((i) => !!binary[i], width, height);
+  const sd = new Float32Array(n);
+  for (let i = 0; i < n; i++) sd[i] = binary[i] ? Math.min(toOut[i]!, 1e6) - 0.5 : 0.5 - Math.min(toIn[i]!, 1e6);
+  // σ = 1 px, separable, edge-clamped.
+  const w = [0.0044, 0.054, 0.242, 0.399, 0.242, 0.054, 0.0044];
+  const tmp = new Float32Array(n);
+  for (let y = 0; y < height; y++)
+    for (let x = 0; x < width; x++) {
+      let a = 0;
+      for (let k = -3; k <= 3; k++) a += w[k + 3]! * sd[y * width + Math.min(width - 1, Math.max(0, x + k))]!;
+      tmp[y * width + x] = a;
+    }
+  const out = new Float32Array(n);
+  for (let y = 0; y < height; y++)
+    for (let x = 0; x < width; x++) {
+      let a = 0;
+      for (let k = -3; k <= 3; k++) a += w[k + 3]! * tmp[Math.min(height - 1, Math.max(0, y + k)) * width + x]!;
+      out[y * width + x] = Math.min(1, Math.max(0, 0.5 + a / 6));
+    }
+  return out;
+}
+
 /** The mask's area in the frame's units squared. */
 export const maskArea = (mask: WorldMask): number => mask.keys.size * mask.cell * mask.cell;

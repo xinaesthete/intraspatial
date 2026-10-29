@@ -27,6 +27,12 @@ type BoundaryUniforms = {
   maskOn: number;
   /** The op a press would apply: 0 new mask, 1 add, 2 subtract, 3 intersect. */
   op: number;
+  /** 1: quadratic B-spline reconstruction and antialiased edges; 0: bilinear and hard thresholds.
+   *  Not `smooth`: that is a reserved word in WGSL. */
+  aa: number;
+  pad0: number;
+  pad1: number;
+  pad2: number;
 };
 
 const boundaryUniforms: ShaderModule<BoundaryUniforms> = {
@@ -36,6 +42,7 @@ struct BoundaryUniforms {
   bounds: vec4<f32>,
   width: f32, height: f32, theta: f32, opacity: f32,
   lines: f32, cellOn: f32, maskOn: f32, op: f32,
+  aa: f32, pad0: f32, pad1: f32, pad2: f32,
 };
 @group(0) @binding(auto) var<uniform> B: BoundaryUniforms;
 /** Per pixel: strength, tensor xx, yy, xy. */
@@ -55,8 +62,46 @@ struct BoundaryUniforms {
     cellOn: "f32",
     maskOn: "f32",
     op: "f32",
+    aa: "f32",
+    pad0: "f32",
+    pad1: "f32",
+    pad2: "f32",
   },
 };
+
+/** A quadratic B-spline sampler for a 0/1 raster: its 0.5 contour is smooth, where bilinear
+ *  interpolation leaves the pixel grid's staircase. 3×3 taps, edge-clamped, pixel centres at whole
+ *  numbers. Generated per buffer: WGSL cannot take a storage array as a parameter. */
+const quadratic = (name: string, buffer: string) => /* wgsl */ `
+fn ${name}(p: vec2<f32>) -> f32 {
+  let size = vec2<i32>(i32(B.width), i32(B.height));
+  let i = vec2<i32>(round(p));
+  let t = p - vec2<f32>(i);
+  let wx = vec3<f32>(0.5 * (0.5 - t.x) * (0.5 - t.x), 0.75 - t.x * t.x, 0.5 * (0.5 + t.x) * (0.5 + t.x));
+  let wy = vec3<f32>(0.5 * (0.5 - t.y) * (0.5 - t.y), 0.75 - t.y * t.y, 0.5 * (0.5 + t.y) * (0.5 + t.y));
+  var v = 0.0;
+  for (var dy = -1; dy <= 1; dy++) {
+    let y = u32(clamp(i.y + dy, 0, size.y - 1));
+    for (var dx = -1; dx <= 1; dx++) {
+      let x = u32(clamp(i.x + dx, 0, size.x - 1));
+      v += wx[dx + 1] * wy[dy + 1] * ${buffer}[y * u32(size.x) + x];
+    }
+  }
+  return v;
+}
+`;
+
+/** The bilinear sampler it replaced, kept for comparison (`smooth` off). */
+const bilinear = (name: string, buffer: string) => /* wgsl */ `
+fn ${name}(p: vec2<f32>) -> f32 {
+  let size = vec2<f32>(B.width, B.height);
+  let q = clamp(p, vec2<f32>(0.0), size - vec2<f32>(1.0));
+  let c0 = vec2<u32>(floor(q));
+  let c1 = min(c0 + vec2<u32>(1u), vec2<u32>(size) - vec2<u32>(1u));
+  let f = q - vec2<f32>(c0);
+  return mix(mix(${buffer}[idx(c0)], ${buffer}[idx(vec2<u32>(c1.x, c0.y))], f.x), mix(${buffer}[idx(vec2<u32>(c0.x, c1.y))], ${buffer}[idx(c1)], f.x), f.y);
+}
+`;
 
 const source = /* wgsl */ `\
 struct Varyings { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> };
@@ -92,22 +137,18 @@ fn T(p: vec2<f32>) -> vec4<f32> {
   );
 }
 
-fn maskAt(p: vec2<f32>) -> f32 {
-  let size = vec2<f32>(B.width, B.height);
-  let q = clamp(p, vec2<f32>(0.0), size - vec2<f32>(1.0));
-  let c0 = vec2<u32>(floor(q));
-  let c1 = min(c0 + vec2<u32>(1u), vec2<u32>(size) - vec2<u32>(1u));
-  let f = q - vec2<f32>(c0);
-  return mix(mix(mask[idx(c0)], mask[idx(vec2<u32>(c1.x, c0.y))], f.x), mix(mask[idx(vec2<u32>(c0.x, c1.y))], mask[idx(c1)], f.x), f.y);
-}
+${quadratic("maskQ", "mask")}
+${quadratic("cellQ", "cell")}
+${bilinear("maskB", "mask")}
+${bilinear("cellB", "cell")}
+fn maskAt(p: vec2<f32>) -> f32 { return select(maskB(p), maskQ(p), B.aa > 0.5); }
+fn cellAt(p: vec2<f32>) -> f32 { return select(cellB(p), cellQ(p), B.aa > 0.5); }
 
-fn cellAt(p: vec2<f32>) -> f32 {
-  let size = vec2<f32>(B.width, B.height);
-  let q = clamp(p, vec2<f32>(0.0), size - vec2<f32>(1.0));
-  let c0 = vec2<u32>(floor(q));
-  let c1 = min(c0 + vec2<u32>(1u), vec2<u32>(size) - vec2<u32>(1u));
-  let f = q - vec2<f32>(c0);
-  return mix(mix(cell[idx(c0)], cell[idx(vec2<u32>(c1.x, c0.y))], f.x), mix(cell[idx(vec2<u32>(c0.x, c1.y))], cell[idx(c1)], f.x), f.y);
+/** The level set v = 0.5 as a coverage, antialiased over one screen pixel (or, unsmoothed, the old
+ *  fixed ramp in v). */
+fn coverage(v: f32) -> f32 {
+  let w = max(fwidth(v), 1e-6) * 0.5;
+  return select(smoothstep(0.4, 0.6, v), smoothstep(0.5 - w, 0.5 + w, v), B.aa > 0.5);
 }
 
 @fragment
@@ -133,12 +174,12 @@ fn fragmentMain(input: Varyings) -> @location(0) vec4<f32> {
   let line = (1.0 - smoothstep(0.6, 1.4, distR / perPixel)) * select(0.0, 1.0, distR < 1.0) * over;
 
   let cv = cellAt(q);
-  let inCell = smoothstep(0.4, 0.6, cv) * B.cellOn;
+  let inCell = coverage(cv) * B.cellOn;
   // The cell's edge as a ~1 px white line: the 0.5 level set of the interpolated mask.
   let cw = max(fwidth(cv), 1e-6);
   let cellEdge = (1.0 - smoothstep(cw * 0.5, cw * 1.5, abs(cv - 0.5))) * B.cellOn;
   let mv = maskAt(q);
-  let inMask = smoothstep(0.4, 0.6, mv) * B.maskOn;
+  let inMask = coverage(mv) * B.maskOn;
   let mw = max(fwidth(mv), 1e-6);
   let maskEdge = (1.0 - smoothstep(mw * 0.5, mw * 1.5, abs(mv - 0.5))) * B.maskOn;
 
@@ -155,8 +196,11 @@ fn fragmentMain(input: Varyings) -> @location(0) vec4<f32> {
   // Only while there is a preview: with none, a press would paint nothing.
   let loss = select(select(inMask * (1.0 - inCell), inMask * inCell, op == 2u), 0.0, op == 1u) * B.cellOn;
   let kept = inMask - loss;
-  // Hatching in screen pixels, so it reads the same at any zoom.
-  let hatch = step(0.5, fract((input.position.x + input.position.y) / 8.0));
+  // Hatching in screen pixels, so it reads the same at any zoom; each stripe's edge antialiased over a
+  // pixel (a triangle wave thresholded with its own screen derivative).
+  let hs = (input.position.x + input.position.y) / 8.0;
+  let hw = max(fwidth(hs), 1e-6) * 0.5;
+  let hatch = select(step(0.5, fract(hs)), smoothstep(0.25 - hw, 0.25 + hw, abs(fract(hs) - 0.5)), B.aa > 0.5);
 
   rgb = mix(rgb, vec3<f32>(1.0, 0.75, 0.1), kept * (1.0 - mark));
   alpha = mix(alpha, 0.5, kept * (1.0 - mark));
@@ -192,6 +236,8 @@ export type BoundaryLayerProps = {
   mask: Float32Array | null;
   /** The op a press would apply, for showing the preview as a change: 0 new, 1 add, 2 subtract, 3 intersect. */
   op: number;
+  /** Quadratic reconstruction and antialiased edges (default), or the bilinear rendering, to compare. */
+  smooth: boolean;
 } & LayerProps;
 
 const defaultProps: DefaultProps<BoundaryLayerProps> = {
@@ -205,6 +251,7 @@ const defaultProps: DefaultProps<BoundaryLayerProps> = {
   cell: { type: "object", value: null, compare: true },
   mask: { type: "object", value: null, compare: true },
   op: { type: "number", value: 0 },
+  smooth: { type: "boolean", value: true },
 };
 
 type Slot = { buf?: Buffer; src?: Float32Array | null };
@@ -242,7 +289,7 @@ export class BoundaryLayer extends Layer<BoundaryLayerProps> {
 
   override draw(): void {
     const { model } = this.state;
-    const { strength, bbox, width, height, theta, opacity, lines, cell, mask, op } = this.props;
+    const { strength, bbox, width, height, theta, opacity, lines, cell, mask, op, smooth } = this.props;
     if (!model || !strength || !bbox || width === 0) return;
     if (this.state.handle !== strength) {
       this.state.wrapped?.destroy();
@@ -266,6 +313,10 @@ export class BoundaryLayer extends Layer<BoundaryLayerProps> {
         cellOn: cell && cell.length === n ? 1 : 0,
         maskOn: mask && mask.length === n ? 1 : 0,
         op,
+        aa: smooth ? 1 : 0,
+        pad0: 0,
+        pad1: 0,
+        pad2: 0,
       },
     });
     model.draw(this.context.renderPass);

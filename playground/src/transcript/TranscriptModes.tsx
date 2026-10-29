@@ -40,7 +40,18 @@ import { MatrixView } from "./MatrixView";
 import { ModeLegend } from "./ModeLegend";
 import { useTranscriptGram } from "./useTranscriptGram";
 import { type MapTool, toolCursor, toolWidgets } from "./wandTools";
-import { apply, discOnRaster, footprint, gridFor, type MaskOp, maskArea, onRaster, sweep, type WorldMask } from "./worldMask";
+import {
+  apply,
+  discOnRaster,
+  footprint,
+  gridFor,
+  type MaskOp,
+  maskArea,
+  onRaster,
+  smoothOutline,
+  sweep,
+  type WorldMask,
+} from "./worldMask";
 import "@deck.gl/widgets/stylesheet.css";
 
 /** A press on the map: deck's click, or the start, moves and end of a drag. */
@@ -274,6 +285,8 @@ export function TranscriptModes() {
   const brushOn = active === "brush";
   /** The brush's radius, in the transcripts' frame (µm), and where it is over the map. */
   const [brushR, setBrushR] = useState(100);
+  /** Draw the mask and preview smoothly (quadratic filter, antialiased), or as before, to compare. */
+  const [smoothEdges, setSmoothEdges] = useState(true);
   const [brushAt, setBrushAt] = useState<readonly [number, number]>();
   const [mainModes, setMainModes] = useState(3);
   const [residualWeight, setResidualWeight] = useState(0);
@@ -641,14 +654,19 @@ export function TranscriptModes() {
     }),
     [device.onDeviceInitialized, painting, press, active, chooseTool],
   );
-  const maskOnMap = useMemo(() => (mask && g && mask.keys.size > 0 ? onRaster(mask, g.res) : null), [mask, g]);
+  /** A 0/1 raster as drawn: with smooth edges, as a smoothed distance field (no pixel staircase). */
+  const drawn = useCallback(
+    (m: Float32Array, res: { width: number; height: number }) => (smoothEdges ? smoothOutline(m, res.width, res.height) : m),
+    [smoothEdges],
+  );
+  const maskOnMap = useMemo(() => (mask && g && mask.keys.size > 0 ? drawn(onRaster(mask, g.res), g.res) : null), [mask, g, drawn]);
   /** What a press would paint, on this window's map: the wand's patch, or the brush's disc. One fill for
    *  both, so the two tools preview alike. */
   const preview = useMemo(() => {
     if (!painting || !g) return null;
-    if (wandOn) return cell?.mask ?? null;
-    return brushOn && brushAt ? discOnRaster(brushAt, brushR, g.res) : null;
-  }, [painting, g, wandOn, cell, brushOn, brushAt, brushR]);
+    const m = wandOn ? cell?.mask : brushOn && brushAt ? discOnRaster(brushAt, brushR, g.res) : undefined;
+    return m ? drawn(m, g.res) : null;
+  }, [painting, g, wandOn, cell, brushOn, brushAt, brushR, drawn]);
 
   const layers = useMemo(
     () =>
@@ -680,6 +698,7 @@ export function TranscriptModes() {
                     // What a press would paint: none under the hand or while Space makes a drag pan.
                     cell: preview,
                     op: OP_INDEX[heldOp],
+                    smooth: smoothEdges,
                     mask: maskOnMap,
                     modelMatrix,
                     pickable: false,
@@ -740,6 +759,7 @@ export function TranscriptModes() {
       boundLines,
       preview,
       heldOp,
+      smoothEdges,
       maskOnMap,
       painting,
       brushOn,
@@ -926,6 +946,11 @@ export function TranscriptModes() {
             )}
             <details>
               <summary>Fine-tune</summary>
+              <label className="check">
+                <input type="checkbox" checked={smoothEdges} onChange={(e) => setSmoothEdges(e.target.checked)} />
+                Smooth edges (outlines from a smoothed distance field, quadratic filter, antialiased; off: the pixel staircase, bilinear, as
+                before)
+              </label>
               <label className="check">
                 <input type="checkbox" checked={boundLines} onChange={(e) => setBoundLines(e.target.checked)} />
                 As thin lines (off: every place above θ)
