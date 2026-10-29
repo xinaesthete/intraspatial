@@ -158,7 +158,8 @@ export function TranscriptModes() {
   // PROTOTYPE: hovering seeds the patch; a click or a drag paints it into the mask. Through refs, so
   // deck's props stay stable.
   const onMapPress = useRef<(phase: PressPhase, x: number | undefined, y: number | undefined, event?: PointerInfo) => void>(undefined);
-  const onMapHover = useRef<(x: number, y: number) => void>(undefined);
+  /** The pointer over the map, or no position when it has left. */
+  const onMapHover = useRef<(x?: number, y?: number) => void>(undefined);
   const press = useCallback(
     (phase: PressPhase) =>
       (info: { coordinate?: number[]; viewport?: { unproject: (xy: number[]) => number[] } }, event?: PointerInfo): void => {
@@ -175,7 +176,7 @@ export function TranscriptModes() {
   const onClick = useMemo(() => press("click"), [press]);
   const onHover = useCallback((info: { coordinate?: number[] }) => {
     const [x, y] = info.coordinate ?? [];
-    if (x !== undefined && y !== undefined) onMapHover.current?.(x, y);
+    onMapHover.current?.(x, y);
   }, []);
 
   const sd = useSpatialData(storeUrl);
@@ -440,7 +441,15 @@ export function TranscriptModes() {
       return seed;
     };
     onMapHover.current = (x, y) => {
-      if (!stroke.current?.open) enter(x, y, false);
+      if (stroke.current?.open) return;
+      // Off the map, or out of the canvas: no preview.
+      if (x === undefined || y === undefined || !pixelAt(x, y)) {
+        if (hovered.current === undefined) return;
+        hovered.current = undefined;
+        setCellSeed(undefined);
+        return;
+      }
+      enter(x, y, false);
     };
     onMapPress.current = (phase, x, y, event) => {
       if (phase === "end") {
@@ -582,7 +591,9 @@ export function TranscriptModes() {
                     height: g.res.height,
                     theta: thetaNow,
                     lines: boundLines,
-                    cell: cell?.mask ?? null,
+                    // The hover preview shows what a press would paint: none under the hand or while
+                    // Space makes a drag pan.
+                    cell: painting ? (cell?.mask ?? null) : null,
                     mask: maskOnMap,
                     modelMatrix,
                     pickable: false,
@@ -616,7 +627,7 @@ export function TranscriptModes() {
               : []),
           ]
         : [],
-    [g, locked, modelMatrix, saturate, chromaWeight, opacity, boundsNow, thetaNow, boundLines, cell, maskOnMap],
+    [g, locked, modelMatrix, saturate, chromaWeight, opacity, boundsNow, thetaNow, boundLines, cell, maskOnMap, painting],
   );
 
   const error = sd.error ?? source.error ?? tiles.error ?? gram.error;
@@ -932,7 +943,12 @@ export function TranscriptModes() {
         <main className="views">
           {/* Always mounted, never keyed: see SpatialDeckView on why deck must outlive a store. */}
           {/* The tool's cursor, over deck's own (which it rewrites on the canvas every frame). */}
-          <div className="tool-cursor" data-tool={painting ? "wand" : "hand"} style={{ "--tool-cursor": cursor } as CSSProperties}>
+          <div
+            className="tool-cursor"
+            data-tool={painting ? "wand" : "hand"}
+            style={{ "--tool-cursor": cursor } as CSSProperties}
+            onPointerLeave={() => onMapHover.current?.()}
+          >
             <SpatialDeckView
               className="deck-canvas"
               sdata={sd.value}
