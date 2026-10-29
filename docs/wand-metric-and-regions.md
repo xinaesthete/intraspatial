@@ -15,8 +15,10 @@ on the transcript modes page.
    `d` to the click → smooth at **σ = 1r** → region around the click where **`∇²d ≥ 0`** → morphological
    **opening at ρ = 0.75r** → the click's piece.
 
-   It is closed by construction, sets its own edge (Xenium: d ≈ 3.4 there), and has two scale
-   settings, both in units of the kernel radius r, and **no similarity threshold**.
+   It is closed by construction, sets its own edge per click, and has two scale settings, both in
+   units of the kernel radius r, and **no similarity threshold**. It is not a tolerance in
+   disguise: its edge d varies from 1.8 to 3.0 across clicks, and no fixed tolerance reproduces it
+   (E7).
 3. **"Everywhere similar" stays `d ≤ tol`.** It is a different question, with a different answer.
 4. **Gram metric:** the q main modes at `1/√λ`, plus the rest at noise level times `w` (PPCA, §2).
    **Boundaries use the main modes only (w = 0):** a derivative amplifies the leftover modes far
@@ -62,6 +64,7 @@ Same window (3.6 × 1.9 mm, map 215 × 111), same click unless noted.
 | ridge lines ≥ θ, fill (Canny/Cumani) | **no**: gaps at junctions | 66–98% of map for any θ | dropped |
 | `∇²d ≥ 0` | yes | 14.6%, a branching network | right edge, wrong shape |
 | + `d ≤ tol` gate | yes | thins to the spine, collapses below tol 3 | dropped |
+| `d ≤ tol` + opening, no ∇²d | yes | none for any tol (E7) | dropped |
 | **+ opening at 0.75r** | yes | **3.3%, compact patch** | **chosen** |
 
 The opening keeps compact cells intact (click 2: 485 → 457 pixels) and cuts branches narrower than
@@ -70,7 +73,18 @@ with r.
 
 ## 4. Exposure (playground)
 
-| Control | Lay line | Default |
+**Presets first, sliders behind "Fine-tune".** The panel shows one choice; touching a slider turns it
+to "Custom".
+
+| Preset | σ | ρ | Lay line |
+|---|---|---|---|
+| **The patch the click is in** (default) | 1r | 0.75r | a compact region of the click's mixture |
+| Follow the tissue | 1r | off | everything connected with the same mixture, branches and all |
+| Fine detail | 0.5r | 0.5r | edges judged at half the radius (untested) |
+
+All presets use q = 3, w = 0, no tolerance.
+
+| Control (fine-tune) | Lay line | Default |
 |---|---|---|
 | Only the patch the click is in | where the difference from the click stops speeding up | on |
 | Smooth the difference first (σ) | the scale at which the edge is judged | 1r |
@@ -82,6 +96,33 @@ with r.
 
 The readout gives the patch's size and **the d along its edge**: the tolerance the rule chose.
 
+## 5. Open: two neighbourhoods at once
+
+Today every scale knob (σ, ρ) acts on one Gram computed at one r. Combining a narrow r₁ and a broad
+r₂ (two Grams over the same window) could be done three ways:
+
+| Option | What d compares | Answers | Cost |
+|---|---|---|---|
+| **A. coarse picks, fine places** | broad r₂ ∇²d cell chooses the patch; narrow r₁ ∇²d moves its edge in (edge focusing) | "this patch, with a sharp edge" | two Grams; the opening is no longer needed (r₂ has no thin branches) |
+| B. stacked channels | `[z(r₁), z(r₂)]`, 2K channels, one Mahalanobis | "same mixture *and* same surroundings" (texture/context) | 2K ≤ 32 channels; corr across scales handles redundancy |
+| C. band-pass | `z(r₁) − z(r₂)` | "same local contrast against its surroundings": a difference of Gaussians, i.e. Marr–Hildreth on the fields | as B, K channels |
+
+**A, tried (E6): not better than the opening.** The broad cell at 3r, intersected with the narrow
+one (the narrow edge allowed 1r outside the broad), then the click's piece. Pinned window 4.7 ×
+1.8 mm, map 285 × 109, % of map:
+
+| Click | narrow | broad (3r) | A | opening 0.75r |
+|---|---|---|---|---|
+| stroma band | 21.0 | 16.5 | 8.9 | 9.4 |
+| epithelium | 44.6 | 52.8 | 3.1 | 4.4 |
+
+On the band A and the opening agree, with A keeping the narrow edge's detail. In epithelium both
+scales say "the whole compartment", which is true, and their intersection breaks into fragments
+wherever the two disagree. So A's patch there is an accident of noise. **A broad r does not
+prune**: a continuous compartment is continuous at every scale. The opening stays the default.
+Two scales remain under "Fine-tune" as an option, not a preset. **B** (same mixture *and* same
+surroundings) asks a genuinely different question and is still untried.
+
 ## Evidence (Xenium 2, 9 channels, r = 50 µm, 2026-10-28)
 
 | # | Experiment | Result |
@@ -91,8 +132,10 @@ The readout gives the patch's size and **the d along its edge**: the tolerance t
 | E3 | ∇²d, σ sweep 0 → 3r | cell 0.2, 3.0, 13.6, 14.6, 18.6, 21.5, 50.4%; plateau at 0.5–1r; edge d 3.2–3.6 throughout |
 | E4 | + tol gate 4 → 1 | 14.4, 13.6, 4.8, 0.3, 0.2, 0.0%: a cliff at the necks |
 | E5 | + opening ρ 0.5 → 2r | 8.8, 3.3, 0.3, 0.4, 0%; compact at 0.75r |
+| E6 | two scales (r, 3r), intersected | matches the opening on the band (8.9 vs 9.4%); fragments in epithelium (3.1%); see §5 |
+| E7 | plain `d ≤ tol` + opening vs the ∇²d cell, 64 clicks on an 8 × 8 grid (7.1 × 3.6 mm, map 429 × 218) | over the 32 tissue clicks: ∇²d edge d 1.8 / 2.1 / 3.0 (p10/p50/p90); median overlap (IoU) 0.01 / 0.14 / 0.21 / 0.06 at tol 1 / 1.5 / 2 / 2.5, and 0.36 even picking the best tol per click; at tol 2 → 2.5 the patch jumps from 2% to 41% of the map (it percolates). The "d ≈ 3.4" of E3 was that window's value, not a constant |
 
-Two clicks in one window of one section. Treat the defaults as provisional.
+E1–E6: two clicks in one window of one section; E7: one grid in a second window. Treat the defaults as provisional.
 
 ## Next
 

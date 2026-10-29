@@ -197,20 +197,21 @@ let ctx:
       project: GPUComputePipeline;
     }>
   | undefined;
-let bufs:
-  | {
-      uni: GPUBuffer;
-      blurUni: GPUBuffer;
-      chan: GPUBuffer;
-      A: GPUBuffer;
-      out: GPUBuffer;
-      staging: GPUBuffer;
-      tmp: GPUBuffer;
-      smooth: GPUBuffer;
-      u: GPUBuffer;
-      uStaging: GPUBuffer;
-    }
-  | undefined;
+type Bufs = {
+  uni: GPUBuffer;
+  blurUni: GPUBuffer;
+  chan: GPUBuffer;
+  A: GPUBuffer;
+  out: GPUBuffer;
+  staging: GPUBuffer;
+  tmp: GPUBuffer;
+  smooth: GPUBuffer;
+  u: GPUBuffer;
+  uStaging: GPUBuffer;
+};
+/** One buffer set per caller-named slot: each slot's `out` is drawn by a layer, so two scales
+ *  computed in turn must not share it. */
+const slots = new Map<string, Bufs>();
 
 function fit(device: GPUDevice, old: GPUBuffer | undefined, size: number, usage: number, label: string): GPUBuffer {
   if (old && old.size >= size) return old;
@@ -233,6 +234,7 @@ export async function boundaryStrength(
   radius: number,
   q: number,
   smoothR: number,
+  slot = "main",
 ): Promise<BoundaryField> {
   ctx ??= (async () => {
     const device = await getDevice();
@@ -260,6 +262,7 @@ export async function boundaryStrength(
     chan[a * 2 + 1] = (sd[a] ?? 0) > 0 ? 1 / sd[a]! : 0;
   }
   const STORAGE = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST;
+  let bufs = slots.get(slot);
   bufs = {
     uni: bufs?.uni ?? device.createBuffer({ label: "boundary:uni", size: 32, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST }),
     blurUni:
@@ -274,6 +277,7 @@ export async function boundaryStrength(
     out: fit(device, bufs?.out, n * 16, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC, "boundary:out"),
     staging: fit(device, bufs?.staging, n * 16, GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST, "boundary:staging"),
   };
+  slots.set(slot, bufs);
   // Raster pixels per kernel radius: the per-pixel strength times this is per radius.
   const pixel = (res.bbox[2] - res.bbox[0]) / width;
   const perR = pixel > 0 ? radius / pixel : 1;
@@ -466,6 +470,8 @@ export function laplacianCell(
   seed: { col: number; row: number },
   smoothR: number,
   tol = 0,
+  /** false: a plain flood fill on `d ≤ tol` (the Laplacian test is skipped). */
+  useLaplacian = true,
 ): { mask: Uint8Array; d: Float32Array; dEdge: number; gated: number } {
   const n = width * height;
   const { u, K } = f;
@@ -501,7 +507,7 @@ export function laplacianCell(
   let gated = 0;
   const visit = (i: number) => {
     if (mask[i] !== 0) return;
-    const curving = lap(i) >= 0;
+    const curving = !useLaplacian || lap(i) >= 0;
     const near = tol <= 0 || raw[i]! <= tol;
     if (curving && near) {
       mask[i] = 1;
@@ -616,4 +622,55 @@ export function openCell(
     }
   }
   return { mask: new Uint8Array(n), moved: true };
+}
+
+/**
+ * Two scales: the broad cell picks the patch, the narrow cell places its edge. The result is the
+ * narrow cell inside the broad one, where the broad one is first grown by `slack` narrow-raster pixels
+ * (its edge is blurred over about r₂, so the narrow edge may sit a little outside it); then the
+ * click's piece. The broad cell may be on a coarser raster over the same bbox; it is sampled
+ * nearest at each narrow pixel's centre.
+ */
+export function focusCell(
+  narrow: Uint8Array,
+  nw: number,
+  nh: number,
+  broad: Uint8Array,
+  bw: number,
+  bh: number,
+  seed: { col: number; row: number },
+  slack: number,
+): Uint8Array {
+  const n = nw * nh;
+  const inBroad = new Uint8Array(n);
+  for (let r = 0; r < nh; r++) {
+    const br = Math.max(0, Math.min(bh - 1, Math.round(((r + 0.5) * bh) / nh - 0.5)));
+    for (let c = 0; c < nw; c++) {
+      const bc = Math.max(0, Math.min(bw - 1, Math.round(((c + 0.5) * bw) / nw - 0.5)));
+      inBroad[r * nw + c] = broad[br * bw + bc]!;
+    }
+  }
+  let grown = inBroad;
+  const R = Math.max(0, slack);
+  if (R >= 0.5) {
+    grown = new Uint8Array(n);
+    const Ri = Math.ceil(R);
+    for (let y = 0; y < nh; y++) {
+      for (let x = 0; x < nw; x++) {
+        if (!inBroad[y * nw + x]) continue;
+        for (let dy = -Ri; dy <= Ri; dy++) {
+          for (let dx = -Ri; dx <= Ri; dx++) {
+            if (dx * dx + dy * dy > R * R) continue;
+            const xx = x + dx;
+            const yy = y + dy;
+            if (xx >= 0 && yy >= 0 && xx < nw && yy < nh) grown[yy * nw + xx] = 1;
+          }
+        }
+      }
+    }
+  }
+  const both = new Uint8Array(n);
+  for (let i = 0; i < n; i++) both[i] = narrow[i]! & grown[i]!;
+  const start = Math.max(0, Math.min(nh - 1, Math.round(seed.row))) * nw + Math.max(0, Math.min(nw - 1, Math.round(seed.col)));
+  return component(both, nw, nh, start);
 }
