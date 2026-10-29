@@ -49,6 +49,28 @@ export function footprint(patch: ArrayLike<number>, res: Raster, cell: number): 
   return out;
 }
 
+/** Add to `out` the grid cells whose centres lie within `r` of the segment from `a` to `b` (a brush
+ *  dab when `a` and `b` coincide): a stroke is swept, so a fast drag leaves no gaps. */
+export function sweep(out: Set<number>, a: readonly [number, number], b: readonly [number, number], r: number, cell: number): void {
+  const dx = b[0] - a[0];
+  const dy = b[1] - a[1];
+  const len2 = dx * dx + dy * dy;
+  const x0 = Math.floor((Math.min(a[0], b[0]) - r) / cell);
+  const x1 = Math.floor((Math.max(a[0], b[0]) + r) / cell);
+  const y0 = Math.floor((Math.min(a[1], b[1]) - r) / cell);
+  const y1 = Math.floor((Math.max(a[1], b[1]) + r) / cell);
+  for (let iy = y0; iy <= y1; iy++) {
+    const cy = (iy + 0.5) * cell;
+    for (let ix = x0; ix <= x1; ix++) {
+      const cx = (ix + 0.5) * cell;
+      const t = len2 > 0 ? Math.max(0, Math.min(1, ((cx - a[0]) * dx + (cy - a[1]) * dy) / len2)) : 0;
+      const ex = cx - (a[0] + t * dx);
+      const ey = cy - (a[1] + t * dy);
+      if (ex * ex + ey * ey <= r * r) out.add(key(ix, iy));
+    }
+  }
+}
+
 /** The grid a new mask takes: the pixel size of the window map it starts on. */
 export const gridFor = (res: Raster): number => (res.bbox[2] - res.bbox[0]) / res.width;
 
@@ -74,6 +96,27 @@ export function onRaster(mask: WorldMask, res: Raster): Float32Array {
     for (let col = 0; col < width; col++) {
       const ix = Math.floor((minX + (col + 0.5) * px) / mask.cell);
       if (mask.keys.has(key(ix, iy))) out[row * width + col] = 1;
+    }
+  }
+  return out;
+}
+
+/** A disc sampled at each pixel centre of `res`, 1 inside: the brush's preview on a window's map. */
+export function discOnRaster(c: readonly [number, number], r: number, res: Raster): Float32Array {
+  const { width, height, bbox } = res;
+  const [minX, minY, maxX, maxY] = bbox;
+  const px = (maxX - minX) / width;
+  const py = (maxY - minY) / height;
+  const out = new Float32Array(width * height);
+  const c0 = Math.max(0, Math.floor((c[0] - r - minX) / px));
+  const c1 = Math.min(width - 1, Math.ceil((c[0] + r - minX) / px));
+  const r0 = Math.max(0, Math.floor((maxY - c[1] - r) / py));
+  const r1 = Math.min(height - 1, Math.ceil((maxY - c[1] + r) / py));
+  for (let row = r0; row <= r1; row++) {
+    const dy = maxY - (row + 0.5) * py - c[1];
+    for (let col = c0; col <= c1; col++) {
+      const dx = minX + (col + 0.5) * px - c[0];
+      if (dx * dx + dy * dy <= r * r) out[row * width + col] = 1;
     }
   }
   return out;

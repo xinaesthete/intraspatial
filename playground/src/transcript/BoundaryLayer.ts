@@ -7,8 +7,9 @@
 //     the interpolated tensor (sign-free), and one Newton step along it, |D|/|D''|, gives the
 //     distance to the crossing, which fwidth turns into screen pixels.
 //
-// A filled cell (the patch under the pointer) is tinted cyan; the persistent mask built from clicks
-// is filled amber, both with a thin outline.
+// The persistent mask built from strokes is filled amber. The preview (what a press would paint: the
+// wand's patch or the brush's disc) is shown as the change it would make, by op: cyan where the mask
+// would grow, red hatching over its amber where it would shrink. Both have a thin outline.
 
 import { type DefaultProps, Layer, type LayerProps, project32 } from "@deck.gl/core";
 import { Buffer } from "@luma.gl/core";
@@ -24,7 +25,8 @@ type BoundaryUniforms = {
   lines: number;
   cellOn: number;
   maskOn: number;
-  pad1: number;
+  /** The op a press would apply: 0 new mask, 1 add, 2 subtract, 3 intersect. */
+  op: number;
 };
 
 const boundaryUniforms: ShaderModule<BoundaryUniforms> = {
@@ -33,7 +35,7 @@ const boundaryUniforms: ShaderModule<BoundaryUniforms> = {
 struct BoundaryUniforms {
   bounds: vec4<f32>,
   width: f32, height: f32, theta: f32, opacity: f32,
-  lines: f32, cellOn: f32, maskOn: f32, pad1: f32,
+  lines: f32, cellOn: f32, maskOn: f32, op: f32,
 };
 @group(0) @binding(auto) var<uniform> B: BoundaryUniforms;
 /** Per pixel: strength, tensor xx, yy, xy. */
@@ -52,7 +54,7 @@ struct BoundaryUniforms {
     lines: "f32",
     cellOn: "f32",
     maskOn: "f32",
-    pad1: "f32",
+    op: "f32",
   },
 };
 
@@ -145,12 +147,27 @@ fn fragmentMain(input: Varyings) -> @location(0) vec4<f32> {
   let mark = select(over, line, B.lines > 0.5);
   rgb = mix(rgb, vec3<f32>(1.0, 0.72, 0.1), mark);
   alpha = mix(alpha, 0.95, mark);
-  rgb = mix(rgb, vec3<f32>(1.0, 0.75, 0.1), inMask * (1.0 - mark));
-  alpha = mix(alpha, 0.5, inMask * (1.0 - mark));
+  // The preview as the change a press would make: what the mask would gain (cyan) and lose (red
+  // hatching over its amber), by op. Where nothing would change only the preview's outline shows.
+  let op = u32(B.op + 0.5);
+  let outside = inCell * (1.0 - inMask);
+  let gain = select(0.0, outside, op <= 1u);
+  // Only while there is a preview: with none, a press would paint nothing.
+  let loss = select(select(inMask * (1.0 - inCell), inMask * inCell, op == 2u), 0.0, op == 1u) * B.cellOn;
+  let kept = inMask - loss;
+  // Hatching in screen pixels, so it reads the same at any zoom.
+  let hatch = step(0.5, fract((input.position.x + input.position.y) / 8.0));
+
+  rgb = mix(rgb, vec3<f32>(1.0, 0.75, 0.1), kept * (1.0 - mark));
+  alpha = mix(alpha, 0.5, kept * (1.0 - mark));
+  let lossInk = loss * (1.0 - mark);
+  rgb = mix(rgb, mix(vec3<f32>(1.0, 0.75, 0.1), vec3<f32>(0.95, 0.15, 0.2), hatch), lossInk);
+  alpha = mix(alpha, mix(0.2, 0.75, hatch), lossInk);
   rgb = mix(rgb, vec3<f32>(1.0, 0.8, 0.2), maskEdge);
   alpha = mix(alpha, 1.0, maskEdge);
-  rgb = mix(rgb, vec3<f32>(0.2, 0.85, 1.0), inCell * (1.0 - mark));
-  alpha = mix(alpha, 0.45, inCell * (1.0 - mark));
+  rgb = mix(rgb, vec3<f32>(0.2, 0.85, 1.0), gain * (1.0 - mark));
+  // A preview, not a selection: light enough that the map under it still reads.
+  alpha = mix(alpha, 0.3, gain * (1.0 - mark));
   rgb = mix(rgb, vec3<f32>(1.0), cellEdge);
   alpha = mix(alpha, 1.0, cellEdge);
   alpha = alpha * B.opacity;
@@ -169,10 +186,12 @@ export type BoundaryLayerProps = {
   theta: number;
   /** Draw zero-crossing lines rather than threshold bands. */
   lines: boolean;
-  /** The filled cell, 1 per pixel inside, or null for none. */
+  /** The preview, 1 per pixel inside, or null for none. */
   cell: Float32Array | null;
   /** The persistent mask on this raster, 1 per pixel inside, or null for none. */
   mask: Float32Array | null;
+  /** The op a press would apply, for showing the preview as a change: 0 new, 1 add, 2 subtract, 3 intersect. */
+  op: number;
 } & LayerProps;
 
 const defaultProps: DefaultProps<BoundaryLayerProps> = {
@@ -185,6 +204,7 @@ const defaultProps: DefaultProps<BoundaryLayerProps> = {
   lines: { type: "boolean", value: true },
   cell: { type: "object", value: null, compare: true },
   mask: { type: "object", value: null, compare: true },
+  op: { type: "number", value: 0 },
 };
 
 type Slot = { buf?: Buffer; src?: Float32Array | null };
@@ -222,7 +242,7 @@ export class BoundaryLayer extends Layer<BoundaryLayerProps> {
 
   override draw(): void {
     const { model } = this.state;
-    const { strength, bbox, width, height, theta, opacity, lines, cell, mask } = this.props;
+    const { strength, bbox, width, height, theta, opacity, lines, cell, mask, op } = this.props;
     if (!model || !strength || !bbox || width === 0) return;
     if (this.state.handle !== strength) {
       this.state.wrapped?.destroy();
@@ -245,7 +265,7 @@ export class BoundaryLayer extends Layer<BoundaryLayerProps> {
         lines: lines ? 1 : 0,
         cellOn: cell && cell.length === n ? 1 : 0,
         maskOn: mask && mask.length === n ? 1 : 0,
-        pad1: 0,
+        op,
       },
     });
     model.draw(this.context.renderPass);

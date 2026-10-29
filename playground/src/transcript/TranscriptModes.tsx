@@ -40,7 +40,7 @@ import { MatrixView } from "./MatrixView";
 import { ModeLegend } from "./ModeLegend";
 import { useTranscriptGram } from "./useTranscriptGram";
 import { type MapTool, toolCursor, toolWidgets } from "./wandTools";
-import { apply, footprint, gridFor, type MaskOp, maskArea, onRaster, type WorldMask } from "./worldMask";
+import { apply, discOnRaster, footprint, gridFor, type MaskOp, maskArea, onRaster, sweep, type WorldMask } from "./worldMask";
 import "@deck.gl/widgets/stylesheet.css";
 
 /** A press on the map: deck's click, or the start, moves and end of a drag. */
@@ -58,6 +58,22 @@ interface Stroke {
   /** The seed whose patch is awaited (the `cellSeed` set for it), if any. Not a flag: a move can land
    *  between a render and its effect, and must not be cleared by the previous patch arriving. */
   want: readonly [number, number] | undefined;
+  /** The brush's last position, the start of the next swept segment. */
+  last?: readonly [number, number];
+}
+
+/** BoundaryLayer's op code. */
+const OP_INDEX: Record<MaskOp, number> = { replace: 0, add: 1, subtract: 2, intersect: 3 };
+
+/** The brush radius scaled by `f`, within 5 µm and 5 mm. */
+const sizeBrush = (r: number, f: number): number => Math.min(5000, Math.max(5, r * f));
+
+/** A closed circle of 64 segments, for a PathLayer. */
+function circle(c: readonly [number, number], r: number): [number, number][] {
+  return Array.from({ length: 65 }, (_, i) => {
+    const t = (i / 64) * 2 * Math.PI;
+    return [c[0] + r * Math.cos(t), c[1] + r * Math.sin(t)];
+  });
 }
 
 /** The raster stack's size on the device, in MiB. `bytesPerWordRatio` of 2 reports what the same
@@ -246,13 +262,19 @@ export function TranscriptModes() {
 
   // PROTOTYPE (docs/wand-metric-and-regions.md, experiment 1): boundary strength in the PPCA metric.
   const [showBounds, setShowBounds] = useState(false);
-  /** The map's tool. The wand needs the boundary field, so choosing it turns that on. */
+  /** The map's tool. The wand needs the boundary field, and the mask is drawn by the boundary layer,
+   *  so choosing either painting tool turns boundaries on; with them off the map is the hand's. */
   const [tool, setTool] = useState<MapTool>("hand");
   const chooseTool = useCallback((t: MapTool) => {
     setTool(t);
-    if (t === "wand") setShowBounds(true);
+    if (t !== "hand") setShowBounds(true);
   }, []);
-  const wandOn = showBounds && tool === "wand";
+  const active: MapTool = showBounds ? tool : "hand";
+  const wandOn = active === "wand";
+  const brushOn = active === "brush";
+  /** The brush's radius, in the transcripts' frame (µm), and where it is over the map. */
+  const [brushR, setBrushR] = useState(100);
+  const [brushAt, setBrushAt] = useState<readonly [number, number]>();
   const [mainModes, setMainModes] = useState(3);
   const [residualWeight, setResidualWeight] = useState(0);
   /** σ, in kernel radii, of the blur the modes after q are differentiated through. */
@@ -394,7 +416,9 @@ export function TranscriptModes() {
   /** The modifier keys held, from the pointer press and from the keyboard: a drag's start event is its
    *  first move, which need not carry them. */
   const pressedWith = useRef({ shift: false, alt: false });
-  const keysHeld = useRef({ shift: false, alt: false });
+  /** `size`: Cmd or Ctrl really held (from the keyboard, so a trackpad pinch, which the browser
+   *  reports as a Ctrl+wheel, still zooms). */
+  const keysHeld = useRef({ shift: false, alt: false, size: false });
   /** The same, as state: the cursor shows the op a press would apply. */
   const [heldOp, setHeldOp] = useState<MaskOp>("replace");
   useEffect(() => {
@@ -402,7 +426,7 @@ export function TranscriptModes() {
       pressedWith.current = { shift: e.shiftKey, alt: e.altKey };
     };
     const key = (e: KeyboardEvent) => {
-      keysHeld.current = { shift: e.shiftKey, alt: e.altKey };
+      keysHeld.current = { shift: e.shiftKey, alt: e.altKey, size: e.metaKey || e.ctrlKey };
       setHeldOp(e.shiftKey && e.altKey ? "intersect" : e.shiftKey ? "add" : e.altKey ? "subtract" : "replace");
     };
     globalThis.addEventListener("pointerdown", press, { capture: true });
@@ -414,15 +438,27 @@ export function TranscriptModes() {
       globalThis.removeEventListener("keyup", key, { capture: true });
     };
   }, []);
+  /** The op a press applies. A drag's start event is its first move, so the keys held when the button
+   *  went down (or on the keyboard) count too. */
+  const opNow = (event?: PointerInfo): MaskOp => {
+    const shift = !!event?.srcEvent?.shiftKey || pressedWith.current.shift || keysHeld.current.shift;
+    const alt = !!event?.srcEvent?.altKey || pressedWith.current.alt || keysHeld.current.alt;
+    return shift && alt ? "intersect" : shift ? "add" : alt ? "subtract" : "replace";
+  };
   /** The map pixel last hovered or painted, so the patch is recomputed only on entering a new one. */
   const hovered = useRef<string>(undefined);
   useEffect(() => {
+    /** The pointer in the transcripts' frame. */
+    const toFrame = (x: number, y: number): readonly [number, number] | undefined => {
+      if (!toElement) return undefined;
+      const m = toElement;
+      return [m.a * x + m.c * y + m.tx, m.b * x + m.d * y + m.ty];
+    };
     /** The pointer's map pixel centre, in the transcripts' frame, or undefined off the map. */
     const pixelAt = (x: number, y: number): readonly [number, number] | undefined => {
-      if (!wandOn || !toElement || !g) return undefined;
-      const m = toElement;
-      const ex = m.a * x + m.c * y + m.tx;
-      const ey = m.b * x + m.d * y + m.ty;
+      const f = toFrame(x, y);
+      if (!wandOn || !f || !g) return undefined;
+      const [ex, ey] = f;
       const { width, height, bbox } = g.res;
       const [minX, minY, maxX, maxY] = bbox;
       const col = Math.floor(((ex - minX) / (maxX - minX)) * width);
@@ -441,6 +477,10 @@ export function TranscriptModes() {
       return seed;
     };
     onMapHover.current = (x, y) => {
+      if (brushOn) {
+        setBrushAt(x === undefined || y === undefined ? undefined : toFrame(x, y));
+        return;
+      }
       if (stroke.current?.open) return;
       // Off the map, or out of the canvas: no preview.
       if (x === undefined || y === undefined || !pixelAt(x, y)) {
@@ -459,6 +499,26 @@ export function TranscriptModes() {
         return;
       }
       if (x === undefined || y === undefined || !g || panning.current) return;
+      if (brushOn) {
+        const p = toFrame(x, y);
+        if (!p) return;
+        setBrushAt(p);
+        let s = stroke.current;
+        if (phase === "move") {
+          if (!s?.open) return;
+        } else {
+          const base = maskNow.current;
+          const op = opNow(event);
+          s = { op, base, cell: base?.cell ?? gridFor(g.res), keys: new Set(), open: phase === "start", want: undefined, last: p };
+          stroke.current = s;
+        }
+        // A swept segment from the last position, so a fast drag leaves no gaps.
+        sweep(s.keys, s.last ?? p, p, brushR, s.cell);
+        s.last = p;
+        setMask(apply(s.base, s.keys, s.cell, s.op));
+        if (!s.open) stroke.current = undefined;
+        return;
+      }
       if (phase === "move") {
         const s = stroke.current;
         const seed = s?.open ? enter(x, y, false) : undefined;
@@ -466,16 +526,13 @@ export function TranscriptModes() {
         return;
       }
       if (!pixelAt(x, y)) return;
-      // A drag's start event is its first move; the keys held when the button went down decide the op.
-      const shift = !!event?.srcEvent?.shiftKey || pressedWith.current.shift || keysHeld.current.shift;
-      const alt = !!event?.srcEvent?.altKey || pressedWith.current.alt || keysHeld.current.alt;
-      const op: MaskOp = shift && alt ? "intersect" : shift ? "add" : alt ? "subtract" : "replace";
+      const op = opNow(event);
       const base = maskNow.current;
       const s: Stroke = { op, base, cell: base?.cell ?? gridFor(g.res), keys: new Set(), open: phase === "start", want: undefined };
       stroke.current = s;
       s.want = enter(x, y, true);
     };
-  }, [wandOn, toElement, g]);
+  }, [wandOn, brushOn, brushR, toElement, g]);
   // Each painted patch lands here once computed: into the stroke's union, then the mask is that union
   // combined with the mask as it was when the stroke began. The mask is judged by one metric, so the
   // first stroke locks the modes: otherwise every pan would change what "similar" means.
@@ -496,16 +553,36 @@ export function TranscriptModes() {
       // Not while typing; a focused checkbox or slider is fine (it is what was last touched).
       const typing = t instanceof HTMLInputElement && !["checkbox", "radio", "range"].includes(t.type);
       if (typing || t instanceof HTMLTextAreaElement) return;
-      if (e.key === "[") setDSmooth((s) => Math.max(0.25, Math.round((s - 0.25) * 4) / 4));
-      else if (e.key === "]") setDSmooth((s) => Math.min(3, Math.round((s + 0.25) * 4) / 4));
+      if (e.key !== "[" && e.key !== "]") return;
+      const grow = e.key === "]";
+      if (brushOn) setBrushR((r) => sizeBrush(r, grow ? 1.25 : 0.8));
+      else if (grow) setDSmooth((s) => Math.min(3, Math.round((s + 0.25) * 4) / 4));
+      else setDSmooth((s) => Math.max(0.25, Math.round((s - 0.25) * 4) / 4));
     };
     globalThis.addEventListener("keydown", on);
     return () => globalThis.removeEventListener("keydown", on);
-  }, [showBounds]);
+  }, [showBounds, brushOn]);
+  // Cmd/Ctrl + scroll sizes the tool (the brush, or the wand's σ) instead of zooming. A native,
+  // non-passive capture listener: it runs before deck's and can stop the zoom.
+  const mapBox = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const el = mapBox.current;
+    if (!el || active === "hand") return;
+    const on = (e: WheelEvent) => {
+      if (!keysHeld.current.size) return;
+      e.preventDefault();
+      e.stopPropagation();
+      const f = Math.exp(-e.deltaY * 0.002);
+      if (active === "brush") setBrushR((r) => sizeBrush(r, f));
+      else setDSmooth((s) => Math.min(3, Math.max(0.25, s * f)));
+    };
+    el.addEventListener("wheel", on, { capture: true, passive: false });
+    return () => el.removeEventListener("wheel", on, { capture: true });
+  }, [active]);
   // Space held: drag pans instead of painting, as Photoshop's temporary hand tool.
   const [spaceHeld, setSpaceHeld] = useState(false);
   useEffect(() => {
-    if (!wandOn) return;
+    if (active === "hand") return;
     const typing = (t: EventTarget | null) =>
       (t instanceof HTMLInputElement && !["checkbox", "radio", "range"].includes(t.type)) || t instanceof HTMLTextAreaElement;
     const down = (e: KeyboardEvent) => {
@@ -531,8 +608,8 @@ export function TranscriptModes() {
       globalThis.removeEventListener("keyup", up);
       globalThis.removeEventListener("blur", blur);
     };
-  }, [wandOn]);
-  // H and W pick the tool, as in Photoshop.
+  }, [active]);
+  // H, W and B pick the tool, as in Photoshop.
   useEffect(() => {
     const on = (e: KeyboardEvent) => {
       const t = e.target;
@@ -540,6 +617,7 @@ export function TranscriptModes() {
       if (t instanceof HTMLInputElement && !["checkbox", "radio", "range"].includes(t.type)) return;
       if (e.key === "h" || e.key === "H") chooseTool("hand");
       else if (e.key === "w" || e.key === "W") chooseTool("wand");
+      else if (e.key === "b" || e.key === "B") chooseTool("brush");
     };
     globalThis.addEventListener("keydown", on);
     return () => globalThis.removeEventListener("keydown", on);
@@ -547,8 +625,9 @@ export function TranscriptModes() {
   // Until this window's field is ready the wand cannot paint, so a drag still pans rather than doing
   // nothing (which reads as broken); the cursor says it is waiting.
   const wandReady = wandOn && !!boundsNow;
-  const painting = wandReady && !spaceHeld;
-  const cursor = wandOn && !wandReady ? "progress" : toolCursor(wandOn ? "wand" : "hand", heldOp, spaceHeld);
+  // The brush needs only a window, for the mask's grid.
+  const painting = (wandReady || (brushOn && !!g)) && !spaceHeld;
+  const cursor = wandOn && !wandReady ? "progress" : toolCursor(active, heldOp, spaceHeld);
   const deckProps = useMemo(
     () => ({
       deviceProps: SHARED_DEVICE_PROPS,
@@ -558,11 +637,18 @@ export function TranscriptModes() {
       onDragStart: press("start"),
       onDrag: press("move"),
       onDragEnd: press("end"),
-      widgets: toolWidgets(wandOn ? "wand" : "hand", chooseTool),
+      widgets: toolWidgets(active, chooseTool),
     }),
-    [device.onDeviceInitialized, painting, press, wandOn, chooseTool],
+    [device.onDeviceInitialized, painting, press, active, chooseTool],
   );
   const maskOnMap = useMemo(() => (mask && g && mask.keys.size > 0 ? onRaster(mask, g.res) : null), [mask, g]);
+  /** What a press would paint, on this window's map: the wand's patch, or the brush's disc. One fill for
+   *  both, so the two tools preview alike. */
+  const preview = useMemo(() => {
+    if (!painting || !g) return null;
+    if (wandOn) return cell?.mask ?? null;
+    return brushOn && brushAt ? discOnRaster(brushAt, brushR, g.res) : null;
+  }, [painting, g, wandOn, cell, brushOn, brushAt, brushR]);
 
   const layers = useMemo(
     () =>
@@ -591,10 +677,25 @@ export function TranscriptModes() {
                     height: g.res.height,
                     theta: thetaNow,
                     lines: boundLines,
-                    // The hover preview shows what a press would paint: none under the hand or while
-                    // Space makes a drag pan.
-                    cell: painting ? (cell?.mask ?? null) : null,
+                    // What a press would paint: none under the hand or while Space makes a drag pan.
+                    cell: preview,
+                    op: OP_INDEX[heldOp],
                     mask: maskOnMap,
+                    modelMatrix,
+                    pickable: false,
+                  }),
+                ]
+              : []),
+            // The brush, as a circle on the map: true to size at any zoom, which a cursor cannot be.
+            ...(brushOn && brushAt && painting
+              ? [
+                  new PathLayer<{ path: [number, number][] }>({
+                    id: "brush-outline",
+                    data: [{ path: circle(brushAt, brushR) }],
+                    getPath: (d) => d.path,
+                    getColor: [255, 255, 255, 230],
+                    getWidth: 1.5,
+                    widthUnits: "pixels",
                     modelMatrix,
                     pickable: false,
                   }),
@@ -627,7 +728,24 @@ export function TranscriptModes() {
               : []),
           ]
         : [],
-    [g, locked, modelMatrix, saturate, chromaWeight, opacity, boundsNow, thetaNow, boundLines, cell, maskOnMap, painting],
+    [
+      g,
+      locked,
+      modelMatrix,
+      saturate,
+      chromaWeight,
+      opacity,
+      boundsNow,
+      thetaNow,
+      boundLines,
+      preview,
+      heldOp,
+      maskOnMap,
+      painting,
+      brushOn,
+      brushAt,
+      brushR,
+    ],
   );
 
   const error = sd.error ?? source.error ?? tiles.error ?? gram.error;
@@ -796,9 +914,9 @@ export function TranscriptModes() {
             </label>
             <p className="hint">{activePreset ? BOUNDARY_PRESETS[activePreset].hint : "Your own settings: pick a preset to go back."}</p>
             <p className="hint">
-              Pick the wand (W) on the map: hover to preview the patch (cyan), click or drag to paint · Shift: add · Alt: subtract ·
-              Shift+Alt: intersect · Space: pan · H: back to the hand · <kbd>[</kbd> <kbd>]</kbd>: smaller / larger patch (σ{" "}
-              {dSmooth.toFixed(2)}r).
+              Pick a tool on the map. Wand (W): hover to preview the patch (cyan), click or drag to paint. Brush (B): drag to paint a disc.
+              Shift: add · Alt: subtract · Shift+Alt: intersect · Space: pan · H: back to the hand · Cmd/Ctrl+scroll or <kbd>[</kbd>{" "}
+              <kbd>]</kbd>: size (wand σ {dSmooth.toFixed(2)}r, brush radius {Math.round(brushR)} µm).
               {mask && mask.keys.size > 0 ? ` Mask: ${(maskArea(mask) / 1e6).toFixed(3)} mm² (amber).` : ""}
             </p>
             {mask && mask.keys.size > 0 && (
@@ -945,7 +1063,8 @@ export function TranscriptModes() {
           {/* The tool's cursor, over deck's own (which it rewrites on the canvas every frame). */}
           <div
             className="tool-cursor"
-            data-tool={painting ? "wand" : "hand"}
+            ref={mapBox}
+            data-tool={painting ? "paint" : "hand"}
             style={{ "--tool-cursor": cursor } as CSSProperties}
             onPointerLeave={() => onMapHover.current?.()}
           >

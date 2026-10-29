@@ -125,8 +125,11 @@ surroundings) asks a genuinely different question and is still untried.
 
 ## 6. Interaction: hover, and a mask built from clicks (prototyped)
 
-Two tools, as deck `IconWidget`s on the map (stateless, so the page owns the tool and H/W stay in
-sync). **Hand** (H, default): drag pans, the map is as it was. **Wand** (W, turns boundaries on):
+Three tools, as deck `IconWidget`s on the map (stateless, so the page owns the tool and H/W/B stay
+in sync). **Hand** (H, default): drag pans, the map is as it was. **Brush** (B): drag paints a disc,
+swept between pointer events so a fast drag leaves no gaps; same ops and Space as the wand; its outline
+is drawn on the map (true to size at any zoom, which a CSS cursor cannot be). **Wand** (W, turns
+boundaries on):
 
 | Input | Effect |
 |---|---|
@@ -137,7 +140,15 @@ sync). **Hand** (H, default): drag pans, the map is as it was. **Wand** (W, turn
 The cursor says what a press will do: a crosshair badged +, − or × with the keys held, a hand when a
 drag pans, "progress" while the window's field is computing (a drag then pans: a wand that can
 neither paint nor pan reads as broken).
-| `[` `]` | patch smaller / larger, through σ in 0.25r steps (E3: the patch grows with σ) |
+| `[` `]`, or Cmd/Ctrl + scroll | size: the wand's σ (E3: the patch grows with σ), or the brush radius |
+
+Cmd/Ctrl counts only when really held (from the keyboard): a trackpad pinch arrives as a Ctrl+wheel
+and must still zoom.
+
+**The preview shows the change, not the footprint.** Before a press, by op: cyan where the mask would
+grow, red hatching over its amber where it would shrink; where nothing would change, only the
+preview's outline. So Shift over existing mask shows no fill (nothing to add), and a plain press shows
+the rest of the mask hatched (it would be replaced).
 
 A drag is one stroke: the patches of the pixels it crosses are unioned, then combined with the mask as
 it was when the stroke began, so intersect means "keep what this stroke covers". A fast drag skips
