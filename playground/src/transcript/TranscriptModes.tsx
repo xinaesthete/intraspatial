@@ -17,7 +17,7 @@ import { type CoLocationModes, radiusToCover } from "../../../src/spatial/gram";
 import { invert2, rectThrough2 } from "../../../src/spatial/ngffTransform";
 import { listImageElements } from "../datasource/imageContext";
 import { DEFAULT_UNTILED_BUDGET, listPointsElements } from "../datasource/pointsTileLoader";
-import { SpatialDeckView } from "../deck/SpatialDeckView";
+import { type PointerInfo, SpatialDeckView } from "../deck/SpatialDeckView";
 import { SHARED_DEVICE_PROPS, useSharedDevice } from "../deck/useSharedDevice";
 import { useAsync, useSettled } from "../hooks/useAsync";
 import { usePointsSource, usePointsTiles, useSpatialData } from "../hooks/useSpatialData";
@@ -39,6 +39,24 @@ import { GramModesLayer } from "./GramModesLayer";
 import { MatrixView } from "./MatrixView";
 import { ModeLegend } from "./ModeLegend";
 import { useTranscriptGram } from "./useTranscriptGram";
+import { apply, footprint, gridFor, type MaskOp, maskArea, onRaster, type WorldMask } from "./worldMask";
+
+/** A press on the map: deck's click, or the start, moves and end of a drag. */
+type PressPhase = "click" | "start" | "move" | "end";
+
+/** A paint stroke: the union of the patches painted since the button went down. */
+interface Stroke {
+  readonly op: MaskOp;
+  /** The mask when the stroke began: the stroke is combined with this, not with itself. */
+  readonly base: WorldMask | undefined;
+  readonly cell: number;
+  readonly keys: Set<number>;
+  /** The button is still down. */
+  open: boolean;
+  /** The seed whose patch is awaited (the `cellSeed` set for it), if any. Not a flag: a move can land
+   *  between a render and its effect, and must not be cleared by the previous patch arriving. */
+  want: readonly [number, number] | undefined;
+}
 
 /** The raster stack's size on the device, in MiB. `bytesPerWordRatio` of 2 reports what the same
  *  stack would cost at f32, which is the comparison the checkbox is making. */
@@ -135,15 +153,27 @@ export function TranscriptModes() {
   const [lock, setLock] = useState<ModeLock>();
 
   const device = useSharedDevice();
-  // PROTOTYPE: a click seeds the ridge-bounded cell. Through a ref, so deck's props stay stable.
-  const onMapClick = useRef<(x: number, y: number) => void>(undefined);
-  const deckProps = useMemo(
-    () => ({ deviceProps: SHARED_DEVICE_PROPS, onDeviceInitialized: device.onDeviceInitialized }),
-    [device.onDeviceInitialized],
+  // PROTOTYPE: hovering seeds the patch; a click or a drag paints it into the mask. Through refs, so
+  // deck's props stay stable.
+  const onMapPress = useRef<(phase: PressPhase, x: number | undefined, y: number | undefined, event?: PointerInfo) => void>(undefined);
+  const onMapHover = useRef<(x: number, y: number) => void>(undefined);
+  const press = useCallback(
+    (phase: PressPhase) =>
+      (info: { coordinate?: number[]; viewport?: { unproject: (xy: number[]) => number[] } }, event?: PointerInfo): void => {
+        // A drag's info is the press-down pick; its current position is the event's.
+        const at =
+          phase === "move" && event?.offsetCenter && info.viewport
+            ? info.viewport.unproject([event.offsetCenter.x, event.offsetCenter.y])
+            : info.coordinate;
+        const [x, y] = at ?? [];
+        onMapPress.current?.(phase, x, y, event);
+      },
+    [],
   );
-  const onClick = useCallback((info: { coordinate?: number[] }) => {
+  const onClick = useMemo(() => press("click"), [press]);
+  const onHover = useCallback((info: { coordinate?: number[] }) => {
     const [x, y] = info.coordinate ?? [];
-    if (x !== undefined && y !== undefined) onMapClick.current?.(x, y);
+    if (x !== undefined && y !== undefined) onMapHover.current?.(x, y);
   }, []);
 
   const sd = useSpatialData(storeUrl);
@@ -340,15 +370,161 @@ export function TranscriptModes() {
     }
     let count = 0;
     for (const v of inside) count += v;
-    return { mask: Float32Array.from(inside), count, total: width * height, dEdge, gated, moved, scales };
+    return { mask: Float32Array.from(inside), seed: cellSeed, count, total: width * height, dEdge, gated, moved, scales };
   }, [boundsNow, g, cellSeed, thetaNow, cellRule, dSmooth, cellTol, cellOpen, twoScale, boundsBroad, gb, focusSlack]);
+  // The persistent mask, on its own grid in the transcripts' frame, and the stroke being painted.
+  const [mask, setMask] = useState<WorldMask>();
+  const maskNow = useRef<WorldMask>(undefined);
   useEffect(() => {
-    onMapClick.current = (x, y) => {
-      if (!showBounds || !toElement) return;
-      const m = toElement;
-      setCellSeed([m.a * x + m.c * y + m.tx, m.b * x + m.d * y + m.ty]);
+    maskNow.current = mask;
+  }, [mask]);
+  const stroke = useRef<Stroke>(undefined);
+  /** Space is held: drags pan, and deck still reports them, so they must not also paint. */
+  const panning = useRef(false);
+  /** The modifier keys held, from the pointer press and from the keyboard: a drag's start event is its
+   *  first move, which need not carry them. */
+  const pressedWith = useRef({ shift: false, alt: false });
+  const keysHeld = useRef({ shift: false, alt: false });
+  useEffect(() => {
+    const press = (e: PointerEvent) => {
+      pressedWith.current = { shift: e.shiftKey, alt: e.altKey };
     };
-  }, [showBounds, toElement]);
+    const key = (e: KeyboardEvent) => {
+      keysHeld.current = { shift: e.shiftKey, alt: e.altKey };
+    };
+    globalThis.addEventListener("pointerdown", press, { capture: true });
+    globalThis.addEventListener("keydown", key, { capture: true });
+    globalThis.addEventListener("keyup", key, { capture: true });
+    return () => {
+      globalThis.removeEventListener("pointerdown", press, { capture: true });
+      globalThis.removeEventListener("keydown", key, { capture: true });
+      globalThis.removeEventListener("keyup", key, { capture: true });
+    };
+  }, []);
+  /** The map pixel last hovered or painted, so the patch is recomputed only on entering a new one. */
+  const hovered = useRef<string>(undefined);
+  useEffect(() => {
+    /** The pointer's map pixel centre, in the transcripts' frame, or undefined off the map. */
+    const pixelAt = (x: number, y: number): readonly [number, number] | undefined => {
+      if (!showBounds || !toElement || !g) return undefined;
+      const m = toElement;
+      const ex = m.a * x + m.c * y + m.tx;
+      const ey = m.b * x + m.d * y + m.ty;
+      const { width, height, bbox } = g.res;
+      const [minX, minY, maxX, maxY] = bbox;
+      const col = Math.floor(((ex - minX) / (maxX - minX)) * width);
+      const row = Math.floor(((maxY - ey) / (maxY - minY)) * height);
+      if (col < 0 || row < 0 || col >= width || row >= height) return undefined;
+      return [minX + ((col + 0.5) / width) * (maxX - minX), maxY - ((row + 0.5) / height) * (maxY - minY)];
+    };
+    /** Seed the patch at the pointer's pixel; the new seed, or undefined when the pixel is unchanged. */
+    const enter = (x: number, y: number, force: boolean): readonly [number, number] | undefined => {
+      const p = pixelAt(x, y);
+      const k = p ? `${p[0]},${p[1]}` : undefined;
+      if (!p || (!force && k === hovered.current)) return undefined;
+      hovered.current = k;
+      const seed: readonly [number, number] = [p[0], p[1]];
+      setCellSeed(seed);
+      return seed;
+    };
+    onMapHover.current = (x, y) => {
+      if (!stroke.current?.open) enter(x, y, false);
+    };
+    onMapPress.current = (phase, x, y, event) => {
+      if (phase === "end") {
+        const s = stroke.current;
+        if (s) s.open = false;
+        if (s && !s.want) stroke.current = undefined;
+        return;
+      }
+      if (x === undefined || y === undefined || !g || panning.current) return;
+      if (phase === "move") {
+        const s = stroke.current;
+        const seed = s?.open ? enter(x, y, false) : undefined;
+        if (s && seed) s.want = seed;
+        return;
+      }
+      if (!pixelAt(x, y)) return;
+      // A drag's start event is its first move; the keys held when the button went down decide the op.
+      const shift = !!event?.srcEvent?.shiftKey || pressedWith.current.shift || keysHeld.current.shift;
+      const alt = !!event?.srcEvent?.altKey || pressedWith.current.alt || keysHeld.current.alt;
+      const op: MaskOp = shift && alt ? "intersect" : shift ? "add" : alt ? "subtract" : "replace";
+      const base = maskNow.current;
+      const s: Stroke = { op, base, cell: base?.cell ?? gridFor(g.res), keys: new Set(), open: phase === "start", want: undefined };
+      stroke.current = s;
+      s.want = enter(x, y, true);
+    };
+  }, [showBounds, toElement, g]);
+  // Each painted patch lands here once computed: into the stroke's union, then the mask is that union
+  // combined with the mask as it was when the stroke began. The mask is judged by one metric, so the
+  // first stroke locks the modes: otherwise every pan would change what "similar" means.
+  useEffect(() => {
+    const s = stroke.current;
+    if (!s?.want || !cell || cell.seed !== s.want || !g) return;
+    s.want = undefined;
+    for (const k of footprint(cell.mask, g.res, s.cell)) s.keys.add(k);
+    setMask(apply(s.base, s.keys, s.cell, s.op));
+    if (!s.open) stroke.current = undefined;
+    if (!lock) setLock({ basis: modeBasis(g.res), modes: g.modes, window: g.window });
+  }, [cell, g, lock]);
+  // [ and ] shrink and grow the patch, through the scale its edge is judged at.
+  useEffect(() => {
+    if (!showBounds) return;
+    const on = (e: KeyboardEvent) => {
+      const t = e.target;
+      // Not while typing; a focused checkbox or slider is fine (it is what was last touched).
+      const typing = t instanceof HTMLInputElement && !["checkbox", "radio", "range"].includes(t.type);
+      if (typing || t instanceof HTMLTextAreaElement) return;
+      if (e.key === "[") setDSmooth((s) => Math.max(0.25, Math.round((s - 0.25) * 4) / 4));
+      else if (e.key === "]") setDSmooth((s) => Math.min(3, Math.round((s + 0.25) * 4) / 4));
+    };
+    globalThis.addEventListener("keydown", on);
+    return () => globalThis.removeEventListener("keydown", on);
+  }, [showBounds]);
+  // Space held: drag pans instead of painting, as Photoshop's temporary hand tool.
+  const [spaceHeld, setSpaceHeld] = useState(false);
+  useEffect(() => {
+    if (!showBounds) return;
+    const typing = (t: EventTarget | null) =>
+      (t instanceof HTMLInputElement && !["checkbox", "radio", "range"].includes(t.type)) || t instanceof HTMLTextAreaElement;
+    const down = (e: KeyboardEvent) => {
+      if (e.key !== " " || typing(e.target)) return;
+      e.preventDefault();
+      panning.current = true;
+      setSpaceHeld(true);
+    };
+    const up = (e: KeyboardEvent) => {
+      if (e.key !== " ") return;
+      panning.current = false;
+      setSpaceHeld(false);
+    };
+    const blur = () => {
+      panning.current = false;
+      setSpaceHeld(false);
+    };
+    globalThis.addEventListener("keydown", down);
+    globalThis.addEventListener("keyup", up);
+    globalThis.addEventListener("blur", blur);
+    return () => {
+      globalThis.removeEventListener("keydown", down);
+      globalThis.removeEventListener("keyup", up);
+      globalThis.removeEventListener("blur", blur);
+    };
+  }, [showBounds]);
+  const painting = showBounds && !spaceHeld;
+  const deckProps = useMemo(
+    () => ({
+      deviceProps: SHARED_DEVICE_PROPS,
+      onDeviceInitialized: device.onDeviceInitialized,
+      // Painting takes the drag; scroll still zooms.
+      controller: { dragPan: !painting },
+      onDragStart: press("start"),
+      onDrag: press("move"),
+      onDragEnd: press("end"),
+    }),
+    [device.onDeviceInitialized, painting, press],
+  );
+  const maskOnMap = useMemo(() => (mask && g && mask.keys.size > 0 ? onRaster(mask, g.res) : null), [mask, g]);
 
   const layers = useMemo(
     () =>
@@ -378,6 +554,7 @@ export function TranscriptModes() {
                     theta: thetaNow,
                     lines: boundLines,
                     cell: cell?.mask ?? null,
+                    mask: maskOnMap,
                     modelMatrix,
                     pickable: false,
                   }),
@@ -410,7 +587,7 @@ export function TranscriptModes() {
               : []),
           ]
         : [],
-    [g, locked, modelMatrix, saturate, chromaWeight, opacity, boundsNow, thetaNow, boundLines, cell],
+    [g, locked, modelMatrix, saturate, chromaWeight, opacity, boundsNow, thetaNow, boundLines, cell, maskOnMap],
   );
 
   const error = sd.error ?? source.error ?? tiles.error ?? gram.error;
@@ -578,9 +755,14 @@ export function TranscriptModes() {
               </select>
             </label>
             <p className="hint">{activePreset ? BOUNDARY_PRESETS[activePreset].hint : "Your own settings: pick a preset to go back."}</p>
-            {cellSeed && (
-              <button type="button" onClick={() => setCellSeed(undefined)}>
-                clear the cell
+            <p className="hint">
+              Hover to preview the patch (cyan). Click or drag to paint: new mask · Shift: add · Alt: subtract · Shift+Alt: intersect · hold
+              Space to pan · <kbd>[</kbd> <kbd>]</kbd>: smaller / larger patch (σ {dSmooth.toFixed(2)}r).
+              {mask && mask.keys.size > 0 ? ` Mask: ${(maskArea(mask) / 1e6).toFixed(3)} mm² (amber).` : ""}
+            </p>
+            {mask && mask.keys.size > 0 && (
+              <button type="button" onClick={() => setMask(undefined)}>
+                clear the mask
               </button>
             )}
             <details>
@@ -728,6 +910,7 @@ export function TranscriptModes() {
             deckProps={deckProps}
             onViewport={setViewport}
             onClick={onClick}
+            onHover={onHover}
             fallbackBounds={fallbackBounds}
           />
           <p className="status">

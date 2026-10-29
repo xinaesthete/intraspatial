@@ -7,7 +7,8 @@
 //     the interpolated tensor (sign-free), and one Newton step along it, |D|/|D''|, gives the
 //     distance to the crossing, which fwidth turns into screen pixels.
 //
-// A filled cell (the ridge-bounded region holding a click) is tinted cyan.
+// A filled cell (the patch under the pointer) is tinted cyan; the persistent mask built from clicks
+// is filled amber, both with a thin outline.
 
 import { type DefaultProps, Layer, type LayerProps, project32 } from "@deck.gl/core";
 import { Buffer } from "@luma.gl/core";
@@ -22,7 +23,7 @@ type BoundaryUniforms = {
   opacity: number;
   lines: number;
   cellOn: number;
-  pad0: number;
+  maskOn: number;
   pad1: number;
 };
 
@@ -32,13 +33,15 @@ const boundaryUniforms: ShaderModule<BoundaryUniforms> = {
 struct BoundaryUniforms {
   bounds: vec4<f32>,
   width: f32, height: f32, theta: f32, opacity: f32,
-  lines: f32, cellOn: f32, pad0: f32, pad1: f32,
+  lines: f32, cellOn: f32, maskOn: f32, pad1: f32,
 };
 @group(0) @binding(auto) var<uniform> B: BoundaryUniforms;
 /** Per pixel: strength, tensor xx, yy, xy. */
 @group(0) @binding(auto) var<storage, read> field: array<vec4<f32>>;
 /** Per pixel: 1 inside the filled cell. */
 @group(0) @binding(auto) var<storage, read> cell: array<f32>;
+/** Per pixel: 1 inside the persistent mask. */
+@group(0) @binding(auto) var<storage, read> mask: array<f32>;
 `,
   uniformTypes: {
     bounds: "vec4<f32>",
@@ -48,7 +51,7 @@ struct BoundaryUniforms {
     opacity: "f32",
     lines: "f32",
     cellOn: "f32",
-    pad0: "f32",
+    maskOn: "f32",
     pad1: "f32",
   },
 };
@@ -87,6 +90,15 @@ fn T(p: vec2<f32>) -> vec4<f32> {
   );
 }
 
+fn maskAt(p: vec2<f32>) -> f32 {
+  let size = vec2<f32>(B.width, B.height);
+  let q = clamp(p, vec2<f32>(0.0), size - vec2<f32>(1.0));
+  let c0 = vec2<u32>(floor(q));
+  let c1 = min(c0 + vec2<u32>(1u), vec2<u32>(size) - vec2<u32>(1u));
+  let f = q - vec2<f32>(c0);
+  return mix(mix(mask[idx(c0)], mask[idx(vec2<u32>(c1.x, c0.y))], f.x), mix(mask[idx(vec2<u32>(c0.x, c1.y))], mask[idx(c1)], f.x), f.y);
+}
+
 fn cellAt(p: vec2<f32>) -> f32 {
   let size = vec2<f32>(B.width, B.height);
   let q = clamp(p, vec2<f32>(0.0), size - vec2<f32>(1.0));
@@ -123,12 +135,20 @@ fn fragmentMain(input: Varyings) -> @location(0) vec4<f32> {
   // The cell's edge as a ~1 px white line: the 0.5 level set of the interpolated mask.
   let cw = max(fwidth(cv), 1e-6);
   let cellEdge = (1.0 - smoothstep(cw * 0.5, cw * 1.5, abs(cv - 0.5))) * B.cellOn;
+  let mv = maskAt(q);
+  let inMask = smoothstep(0.4, 0.6, mv) * B.maskOn;
+  let mw = max(fwidth(mv), 1e-6);
+  let maskEdge = (1.0 - smoothstep(mw * 0.5, mw * 1.5, abs(mv - 0.5))) * B.maskOn;
 
   var rgb = vec3<f32>(1.0);
   var alpha = 0.6 * faint * faint;
   let mark = select(over, line, B.lines > 0.5);
   rgb = mix(rgb, vec3<f32>(1.0, 0.72, 0.1), mark);
   alpha = mix(alpha, 0.95, mark);
+  rgb = mix(rgb, vec3<f32>(1.0, 0.75, 0.1), inMask * (1.0 - mark));
+  alpha = mix(alpha, 0.5, inMask * (1.0 - mark));
+  rgb = mix(rgb, vec3<f32>(1.0, 0.8, 0.2), maskEdge);
+  alpha = mix(alpha, 1.0, maskEdge);
   rgb = mix(rgb, vec3<f32>(0.2, 0.85, 1.0), inCell * (1.0 - mark));
   alpha = mix(alpha, 0.45, inCell * (1.0 - mark));
   rgb = mix(rgb, vec3<f32>(1.0), cellEdge);
@@ -151,6 +171,8 @@ export type BoundaryLayerProps = {
   lines: boolean;
   /** The filled cell, 1 per pixel inside, or null for none. */
   cell: Float32Array | null;
+  /** The persistent mask on this raster, 1 per pixel inside, or null for none. */
+  mask: Float32Array | null;
 } & LayerProps;
 
 const defaultProps: DefaultProps<BoundaryLayerProps> = {
@@ -162,9 +184,11 @@ const defaultProps: DefaultProps<BoundaryLayerProps> = {
   theta: { type: "number", value: 1 },
   lines: { type: "boolean", value: true },
   cell: { type: "object", value: null, compare: true },
+  mask: { type: "object", value: null, compare: true },
 };
 
-type State = { model?: Model; wrapped?: Buffer; handle?: GPUBuffer; cellBuf?: Buffer; cellSrc?: Float32Array | null };
+type Slot = { buf?: Buffer; src?: Float32Array | null };
+type State = { model?: Model; wrapped?: Buffer; handle?: GPUBuffer; cell: Slot; mask: Slot };
 
 export class BoundaryLayer extends Layer<BoundaryLayerProps> {
   static override layerName = "BoundaryLayer";
@@ -185,19 +209,20 @@ export class BoundaryLayer extends Layer<BoundaryLayerProps> {
       vertexCount: 6,
       shaderAssembler: this.context.shaderAssembler,
     });
-    this.setState({ model });
+    this.setState({ model, cell: {}, mask: {} });
   }
 
   override finalizeState(context: Parameters<Layer["finalizeState"]>[0]): void {
     this.state.wrapped?.destroy();
-    this.state.cellBuf?.destroy();
+    this.state.cell.buf?.destroy();
+    this.state.mask.buf?.destroy();
     this.state.model?.destroy();
     super.finalizeState(context);
   }
 
   override draw(): void {
     const { model } = this.state;
-    const { strength, bbox, width, height, theta, opacity, lines, cell } = this.props;
+    const { strength, bbox, width, height, theta, opacity, lines, cell, mask } = this.props;
     if (!model || !strength || !bbox || width === 0) return;
     if (this.state.handle !== strength) {
       this.state.wrapped?.destroy();
@@ -205,18 +230,10 @@ export class BoundaryLayer extends Layer<BoundaryLayerProps> {
       this.state.handle = strength;
       model.setBindings({ field: this.state.wrapped });
     }
-    // Always bound (a zero mask when there is no cell), sized for this raster.
+    // Always bound (a zero mask when there is none), sized for this raster.
     const n = width * height;
-    if (!this.state.cellBuf || this.state.cellBuf.byteLength < n * 4 || this.state.cellSrc !== cell) {
-      const data = cell && cell.length === n ? cell : new Float32Array(n);
-      if (this.state.cellBuf && this.state.cellBuf.byteLength >= data.byteLength) this.state.cellBuf.write(data);
-      else {
-        this.state.cellBuf?.destroy();
-        this.state.cellBuf = this.context.device.createBuffer({ data, usage: Buffer.STORAGE | Buffer.COPY_DST });
-      }
-      this.state.cellSrc = cell;
-      model.setBindings({ cell: this.state.cellBuf });
-    }
+    this.upload(model, "cell", cell, n);
+    this.upload(model, "mask", mask, n);
     const [minX, minY, maxX, maxY] = bbox;
     model.shaderInputs.setProps({
       B: {
@@ -227,10 +244,23 @@ export class BoundaryLayer extends Layer<BoundaryLayerProps> {
         opacity: opacity ?? 1,
         lines: lines ? 1 : 0,
         cellOn: cell && cell.length === n ? 1 : 0,
-        pad0: 0,
+        maskOn: mask && mask.length === n ? 1 : 0,
         pad1: 0,
       },
     });
     model.draw(this.context.renderPass);
+  }
+
+  private upload(model: Model, name: "cell" | "mask", src: Float32Array | null, n: number): void {
+    const slot = this.state[name];
+    if (slot.buf && slot.buf.byteLength >= n * 4 && slot.src === src) return;
+    const data = src && src.length === n ? src : new Float32Array(n);
+    if (slot.buf && slot.buf.byteLength >= data.byteLength) slot.buf.write(data);
+    else {
+      slot.buf?.destroy();
+      slot.buf = this.context.device.createBuffer({ data, usage: Buffer.STORAGE | Buffer.COPY_DST });
+    }
+    slot.src = src;
+    model.setBindings({ [name]: slot.buf });
   }
 }

@@ -123,6 +123,37 @@ prune**: a continuous compartment is continuous at every scale. The opening stay
 Two scales remain under "Fine-tune" as an option, not a preset. **B** (same mixture *and* same
 surroundings) asks a genuinely different question and is still untried.
 
+## 6. Interaction: hover, and a mask built from clicks (prototyped)
+
+| Input | Effect |
+|---|---|
+| hover | the patch under the pointer, recomputed only when the pointer enters a new map pixel |
+| click or drag (paint) | new mask; with Shift / Alt / Shift+Alt: add / subtract / intersect (Photoshop's bindings) |
+| Space + drag | pan (Photoshop's temporary hand tool); scroll still zooms |
+| `[` `]` | patch smaller / larger, through σ in 0.25r steps (E3: the patch grows with σ) |
+
+A drag is one stroke: the patches of the pixels it crosses are unioned, then combined with the mask as
+it was when the stroke began, so intersect means "keep what this stroke covers". A fast drag skips
+pixels between renders; patches are much larger than pixels, so the gaps fill in.
+
+- **The mask lives on its own grid in the transcripts' frame** (`worldMask.ts`), at the first window's
+  pixel size. Window maps are rebuilt on every pan, so each patch is carried onto the grid and the mask
+  back onto whatever map is showing. Polygons from its outline are the natural MDV form; not done.
+- **The first commit locks the modes**: the metric is fitted per window, so without it each addition
+  after a pan would use a different "similar".
+
+Cost per patch, CPU (Node, one thread), 3 modes, r = 3 px:
+
+| Map | d + smooth + ∇²d fill | opening | total |
+|---|---|---|---|
+| 419 × 156 (today's windows) | 12.8 ms | 3.8 ms | ~17 ms |
+| 1000 × 1000 | 192 ms | 56 ms | ~250 ms |
+| 2000 × 2000 | 870 ms | 261 ms | ~1.1 s |
+
+The smoothing dominates. Everything but the flood fill is per-pixel and would move to GPU passes; the
+fill is ~2 ms per million pixels. Hover is affordable on the main thread at today's sizes; past
+~1000² it needs those GPU passes, a worker, or a half-resolution preview.
+
 ## Evidence (Xenium 2, 9 channels, r = 50 µm, 2026-10-28)
 
 | # | Experiment | Result |
@@ -141,5 +172,6 @@ E1–E6: two clicks in one window of one section; E7: one grid in a second windo
 
 1. Repeat E3/E5 over more windows, sections and radii: is the 0.5–1r plateau, and ρ = 0.75r, general?
 2. Does w > 0 change the ∇²d patch? Untested.
-3. Move the rule into the real wand (`useWand`, `wandRegion.ts`), replacing "only the patch" with it.
+3. Move the rule into the real wand (`useWand`, `wandRegion.ts`), replacing "only the patch" with it,
+   with §6's hover and mask.
 4. A second comparator (image channels) to check that the rule does not depend on the Gram metric.

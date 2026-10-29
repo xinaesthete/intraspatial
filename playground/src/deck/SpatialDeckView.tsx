@@ -14,6 +14,13 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { Rect } from "../../../src/datasource/points";
 import { useElementSize } from "../hooks/useElementSize";
 
+/** The part of deck's pointer event a page needs: which modifier keys were held. */
+export interface PointerInfo {
+  readonly srcEvent?: { readonly shiftKey?: boolean; readonly altKey?: boolean };
+  /** The pointer in canvas pixels: drag events carry the press-down pick, so this is where it is now. */
+  readonly offsetCenter?: { readonly x: number; readonly y: number };
+}
+
 interface Props {
   /** Absent while a store opens: deck stays up, with nothing from sd.js to draw. */
   readonly sdata: SpatialData | undefined;
@@ -27,7 +34,9 @@ interface Props {
   readonly onViewport?: (r: Rect) => void;
   /** A click on the canvas, with the world-frame coordinate under it. Not in `deckProps`: the
    *  viewer sets deck's `onClick` from its own prop, which would override one there. */
-  readonly onClick?: (info: { coordinate?: number[] }) => void;
+  readonly onClick?: (info: { coordinate?: number[] }, event?: PointerInfo) => void;
+  /** The pointer moving over the canvas, as `onClick`. */
+  readonly onHover?: (info: { coordinate?: number[] }, event?: PointerInfo) => void;
   /** What to frame when no sd.js layer has bounds — e.g. a store with no image — in the world frame. */
   readonly fallbackBounds?: Rect;
   readonly className?: string;
@@ -59,6 +68,7 @@ export function SpatialDeckView({
   deckProps,
   onViewport,
   onClick,
+  onHover,
   fallbackBounds,
   className,
 }: Props) {
@@ -129,6 +139,7 @@ export function SpatialDeckView({
           vivLayerProps={renderer.vivLayerProps.length > 0 ? renderer.vivLayerProps : undefined}
           deckProps={deckProps}
           onClick={onClick}
+          onHover={onHover}
         />
       ) : (
         <p className="status">{isBlocking ? "Loading image…" : "Framing view…"}</p>
