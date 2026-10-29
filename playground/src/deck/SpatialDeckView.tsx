@@ -121,8 +121,16 @@ export function SpatialDeckView({
     fallbackBounds,
   ]);
 
+  // Only when the rectangle moves: deck reports a fresh view state on every gesture start (a drag that
+  // doesn't pan, say), and a page that reanalyses its window per rectangle would redo the work.
+  const reported = useRef<Rect>(undefined);
   useEffect(() => {
-    if (viewState && width > 0 && height > 0) onViewport?.(visibleRect(viewState, width, height));
+    if (!viewState || width <= 0 || height <= 0) return;
+    const r = visibleRect(viewState, width, height);
+    const p = reported.current;
+    if (p && p.minX === r.minX && p.minY === r.minY && p.maxX === r.maxX && p.maxY === r.maxY) return;
+    reported.current = r;
+    onViewport?.(r);
   }, [viewState, width, height, onViewport]);
 
   return (
