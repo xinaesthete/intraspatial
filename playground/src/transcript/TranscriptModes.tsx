@@ -45,7 +45,10 @@ import {
   discOnRaster,
   footprint,
   gridFor,
+  islandAt,
   type MaskOp,
+  matchingPiece,
+  type PressOp,
   maskArea,
   onRaster,
   smoothOutline,
@@ -60,6 +63,8 @@ type PressPhase = "click" | "start" | "move" | "end";
 /** A paint stroke: the union of the patches painted since the button went down. */
 interface Stroke {
   readonly op: MaskOp;
+  /** Removing whole pieces (Cmd/Ctrl+Alt), not what matches the patch. */
+  readonly piece?: boolean;
   /** The mask when the stroke began: the stroke is combined with this, not with itself. */
   readonly base: WorldMask | undefined;
   readonly cell: number;
@@ -73,8 +78,12 @@ interface Stroke {
   last?: readonly [number, number];
 }
 
+/** The op for the keys held: Shift add, Alt subtract, both intersect; Cmd/Ctrl+Alt removes a piece. */
+const pressOp = (shift: boolean, alt: boolean, cmd: boolean): PressOp =>
+  alt && cmd ? "piece" : shift && alt ? "intersect" : shift ? "add" : alt ? "subtract" : "replace";
+
 /** BoundaryLayer's op code. */
-const OP_INDEX: Record<MaskOp, number> = { replace: 0, add: 1, subtract: 2, intersect: 3 };
+const OP_INDEX: Record<PressOp, number> = { replace: 0, add: 1, subtract: 2, intersect: 3, piece: 2 };
 
 /** The brush radius scaled by `f`, within 5 µm and 5 mm. */
 const sizeBrush = (r: number, f: number): number => Math.min(5000, Math.max(5, r * f));
@@ -433,14 +442,14 @@ export function TranscriptModes() {
    *  reports as a Ctrl+wheel, still zooms). */
   const keysHeld = useRef({ shift: false, alt: false, size: false });
   /** The same, as state: the cursor shows the op a press would apply. */
-  const [heldOp, setHeldOp] = useState<MaskOp>("replace");
+  const [heldOp, setHeldOp] = useState<PressOp>("replace");
   useEffect(() => {
     const press = (e: PointerEvent) => {
       pressedWith.current = { shift: e.shiftKey, alt: e.altKey };
     };
     const key = (e: KeyboardEvent) => {
       keysHeld.current = { shift: e.shiftKey, alt: e.altKey, size: e.metaKey || e.ctrlKey };
-      setHeldOp(e.shiftKey && e.altKey ? "intersect" : e.shiftKey ? "add" : e.altKey ? "subtract" : "replace");
+      setHeldOp(pressOp(e.shiftKey, e.altKey, e.metaKey || e.ctrlKey));
     };
     globalThis.addEventListener("pointerdown", press, { capture: true });
     globalThis.addEventListener("keydown", key, { capture: true });
@@ -453,10 +462,10 @@ export function TranscriptModes() {
   }, []);
   /** The op a press applies. A drag's start event is its first move, so the keys held when the button
    *  went down (or on the keyboard) count too. */
-  const opNow = (event?: PointerInfo): MaskOp => {
+  const opNow = (event?: PointerInfo): PressOp => {
     const shift = !!event?.srcEvent?.shiftKey || pressedWith.current.shift || keysHeld.current.shift;
     const alt = !!event?.srcEvent?.altKey || pressedWith.current.alt || keysHeld.current.alt;
-    return shift && alt ? "intersect" : shift ? "add" : alt ? "subtract" : "replace";
+    return pressOp(shift, alt, keysHeld.current.size);
   };
   /** The map pixel last hovered or painted, so the patch is recomputed only on entering a new one. */
   const hovered = useRef<string>(undefined);
@@ -521,7 +530,9 @@ export function TranscriptModes() {
           if (!s?.open) return;
         } else {
           const base = maskNow.current;
-          const op = opNow(event);
+          // The brush's subtract already removes exactly what it touches: "piece" is the same here.
+          const pressed = opNow(event);
+          const op = pressed === "piece" ? "subtract" : pressed;
           s = { op, base, cell: base?.cell ?? gridFor(g.res), keys: new Set(), open: phase === "start", want: undefined, last: p };
           stroke.current = s;
         }
@@ -532,6 +543,35 @@ export function TranscriptModes() {
         if (!s.open) stroke.current = undefined;
         return;
       }
+      // Cmd/Ctrl+Alt removes the mask's connected pieces the pointer touches, whatever their mixture:
+      // a click on a blob deletes the blob.
+      const removing = phase === "move" ? !!stroke.current?.piece : opNow(event) === "piece";
+      if (removing) {
+        const p = pixelAt(x, y);
+        let s = stroke.current;
+        if (phase === "move") {
+          if (!s?.open) return;
+        } else {
+          const base = maskNow.current;
+          s = {
+            op: "subtract",
+            piece: true,
+            base,
+            cell: base?.cell ?? gridFor(g.res),
+            keys: new Set(),
+            open: phase === "start",
+            want: undefined,
+          };
+          stroke.current = s;
+        }
+        if (p) {
+          enter(x, y, phase !== "move");
+          for (const k of islandAt(s.base, p)) s.keys.add(k);
+          setMask(apply(s.base, s.keys, s.cell, s.op));
+        }
+        if (!s.open) stroke.current = undefined;
+        return;
+      }
       if (phase === "move") {
         const s = stroke.current;
         const seed = s?.open ? enter(x, y, false) : undefined;
@@ -539,7 +579,8 @@ export function TranscriptModes() {
         return;
       }
       if (!pixelAt(x, y)) return;
-      const op = opNow(event);
+      const pressed = opNow(event);
+      const op = pressed === "piece" ? "subtract" : pressed;
       const base = maskNow.current;
       const s: Stroke = { op, base, cell: base?.cell ?? gridFor(g.res), keys: new Set(), open: phase === "start", want: undefined };
       stroke.current = s;
@@ -553,7 +594,10 @@ export function TranscriptModes() {
     const s = stroke.current;
     if (!s?.want || !cell || cell.seed !== s.want || !g) return;
     s.want = undefined;
-    for (const k of footprint(cell.mask, g.res, s.cell)) s.keys.add(k);
+    // Subtract removes only what matches the patch and is connected to the sampled point.
+    const touched =
+      s.op === "subtract" ? matchingPiece(s.base, cell.mask, g.res, cell.seed ?? [0, 0]) : footprint(cell.mask, g.res, s.cell);
+    for (const k of touched) s.keys.add(k);
     setMask(apply(s.base, s.keys, s.cell, s.op));
     if (!s.open) stroke.current = undefined;
     if (!lock) setLock({ basis: modeBasis(g.res), modes: g.modes, window: g.window });
@@ -664,9 +708,23 @@ export function TranscriptModes() {
    *  both, so the two tools preview alike. */
   const preview = useMemo(() => {
     if (!painting || !g) return null;
-    const m = wandOn ? cell?.mask : brushOn && brushAt ? discOnRaster(brushAt, brushR, g.res) : undefined;
+    // The wand's removals preview what they would take: the whole piece under the pointer, or the part
+    // of it that matches the patch and is connected to the pointer.
+    const piece =
+      wandOn && cellSeed && heldOp === "piece"
+        ? islandAt(mask, cellSeed)
+        : wandOn && cellSeed && heldOp === "subtract" && cell
+          ? matchingPiece(mask, cell.mask, g.res, cellSeed)
+          : undefined;
+    const m = piece
+      ? onRaster({ cell: mask?.cell ?? 1, keys: piece }, g.res)
+      : wandOn
+        ? cell?.mask
+        : brushOn && brushAt
+          ? discOnRaster(brushAt, brushR, g.res)
+          : undefined;
     return m ? drawn(m, g.res) : null;
-  }, [painting, g, wandOn, cell, brushOn, brushAt, brushR, drawn]);
+  }, [painting, g, wandOn, heldOp, cellSeed, mask, cell, brushOn, brushAt, brushR, drawn]);
 
   const layers = useMemo(
     () =>
@@ -935,8 +993,9 @@ export function TranscriptModes() {
             <p className="hint">{activePreset ? BOUNDARY_PRESETS[activePreset].hint : "Your own settings: pick a preset to go back."}</p>
             <p className="hint">
               Pick a tool on the map. Wand (W): hover to preview the patch (cyan), click or drag to paint. Brush (B): drag to paint a disc.
-              Shift: add · Alt: subtract · Shift+Alt: intersect · Space: pan · H: back to the hand · Cmd/Ctrl+scroll or <kbd>[</kbd>{" "}
-              <kbd>]</kbd>: size (wand σ {dSmooth.toFixed(2)}r, brush radius {Math.round(brushR)} µm).
+              Shift: add · Alt: subtract what matches · Cmd/Ctrl+Alt: remove the piece · Shift+Alt: intersect · Space: pan · H: back to the
+              hand · Cmd/Ctrl+scroll or <kbd>[</kbd> <kbd>]</kbd>: size (wand σ {dSmooth.toFixed(2)}r, brush radius {Math.round(brushR)}{" "}
+              µm).
               {mask && mask.keys.size > 0 ? ` Mask: ${(maskArea(mask) / 1e6).toFixed(3)} mm² (amber).` : ""}
             </p>
             {mask && mask.keys.size > 0 && (

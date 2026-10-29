@@ -2,7 +2,7 @@
 // (drag paints a disc), as deck widgets, and a cursor that says what a press will do before it happens.
 
 import { IconWidget } from "@deck.gl/widgets";
-import type { MaskOp } from "./worldMask";
+import type { PressOp } from "./worldMask";
 
 export type MapTool = "hand" | "wand" | "brush";
 
@@ -52,21 +52,22 @@ export function toolWidgets(tool: MapTool, choose: (tool: MapTool) => void): Ico
   ];
 }
 
-const BADGE: Record<MaskOp, string> = {
+const BADGE: Record<PressOp, string> = {
   replace: "",
   add: '<path d="M22 25h8M26 21v8"/>',
   subtract: '<path d="M22 25h8"/>',
   intersect: '<path d="M23 22l6 6M29 22l-6 6"/>',
+  piece: '<circle cx="26" cy="25" r="4.5"/><path d="M23.5 25h5"/>',
 };
 
 /** A crosshair with the op's badge, drawn twice (dark under light) so it reads on any background. */
-function wandCursor(op: MaskOp): string {
+function wandCursor(op: PressOp): string {
   const marks = `<path d="M16 3v9M16 20v9M3 16h9M20 16h9"/><circle cx="16" cy="16" r="1.2"/>${BADGE[op]}`;
   const body = `<g fill="none" stroke-linecap="round"><g stroke="#000" stroke-width="3.5">${marks}</g><g stroke="#fff" stroke-width="1.5">${marks}</g></g>`;
   return `url("${svg(body, 32)}") 16 16, crosshair`;
 }
 
 /** The cursor for the tool and the keys held. Space in a painting tool is Photoshop's temporary hand. */
-export function toolCursor(tool: MapTool, op: MaskOp, space: boolean): string {
+export function toolCursor(tool: MapTool, op: PressOp, space: boolean): string {
   return tool === "hand" || space ? "grab" : wandCursor(op);
 }

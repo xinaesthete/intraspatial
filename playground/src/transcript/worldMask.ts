@@ -18,6 +18,8 @@ export interface WorldMask {
 }
 
 export type MaskOp = "replace" | "add" | "subtract" | "intersect";
+/** What a press does: a mask op, or "piece", removing the whole connected piece under the pointer. */
+export type PressOp = MaskOp | "piece";
 
 const OFFSET = 2 ** 20;
 const key = (ix: number, iy: number) => (ix + OFFSET) * 2 ** 21 + (iy + OFFSET);
@@ -69,6 +71,42 @@ export function sweep(out: Set<number>, a: readonly [number, number], b: readonl
       if (ex * ex + ey * ey <= r * r) out.add(key(ix, iy));
     }
   }
+}
+
+/** The mask's connected piece (4-connected on its grid) holding point `p`, or an empty set when `p`
+ *  is outside the mask: what the wand's subtract removes. */
+export function islandAt(mask: WorldMask | undefined, p: readonly [number, number]): Set<number> {
+  const out = new Set<number>();
+  if (!mask) return out;
+  const start = key(Math.floor(p[0] / mask.cell), Math.floor(p[1] / mask.cell));
+  if (!mask.keys.has(start)) return out;
+  const COL = 2 ** 21; // a step in ix; a step in iy is 1
+  const queue = [start];
+  out.add(start);
+  while (queue.length > 0) {
+    const k = queue.pop()!;
+    for (const n of [k + 1, k - 1, k + COL, k - COL]) {
+      if (mask.keys.has(n) && !out.has(n)) {
+        out.add(n);
+        queue.push(n);
+      }
+    }
+  }
+  return out;
+}
+
+/** What the wand's subtract removes: the part of the mask that matches the patch (`patch` on `res`)
+ *  and is connected, within that overlap, to the sampled point. */
+export function matchingPiece(
+  mask: WorldMask | undefined,
+  patch: ArrayLike<number>,
+  res: Raster,
+  p: readonly [number, number],
+): Set<number> {
+  if (!mask) return new Set();
+  const overlap = new Set<number>();
+  for (const k of footprint(patch, res, mask.cell)) if (mask.keys.has(k)) overlap.add(k);
+  return islandAt({ cell: mask.cell, keys: overlap }, p);
 }
 
 /** The grid a new mask takes: the pixel size of the window map it starts on. */

@@ -135,6 +135,8 @@ boundaries on):
 |---|---|
 | hover | the patch under the pointer, recomputed only when the pointer enters a new map pixel |
 | click or drag (paint) | new mask; with Shift / Alt / Shift+Alt: add / subtract / intersect (Photoshop's bindings) |
+| Alt + click or drag (wand) | subtract what matches the patch *and* is connected, within that overlap, to the point |
+| Cmd/Ctrl + Alt + click or drag | remove the whole connected piece of the mask under the pointer, whatever its mixture |
 | Space + drag | pan (Photoshop's temporary hand tool); scroll still zooms |
 
 The cursor says what a press will do: a crosshair badged +, − or × with the keys held, a hand when a
