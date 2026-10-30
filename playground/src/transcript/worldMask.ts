@@ -186,7 +186,7 @@ function edt1(f: Float64Array, n: number, d: Float64Array, v: Int32Array, z: Flo
 }
 
 /** Euclidean distance (pixels) from each pixel to the nearest pixel where `target` holds. */
-function distanceTo(target: (i: number) => boolean, width: number, height: number): Float64Array {
+export function distanceTo(target: (i: number) => boolean, width: number, height: number): Float64Array {
   const BIG = 1e12;
   const n = Math.max(width, height);
   const f = new Float64Array(n);

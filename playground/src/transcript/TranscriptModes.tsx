@@ -55,6 +55,7 @@ import {
   sweep,
   type WorldMask,
 } from "./worldMask";
+import { gradedCell } from "./gradedNecks";
 import "@deck.gl/widgets/stylesheet.css";
 
 /** A press on the map: deck's click, or the start, moves and end of a drag. */
@@ -332,6 +333,10 @@ export function TranscriptModes() {
   const [cellTol, setCellTol] = useState(0);
   /** Opening radius, in kernel radii: parts of the cell narrower than this are dropped; 0 = off. */
   const [cellOpen, setCellOpen] = useState(0.75);
+  /** The opening graded by neck width (a lobe fades as its neck narrows), or the binary opening.
+   *  Off by default: on real data the fill behind a small patch has often percolated over most of the
+   *  map, and grading shows that cluster faintly, which swings more than the binary pops (E8). */
+  const [gradedNecks, setGradedNecks] = useState(false);
   const [twoScale, setTwoScale] = useState(false);
   const [broadFactor, setBroadFactor] = useState(3);
   const [focusSlack, setFocusSlack] = useState(1);
@@ -404,6 +409,8 @@ export function TranscriptModes() {
     let dEdge: number | undefined;
     let gated: number | undefined;
     let moved = false;
+    let weight: Float32Array | undefined;
+    let support: Float32Array | undefined;
     let scales: { broad: number; narrow: number } | undefined;
     if (cellRule !== "ridges") {
       const lap = cellRule === "laplacian";
@@ -418,14 +425,19 @@ export function TranscriptModes() {
         scales = { broad: share(broad), narrow: share(inside) };
         inside = focusCell(inside, width, height, broad, bw, bh, { col, row }, focusSlack * boundsNow.field.perR);
       }
-      ({ mask: inside, moved } = openCell(inside, width, height, { col, row }, cellOpen * boundsNow.field.perR));
+      const rho = cellOpen * boundsNow.field.perR;
+      if (gradedNecks && rho >= 0.5) {
+        const start = Math.max(0, Math.min(height - 1, Math.round(row))) * width + Math.max(0, Math.min(width - 1, Math.round(col)));
+        ({ weight, support, mask: inside } = gradedCell(inside, width, height, { col, row }, rho));
+        moved = !inside[start];
+      } else ({ mask: inside, moved } = openCell(inside, width, height, { col, row }, rho));
     } else {
       inside = ridgeCell(ridges(boundsNow.field.field, width, height, thetaNow), width, height, { col, row });
     }
     let count = 0;
     for (const v of inside) count += v;
-    return { mask: Float32Array.from(inside), seed: cellSeed, count, total: width * height, dEdge, gated, moved, scales };
-  }, [boundsNow, g, cellSeed, thetaNow, cellRule, dSmooth, cellTol, cellOpen, twoScale, boundsBroad, gb, focusSlack]);
+    return { mask: Float32Array.from(inside), weight, support, seed: cellSeed, count, total: width * height, dEdge, gated, moved, scales };
+  }, [boundsNow, g, cellSeed, thetaNow, cellRule, dSmooth, cellTol, cellOpen, gradedNecks, twoScale, boundsBroad, gb, focusSlack]);
   // The persistent mask, on its own grid in the transcripts' frame, and the stroke being painted.
   const [mask, setMask] = useState<WorldMask>();
   const maskNow = useRef<WorldMask>(undefined);
@@ -467,7 +479,7 @@ export function TranscriptModes() {
     const alt = !!event?.srcEvent?.altKey || pressedWith.current.alt || keysHeld.current.alt;
     return pressOp(shift, alt, keysHeld.current.size);
   };
-  /** The map pixel last hovered or painted, so the patch is recomputed only on entering a new one. */
+  /** The point last hovered or painted, to a quarter map pixel, so a still pointer recomputes nothing. */
   const hovered = useRef<string>(undefined);
   useEffect(() => {
     /** The pointer in the transcripts' frame. */
@@ -476,22 +488,20 @@ export function TranscriptModes() {
       const m = toElement;
       return [m.a * x + m.c * y + m.tx, m.b * x + m.d * y + m.ty];
     };
-    /** The pointer's map pixel centre, in the transcripts' frame, or undefined off the map. */
+    /** The pointer in the transcripts' frame, or undefined off the map. Not snapped to a map pixel:
+     *  the seed's mixture is interpolated there, so the patch follows the pointer smoothly. */
     const pixelAt = (x: number, y: number): readonly [number, number] | undefined => {
       const f = toFrame(x, y);
       if (!wandOn || !f || !g) return undefined;
-      const [ex, ey] = f;
-      const { width, height, bbox } = g.res;
-      const [minX, minY, maxX, maxY] = bbox;
-      const col = Math.floor(((ex - minX) / (maxX - minX)) * width);
-      const row = Math.floor(((maxY - ey) / (maxY - minY)) * height);
-      if (col < 0 || row < 0 || col >= width || row >= height) return undefined;
-      return [minX + ((col + 0.5) / width) * (maxX - minX), maxY - ((row + 0.5) / height) * (maxY - minY)];
+      const [minX, minY, maxX, maxY] = g.res.bbox;
+      if (f[0] < minX || f[0] >= maxX || f[1] <= minY || f[1] > maxY) return undefined;
+      return f;
     };
-    /** Seed the patch at the pointer's pixel; the new seed, or undefined when the pixel is unchanged. */
+    /** Seed the patch at the pointer; the new seed, or undefined when it has not moved a quarter pixel. */
     const enter = (x: number, y: number, force: boolean): readonly [number, number] | undefined => {
       const p = pixelAt(x, y);
-      const k = p ? `${p[0]},${p[1]}` : undefined;
+      const q = g ? (4 * g.res.width) / (g.res.bbox[2] - g.res.bbox[0]) : 1;
+      const k = p ? `${Math.round(p[0] * q)},${Math.round(p[1] * q)}` : undefined;
       if (!p || (!force && k === hovered.current)) return undefined;
       hovered.current = k;
       const seed: readonly [number, number] = [p[0], p[1]];
@@ -716,14 +726,19 @@ export function TranscriptModes() {
         : wandOn && cellSeed && heldOp === "subtract" && cell
           ? matchingPiece(mask, cell.mask, g.res, cellSeed)
           : undefined;
+    // The wand's plain patch with graded necks: its whole support, faded by membership (a press
+    // paints where that is at least a half).
+    const graded = !piece && wandOn && cell?.support && cell.weight ? cell : undefined;
     const m = piece
       ? onRaster({ cell: mask?.cell ?? 1, keys: piece }, g.res)
-      : wandOn
-        ? cell?.mask
-        : brushOn && brushAt
-          ? discOnRaster(brushAt, brushR, g.res)
-          : undefined;
-    return m ? drawn(m, g.res) : null;
+      : graded
+        ? graded.support
+        : wandOn
+          ? cell?.mask
+          : brushOn && brushAt
+            ? discOnRaster(brushAt, brushR, g.res)
+            : undefined;
+    return m ? { cell: drawn(m, g.res), weight: graded?.weight ?? null } : null;
   }, [painting, g, wandOn, heldOp, cellSeed, mask, cell, brushOn, brushAt, brushR, drawn]);
 
   const layers = useMemo(
@@ -754,7 +769,8 @@ export function TranscriptModes() {
                     theta: thetaNow,
                     lines: boundLines,
                     // What a press would paint: none under the hand or while Space makes a drag pan.
-                    cell: preview,
+                    cell: preview?.cell ?? null,
+                    weight: preview?.weight ?? null,
                     op: OP_INDEX[heldOp],
                     smooth: smoothEdges,
                     mask: maskOnMap,
@@ -1006,6 +1022,11 @@ export function TranscriptModes() {
             <details>
               <summary>Fine-tune</summary>
               <label className="check">
+                <input type="checkbox" checked={gradedNecks} onChange={(e) => setGradedNecks(e.target.checked)} />
+                Graded necks (a part joined by a neck near the opening's width fades with the neck; a press paints what is at least half
+                shown. Off: the binary opening, whose parts appear and vanish whole)
+              </label>
+              <label className="check">
                 <input type="checkbox" checked={smoothEdges} onChange={(e) => setSmoothEdges(e.target.checked)} />
                 Smooth edges (outlines from a smoothed distance field, quadratic filter, antialiased; off: the pixel staircase, bilinear, as
                 before)
@@ -1128,7 +1149,7 @@ export function TranscriptModes() {
                 {boundsNow.field.quantiles.p90.toPrecision(3)} · 99% {boundsNow.field.quantiles.p99.toPrecision(3)} · max{" "}
                 {boundsNow.field.quantiles.max.toPrecision(3)}
                 {cell
-                  ? ` · cell: ${cell.count.toLocaleString()} of ${cell.total.toLocaleString()} map pixels (${((100 * cell.count) / cell.total).toFixed(1)}%)${cell.dEdge !== undefined ? `, d at its edge ≈ ${cell.dEdge.toFixed(2)}${cell.gated ? `, ${(100 * cell.gated).toFixed(0)}% of the edge set by the tolerance` : ""}${cell.moved ? ", the click was on a dropped branch: showing the nearest piece" : ""}${cell.scales ? ` (broad cell ${(100 * cell.scales.broad).toFixed(1)}%, narrow ${(100 * cell.scales.narrow).toFixed(1)}%)` : ""}` : ""}`
+                  ? ` · cell: ${cell.count.toLocaleString()} of ${cell.total.toLocaleString()} map pixels (${((100 * cell.count) / cell.total).toFixed(1)}%)${cell.dEdge !== undefined ? `, d at its edge ≈ ${cell.dEdge.toFixed(2)}${cell.gated ? `, ${(100 * cell.gated).toFixed(0)}% of the edge set by the tolerance` : ""}${cell.moved ? ", the pointer is on a branch narrower than the opening: nothing to pick" : ""}${cell.scales ? ` (broad cell ${(100 * cell.scales.broad).toFixed(1)}%, narrow ${(100 * cell.scales.narrow).toFixed(1)}%)` : ""}` : ""}`
                   : ""}
                 {boundsNow.q < (g?.res.labels.length ?? 0)
                   ? ` · noise floor σ² ${boundsNow.sigma2.toPrecision(3)} (λ₁ ${modes?.values[0]?.toPrecision(3)})`

@@ -133,7 +133,7 @@ boundaries on):
 
 | Input | Effect |
 |---|---|
-| hover | the patch under the pointer, recomputed only when the pointer enters a new map pixel |
+| hover | the patch under the pointer, recomputed as it moves (to a quarter map pixel), with the seed's mixture interpolated bilinearly at the pointer rather than read at the nearest pixel; on a branch the opening drops, nothing is shown |
 | click or drag (paint) | new mask; with Shift / Alt / Shift+Alt: add / subtract / intersect (Photoshop's bindings) |
 | Alt + click or drag (wand) | subtract what matches the patch *and* is connected, within that overlap, to the point |
 | Cmd/Ctrl + Alt + click or drag | remove the whole connected piece of the mask under the pointer, whatever its mixture |
@@ -185,6 +185,7 @@ fill is ~2 ms per million pixels. Hover is affordable on the main thread at toda
 | E5 | + opening ρ 0.5 → 2r | 8.8, 3.3, 0.3, 0.4, 0%; compact at 0.75r |
 | E6 | two scales (r, 3r), intersected | matches the opening on the band (8.9 vs 9.4%); fragments in epithelium (3.1%); see §5 |
 | E7 | plain `d ≤ tol` + opening vs the ∇²d cell, 64 clicks on an 8 × 8 grid (7.1 × 3.6 mm, map 429 × 218) | over the 32 tissue clicks: ∇²d edge d 1.8 / 2.1 / 3.0 (p10/p50/p90); median overlap (IoU) 0.01 / 0.14 / 0.21 / 0.06 at tol 1 / 1.5 / 2 / 2.5, and 0.36 even picking the best tol per click; at tol 2 → 2.5 the patch jumps from 2% to 41% of the map (it percolates). The "d ≈ 3.4" of E3 was that window's value, not a constant |
+| E8 | hover stability along one row (map 653 × 218, r = 3 px) | seed read at the nearest pixel: 216 of 317 two-pixel steps change the patch by more than half, and 7 showed a piece off the pointer (now: nothing). The unopened fill is 28–60% of the map for every seed; the opening carves the piece out, and which lobes it keeps flips as a neck crosses ρ. Interpolating the seed's mixture: quarter-pixel steps keep overlap 0.94–1.0, but 4 in 32 still flip a lobe (overlap 0.2–0.7). Not fixed by: averaging the reference over r (191), ∇²d ≥ ε margins (178 at 0.3σ, patches shrink), confining the fill to d's basin (172). Graded necks (score = narrowest neck on the widest path from the seed, smoothstep about ρ; `gradedNecks.ts`, "Graded necks" toggle, off): on a two-blob test the far blob fades 0 → 0.34 → 0.93 → 1 as its neck widens; on the real row it removes the big pops over 8 px (worst soft overlap 0.62 vs 0.22) but over 100 px it is worse (105 vs 75 half-pixel steps below 0.5): behind a ~100 px patch the fill has often percolated to 85 000+ px, and grading shows that cluster faintly (500 ↔ 22 000 px of weight between steps). The fix has to stop the fill percolating, not grade what it reaches |
 
 E1–E6: two clicks in one window of one section; E7: one grid in a second window. Treat the defaults as provisional.
 

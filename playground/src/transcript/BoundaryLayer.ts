@@ -1,5 +1,6 @@
 // PROTOTYPE: draws `boundaryStrength`'s field over the mode map. Same placement as GramModesLayer,
-// which it sits on top of. A faint white ramp always shows where the mixture changes. On top of it:
+// which it sits on top of. A faint white ramp always shows where the mixture changes (should be controlable).
+// On top of it:
 //
 //   * bands: solid amber wherever strength ≥ θ, the pixels an edge-bounded fill would refuse;
 //   * lines: the zero-crossings of the strength's derivative across the edge, where strength ≥ θ.
@@ -10,6 +11,8 @@
 // The persistent mask built from strokes is filled amber. The preview (what a press would paint: the
 // wand's patch or the brush's disc) is shown as the change it would make, by op: cyan where the mask
 // would grow, red hatching over its amber where it would shrink. Both have a thin outline.
+//
+// This shouldn't really belong in 'transcripts', it's more general than that.
 
 import { type DefaultProps, Layer, type LayerProps, project32 } from "@deck.gl/core";
 import { Buffer } from "@luma.gl/core";
@@ -30,7 +33,8 @@ type BoundaryUniforms = {
   /** 1: quadratic B-spline reconstruction and antialiased edges; 0: bilinear and hard thresholds.
    *  Not `smooth`: that is a reserved word in WGSL. */
   aa: number;
-  pad0: number;
+  /** 1: the preview fades by the `weight` buffer (graded necks); 0: drawn at full strength. */
+  graded: number;
   pad1: number;
   pad2: number;
 };
@@ -42,7 +46,7 @@ struct BoundaryUniforms {
   bounds: vec4<f32>,
   width: f32, height: f32, theta: f32, opacity: f32,
   lines: f32, cellOn: f32, maskOn: f32, op: f32,
-  aa: f32, pad0: f32, pad1: f32, pad2: f32,
+  aa: f32, graded: f32, pad1: f32, pad2: f32,
 };
 @group(0) @binding(auto) var<uniform> B: BoundaryUniforms;
 /** Per pixel: strength, tensor xx, yy, xy. */
@@ -51,6 +55,8 @@ struct BoundaryUniforms {
 @group(0) @binding(auto) var<storage, read> cell: array<f32>;
 /** Per pixel: 1 inside the persistent mask. */
 @group(0) @binding(auto) var<storage, read> mask: array<f32>;
+/** Per pixel: the preview's membership in [0, 1], when graded. */
+@group(0) @binding(auto) var<storage, read> weight: array<f32>;
 `,
   uniformTypes: {
     bounds: "vec4<f32>",
@@ -63,12 +69,13 @@ struct BoundaryUniforms {
     maskOn: "f32",
     op: "f32",
     aa: "f32",
-    pad0: "f32",
+    graded: "f32",
     pad1: "f32",
     pad2: "f32",
   },
 };
 
+// could be a general-purpose utility function, but would mean more litigation over semantics.
 /** A quadratic B-spline sampler for a 0/1 raster: its 0.5 contour is smooth, where bilinear
  *  interpolation leaves the pixel grid's staircase. 3×3 taps, edge-clamped, pixel centres at whole
  *  numbers. Generated per buffer: WGSL cannot take a storage array as a parameter. */
@@ -103,10 +110,14 @@ fn ${name}(p: vec2<f32>) -> f32 {
 }
 `;
 
+// What keeps us from using TypeGPU more widely?
+// How well does it work with luma/deck? Is this something we should discuss with the community?
+// Would be a significant change now for template-function type things `maskQ(p)` etc.
+// What we have is not ugly, but it'd be nice if it was better understood in editors, which would be harder.
 const source = /* wgsl */ `\
 struct Varyings { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32> };
 
-@vertex
+@vertex //common boilerplate
 fn vertexMain(@builtin(vertex_index) i: u32) -> Varyings {
   var corners = array<vec2<f32>, 6>(
     vec2<f32>(0.0, 0.0), vec2<f32>(1.0, 0.0), vec2<f32>(1.0, 1.0),
@@ -141,6 +152,7 @@ ${quadratic("maskQ", "mask")}
 ${quadratic("cellQ", "cell")}
 ${bilinear("maskB", "mask")}
 ${bilinear("cellB", "cell")}
+${bilinear("weightAt", "weight")}
 fn maskAt(p: vec2<f32>) -> f32 { return select(maskB(p), maskQ(p), B.aa > 0.5); }
 fn cellAt(p: vec2<f32>) -> f32 { return select(cellB(p), cellQ(p), B.aa > 0.5); }
 
@@ -174,10 +186,12 @@ fn fragmentMain(input: Varyings) -> @location(0) vec4<f32> {
   let line = (1.0 - smoothstep(0.6, 1.4, distR / perPixel)) * select(0.0, 1.0, distR < 1.0) * over;
 
   let cv = cellAt(q);
-  let inCell = coverage(cv) * B.cellOn;
+  // Graded necks: a lobe hanging on a narrowing neck fades out rather than vanishing at once.
+  let fade = select(1.0, clamp(weightAt(q), 0.0, 1.0), B.graded > 0.5);
+  let inCell = coverage(cv) * B.cellOn * fade;
   // The cell's edge as a ~1 px white line: the 0.5 level set of the interpolated mask.
   let cw = max(fwidth(cv), 1e-6);
-  let cellEdge = (1.0 - smoothstep(cw * 0.5, cw * 1.5, abs(cv - 0.5))) * B.cellOn;
+  let cellEdge = (1.0 - smoothstep(cw * 0.5, cw * 1.5, abs(cv - 0.5))) * B.cellOn * fade;
   let mv = maskAt(q);
   let inMask = coverage(mv) * B.maskOn;
   let mw = max(fwidth(mv), 1e-6);
@@ -234,6 +248,8 @@ export type BoundaryLayerProps = {
   cell: Float32Array | null;
   /** The persistent mask on this raster, 1 per pixel inside, or null for none. */
   mask: Float32Array | null;
+  /** The preview's membership in [0, 1] per pixel, which fades it; null draws it at full strength. */
+  weight: Float32Array | null;
   /** The op a press would apply, for showing the preview as a change: 0 new, 1 add, 2 subtract, 3 intersect. */
   op: number;
   /** Quadratic reconstruction and antialiased edges (default), or the bilinear rendering, to compare. */
@@ -250,12 +266,13 @@ const defaultProps: DefaultProps<BoundaryLayerProps> = {
   lines: { type: "boolean", value: true },
   cell: { type: "object", value: null, compare: true },
   mask: { type: "object", value: null, compare: true },
+  weight: { type: "object", value: null, compare: true },
   op: { type: "number", value: 0 },
   smooth: { type: "boolean", value: true },
 };
 
 type Slot = { buf?: Buffer; src?: Float32Array | null };
-type State = { model?: Model; wrapped?: Buffer; handle?: GPUBuffer; cell: Slot; mask: Slot };
+type State = { model?: Model; wrapped?: Buffer; handle?: GPUBuffer; cell: Slot; mask: Slot; weight: Slot };
 
 export class BoundaryLayer extends Layer<BoundaryLayerProps> {
   static override layerName = "BoundaryLayer";
@@ -276,20 +293,21 @@ export class BoundaryLayer extends Layer<BoundaryLayerProps> {
       vertexCount: 6,
       shaderAssembler: this.context.shaderAssembler,
     });
-    this.setState({ model, cell: {}, mask: {} });
+    this.setState({ model, cell: {}, mask: {}, weight: {} });
   }
 
   override finalizeState(context: Parameters<Layer["finalizeState"]>[0]): void {
     this.state.wrapped?.destroy();
     this.state.cell.buf?.destroy();
     this.state.mask.buf?.destroy();
+    this.state.weight.buf?.destroy();
     this.state.model?.destroy();
     super.finalizeState(context);
   }
 
   override draw(): void {
     const { model } = this.state;
-    const { strength, bbox, width, height, theta, opacity, lines, cell, mask, op, smooth } = this.props;
+    const { strength, bbox, width, height, theta, opacity, lines, cell, mask, weight, op, smooth } = this.props;
     if (!model || !strength || !bbox || width === 0) return;
     if (this.state.handle !== strength) {
       this.state.wrapped?.destroy();
@@ -301,6 +319,7 @@ export class BoundaryLayer extends Layer<BoundaryLayerProps> {
     const n = width * height;
     this.upload(model, "cell", cell, n);
     this.upload(model, "mask", mask, n);
+    this.upload(model, "weight", weight, n);
     const [minX, minY, maxX, maxY] = bbox;
     model.shaderInputs.setProps({
       B: {
@@ -314,7 +333,7 @@ export class BoundaryLayer extends Layer<BoundaryLayerProps> {
         maskOn: mask && mask.length === n ? 1 : 0,
         op,
         aa: smooth ? 1 : 0,
-        pad0: 0,
+        graded: weight && weight.length === n ? 1 : 0,
         pad1: 0,
         pad2: 0,
       },
@@ -322,7 +341,7 @@ export class BoundaryLayer extends Layer<BoundaryLayerProps> {
     model.draw(this.context.renderPass);
   }
 
-  private upload(model: Model, name: "cell" | "mask", src: Float32Array | null, n: number): void {
+  private upload(model: Model, name: "cell" | "mask" | "weight", src: Float32Array | null, n: number): void {
     const slot = this.state[name];
     if (slot.buf && slot.buf.byteLength >= n * 4 && slot.src === src) return;
     const data = src && src.length === n ? src : new Float32Array(n);

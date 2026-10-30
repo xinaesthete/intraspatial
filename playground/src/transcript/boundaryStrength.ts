@@ -478,9 +478,24 @@ export function laplacianCell(
   const c = Math.max(0, Math.min(width - 1, Math.round(seed.col)));
   const r = Math.max(0, Math.min(height - 1, Math.round(seed.row)));
   const start = r * width + c;
+  // The seed's mixture, interpolated bilinearly at the seed itself: read at the nearest pixel, it
+  // would step every time the pointer crossed one (a third of r on the usual raster).
+  const fx = Math.max(0, Math.min(width - 1, seed.col));
+  const fy = Math.max(0, Math.min(height - 1, seed.row));
+  const x0 = Math.min(width - 2, Math.floor(fx));
+  const y0 = Math.min(height - 2, Math.floor(fy));
+  const tx = width > 1 ? fx - x0 : 0;
+  const ty = height > 1 ? fy - y0 : 0;
+  const corners = [
+    [Math.max(0, y0) * width + Math.max(0, x0), (1 - tx) * (1 - ty)],
+    [Math.max(0, y0) * width + Math.min(width - 1, x0 + 1), tx * (1 - ty)],
+    [Math.min(height - 1, y0 + 1) * width + Math.max(0, x0), (1 - tx) * ty],
+    [Math.min(height - 1, y0 + 1) * width + Math.min(width - 1, x0 + 1), tx * ty],
+  ] as const;
   const raw = new Float32Array(n);
   for (let k = 0; k < K; k++) {
-    const ref = u[k * n + start]!;
+    let ref = 0;
+    for (const [i, wt] of corners) ref += wt * u[k * n + i]!;
     for (let i = 0; i < n; i++) {
       const dv = u[k * n + i]! - ref;
       raw[i]! += dv * dv;
@@ -557,8 +572,8 @@ function component(set: Uint8Array, width: number, height: number, start: number
  * Morphological opening of a cell by a disk of radius `rho` pixels (erode, then dilate), then the
  * piece the seed belongs to. Opening removes every part of the cell narrower than the disk (the
  * branches and the necks between them) and leaves the rest exactly as it was. When the seed itself
- * sat on a removed branch, the piece is the one reached first walking from the seed inside the
- * original cell, so the result is still "the patch the click belongs to". `moved` says so.
+ * sat on a removed branch the result is empty and `moved` says so: a piece elsewhere would be a
+ * patch the pointer is not on, and it jumps about as the pointer moves.
  */
 export function openCell(
   cell: Uint8Array,
@@ -603,24 +618,6 @@ export function openCell(
     }
   }
   if (opened[start]) return { mask: component(opened, width, height, start), moved: false };
-  // Walk from the seed through the original cell to the nearest surviving pixel.
-  const seen = new Uint8Array(n);
-  const queue = new Int32Array(n);
-  let head = 0;
-  let tail = 0;
-  seen[start] = 1;
-  queue[tail++] = start;
-  while (head < tail) {
-    const i = queue[head++]!;
-    if (opened[i]) return { mask: component(opened, width, height, i), moved: true };
-    const x = i % width;
-    for (const j of [x > 0 ? i - 1 : -1, x < width - 1 ? i + 1 : -1, i - width, i + width]) {
-      if (j >= 0 && j < n && cell[j] && !seen[j]) {
-        seen[j] = 1;
-        queue[tail++] = j;
-      }
-    }
-  }
   return { mask: new Uint8Array(n), moved: true };
 }
 
