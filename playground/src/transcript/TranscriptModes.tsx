@@ -24,9 +24,9 @@ import { usePointsSource, usePointsTiles, useSpatialData } from "../hooks/useSpa
 import { ChannelPicker } from "./ChannelPicker";
 import { buildChannels, NEGATIVE_CONTROLS, type Selection, STARTER_SETS } from "./channelModel";
 import { Explain } from "./Explain";
-import { GramModesLayer } from "./GramModesLayer";
-import { MatrixView } from "./MatrixView";
-import { ModeLegend } from "./ModeLegend";
+import { GramModesLayer } from "../modes/GramModesLayer";
+import { MatrixView } from "../modes/MatrixView";
+import { ModeLegend } from "../modes/ModeLegend";
 import { useTranscriptGram } from "./useTranscriptGram";
 
 /** The raster stack's size on the device, in MiB. `bytesPerWordRatio` of 2 reports what the same
@@ -416,7 +416,14 @@ export function TranscriptModes() {
               )}
               {modes && <ModeLegend modes={modes} />}
               <h3>How often each pair turns up together, compared with chance</h3>
-              <MatrixView gram={g} />
+              <MatrixView
+                labels={g.modes.labels}
+                values={g.res.g}
+                scale="log2"
+                describe={(i, j) =>
+                  `${g.modes.labels[i]} × ${g.modes.labels[j]}: g = ${(g.res.g[i * g.modes.labels.length + j] ?? 0).toFixed(2)}`
+                }
+              />
             </>
           )}
 

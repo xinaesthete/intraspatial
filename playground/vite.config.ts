@@ -199,6 +199,7 @@ export default defineConfig({
         rasterstat: fileURLToPath(new URL("./rasterstat.html", import.meta.url)),
         cellstats: fileURLToPath(new URL("./cellstats.html", import.meta.url)),
         cellmodes: fileURLToPath(new URL("./cellmodes.html", import.meta.url)),
+        cellmodesLegacy: fileURLToPath(new URL("./cellmodes-legacy.html", import.meta.url)),
         transcriptmodes: fileURLToPath(new URL("./transcriptmodes.html", import.meta.url)),
         density: fileURLToPath(new URL("./density.html", import.meta.url)),
         r3fspike: fileURLToPath(new URL("./r3fspike.html", import.meta.url)),
