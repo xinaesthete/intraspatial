@@ -27,7 +27,7 @@ export function usePointsSource(
   // `columns` stands for opts.columns, so a fresh options object does not reopen the element.
   return useAsync(
     () => (sdata && element ? openPointsSource(sdata, element, opts) : undefined),
-    [sdata, element, columns, opts.minRowsPerTile, opts.untiledBudget],
+    [sdata, element, columns, opts.minRowsPerTile, opts.untiledBudget, opts.tilePointBudget],
     scope,
   );
 }
@@ -58,7 +58,7 @@ export function usePointsTiles(
   const state = useAsync(
     (signal) => {
       if (!source || !window || !cache) return undefined;
-      const selection = selectPointsTiles(source.grid, window, apron);
+      const selection = selectPointsTiles(source.gridFor?.(window, apron) ?? source.grid, window, apron);
       // Progress counts the tiles that must be FETCHED; cached ones cost nothing.
       const total = selection.chunks.filter((c) => !cache.has(chunkKey(c.id))).length;
       let done = 0;

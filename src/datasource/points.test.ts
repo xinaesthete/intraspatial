@@ -10,6 +10,7 @@ import {
   ownsPoint,
   type PointsTile,
   pointsGrid,
+  pointsGridAtLevel,
   pointsTileBytes,
   type RawPoints,
   type Rect,
@@ -79,6 +80,23 @@ describe("pointsGrid", () => {
 
   it("refuses degenerate bounds", () => {
     expect(() => pointsGrid({ minX: 0, minY: 0, maxX: 0, maxY: 1 }, 10)).toThrow(/degenerate/);
+  });
+});
+
+describe("pointsGridAtLevel", () => {
+  it("halves the tile per level, so a tile is exactly four at the next", () => {
+    const [a, b] = [pointsGridAtLevel(BOUNDS, 400_000, 2), pointsGridAtLevel(BOUNDS, 400_000, 3)];
+    expect([a.tileSize, b.tileSize]).toEqual([250, 125]);
+    expect([a.cols, a.rows, b.cols, b.rows]).toEqual([4, 2, 8, 4]);
+    expect(a.rowsPerTile / b.rowsPerTile).toBeCloseTo(4);
+    const outer = tileRect(a, 1, 1);
+    const inner = [tileRect(b, 2, 2), tileRect(b, 3, 3)];
+    expect([inner[0]?.minX, inner[0]?.minY, inner[1]?.maxX, inner[1]?.maxY]).toEqual([outer.minX, outer.minY, outer.maxX, outer.maxY]);
+  });
+
+  it("is the grid pointsGrid chooses, at its level", () => {
+    const g = pointsGrid(BOUNDS, 400_000, { minRowsPerTile: 10_000 });
+    expect(pointsGridAtLevel(BOUNDS, 400_000, g.level)).toEqual(g);
   });
 });
 
