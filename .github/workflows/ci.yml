@@ -155,13 +155,13 @@ jobs:
       - run: vp run check:publish
 
   fallow:
-    name: Code health (fallow, non-blocking)
+    name: Code health (fallow)
     needs: changes
     if: github.event_name == 'pull_request' && needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     # Dead code / complexity / duplication scoped to the changed files, new-vs-inherited
-    # attributed. Non-blocking until the committed baselines are trusted.
-    continue-on-error: true
+    # attributed. Fails only on dead code this PR introduces; new complexity and duplication are
+    # warnings, inherited findings are counted in the job summary (scripts/fallow-gate.mjs).
     steps:
       # Full history: the audit diffs against the merge base with main, which a depth-1 clone
       # does not have ("no merge base").
@@ -172,5 +172,4 @@ jobs:
         with:
           node-version-file: .node-version
           cache: true
-      - run: |
-          vp exec fallow audit --base "origin/${{ github.base_ref }}" --format github-annotations
+      - run: vp exec node scripts/fallow-gate.mjs "origin/${{ github.base_ref }}"

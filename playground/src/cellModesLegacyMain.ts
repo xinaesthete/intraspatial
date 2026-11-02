@@ -1,3 +1,6 @@
+// LEGACY: the vanilla-DOM page, kept only for the mode terrain until it is ported to the React/deck
+// page (`cells/CellModes.tsx`); see docs/playground-deck-migration.md. Delete with cellmodes-legacy.html.
+//
 // Co-location modes — the Gram matrix over a set of channels, and its OKLab eigen-projection.
 //
 // The premise this page is built on, and the reason it is separate from `cellstats.html`: **most
