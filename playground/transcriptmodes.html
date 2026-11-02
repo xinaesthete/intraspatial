@@ -21,6 +21,11 @@
     .controls input:not([type=range]), .controls select { background: #111827; color: #e2e8f0; border: 1px solid #334155; border-radius: 4px; padding: 3px 6px; font: inherit; min-width: 0; flex: 1; }
     button { background: #1e293b; color: #e2e8f0; border: 1px solid #334155; border-radius: 4px; padding: 3px 8px; font: inherit; cursor: pointer; }
     .views { min-width: 0; }
+    .deck-wrap { position: relative; }
+    .wand-readout { position: absolute; left: 10px; bottom: 10px; max-width: min(560px, 80%); pointer-events: none;
+      background: rgba(10, 16, 32, 0.92); border: 1px solid #334155; border-left: 3px solid #38bdf8; border-radius: 6px;
+      padding: 6px 10px; font-size: 11.5px; color: #cbd5e1; font-variant-numeric: tabular-nums; }
+    .dim { color: #64748b; }
     .deck-canvas { position: relative; height: min(62vh, 640px); min-height: 320px; border-radius: 4px; overflow: hidden; background: #111; }
     .controls label.check { flex-direction: row; align-items: center; gap: 6px; }
     .controls label.check input { flex: none; }

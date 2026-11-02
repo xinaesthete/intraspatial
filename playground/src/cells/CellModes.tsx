@@ -12,7 +12,7 @@
 
 import type { Layer } from "@deck.gl/core";
 import { PathLayer } from "@deck.gl/layers";
-import { useCallback, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import type { Rect } from "../../../src/datasource/points";
 import { envelopeExcursions, type SpectrumEnvelopeResult, spectrumEnvelope } from "../../../src/gpu/spatial/gramEnvelope";
 import { apronCoverage } from "../../../src/spatial/gram";
@@ -30,7 +30,8 @@ import { LoadingsChart } from "../modes/LoadingsChart";
 import { MatrixView } from "../modes/MatrixView";
 import { ModeLegend } from "../modes/ModeLegend";
 import { ScreeChart } from "../modes/ScreeChart";
-import { useWand } from "../modes/useWand";
+import { useWand, type WandSource } from "../modes/useWand";
+import { WandControls, WandExplain } from "../modes/WandPanel";
 import { WandReadout } from "../modes/WandReadout";
 import { Explain } from "../transcript/Explain";
 import { buildCellChannels, type ChannelSpec, tableBounds, viewDims, WINDOW_MODES, type WindowMode, windowBbox } from "./cellChannels";
@@ -65,8 +66,6 @@ export function CellModes() {
   const [windowMode, setWindowMode] = useState<WindowMode>("apron");
   const [saturate, setSaturate] = useState(2.5);
   const [chromaWeight, setChromaWeight] = useState(1);
-  const [modesUsed, setModesUsed] = useState(3);
-  const [span, setSpan] = useState(1.2);
   const [opacity, setOpacity] = useState(0.8);
   const [imageName, setImageName] = useState<string>();
   const [systemChoice, setSystem] = useState<string>();
@@ -134,21 +133,16 @@ export function CellModes() {
   // No compute until deck's device is ours: resources made on another device could not be drawn.
   const gram = useCellGram(device.ready ? built.value?.channels : undefined, params, base.value);
   const g = gram.value;
-  const { wand, error: wandError, sample } = useWand(g);
+  const wandSource = useMemo<WandSource | undefined>(
+    () => (g ? { res: g.res, rasters: g.rasters, mean: g.res.resident.mean, sd: g.res.resident.sd, vectors: g.modes.vectors } : undefined),
+    [g],
+  );
+  const wand = useWand(wandSource);
+  const sample = wand.sample;
   const env = envelope && g && envelope.generation === g.generation ? envelope.result : undefined;
 
-  const onPick = useCallback(
-    (x: number, y: number) => {
-      if (!g) return;
-      const [x0, y0, x1, y1] = g.res.bbox;
-      // Raster row 0 is the window's maxY (the splat's NDC y runs up).
-      const col = ((x - x0) / (x1 - x0)) * g.res.width;
-      const row = ((y1 - y) / (y1 - y0)) * g.res.height;
-      if (col >= 0 && col <= g.res.width && row >= 0 && row <= g.res.height) sample(col, row);
-    },
-    [g, sample],
-  );
-  const pick = useWorldPick(viewport, onPick);
+  // The view's world frame is the table's, which the Gram's bbox is in.
+  const pick = useWorldPick(viewport, wand.pick);
 
   const K = g?.modes.labels.length ?? 0;
   const layers = useMemo<Layer[]>(
@@ -163,11 +157,12 @@ export function CellModes() {
               saturate,
               chromaWeight,
               opacity,
-              reference: wand?.z ?? null,
-              marker: wand ? { col: wand.col, row: wand.row } : null,
+              reference: sample?.z ?? null,
+              marker: sample ? { col: sample.col, row: sample.row } : null,
               // "all" is held as 0 so the option need not know K.
-              modesUsed: modesUsed || K,
-              tolerance: span,
+              modesUsed: wand.modesUsed || K,
+              tolerance: wand.tolerance,
+              region: wand.region ?? null,
               pickable: false,
             }),
             new PathLayer<{ path: [number, number][] }>({
@@ -181,7 +176,7 @@ export function CellModes() {
             }),
           ]
         : [],
-    [g, wand, saturate, chromaWeight, opacity, modesUsed, span, K],
+    [g, sample, saturate, chromaWeight, opacity, wand.modesUsed, wand.tolerance, wand.region, K],
   );
 
   /** Simulate the null spectrum. Re-splats this result's own channels and window, so the band is
@@ -227,7 +222,7 @@ export function CellModes() {
     setRangeUm(undefined);
   };
 
-  const error = sd.error ?? tables.error ?? base.error ?? built.error ?? gram.error ?? wandError;
+  const error = sd.error ?? tables.error ?? base.error ?? built.error ?? gram.error ?? wand.error;
   const busy = tables.loading
     ? "inspecting the store…"
     : base.loading
@@ -386,17 +381,7 @@ export function CellModes() {
             Map over image
             <input type="range" min={0} max={1} step={0.05} value={opacity} onChange={(e) => setOpacity(Number(e.target.value))} />
           </label>
-          <label>
-            Similarity measured over
-            <select value={modesUsed} onChange={(e) => setModesUsed(Number(e.target.value))}>
-              <option value={3}>3 modes — the space you can see</option>
-              <option value={0}>all modes — full Mahalanobis</option>
-            </select>
-          </label>
-          <label>
-            Similar within {span.toFixed(2)}σ
-            <input type="range" min={0.25} max={5} step={0.05} value={span} onChange={(e) => setSpan(Number(e.target.value))} />
-          </label>
+          <WandControls wand={wand} />
           <p className="hint">
             {unit === "µm*" ? "µm*: the store states no unit; the µm-per-unit box is your declaration. " : ""}⚠ The store must be
             CORS-enabled. The mode terrain (3-D) is still on the <a href="./cellmodes-legacy.html">legacy page</a>.
@@ -416,7 +401,7 @@ export function CellModes() {
               onViewport={setViewport}
               fallbackBounds={full ? { minX: full[0], minY: full[1], maxX: full[2], maxY: full[3] } : undefined}
             />
-            {wand && g && <WandReadout wand={wand} modes={g.modes} />}
+            {sample && g && <WandReadout wand={sample} modes={g.modes} />}
           </div>
           <p className="hint">Click the map to sample a place · shift-drag to move the sample · drag to pan, wheel to zoom.</p>
           <p className="status">
@@ -512,12 +497,7 @@ export function CellModes() {
               is nothing outside to correct with, so pairs near the edge are undercounted. Insetting by one range is all it takes, which is
               the default; the status line reports how well populated the apron is.
             </Explain>
-            <Explain title="The wand: picking a place">
-              Click the map to sample the mixture of channels at one place. The readout over the map lists the channels furthest from
-              typical there, and the place's position in the modes — which is its colour. Everywhere with a similar mixture is outlined:
-              "similar" is a distance measured in units of each mode's own spread, over the three modes you can see or over all of them.
-              Shift-drag to move the sample and watch the outline follow.
-            </Explain>
+            <WandExplain />
             <Explain title="How much variation does each mode carry — and is it real?">
               The bars are each mode's share of the total variation; they add up to 1. But 45% means nothing on its own: some structure is
               inevitable just because cells are not spread evenly. "Run null" shuffles which cell carries which mark, many times, keeping

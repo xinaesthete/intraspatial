@@ -19,6 +19,7 @@ import { listImageElements } from "../datasource/imageContext";
 import { DEFAULT_UNTILED_BUDGET, listPointsElements } from "../datasource/pointsTileLoader";
 import { SpatialDeckView } from "../deck/SpatialDeckView";
 import { SHARED_DEVICE_PROPS, useSharedDevice } from "../deck/useSharedDevice";
+import { useWorldPick } from "../deck/useWorldPick";
 import { useAsync, useSettled } from "../hooks/useAsync";
 import { usePointsSource, usePointsTiles, useSpatialData } from "../hooks/useSpatialData";
 import { ChannelPicker } from "./ChannelPicker";
@@ -28,8 +29,9 @@ import { GramModesLayer } from "../modes/GramModesLayer";
 import { MatrixView } from "../modes/MatrixView";
 import { ModeLegend } from "../modes/ModeLegend";
 import { useTranscriptGram } from "./useTranscriptGram";
-import { useWand, type WandSource } from "./useWand";
-import { WandControls, WandExplain, WandReadout } from "./WandPanel";
+import { useWand, type WandSource } from "../modes/useWand";
+import { WandControls, WandExplain } from "../modes/WandPanel";
+import { WandReadout } from "../modes/WandReadout";
 
 /** The raster stack's size on the device, in MiB. `bytesPerWordRatio` of 2 reports what the same
  *  stack would cost at f32, which is the comparison the checkbox is making. */
@@ -174,18 +176,17 @@ export function TranscriptModes() {
   }, [g, lockedBasis, vectors]);
   const wand = useWand(wandSource);
   const sample = wand.sample;
-  // A position across the map → a place in the transcripts' frame: the canvas's world frame (the
-  // visible rectangle, y down as deck's orthographic view draws it), then the element's frame.
-  const toPlace = useCallback(
-    (u: number, v: number): readonly [number, number] | undefined => {
-      if (!viewport || !toElement) return undefined;
-      const wx = viewport.minX + u * (viewport.maxX - viewport.minX);
-      const wy = viewport.minY + v * (viewport.maxY - viewport.minY);
+  // The canvas's world frame → the transcripts' frame, which the Gram's bbox is in.
+  const { pick: wandPick } = wand;
+  const onPick = useCallback(
+    (wx: number, wy: number) => {
+      if (!toElement) return;
       const m = toElement;
-      return [m.a * wx + m.c * wy + m.tx, m.b * wx + m.d * wy + m.ty];
+      wandPick(m.a * wx + m.c * wy + m.tx, m.b * wx + m.d * wy + m.ty);
     },
-    [viewport, toElement],
+    [toElement, wandPick],
   );
+  const pick = useWorldPick(viewport, onPick);
 
   const layers = useMemo(
     () =>
@@ -394,7 +395,7 @@ export function TranscriptModes() {
         </aside>
 
         <main className="views">
-          <div {...wand.pointer(toPlace)}>
+          <div className="deck-wrap" {...pick}>
             {/* Always mounted, never keyed: see SpatialDeckView on why deck must outlive a store. */}
             <SpatialDeckView
               className="deck-canvas"
@@ -406,7 +407,17 @@ export function TranscriptModes() {
               onViewport={setViewport}
               fallbackBounds={fallbackBounds}
             />
+            {sample && modes && <WandReadout wand={sample} modes={modes} />}
           </div>
+          <p className="hint">
+            {wand.error ? (
+              <span className="error">wand: {wand.error.message}</span>
+            ) : wand.place && !sample ? (
+              "The wand's place is outside this window."
+            ) : (
+              "Click the map to sample a place · shift-drag to move the sample · drag to pan, wheel to zoom."
+            )}
+          </p>
           <p className="status">
             {error ? <span className="error">{error.message}</span> : busy}
             {!error && !busy && g && (
@@ -424,7 +435,6 @@ export function TranscriptModes() {
               </>
             )}
           </p>
-          {g && <WandReadout wand={wand} labels={g.res.labels} />}
           <p className="hint">GPU: {device.status}</p>
           {coarse && (
             <p className="hint error">

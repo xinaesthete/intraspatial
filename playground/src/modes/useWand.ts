@@ -1,75 +1,187 @@
-// The wand: a co-location profile sampled from one pixel of the mode map, as the reference every
-// other pixel is measured against (the selection outline in `GramModesLayer`).
+// The wand: pick a place on the mode map, and every other place is measured by how far its mixture
+// of channels is from that one (the whitened distance `similarityWgsl` computes), with an outline
+// where the distance reaches the tolerance. cellModesMain.ts has the same tool for one fixed canvas.
 //
-// Sampling is a GPU dispatch plus a buffer map, so it cannot keep up with pointer events one-to-one
-// and must not be allowed to queue: fifty pending readbacks would land in order and repaint for
-// positions the pointer left long ago. The latest position is held and one sample runs at a time —
-// a coalescing loop, which drops intermediate positions rather than falling behind, and always
-// samples the final one because it re-checks after each readback.
+// The wand is held as a PLACE, in the transcripts' own frame, not as a pixel: each new result (a
+// zoom, a new radius) re-reads the channels there, so the reference always means "the mixture at
+// that spot, standardised as this map is". A place the new window does not cover drops the wand.
+//
+// Reading the channels is a GPU dispatch plus a buffer map, too slow to keep up with pointer moves
+// and not to be queued: fifty pending readbacks would land in order, redrawing for positions the
+// pointer left long ago. So the latest place is held and one probe runs at a time; intermediate
+// places are dropped, and the last one is always read because the loop re-checks after each probe.
+// The connected region's distance field is read back the same way.
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { GramMatrixGpuResult } from "../../../src/gpu/spatial/gramMatrix";
+import { type ModeBasis, modeParams } from "../../../src/gpu/spatial/gramModes";
 import { probeChannels, standardise } from "../../../src/gpu/spatial/gramTerrain";
-import { onSnapshot } from "./gramSnapshots";
+import { connectedRegion, wandDistance } from "../../../src/gpu/spatial/wandRegion";
 
-export interface WandSample {
-  /** The Gram result it was taken from; a sample from any other is meaningless. */
-  readonly generation: number;
-  /** Raster pixel. */
-  readonly col: number;
-  readonly row: number;
-  /** Kernel-smoothed density per channel at that pixel. */
-  readonly raw: Float64Array;
-  /** `raw` standardised the way `corr` was built — the reference vector. */
-  readonly z: Float64Array;
-}
-
+/** What the wand reads from: a Gram result, a copy of its rasters that stays intact while it is
+ *  on screen, and the per-channel mean and sd its map is standardised with (a locked basis's, or
+ *  its own). */
 export interface WandSource {
-  readonly generation: number;
   readonly res: GramMatrixGpuResult;
   readonly rasters: GPUBuffer;
+  readonly mean: ArrayLike<number>;
+  readonly sd: ArrayLike<number>;
+  /** The modes the map is painted with, and the locked basis if any — what the metric is built from. */
+  readonly vectors: Float64Array;
+  readonly basis?: ModeBasis;
 }
 
-/** `sample(col, row)` sets the reference, or `error` says why it could not; `wand` is it, but only while `source` is the result it came
- *  from — a new splat standardises against new means, so an old `z` no longer means what it says. */
+export interface WandSample {
+  /** Standardised channel values at the place — the reference the layer measures from. */
+  readonly z: Float64Array;
+  /** The kernel-smoothed densities `z` was standardised from. */
+  readonly raw: Float64Array;
+  /** The place, in raster pixels (pixel centres at whole numbers, fractions between) — the layer's marker. */
+  readonly col: number;
+  readonly row: number;
+  readonly source: WandSource;
+}
+
+/** A place in the raster's frame (row 0 at the bbox's top), or undefined outside it. */
+function toRaster(res: GramMatrixGpuResult, x: number, y: number): { col: number; row: number } | undefined {
+  const [minX, minY, maxX, maxY] = res.bbox;
+  const col = ((x - minX) / (maxX - minX)) * res.width - 0.5;
+  const row = ((maxY - y) / (maxY - minY)) * res.height - 0.5;
+  if (col < -0.5 || row < -0.5 || col > res.width - 0.5 || row > res.height - 0.5) return undefined;
+  // Not rounded: the probe interpolates, so the sample follows the pointer, not the pixel grid.
+  return { col, row };
+}
+
+/**
+ * Run `task` for the latest job only, one at a time: a job scheduled while one runs replaces any
+ * other waiting job, and the loop re-checks after each run so the last job is never lost.
+ */
+function coalescing<T>(task: (job: T) => Promise<void>) {
+  let waiting: { job: T } | null = null;
+  let busy = false;
+  return {
+    schedule(job: T) {
+      waiting = { job };
+      if (busy) return;
+      busy = true;
+      void (async () => {
+        try {
+          while (waiting) {
+            const { job: next } = waiting;
+            waiting = null;
+            await task(next);
+          }
+        } finally {
+          busy = false;
+        }
+      })();
+    },
+    cancel() {
+      waiting = null;
+    },
+  };
+}
+
+/** The wand's distance at every pixel, for the sample and metric it was computed with. */
+interface Field {
+  readonly d: Float32Array;
+  readonly sample: WandSample;
+  readonly m: number;
+}
+
 export function useWand(source: WandSource | undefined) {
+  const [tolerance, setTolerance] = useState(1.2);
+  /** 0 = every mode: full Mahalanobis distance. */
+  const [modesUsed, setModesUsed] = useState(3);
+  /** Outline only the fragment the sample sits in, not every place within tolerance. */
+  const [connected, setConnected] = useState(false);
+  const [place, setPlace] = useState<readonly [number, number]>();
   const [sample, setSample] = useState<WandSample>();
+  const [field, setField] = useState<Field>();
   const [error, setError] = useState<Error>();
+
   const latest = useRef(source);
+  const fail = (err: unknown) => setError(err instanceof Error ? err : new Error(String(err)));
+
+  const [probe] = useState(() =>
+    coalescing(async ({ at: [x, y], src }: { at: readonly [number, number]; src: WandSource | undefined }) => {
+      if (!src) return;
+      // Outside this window: nothing to read, and the last sample (another result's) is not drawn.
+      const at = toRaster(src.res, x, y);
+      if (!at) return;
+      try {
+        const raw = await probeChannels(src.res, at.col, at.row, src.rasters);
+        setSample({ z: standardise(raw, src.mean, src.sd), raw, ...at, source: src });
+        setError(undefined);
+      } catch (err) {
+        fail(err);
+      }
+    }),
+  );
+  const [distance] = useState(() =>
+    coalescing(async ({ s, m }: { s: WandSample; m: number }) => {
+      const { res, rasters, vectors, basis } = s.source;
+      try {
+        const params = modeParams(res, { vectors, reference: s.z, modesUsed: m, ...(basis ? { basis } : {}) });
+        setField({ d: await wandDistance(res, params, rasters), sample: s, m });
+      } catch (err) {
+        fail(err);
+      }
+    }),
+  );
+
+  const pick = useCallback(
+    (x: number, y: number) => {
+      setPlace([x, y]);
+      probe.schedule({ at: [x, y], src: latest.current });
+    },
+    [probe],
+  );
+  const clear = useCallback(() => {
+    probe.cancel();
+    distance.cancel();
+    setPlace(undefined);
+    setSample(undefined);
+  }, [probe, distance]);
+
+  // A new result re-reads the place: the old z was standardised for another map.
   useEffect(() => {
     latest.current = source;
-  }, [source]);
-  const queued = useRef<{ col: number; row: number } | null>(null);
-  const busy = useRef(false);
+    if (place) probe.schedule({ at: place, src: source });
+  }, [source, place, probe]);
 
-  const take = useCallback((col: number, row: number) => {
-    queued.current = { col, row };
-    if (busy.current) return;
-    busy.current = true;
-    void (async () => {
-      try {
-        while (queued.current && latest.current) {
-          const at = queued.current;
-          queued.current = null;
-          const { res, rasters, generation } = latest.current;
-          try {
-            // From the snapshot, not `res.resident`: a later compute or a null run may have overwritten that.
-            const raw = await probeChannels(onSnapshot(res, rasters), at.col, at.row);
-            const z = standardise(raw, res.resident.mean, res.resident.sd);
-            setSample({ generation, col: Math.round(at.col), row: Math.round(at.row), raw, z });
-            setError(undefined);
-          } catch (e) {
-            // Reported, not thrown: a probe can fail (f16 rasters, a lost device) and the loop must
-            // still take the next position.
-            setError(e instanceof Error ? e : new Error(String(e)));
-          }
-        }
-      } finally {
-        busy.current = false;
-      }
-    })();
-  }, []);
+  // A sample from another result is not drawn on this one: it would mark the wrong pixel.
+  const current = sample && sample.source === source ? sample : undefined;
+  const m = modesUsed || (source?.res.labels.length ?? 3);
 
-  const wand = sample && source && sample.generation === source.generation ? sample : undefined;
-  return { wand, error, sample: take };
+  // The connected region needs the whole distance field, read back once per sample and metric; the
+  // fill itself is redone on the host whenever the tolerance moves.
+  useEffect(() => {
+    if (connected && current) distance.schedule({ s: current, m });
+  }, [connected, current, m, distance]);
+  const region = useMemo(() => {
+    // While a newer field is on its way, the last one for this map stands in rather than flashing
+    // every fragment back for a frame.
+    if (!connected || !current || !field || field.sample.source !== current.source || field.m !== m) return undefined;
+    const { width, height } = current.source.res;
+    return connectedRegion(field.d, width, height, field.sample, tolerance);
+  }, [connected, current, field, m, tolerance]);
+
+  return {
+    tolerance,
+    setTolerance,
+    connected,
+    setConnected,
+    region,
+    modesUsed,
+    setModesUsed,
+    place,
+    sample: current,
+    error,
+    /** Sample the place `x, y`, in the frame of the result's bbox. */
+    pick,
+    clear,
+  };
 }
+
+export type Wand = ReturnType<typeof useWand>;

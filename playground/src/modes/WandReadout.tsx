@@ -24,7 +24,7 @@ export function WandReadout({ wand, modes }: { wand: WandSample; modes: CoLocati
   return (
     <div className="wand-readout">
       <b>
-        wand @ px {wand.col}, {wand.row}
+        wand @ px {wand.col.toFixed(1)}, {wand.row.toFixed(1)}
       </b>{" "}
       —{" "}
       {top.map((p, i) => (
