@@ -108,9 +108,11 @@ export function CellModes() {
     () => (kind === "obs" ? (obsColumn ? { kind, column: obsColumn } : undefined) : vars.length >= 2 ? { kind, vars, matrix } : undefined),
     [kind, obsColumn, vars, matrix],
   );
+  // The catalogue only for X: obs channels never read it, and its late arrival must not rebuild them.
+  const xCatalog = spec?.kind === "x" ? catalog.value : undefined;
   const built = useAsync(
-    () => (sd.value && base.value && spec ? buildCellChannels(sd.value, base.value, spec, catalog.value) : undefined),
-    [sd.value, base.value, spec, catalog.value],
+    () => (sd.value && base.value && spec ? buildCellChannels(sd.value, base.value, spec, xCatalog) : undefined),
+    [sd.value, base.value, spec, xCatalog],
     base.value,
   );
 
@@ -132,7 +134,7 @@ export function CellModes() {
   // No compute until deck's device is ours: resources made on another device could not be drawn.
   const gram = useCellGram(device.ready ? built.value?.channels : undefined, params, base.value);
   const g = gram.value;
-  const { wand, sample } = useWand(g);
+  const { wand, error: wandError, sample } = useWand(g);
   const env = envelope && g && envelope.generation === g.generation ? envelope.result : undefined;
 
   const onPick = useCallback(
@@ -211,6 +213,7 @@ export function CellModes() {
     setTableName(undefined);
     setObsColumn(undefined);
     setVars([]);
+    setMatrix("X");
     setRangeUm(undefined);
     setImageName(undefined);
     setSystem(undefined);
@@ -220,10 +223,11 @@ export function CellModes() {
     setTableName(name);
     setObsColumn(undefined);
     setVars([]);
+    setMatrix("X");
     setRangeUm(undefined);
   };
 
-  const error = sd.error ?? tables.error ?? base.error ?? built.error ?? gram.error;
+  const error = sd.error ?? tables.error ?? base.error ?? built.error ?? gram.error ?? wandError;
   const busy = tables.loading
     ? "inspecting the store…"
     : base.loading

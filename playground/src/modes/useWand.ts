@@ -30,10 +30,11 @@ export interface WandSource {
   readonly rasters: GPUBuffer;
 }
 
-/** `sample(col, row)` sets the reference; `wand` is it, but only while `source` is the result it came
+/** `sample(col, row)` sets the reference, or `error` says why it could not; `wand` is it, but only while `source` is the result it came
  *  from — a new splat standardises against new means, so an old `z` no longer means what it says. */
 export function useWand(source: WandSource | undefined) {
   const [sample, setSample] = useState<WandSample>();
+  const [error, setError] = useState<Error>();
   const latest = useRef(source);
   useEffect(() => {
     latest.current = source;
@@ -51,10 +52,17 @@ export function useWand(source: WandSource | undefined) {
           const at = queued.current;
           queued.current = null;
           const { res, rasters, generation } = latest.current;
-          // From the snapshot, not `res.resident`: a later compute or a null run may have overwritten that.
-          const raw = await probeChannels(onSnapshot(res, rasters), at.col, at.row);
-          const z = standardise(raw, res.resident.mean, res.resident.sd);
-          setSample({ generation, col: Math.round(at.col), row: Math.round(at.row), raw, z });
+          try {
+            // From the snapshot, not `res.resident`: a later compute or a null run may have overwritten that.
+            const raw = await probeChannels(onSnapshot(res, rasters), at.col, at.row);
+            const z = standardise(raw, res.resident.mean, res.resident.sd);
+            setSample({ generation, col: Math.round(at.col), row: Math.round(at.row), raw, z });
+            setError(undefined);
+          } catch (e) {
+            // Reported, not thrown: a probe can fail (f16 rasters, a lost device) and the loop must
+            // still take the next position.
+            setError(e instanceof Error ? e : new Error(String(e)));
+          }
         }
       } finally {
         busy.current = false;
@@ -63,5 +71,5 @@ export function useWand(source: WandSource | undefined) {
   }, []);
 
   const wand = sample && source && sample.generation === source.generation ? sample : undefined;
-  return { wand, sample: take };
+  return { wand, error, sample: take };
 }
