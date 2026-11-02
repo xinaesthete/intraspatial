@@ -26,7 +26,7 @@ export type ChannelSpec =
  * scale is real information, every length the statistic takes is a world length, and it is the
  * frame sd.js draws the table's coordinate system in.
  */
-export function placeCloud(t: CellTable, xs: readonly number[], ys: readonly number[]): { xs: number[]; ys: number[] } {
+function placeCloud(t: CellTable, xs: readonly number[], ys: readonly number[]): { xs: number[]; ys: number[] } {
   const m = t.placement.worldFromArray;
   const n = xs.length;
   const wx = new Array<number>(n);

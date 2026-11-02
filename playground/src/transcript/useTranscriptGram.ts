@@ -21,7 +21,7 @@ export interface GramParamsUi {
   readonly rasterSide: number;
 }
 
-export interface TranscriptGram {
+interface TranscriptGram {
   readonly generation: number;
   readonly res: GramMatrixGpuResult;
   /** This result's rasters, laid out as `res.resident`, kept intact while it or its successor is on screen. */

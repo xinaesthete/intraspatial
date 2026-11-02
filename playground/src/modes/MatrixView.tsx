@@ -4,7 +4,7 @@
 
 import { cssRgb, diverging } from "../../../src/color/ramps";
 
-export type MatrixScale = "log2" | "signed";
+type MatrixScale = "log2" | "signed";
 
 const RAMP = { centreL: 0.19, endL: 0.8, endC: 0.17 };
 

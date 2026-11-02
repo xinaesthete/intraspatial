@@ -8,7 +8,7 @@ import { alignModeSigns, type ChannelCloud, type CoLocationModes, coLocationMode
 import { useAsync } from "../hooks/useAsync";
 import { onGpu, useGramSnapshots } from "../modes/gramSnapshots";
 
-export interface CellGram {
+interface CellGram {
   readonly generation: number;
   readonly res: GramMatrixGpuResult;
   /** This result's rasters, laid out as `res.resident`, kept intact while it or its successor is on screen. */

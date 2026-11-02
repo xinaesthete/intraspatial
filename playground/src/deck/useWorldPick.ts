@@ -10,7 +10,7 @@ import { type PointerEvent, useRef } from "react";
 import type { Rect } from "../../../src/datasource/points";
 
 /** The world point under `clientX, clientY` on `el`, which shows `view` (top edge = `view.minY`). */
-export function worldAt(el: Element, view: Rect, clientX: number, clientY: number): [number, number] {
+function worldAt(el: Element, view: Rect, clientX: number, clientY: number): [number, number] {
   const r = el.getBoundingClientRect();
   return [
     view.minX + ((clientX - r.left) / r.width) * (view.maxX - view.minX),
