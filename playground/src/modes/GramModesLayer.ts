@@ -107,13 +107,18 @@ ${OKLAB_TO_SRGB_WGSL}
 
 /** sampleWhitened, with pixels outside the connected region pushed out of range. Applied per pixel,
  *  before the bilinear blend, so the outline runs between a kept pixel and a dropped one even where
- *  both are within tolerance — which is what separates the region from a fragment touching it. */
+ *  both are within tolerance — which is what separates the region from a fragment touching it.
+ *
+ *  Only dropped pixels WITHIN tolerance move, reflected about it (d → 2·tol − d), so the outline
+ *  between them and a kept pixel still falls where their distances say. Dropped pixels already out
+ *  of range keep their own d: raising those too (to a fixed 2·tol, say) would drag every crossing on
+ *  the region's edge toward the kept pixel, by a different amount in each cell — a staircase. */
 fn sampleKept(col: u32, row: u32) -> vec4<f32> {
   var s = sampleWhitened(col, row);
-  if (U.region != 0.0) {
+  if (U.region != 0.0 && s.w <= U.selTol) {
     let i = row * u32(U.width) + col;
     if (((keep[i >> 2u] >> ((i & 3u) * 8u)) & 0xffu) == 0u) {
-      s.w = max(s.w, 2.0 * U.selTol);
+      s.w = 2.0 * U.selTol - s.w;
     }
   }
   return s;
