@@ -30,7 +30,7 @@ import { MatrixView } from "../modes/MatrixView";
 import { ModeLegend } from "../modes/ModeLegend";
 import { useTranscriptGram } from "./useTranscriptGram";
 import { useWand, type WandSource } from "../modes/useWand";
-import { WandControls, WandExplain } from "../modes/WandPanel";
+import { WandExplain, WandPanel } from "../modes/WandPanel";
 import { WandReadout } from "../modes/WandReadout";
 
 /** The raster stack's size on the device, in MiB. `bytesPerWordRatio` of 2 reports what the same
@@ -387,7 +387,7 @@ export function TranscriptModes() {
             Map over image
             <input type="range" min={0} max={1} step={0.05} value={opacity} onChange={(e) => setOpacity(Number(e.target.value))} />
           </label>
-          <WandControls wand={wand} />
+          <WandPanel wand={wand} />
           {source.value && (
             <ChannelPicker features={source.value.features} selection={selection} onChange={setSelection} missing={built.missing} />
           )}
@@ -409,15 +409,7 @@ export function TranscriptModes() {
             />
             {sample && modes && <WandReadout wand={sample} modes={modes} />}
           </div>
-          <p className="hint">
-            {wand.error ? (
-              <span className="error">wand: {wand.error.message}</span>
-            ) : wand.place && !sample ? (
-              "The wand's place is outside this window."
-            ) : (
-              "Click the map to sample a place · shift-drag to move the sample · drag to pan, wheel to zoom."
-            )}
-          </p>
+          <p className="hint">Click the map to sample a place · shift-drag to move the sample · drag to pan, wheel to zoom.</p>
           <p className="status">
             {error ? <span className="error">{error.message}</span> : busy}
             {!error && !busy && g && (

@@ -1,15 +1,21 @@
-// Controls and explanation for `useWand`: how close counts as "similar", over which modes, and
-// whether only the sample's own patch is outlined. `WandReadout` shows what the sample is made of.
+// The wand's panel, the same on every page that has one: how close counts as "similar", over which
+// modes, whether only the sample's own patch is outlined, and what state the wand is in. The
+// explanation goes with it; `WandReadout` (over the map) shows what the sample is made of.
 
 import { Explain } from "../transcript/Explain";
 import type { Wand } from "./useWand";
 
-export function WandControls({ wand }: { wand: Wand }) {
+export function WandPanel({ wand }: { wand: Wand }) {
   return (
     <div className="picker">
       <div className="picker-head">
         Wand: click the map to sample a place; shift-drag to move the sample (the map does not pan while you do)
       </div>
+      {wand.error ? (
+        <p className="hint error">wand: {wand.error.message}</p>
+      ) : (
+        wand.place && !wand.sample && <p className="hint">The wand's place is outside this window.</p>
+      )}
       <label>
         How close counts as similar: {wand.tolerance.toFixed(2)}
         <input

@@ -31,7 +31,7 @@ import { MatrixView } from "../modes/MatrixView";
 import { ModeLegend } from "../modes/ModeLegend";
 import { ScreeChart } from "../modes/ScreeChart";
 import { useWand, type WandSource } from "../modes/useWand";
-import { WandControls, WandExplain } from "../modes/WandPanel";
+import { WandExplain, WandPanel } from "../modes/WandPanel";
 import { WandReadout } from "../modes/WandReadout";
 import { Explain } from "../transcript/Explain";
 import { buildCellChannels, type ChannelSpec, tableBounds, viewDims, WINDOW_MODES, type WindowMode, windowBbox } from "./cellChannels";
@@ -222,7 +222,7 @@ export function CellModes() {
     setRangeUm(undefined);
   };
 
-  const error = sd.error ?? tables.error ?? base.error ?? built.error ?? gram.error ?? wand.error;
+  const error = sd.error ?? tables.error ?? base.error ?? built.error ?? gram.error;
   const busy = tables.loading
     ? "inspecting the store…"
     : base.loading
@@ -381,7 +381,7 @@ export function CellModes() {
             Map over image
             <input type="range" min={0} max={1} step={0.05} value={opacity} onChange={(e) => setOpacity(Number(e.target.value))} />
           </label>
-          <WandControls wand={wand} />
+          <WandPanel wand={wand} />
           <p className="hint">
             {unit === "µm*" ? "µm*: the store states no unit; the µm-per-unit box is your declaration. " : ""}⚠ The store must be
             CORS-enabled. The mode terrain (3-D) is still on the <a href="./cellmodes-legacy.html">legacy page</a>.
