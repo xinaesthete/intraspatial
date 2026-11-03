@@ -33,6 +33,41 @@ export interface SeededPatch {
   readonly seed: readonly [number, number];
 }
 
+/** The wand's patch at a seed; it may take a while (a graph pull), so it is asynchronous. */
+export type PatchAt<P> = (seed: readonly [number, number]) => Promise<P | undefined>;
+
+/**
+ * `patchAt(seed)`, kept to the latest seed: one computation at a time, and when the seed moves while
+ * one runs, the next starts from wherever it is by then, dropping the positions in between rather
+ * than falling behind. Each result is shown as it lands, so a slow patch still follows the pointer.
+ */
+function useLatest<P>(seed: readonly [number, number] | undefined, patchAt: PatchAt<P> | undefined): P | undefined {
+  const [patch, setPatch] = useState<P>();
+  const wanted = useRef<{ seed: readonly [number, number]; patchAt: PatchAt<P> }>(undefined);
+  const running = useRef(false);
+  useEffect(() => {
+    wanted.current = seed && patchAt ? { seed, patchAt } : undefined;
+    if (!wanted.current || running.current) return;
+    running.current = true;
+    void (async () => {
+      try {
+        for (let job = wanted.current; job;) {
+          const p = await job.patchAt(job.seed);
+          // A result for a seed since left (off the map) is not shown.
+          if (wanted.current) setPatch(p);
+          job = wanted.current === job ? undefined : wanted.current;
+        }
+      } catch (err: unknown) {
+        console.error("wand patch", err);
+      } finally {
+        running.current = false;
+      }
+    })();
+  }, [seed, patchAt]);
+  // Nothing wanted, nothing shown, whatever last landed.
+  return seed && patchAt ? patch : undefined;
+}
+
 /** A paint stroke: the union of the patches painted since the button went down. */
 interface Stroke {
   readonly op: MaskOp;
@@ -61,7 +96,7 @@ export function useMaskPainting<P extends SeededPatch>(
   tools: MapTools,
   res: Raster | undefined,
   toFrame: Affine2 | undefined,
-  patchAt: ((seed: readonly [number, number]) => P | undefined) | undefined,
+  patchAt: PatchAt<P> | undefined,
   onPaint: () => void,
   smooth: boolean,
 ) {
@@ -70,7 +105,7 @@ export function useMaskPainting<P extends SeededPatch>(
   const brushOn = active === "brush";
   /** The wand's seed: the pointer, in the transcripts' frame. */
   const [seed, setSeed] = useState<readonly [number, number]>();
-  const patch = useMemo(() => (seed && patchAt ? patchAt(seed) : undefined), [seed, patchAt]);
+  const patch = useLatest(seed, patchAt);
   /** Where the brush is over the map. */
   const [brushAt, setBrushAt] = useState<readonly [number, number]>();
   // The persistent mask, on its own grid in the transcripts' frame, and the stroke being painted.

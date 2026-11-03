@@ -1,7 +1,18 @@
 // PROTOTYPE: the wand's patch at one seed (docs/wand-metric-and-regions.md): the cell of the boundary
 // field around the seed under the chosen rule, optionally focused by a broader scale's cell, then
-// opened so branches narrower than the opening drop. Pure: the field is computed elsewhere.
+// opened so branches narrower than the opening drop. The field is computed elsewhere.
+//
+// The plain rule (Laplacian or tolerance, then the opening) runs as a graph of general ops
+// (`wandPatchOnGraph`, src/gpu/graph/wandPatch.ts). The experiments (ridges, two scales, graded
+// necks) still run here as one function, `wandPatch`.
 
+registerWandOps();
+
+import { browserBackend } from "../../../src/gpu/graph/backend.browser";
+import { pull } from "../../../src/gpu/graph/executor";
+import { Graph } from "../../../src/gpu/graph/graph";
+import { registerWandOps, wandPatch as patchSubgraph } from "../../../src/gpu/graph/wandPatch";
+import { nearestPixel } from "../../../src/spatial/regions";
 import type { Raster } from "../selection/worldMask";
 import { type BoundaryField, focusCell, laplacianCell, openCell, ridgeCell, ridges } from "./boundaryStrength";
 import { gradedCell } from "./gradedNecks";
@@ -48,7 +59,7 @@ export interface Patch {
   readonly scales?: { readonly broad: number; readonly narrow: number };
 }
 
-/** The seed as a fractional map pixel (pixel centres at integers), or undefined off the map. */
+/** The seed as a fractional map pixel (pixel centres at integers). */
 function pixelOf(res: Raster, seed: readonly [number, number]): { col: number; row: number } {
   const { width, height, bbox } = res;
   const [minX, minY, maxX, maxY] = bbox;
@@ -96,4 +107,33 @@ export function wandPatch(
   let count = 0;
   for (const v of inside) count += v;
   return { mask: Float32Array.from(inside), weight, support, seed, count, total: width * height, dEdge, gated, moved, scales };
+}
+
+/** Whether the settings need the experiments' path rather than the graph. */
+export const needsExperiments = (s: PatchSettings, broad: BroadField | undefined): boolean => s.rule === "ridges" || s.graded || !!broad;
+
+/** The plain rule's patch at `seed`, pulled through the wand's subgraph, or undefined off the map. */
+export async function wandPatchOnGraph(
+  field: BoundaryField,
+  res: Raster,
+  seed: readonly [number, number],
+  s: PatchSettings,
+): Promise<Patch | undefined> {
+  const { width, height } = res;
+  const { col, row } = pixelOf(res, seed);
+  if (col < -0.5 || row < -0.5 || col > width - 0.5 || row > height - 0.5) return undefined;
+  const g = new Graph();
+  const u = g.source(
+    { shape: { kind: "grid", width, height }, dtype: "f32", data: field.u, axes: [{ name: "modes", type: "channel", length: field.K }] },
+    "u",
+  );
+  const rho = s.open * field.perR;
+  const { patch } = patchSubgraph(g, u, { col, row, sigma: s.dSmooth * field.perR, tol: s.tol, laplacian: s.rule === "laplacian", rho });
+  // On the host: the patch is per pointer move on a map of some 10⁵ pixels, and every step after the
+  // first is a fill or a transform with no GPU kernel yet.
+  const out = await pull(g, patch, { mode: "cpu", ctx: { backend: browserBackend } });
+  const mask = out.data instanceof Float32Array ? out.data : Float32Array.from(out.data ?? []);
+  let count = 0;
+  for (const v of mask) count += v;
+  return { mask, seed, count, total: width * height, moved: rho >= 0.5 && !mask[nearestPixel(width, height, col, row)] };
 }

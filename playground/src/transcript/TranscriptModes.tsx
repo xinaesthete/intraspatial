@@ -25,14 +25,14 @@ import { GramModesLayer } from "../modes/GramModesLayer";
 import { MatrixView } from "../modes/MatrixView";
 import { ModeLegend } from "../modes/ModeLegend";
 import { useMapTools } from "../selection/useMapTools";
-import { type PressPhase, useMaskPainting } from "../selection/useMaskPainting";
+import { type PatchAt, type PressPhase, useMaskPainting } from "../selection/useMaskPainting";
 import { toolWidgets } from "../selection/wandTools";
 import type { PressOp } from "../selection/worldMask";
 import { BoundaryLayer } from "../wand/BoundaryLayer";
 import { useBoundaryField } from "../wand/useBoundaryField";
 import { useWandSettings } from "../wand/useWandSettings";
 import { WandPanel } from "../wand/WandPanel";
-import { wandPatch } from "../wand/wandPatch";
+import { needsExperiments, type Patch, wandPatch, wandPatchOnGraph } from "../wand/wandPatch";
 import { ChannelPicker } from "./ChannelPicker";
 import { buildChannels, NEGATIVE_CONTROLS, type Selection, STARTER_SETS } from "./channelModel";
 import { TranscriptExplainers } from "./TranscriptExplainers";
@@ -210,11 +210,12 @@ export function TranscriptModes() {
   const bounds = useBoundaryField(showBounds, g, modes, locked?.basis, gb, ws);
   const boundsNow = bounds.main;
   const thetaNow = ws.theta ?? boundsNow?.field.quantiles.p90 ?? 1;
-  const patchAt = useMemo(() => {
+  const patchAt = useMemo<PatchAt<Patch> | undefined>(() => {
     if (!boundsNow || !g) return undefined;
     const broad = ws.twoScale && bounds.broad && gb ? { field: bounds.broad, res: gb.res } : undefined;
     const s = { rule: ws.rule, dSmooth: ws.dSmooth, tol: ws.tol, open: ws.open, graded: ws.graded, slack: ws.slack, theta: thetaNow };
-    return (seed: readonly [number, number]) => wandPatch(boundsNow.field, g.res, seed, s, broad);
+    if (needsExperiments(s, broad)) return async (seed) => wandPatch(boundsNow.field, g.res, seed, s, broad);
+    return (seed) => wandPatchOnGraph(boundsNow.field, g.res, seed, s);
   }, [boundsNow, g, ws.rule, ws.dSmooth, ws.tol, ws.open, ws.graded, ws.slack, ws.twoScale, thetaNow, bounds.broad, gb]);
   // The mask is judged by one metric, so the first stroke locks the modes: otherwise every pan would
   // change what "similar" means.

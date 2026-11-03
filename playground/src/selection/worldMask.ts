@@ -4,6 +4,8 @@
 // carried onto it, combined Photoshop-style, and carried back onto whatever map is showing. A drag is
 // one stroke: its patches are unioned, then combined with the mask as it was when the stroke began.
 
+import { distanceTo } from "../../../src/spatial/regions";
+
 /** The window map a patch was computed on: row 0 at bbox maxY, as `GramMatrixGpuResult`. */
 export interface Raster {
   readonly width: number;
@@ -158,54 +160,6 @@ export function discOnRaster(c: readonly [number, number], r: number, res: Raste
     }
   }
   return out;
-}
-
-/** Squared distance to the nearest zero of `f` along one line (Felzenszwalb & Huttenlocher's lower
- *  envelope of parabolas); `f` is 0 at targets and huge elsewhere. Writes into `d`. */
-function edt1(f: Float64Array, n: number, d: Float64Array, v: Int32Array, z: Float64Array): void {
-  let k = 0;
-  v[0] = 0;
-  z[0] = -Infinity;
-  z[1] = Infinity;
-  for (let q = 1; q < n; q++) {
-    let s = (f[q]! + q * q - (f[v[k]!]! + v[k]! * v[k]!)) / (2 * q - 2 * v[k]!);
-    while (s <= z[k]!) {
-      k--;
-      s = (f[q]! + q * q - (f[v[k]!]! + v[k]! * v[k]!)) / (2 * q - 2 * v[k]!);
-    }
-    k++;
-    v[k] = q;
-    z[k] = s;
-    z[k + 1] = Infinity;
-  }
-  k = 0;
-  for (let q = 0; q < n; q++) {
-    while (z[k + 1]! < q) k++;
-    d[q] = (q - v[k]!) * (q - v[k]!) + f[v[k]!]!;
-  }
-}
-
-/** Euclidean distance (pixels) from each pixel to the nearest pixel where `target` holds. */
-export function distanceTo(target: (i: number) => boolean, width: number, height: number): Float64Array {
-  const BIG = 1e12;
-  const n = Math.max(width, height);
-  const f = new Float64Array(n);
-  const d = new Float64Array(n);
-  const v = new Int32Array(n);
-  const z = new Float64Array(n + 1);
-  const g = new Float64Array(width * height);
-  for (let i = 0; i < width * height; i++) g[i] = target(i) ? 0 : BIG;
-  for (let x = 0; x < width; x++) {
-    for (let y = 0; y < height; y++) f[y] = g[y * width + x]!;
-    edt1(f, height, d, v, z);
-    for (let y = 0; y < height; y++) g[y * width + x] = d[y]!;
-  }
-  for (let y = 0; y < height; y++) {
-    for (let x = 0; x < width; x++) f[x] = g[y * width + x]!;
-    edt1(f, width, d, v, z);
-    for (let x = 0; x < width; x++) g[y * width + x] = Math.sqrt(d[x]!);
-  }
-  return g;
 }
 
 /** A 0/1 raster as a smooth field whose 0.5 level is the region's outline with the pixel staircase

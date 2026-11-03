@@ -3,7 +3,7 @@
 // can add or remove a lobe at once. Here each pixel is scored by the narrowest neck on its widest path
 // from the seed, and a lobe fades out as its neck narrows past ρ instead of popping.
 
-import { distanceTo } from "../selection/worldMask";
+import { distanceTo } from "../../../src/spatial/regions";
 
 export interface GradedCell {
   /** Membership in [0, 1]: the neck score through a smoothstep about ρ. */
