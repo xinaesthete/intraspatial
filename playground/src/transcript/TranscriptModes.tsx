@@ -280,8 +280,7 @@ export function TranscriptModes() {
               ? [
                   new BoundaryLayer({
                     id: "gram-boundary",
-                    strength: boundsNow.field.buffer,
-                    version: boundsNow.version,
+                    strength: boundsNow.field.field,
                     bbox: g.res.bbox,
                     width: g.res.width,
                     height: g.res.height,

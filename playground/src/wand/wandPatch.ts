@@ -3,7 +3,7 @@
 // opened so branches narrower than the opening drop. The field is computed elsewhere.
 //
 // The plain rule (Laplacian or tolerance, then the opening) runs as a graph of general ops
-// (`wandPatchOnGraph`, src/gpu/graph/wandPatch.ts). The experiments (ridges, two scales, graded
+// (`wandPatchOnGraph`, src/gpu/graph/wand.ts). The experiments (ridges, two scales, graded
 // necks) still run here as one function, `wandPatch`.
 
 registerWandOps();
@@ -11,7 +11,7 @@ registerWandOps();
 import { browserBackend } from "../../../src/gpu/graph/backend.browser";
 import { pull } from "../../../src/gpu/graph/executor";
 import { Graph } from "../../../src/gpu/graph/graph";
-import { registerWandOps, wandPatch as patchSubgraph } from "../../../src/gpu/graph/wandPatch";
+import { registerWandOps, wandPatch as patchSubgraph } from "../../../src/gpu/graph/wand";
 import { nearestPixel } from "../../../src/spatial/regions";
 import type { Raster } from "../selection/worldMask";
 import { type BoundaryField, focusCell, laplacianCell, openCell, ridgeCell, ridges } from "./boundaryStrength";

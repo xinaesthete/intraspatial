@@ -5,7 +5,8 @@ import { useEffect, useRef, useState } from "react";
 import type { GramMatrixGpuResult } from "../../../src/gpu/spatial/gramMatrix";
 import type { ModeBasis } from "../../../src/gpu/spatial/gramModes";
 import type { CoLocationModes } from "../../../src/spatial/gram";
-import { type BoundaryField, boundaryStrength, ppcaMetric } from "./boundaryStrength";
+import { boundaryField } from "./boundaryField";
+import { type BoundaryField, ppcaMetric } from "./boundaryStrength";
 import type { WandSettings } from "./useWandSettings";
 
 /** What the field is computed from: a Gram result, its raster snapshot and its modes. */
@@ -23,8 +24,6 @@ export interface BoundaryNow {
   /** The noise floor the modes after q are counted at. */
   readonly sigma2: number;
   readonly q: number;
-  /** Bumped per computation, so a layer reuploading the shared buffer knows it changed. */
-  readonly version: number;
   readonly generation: number;
 }
 
@@ -43,7 +42,6 @@ export function useBoundaryField(
 ) {
   const [bounds, setBounds] = useState<BoundaryNow>();
   const chain = useRef(Promise.resolve());
-  const version = useRef(0);
   useEffect(() => {
     if (!on || !g || !modes) return;
     const K = g.res.labels.length;
@@ -51,10 +49,10 @@ export function useBoundaryField(
     const { A, sigma2 } = ppcaMetric(modes.vectors, modes.values, K, q, s.w);
     const sd = basis?.sd ?? g.res.resident.sd;
     const mean = basis?.mean ?? g.res.resident.mean;
-    // One at a time: the strength buffers are shared between calls.
+    // One at a time, in order: a newer field must not be overtaken by an older one.
     chain.current = chain.current
-      .then(() => boundaryStrength(g.res, g.rasters, mean, sd, A, g.radius, q, s.residualSmooth))
-      .then((field) => setBounds({ field, sigma2, q, version: ++version.current, generation: g.generation }))
+      .then(() => boundaryField(g.res, g.rasters, mean, sd, A, g.radius, q, s.residualSmooth))
+      .then((field) => setBounds({ field, sigma2, q, generation: g.generation }))
       .catch((err: unknown) => console.error("boundary strength", err));
   }, [on, g, modes, basis, s.q, s.w, s.residualSmooth]);
   const [boundsB, setBoundsB] = useState<{ field: BoundaryField; generation: number }>();
@@ -64,9 +62,7 @@ export function useBoundaryField(
     const q = Math.min(s.q, K);
     const { A } = ppcaMetric(broad.modes.vectors, broad.modes.values, K, q, s.w);
     chain.current = chain.current
-      .then(() =>
-        boundaryStrength(broad.res, broad.rasters, broad.res.resident.mean, broad.res.resident.sd, A, broad.radius, q, 0, "broad"),
-      )
+      .then(() => boundaryField(broad.res, broad.rasters, broad.res.resident.mean, broad.res.resident.sd, A, broad.radius, q, 0))
       .then((field) => setBoundsB({ field, generation: broad.generation }))
       .catch((err: unknown) => console.error("boundary strength (broad)", err));
   }, [broad, s.q, s.w]);

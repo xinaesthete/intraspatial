@@ -234,10 +234,9 @@ fn fragmentMain(input: Varyings) -> @location(0) vec4<f32> {
 `;
 
 export type BoundaryLayerProps = {
-  /** `BoundaryField.buffer`: per raster pixel strength and tensor, row-major, row 0 at bbox maxY. */
-  strength: GPUBuffer | null;
-  /** Bumped whenever `strength`'s contents change: the buffer is reused, so its identity does not. */
-  version: number;
+  /** `BoundaryField.field`: per raster pixel strength and tensor (4 floats), row-major, row 0 at bbox
+   *  maxY. Uploaded when its identity changes. */
+  strength: Float32Array | null;
   bbox: readonly [number, number, number, number] | null;
   width: number;
   height: number;
@@ -257,8 +256,7 @@ export type BoundaryLayerProps = {
 } & LayerProps;
 
 const defaultProps: DefaultProps<BoundaryLayerProps> = {
-  strength: { type: "object", value: null, compare: false },
-  version: { type: "number", value: 0 },
+  strength: { type: "object", value: null, compare: true },
   bbox: { type: "object", value: null, compare: false },
   width: { type: "number", value: 0 },
   height: { type: "number", value: 0 },
@@ -272,7 +270,7 @@ const defaultProps: DefaultProps<BoundaryLayerProps> = {
 };
 
 type Slot = { buf?: Buffer; src?: Float32Array | null };
-type State = { model?: Model; wrapped?: Buffer; handle?: GPUBuffer; cell: Slot; mask: Slot; weight: Slot };
+type State = { model?: Model; field: Slot; cell: Slot; mask: Slot; weight: Slot };
 
 export class BoundaryLayer extends Layer<BoundaryLayerProps> {
   static override layerName = "BoundaryLayer";
@@ -293,11 +291,11 @@ export class BoundaryLayer extends Layer<BoundaryLayerProps> {
       vertexCount: 6,
       shaderAssembler: this.context.shaderAssembler,
     });
-    this.setState({ model, cell: {}, mask: {}, weight: {} });
+    this.setState({ model, field: {}, cell: {}, mask: {}, weight: {} });
   }
 
   override finalizeState(context: Parameters<Layer["finalizeState"]>[0]): void {
-    this.state.wrapped?.destroy();
+    this.state.field.buf?.destroy();
     this.state.cell.buf?.destroy();
     this.state.mask.buf?.destroy();
     this.state.weight.buf?.destroy();
@@ -309,14 +307,9 @@ export class BoundaryLayer extends Layer<BoundaryLayerProps> {
     const { model } = this.state;
     const { strength, bbox, width, height, theta, opacity, lines, cell, mask, weight, op, smooth } = this.props;
     if (!model || !strength || !bbox || width === 0) return;
-    if (this.state.handle !== strength) {
-      this.state.wrapped?.destroy();
-      this.state.wrapped = this.context.device.createBuffer({ handle: strength, byteLength: strength.size, usage: Buffer.STORAGE });
-      this.state.handle = strength;
-      model.setBindings({ field: this.state.wrapped });
-    }
     // Always bound (a zero mask when there is none), sized for this raster.
     const n = width * height;
+    this.upload(model, "field", strength, n * 4);
     this.upload(model, "cell", cell, n);
     this.upload(model, "mask", mask, n);
     this.upload(model, "weight", weight, n);
@@ -341,7 +334,7 @@ export class BoundaryLayer extends Layer<BoundaryLayerProps> {
     model.draw(this.context.renderPass);
   }
 
-  private upload(model: Model, name: "cell" | "mask" | "weight", src: Float32Array | null, n: number): void {
+  private upload(model: Model, name: "field" | "cell" | "mask" | "weight", src: Float32Array | null, n: number): void {
     const slot = this.state[name];
     if (slot.buf && slot.buf.byteLength >= n * 4 && slot.src === src) return;
     const data = src && src.length === n ? src : new Float32Array(n);

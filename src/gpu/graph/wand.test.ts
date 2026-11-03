@@ -4,7 +4,7 @@ import { beforeAll, describe, expect, it } from "vite-plus/test";
 import { floodFrom, mixtureDistance, nearestPixel } from "../../spatial/regions";
 import { Graph, pull } from "./index";
 import { convolveSeparableOp } from "./ops/convolveSeparable";
-import { registerWandOps, wandPatch } from "./wandPatch";
+import { registerWandOps, wandPatch } from "./wand";
 
 beforeAll(() => registerWandOps());
 

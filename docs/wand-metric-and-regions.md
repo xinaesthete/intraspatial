@@ -3,7 +3,7 @@
 Status: **design note** (2026-10-28). Not in flight, so not an ADR. Companion to
 [wand-contours-and-lofted-geometry.md](wand-contours-and-lofted-geometry.md) (what happens *after*
 a region exists) and §5 of [stain-space-and-stack-transparency.md](stain-space-and-stack-transparency.md)
-(the comparator registry). Prototype: `playground/src/wand/{boundaryStrength,BoundaryLayer,gradedNecks}.ts`, with the mask and map tools in `playground/src/selection/`. The plain rule's patch runs as a graph of general ops (`src/gpu/graph/wandPatch.ts`: mixtureDistance → Gaussian → Laplacian ≥ 0 → floodFrom, opened by two distance transforms), pixel-identical to the prototype function; the boundary field feeding it is not a graph op yet
+(the comparator registry). Prototype: `playground/src/wand/{boundaryStrength,BoundaryLayer,gradedNecks}.ts`, with the mask and map tools in `playground/src/selection/`. The plain rule's patch runs as a graph of general ops (`src/gpu/graph/wand.ts`: mixtureDistance → Gaussian → Laplacian ≥ 0 → floodFrom, opened by two distance transforms), pixel-identical to the prototype function; so does the boundary field feeding it (`wandField`: gramChannels → channelMix (standardise and project) → channelStructureTensor, with convolveSeparable over the channel planes for the residual modes), within 1e-5 of the prototype shader
 on the transcript modes page.
 
 ## Decision
