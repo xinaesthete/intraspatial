@@ -54,8 +54,10 @@ export function footprint(patch: ArrayLike<number>, res: Raster, cell: number): 
 }
 
 /** Add to `out` the grid cells whose centres lie within `r` of the segment from `a` to `b` (a brush
- *  dab when `a` and `b` coincide): a stroke is swept, so a fast drag leaves no gaps. */
+ *  dab when `a` and `b` coincide): a stroke is swept, so a fast drag leaves no gaps. A dab that covers
+ *  no centre (a brush narrower than a cell) takes the cell under it, so a click always paints. */
 export function sweep(out: Set<number>, a: readonly [number, number], b: readonly [number, number], r: number, cell: number): void {
+  let covered = false;
   const dx = b[0] - a[0];
   const dy = b[1] - a[1];
   const len2 = dx * dx + dy * dy;
@@ -70,9 +72,13 @@ export function sweep(out: Set<number>, a: readonly [number, number], b: readonl
       const t = len2 > 0 ? Math.max(0, Math.min(1, ((cx - a[0]) * dx + (cy - a[1]) * dy) / len2)) : 0;
       const ex = cx - (a[0] + t * dx);
       const ey = cy - (a[1] + t * dy);
-      if (ex * ex + ey * ey <= r * r) out.add(key(ix, iy));
+      if (ex * ex + ey * ey <= r * r) {
+        out.add(key(ix, iy));
+        covered = true;
+      }
     }
   }
+  if (!covered && len2 === 0) out.add(key(Math.floor(a[0] / cell), Math.floor(a[1] / cell)));
 }
 
 /** The mask's connected piece (4-connected on its grid) holding point `p`, or an empty set when `p`
@@ -116,6 +122,8 @@ export const gridFor = (res: Raster): number => (res.bbox[2] - res.bbox[0]) / re
 
 /** `base` combined with a stroke (the union of the patches painted since the button went down). */
 export function apply(base: WorldMask | undefined, stroke: ReadonlySet<number>, cell: number, op: MaskOp): WorldMask {
+  // Removing from or intersecting with nothing leaves nothing.
+  if (!base && (op === "subtract" || op === "intersect")) return { cell, keys: new Set() };
   if (!base || op === "replace") return { cell, keys: new Set(stroke) };
   const keys = new Set(base.keys);
   if (op === "add") for (const k of stroke) keys.add(k);

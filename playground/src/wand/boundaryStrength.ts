@@ -74,7 +74,8 @@ export function ridges(f: Float32Array, width: number, height: number, theta: nu
     for (let c = 0; c < width; c++) {
       const i = (r * width + c) * 4;
       const s = f[i]!;
-      if (s < theta) continue;
+      // Flat ground is no ridge, even when θ is 0 (a window whose 90th percentile is 0).
+      if (s < theta || s <= 0) continue;
       const ang = 0.5 * Math.atan2(2 * f[i + 3]!, f[i + 1]! - f[i + 2]!);
       const nx = Math.cos(ang);
       const ny = Math.sin(ang);

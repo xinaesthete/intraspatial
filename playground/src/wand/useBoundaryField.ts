@@ -42,6 +42,9 @@ export function useBoundaryField(
 ) {
   const [bounds, setBounds] = useState<BoundaryNow>();
   const chain = useRef(Promise.resolve());
+  // The latest job asked for, per field: a queued job that a newer one has replaced is skipped, so a
+  // slider drag computes the field it ends on, not every step of the way.
+  const latest = useRef({ main: 0, broad: 0 });
   useEffect(() => {
     if (!on || !g || !modes) return;
     const K = g.res.labels.length;
@@ -49,10 +52,14 @@ export function useBoundaryField(
     const { A, sigma2 } = ppcaMetric(modes.vectors, modes.values, K, q, s.w);
     const sd = basis?.sd ?? g.res.resident.sd;
     const mean = basis?.mean ?? g.res.resident.mean;
+    const job = ++latest.current.main;
     // One at a time, in order: a newer field must not be overtaken by an older one.
     chain.current = chain.current
-      .then(() => boundaryField(g.res, g.rasters, mean, sd, A, g.radius, q, s.residualSmooth))
-      .then((field) => setBounds({ field, sigma2, q, generation: g.generation }))
+      .then(async () => {
+        if (job !== latest.current.main) return;
+        const field = await boundaryField(g.res, g.rasters, mean, sd, A, g.radius, q, s.residualSmooth);
+        setBounds({ field, sigma2, q, generation: g.generation });
+      })
       .catch((err: unknown) => console.error("boundary strength", err));
   }, [on, g, modes, basis, s.q, s.w, s.residualSmooth]);
   const [boundsB, setBoundsB] = useState<{ field: BoundaryField; generation: number }>();
@@ -61,9 +68,13 @@ export function useBoundaryField(
     const K = broad.res.labels.length;
     const q = Math.min(s.q, K);
     const { A } = ppcaMetric(broad.modes.vectors, broad.modes.values, K, q, s.w);
+    const job = ++latest.current.broad;
     chain.current = chain.current
-      .then(() => boundaryField(broad.res, broad.rasters, broad.res.resident.mean, broad.res.resident.sd, A, broad.radius, q, 0))
-      .then((field) => setBoundsB({ field, generation: broad.generation }))
+      .then(async () => {
+        if (job !== latest.current.broad) return;
+        const field = await boundaryField(broad.res, broad.rasters, broad.res.resident.mean, broad.res.resident.sd, A, broad.radius, q, 0);
+        setBoundsB({ field, generation: broad.generation });
+      })
       .catch((err: unknown) => console.error("boundary strength (broad)", err));
   }, [broad, s.q, s.w]);
   return {

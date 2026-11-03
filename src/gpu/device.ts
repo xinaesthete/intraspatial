@@ -318,6 +318,9 @@ export function writeView(queue: GPUQueue, dst: GPUBuffer, view: ArrayBufferView
  *  is silence — see `checkBindingSize`). Never destroyed — mid-process `.destroy()` is what
  *  segfaults Dawn-on-Node's teardown (ADR-0002/0003). */
 const stagingPool = perDevice(() => new Map<string, { buf: GPUBuffer; cap: number }>());
+/** The last read queued on each staging buffer: reads sharing a key run one at a time, since a copy
+ *  into a buffer that is still mapped (or awaiting its map) fails. */
+const stagingTail = perDevice(() => new Map<string, Promise<unknown>>());
 
 /**
  * Copy `bytes` out of a storage buffer and return them **verbatim**.
@@ -334,13 +337,18 @@ const stagingPool = perDevice(() => new Map<string, { buf: GPUBuffer; cap: numbe
  * Raw `mapAsync` on a pooled MAP_READ buffer is Dawn-stable since the Instance-lifetime fix of
  * 2026-07-29, and `test/dawn-limits-sweep.gpu.test.ts` pins exactly this pattern.
  */
-export async function readBackBytes(
-  device: GPUDevice,
-  key: string,
-  src: GPUBuffer,
-  srcOffset: number,
-  bytes: number,
-): Promise<ArrayBuffer> {
+export function readBackBytes(device: GPUDevice, key: string, src: GPUBuffer, srcOffset: number, bytes: number): Promise<ArrayBuffer> {
+  const tails = stagingTail(device);
+  const read = (tails.get(key) ?? Promise.resolve()).then(() => readNow(device, key, src, srcOffset, bytes));
+  // The next read waits for this one to finish, whether or not it succeeded.
+  tails.set(
+    key,
+    read.catch(() => undefined),
+  );
+  return read;
+}
+
+async function readNow(device: GPUDevice, key: string, src: GPUBuffer, srcOffset: number, bytes: number): Promise<ArrayBuffer> {
   const pool = stagingPool(device);
   const got = pool.get(key);
   let staging = got?.buf;

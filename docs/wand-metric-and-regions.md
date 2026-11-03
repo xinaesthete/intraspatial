@@ -21,8 +21,9 @@ on the transcript modes page.
    (E7).
 3. **"Everywhere similar" stays `d ≤ tol`.** It is a different question, with a different answer.
 4. **Gram metric:** the q main modes at `1/√λ`, plus the rest at noise level times `w` (PPCA, §2).
-   **Boundaries use the main modes only (w = 0):** a derivative amplifies the leftover modes far
-   beyond their variance share.
+   **Boundaries should use the main modes only (w = 0, the default):** a derivative amplifies the
+   leftover modes far beyond their variance share. The prototype's boundary field still follows the
+   `w` slider, with the leftover modes blurred first (residual smoothing), so the two can be compared.
 5. **Boundary strength is a display**, not a rule. Edges taken from the vector field's directional
    derivative (Canny/Cumani) do not close (§3).
 

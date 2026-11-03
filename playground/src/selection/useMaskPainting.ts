@@ -52,13 +52,16 @@ function useLatest<P>(seed: readonly [number, number] | undefined, patchAt: Patc
     void (async () => {
       try {
         for (let job = wanted.current; job;) {
-          const p = await job.patchAt(job.seed);
-          // A result for a seed since left (off the map) is not shown.
-          if (wanted.current) setPatch(p);
+          try {
+            const p = await job.patchAt(job.seed);
+            // A result for a seed since left (off the map) is not shown.
+            if (wanted.current) setPatch(p);
+          } catch (err: unknown) {
+            // One failed seed doesn't stop the loop: the latest seed is still computed.
+            console.error("wand patch", err);
+          }
           job = wanted.current === job ? undefined : wanted.current;
         }
-      } catch (err: unknown) {
-        console.error("wand patch", err);
       } finally {
         running.current = false;
       }
@@ -294,6 +297,10 @@ export function useMaskPainting<P extends SeededPatch>(
     [],
   );
   const onHover = useCallback((x?: number, y?: number) => onHoverNow.current?.(x, y), []);
-  const clear = useCallback(() => setMask(undefined), []);
+  /** Drop the mask and any stroke still awaiting its patch, which would otherwise restore its base. */
+  const clear = useCallback(() => {
+    stroke.current = undefined;
+    setMask(undefined);
+  }, []);
   return { mask, clear, maskOnMap, preview, patch, brushAt, painting, cursor, onPress, onHover };
 }

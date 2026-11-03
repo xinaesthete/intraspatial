@@ -213,6 +213,8 @@ export function TranscriptModes() {
   const patchAt = useMemo<PatchAt<Patch> | undefined>(() => {
     if (!boundsNow || !g) return undefined;
     const broad = ws.twoScale && bounds.broad && gb ? { field: bounds.broad, res: gb.res } : undefined;
+    // Two scales asked for: wait for the broad field rather than paint with the one-scale patch.
+    if (ws.twoScale && !broad) return undefined;
     const s = { rule: ws.rule, dSmooth: ws.dSmooth, tol: ws.tol, open: ws.open, graded: ws.graded, slack: ws.slack, theta: thetaNow };
     if (needsExperiments(s, broad)) return async (seed) => wandPatch(boundsNow.field, g.res, seed, s, broad);
     return (seed) => wandPatchOnGraph(boundsNow.field, g.res, seed, s);
@@ -374,8 +376,8 @@ export function TranscriptModes() {
   const coarse = g && rasterSide > 0 ? (g.window.maxX - g.window.minX) / g.raster.width > g.radius : false;
 
   // What belongs to one store, or one element of it, is dropped with it — by the action that changes
-  // it, not an effect after: the pinned window is in the old element's frame, the lock is the old
-  // data's projection, and the last viewport would fetch tiles at the old store's coordinates.
+  // it, not an effect after: the pinned window and the mask are in the old element's frame, the lock is
+  // the old data's projection, and the last viewport would fetch tiles at the old store's coordinates.
   const openStore = (url: string) => {
     setStoreUrl(url);
     setPointsName(undefined);
@@ -383,10 +385,12 @@ export function TranscriptModes() {
     setPinned(undefined);
     setLock(undefined);
     setViewport(undefined);
+    paint.clear();
   };
   const choosePoints = (name: string) => {
     setPointsName(name);
     setPinned(undefined);
+    paint.clear();
   };
 
   return (

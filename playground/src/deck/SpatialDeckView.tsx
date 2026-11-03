@@ -94,6 +94,8 @@ export function SpatialDeckView({
   });
 
   const { getWorldBoundsForVisibleLayers, hasEnabledLayers, hasLayersDrawn, isBlocking } = renderer;
+  /** The view rectangle last reported to `onViewport`. */
+  const reported = useRef<Rect>(undefined);
   useEffect(() => {
     if (!sdata || width <= 0 || height <= 0) return;
     const f = fittedFor.current;
@@ -108,6 +110,8 @@ export function SpatialDeckView({
     }
     if (!bounds) return;
     fittedFor.current = { sdata, coordinateSystem };
+    // A refit reports its view even when it lands on the last one reported (the same store reopened).
+    reported.current = undefined;
     setViewState(viewStateFromBounds(bounds, width, height));
   }, [
     sdata,
@@ -123,7 +127,6 @@ export function SpatialDeckView({
 
   // Only when the rectangle moves: deck reports a fresh view state on every gesture start (a drag that
   // doesn't pan, say), and a page that reanalyses its window per rectangle would redo the work.
-  const reported = useRef<Rect>(undefined);
   useEffect(() => {
     if (!viewState || width <= 0 || height <= 0) return;
     const r = visibleRect(viewState, width, height);

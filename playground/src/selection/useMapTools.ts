@@ -73,8 +73,10 @@ export function useMapTools(enabled: boolean, onPaintTool: () => void, resizeWan
 
   const brushOn = active === "brush";
   // [ and ] shrink and grow the patch, through the scale its edge is judged at.
+  const handOn = active === "hand";
   useEffect(() => {
-    if (!enabled) return;
+    // The hand has no size.
+    if (!enabled || handOn) return;
     const on = (e: KeyboardEvent) => {
       if (typing(e.target)) return;
       if (e.key !== "[" && e.key !== "]") return;
@@ -85,7 +87,7 @@ export function useMapTools(enabled: boolean, onPaintTool: () => void, resizeWan
     };
     globalThis.addEventListener("keydown", on);
     return () => globalThis.removeEventListener("keydown", on);
-  }, [enabled, brushOn, resizeWand]);
+  }, [enabled, handOn, brushOn, resizeWand]);
   // Cmd/Ctrl + scroll sizes the tool (the brush, or the wand's σ) instead of zooming. A native,
   // non-passive capture listener: it runs before deck's and can stop the zoom.
   const [mapBox, setMapBox] = useState<HTMLDivElement | null>(null);
@@ -129,6 +131,8 @@ export function useMapTools(enabled: boolean, onPaintTool: () => void, resizeWan
       globalThis.removeEventListener("keydown", down);
       globalThis.removeEventListener("keyup", up);
       globalThis.removeEventListener("blur", blur);
+      // Space's release may come while these listeners are gone (under Hand): don't stay panning.
+      blur();
     };
   }, [active]);
   // H, W and B pick the tool, as in Photoshop.
