@@ -167,21 +167,38 @@ export function useWand(source: WandSource | undefined) {
     return connectedRegion(field.d, width, height, field.sample, tolerance);
   }, [connected, current, field, m, tolerance]);
 
-  return {
-    tolerance,
-    setTolerance,
-    connected,
-    setConnected,
-    region,
-    modesUsed,
-    setModesUsed,
-    place,
-    sample: current,
-    error,
-    /** Sample the place `x, y`, in the frame of the result's bbox. */
-    pick,
-    clear,
-  };
+  // One object per state, not per render, so a page's layers can depend on the wand as a whole.
+  return useMemo(
+    () => ({
+      tolerance,
+      setTolerance,
+      connected,
+      setConnected,
+      region,
+      modesUsed,
+      setModesUsed,
+      place,
+      sample: current,
+      error,
+      /** Sample the place `x, y`, in the frame of the result's bbox. */
+      pick,
+      clear,
+    }),
+    [tolerance, connected, region, modesUsed, place, current, error, pick, clear],
+  );
 }
 
 export type Wand = ReturnType<typeof useWand>;
+
+/** The `GramModesLayer` props that draw `wand`: its reference, marker, tolerance, metric and patch. */
+export function wandLayerProps(wand: Wand, K: number) {
+  const s = wand.sample;
+  return {
+    reference: s?.z ?? null,
+    marker: s ? { col: s.col, row: s.row } : null,
+    tolerance: wand.tolerance,
+    // "every mode" is held as 0 so the option need not know K.
+    modesUsed: wand.modesUsed || K,
+    region: wand.region ?? null,
+  };
+}

@@ -1,4 +1,5 @@
 import { createRoot } from "react-dom/client";
+import "./modes/modes.css";
 import { CellModes } from "./cells/CellModes";
 
 // No StrictMode: its dev-only double effects would queue every GPU compute twice, and its double

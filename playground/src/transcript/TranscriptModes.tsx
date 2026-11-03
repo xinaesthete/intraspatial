@@ -19,7 +19,6 @@ import { listImageElements } from "../datasource/imageContext";
 import { DEFAULT_UNTILED_BUDGET, listPointsElements } from "../datasource/pointsTileLoader";
 import { SpatialDeckView } from "../deck/SpatialDeckView";
 import { SHARED_DEVICE_PROPS, useSharedDevice } from "../deck/useSharedDevice";
-import { useWorldPick } from "../deck/useWorldPick";
 import { useAsync, useSettled } from "../hooks/useAsync";
 import { usePointsSource, usePointsTiles, useSpatialData } from "../hooks/useSpatialData";
 import { ChannelPicker } from "./ChannelPicker";
@@ -27,11 +26,12 @@ import { buildChannels, NEGATIVE_CONTROLS, type Selection, STARTER_SETS } from "
 import { Explain } from "./Explain";
 import { GramModesLayer } from "../modes/GramModesLayer";
 import { MatrixView } from "../modes/MatrixView";
-import { ModeLegend } from "../modes/ModeLegend";
-import { useTranscriptGram } from "./useTranscriptGram";
-import { useWand, type WandSource } from "../modes/useWand";
+import { ChartsExplain, ColoursExplain, ModeCharts } from "../modes/ModeCharts";
+import { ModeMap } from "../modes/ModeMap";
+import { ImagePicker, MapStyleControls, StoreInput, useImageChoice, useMapStyle } from "../modes/PageControls";
+import { useWand, type WandSource, wandLayerProps } from "../modes/useWand";
 import { WandExplain, WandPanel } from "../modes/WandPanel";
-import { WandReadout } from "../modes/WandReadout";
+import { useTranscriptGram } from "./useTranscriptGram";
 
 /** The raster stack's size on the device, in MiB. `bytesPerWordRatio` of 2 reports what the same
  *  stack would cost at f32, which is the comparison the checkbox is making. */
@@ -47,8 +47,7 @@ const DEFAULT_STORE = "http://localhost:8080/xenium_2.q0.001.htj2k.index-permuta
 const DEFAULT_SELECTION: Selection = { sets: [...STARTER_SETS.map((s) => s.name), NEGATIVE_CONTROLS], genes: [] };
 /** How long the view must rest before the window moves to it. */
 const SETTLE_MS = 50;
-/** `imageName` for "no image". `undefined` means "pick one". */
-const NO_IMAGE = "";
+const preferHe = (names: readonly string[]) => names.find((n) => /he/i.test(n)) ?? names[0];
 
 /** Modes fixed from one window, to paint every later window with. Each raster is a density
  *  (molecules per µm², the kernel having unit mass), so the lock stays meaningful when the radius or
@@ -73,9 +72,7 @@ const outline = (r: Rect): [number, number][] => [
 
 export function TranscriptModes() {
   const [storeUrl, setStoreUrl] = useState(DEFAULT_STORE);
-  const [storeDraft, setStoreDraft] = useState(DEFAULT_STORE);
   const [pointsName, setPointsName] = useState<string>();
-  const [imageName, setImageName] = useState<string>();
   const [radius, setRadius] = useState(50);
   const [qvMin, setQvMin] = useState(20);
   const [untiledBudgetM, setUntiledBudgetM] = useState(DEFAULT_UNTILED_BUDGET / 1e6);
@@ -85,9 +82,8 @@ export function TranscriptModes() {
   const [follow, setFollow] = useState(true);
   const [pinned, setPinned] = useState<Rect>();
   const [selection, setSelection] = useState(DEFAULT_SELECTION);
-  const [saturate, setSaturate] = useState(2.5);
-  const [chromaWeight, setChromaWeight] = useState(0.5);
-  const [opacity, setOpacity] = useState(0.75);
+  const style = useMapStyle({ chromaWeight: 0.5, opacity: 0.75 });
+  const { saturate, chromaWeight, opacity } = style;
   const [lock, setLock] = useState<ModeLock>();
 
   const device = useSharedDevice();
@@ -108,7 +104,7 @@ export function TranscriptModes() {
   const hasQv = source.value?.columns.includes("qv") ?? true;
   const qvApplied = hasQv ? qvMin : 0;
   const imageNames = useAsync(() => (sd.value ? listImageElements(sd.value) : undefined), [sd.value], sd.value);
-  const imageEl = imageName === NO_IMAGE ? undefined : (imageName ?? imageNames.value?.find((n) => /he/i.test(n)) ?? imageNames.value?.[0]);
+  const images = useImageChoice(imageNames.value ?? [], preferHe);
 
   // Transcripts' own frame ↔ the frame the canvas draws in.
   const space = source.value?.space;
@@ -175,18 +171,11 @@ export function TranscriptModes() {
     return { res: g.res, rasters: g.rasters, mean, sd, vectors, ...(lockedBasis ? { basis: lockedBasis } : {}) };
   }, [g, lockedBasis, vectors]);
   const wand = useWand(wandSource);
-  const sample = wand.sample;
   // The canvas's world frame → the transcripts' frame, which the Gram's bbox is in.
-  const { pick: wandPick } = wand;
-  const onPick = useCallback(
-    (wx: number, wy: number) => {
-      if (!toElement) return;
-      const m = toElement;
-      wandPick(m.a * wx + m.c * wy + m.tx, m.b * wx + m.d * wy + m.ty);
-    },
-    [toElement, wandPick],
-  );
-  const pick = useWorldPick(viewport, onPick);
+  const toPlace = (wx: number, wy: number): readonly [number, number] | undefined => {
+    const m = toElement;
+    return m ? [m.a * wx + m.c * wy + m.tx, m.b * wx + m.d * wy + m.ty] : undefined;
+  };
 
   const layers = useMemo(
     () =>
@@ -198,11 +187,7 @@ export function TranscriptModes() {
               rasters: g.rasters,
               vectors: (locked?.modes ?? g.modes).vectors,
               basis: locked?.basis ?? null,
-              reference: sample?.z ?? null,
-              marker: sample ? { col: sample.col, row: sample.row } : null,
-              tolerance: wand.tolerance,
-              modesUsed: wand.modesUsed || g.modes.labels.length,
-              region: wand.region ?? null,
+              ...wandLayerProps(wand, g.modes.labels.length),
               saturate,
               chromaWeight,
               opacity,
@@ -236,7 +221,7 @@ export function TranscriptModes() {
               : []),
           ]
         : [],
-    [g, locked, modelMatrix, saturate, chromaWeight, opacity, sample, wand.tolerance, wand.modesUsed, wand.region],
+    [g, locked, modelMatrix, saturate, chromaWeight, opacity, wand],
   );
 
   const error = sd.error ?? source.error ?? tiles.error ?? gram.error;
@@ -258,7 +243,7 @@ export function TranscriptModes() {
   const openStore = (url: string) => {
     setStoreUrl(url);
     setPointsName(undefined);
-    setImageName(undefined);
+    images.reset();
     setPinned(undefined);
     setLock(undefined);
     setViewport(undefined);
@@ -279,15 +264,7 @@ export function TranscriptModes() {
 
       <div className="layout">
         <aside className="controls">
-          <label>
-            Store
-            <span className="row">
-              <input value={storeDraft} onChange={(e) => setStoreDraft(e.target.value)} />
-              <button type="button" onClick={() => openStore(storeDraft.trim())}>
-                open
-              </button>
-            </span>
-          </label>
+          <StoreInput initial={DEFAULT_STORE} onOpen={openStore} />
           <label>
             Transcripts
             <select value={pointsEl ?? ""} onChange={(e) => choosePoints(e.target.value)}>
@@ -313,15 +290,7 @@ export function TranscriptModes() {
               Every molecule, at any zoom (off: a zoomed-out view analyses a random sample — fast, approximate)
             </label>
           )}
-          <label>
-            Image
-            <select value={imageEl ?? NO_IMAGE} onChange={(e) => setImageName(e.target.value)}>
-              {(imageNames.value ?? []).map((n) => (
-                <option key={n}>{n}</option>
-              ))}
-              <option value={NO_IMAGE}>(none)</option>
-            </select>
-          </label>
+          <ImagePicker images={images} />
           <label>
             <span>
               Neighbourhood radius r: {radius} µm*
@@ -368,25 +337,7 @@ export function TranscriptModes() {
             <input type="checkbox" checked={!!locked} disabled={!g} onChange={(e) => toggleLock(e.target.checked)} />
             Lock the modes (off: recompute them for each window)
           </label>
-          <label>
-            Colour strength
-            <input type="range" min={0.5} max={6} step={0.1} value={saturate} onChange={(e) => setSaturate(Number(e.target.value))} />
-          </label>
-          <label>
-            Hue weight (0 = by importance, 1 = equalised)
-            <input
-              type="range"
-              min={0}
-              max={1}
-              step={0.05}
-              value={chromaWeight}
-              onChange={(e) => setChromaWeight(Number(e.target.value))}
-            />
-          </label>
-          <label>
-            Map over image
-            <input type="range" min={0} max={1} step={0.05} value={opacity} onChange={(e) => setOpacity(Number(e.target.value))} />
-          </label>
+          <MapStyleControls style={style} />
           <WandPanel wand={wand} />
           {source.value && (
             <ChannelPicker features={source.value.features} selection={selection} onChange={setSelection} missing={built.missing} />
@@ -395,21 +346,19 @@ export function TranscriptModes() {
         </aside>
 
         <main className="views">
-          <div className="deck-wrap" {...pick}>
+          <ModeMap wand={wand} modes={modes} viewport={viewport} toPlace={toPlace}>
             {/* Always mounted, never keyed: see SpatialDeckView on why deck must outlive a store. */}
             <SpatialDeckView
               className="deck-canvas"
               sdata={sd.value}
               coordinateSystem={coordinateSystem}
-              image={imageEl}
+              image={images.image}
               layers={layers}
               deckProps={deckProps}
               onViewport={setViewport}
               fallbackBounds={fallbackBounds}
             />
-            {sample && modes && <WandReadout wand={sample} modes={modes} />}
-          </div>
-          <p className="hint">Click the map to sample a place · shift-drag to move the sample · drag to pan, wheel to zoom.</p>
+          </ModeMap>
           <p className="status">
             {error ? <span className="error">{error.message}</span> : busy}
             {!error && !busy && g && (
@@ -450,7 +399,7 @@ export function TranscriptModes() {
                   the percentages are of that window's variation.
                 </p>
               )}
-              {modes && <ModeLegend modes={modes} />}
+              {modes && <ModeCharts modes={modes} />}
               <h3>How often each pair turns up together, compared with chance</h3>
               <MatrixView
                 labels={g.modes.labels}
@@ -479,14 +428,8 @@ export function TranscriptModes() {
               with the negative controls, rather than with 1. In the formula, M holds each channel's smoothed map, W its total, |A| the
               window area and S the self-pairs, which are removed.
             </Explain>
-            <Explain
-              title="What do the colours mean?"
-              math={String.raw`\mathrm{corr} = V \Lambda V^\top, \qquad \text{colour}(x) = \mathrm{OKLab}\big(z(x)\!\cdot\! v_1,\ z(x)\!\cdot\! v_2,\ z(x)\!\cdot\! v_3\big)`}
-            >
-              The channels' maps are summarised by a few <b>modes</b>: patterns of channels that rise and fall together across the window.
-              Mode 1 sets brightness and modes 2 and 3 set hue, so places with similar colours have similar mixtures of genes. The legend
-              says which channels push each mode each way, and how much of the variation it carries.
-            </Explain>
+            <ColoursExplain mixtures="genes" />
+            <ChartsExplain />
             <WandExplain />
             <Explain title="Locking the modes">
               Normally each window gets its own modes, and each place is compared with the rest of its window: the same colour in two
