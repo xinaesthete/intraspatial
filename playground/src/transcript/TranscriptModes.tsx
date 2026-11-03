@@ -21,7 +21,7 @@ import { type PointerInfo, SpatialDeckView } from "../deck/SpatialDeckView";
 import { SHARED_DEVICE_PROPS, useSharedDevice } from "../deck/useSharedDevice";
 import { useAsync, useSettled } from "../hooks/useAsync";
 import { usePointsSource, usePointsTiles, useSpatialData } from "../hooks/useSpatialData";
-import { BoundaryLayer } from "./BoundaryLayer";
+import { BoundaryLayer } from "../wand/BoundaryLayer";
 import {
   type BoundaryField,
   boundaryStrength,
@@ -31,7 +31,7 @@ import {
   ppcaMetric,
   ridgeCell,
   ridges,
-} from "./boundaryStrength";
+} from "../wand/boundaryStrength";
 import { ChannelPicker } from "./ChannelPicker";
 import { buildChannels, NEGATIVE_CONTROLS, type Selection, STARTER_SETS } from "./channelModel";
 import { Explain } from "./Explain";
@@ -39,7 +39,7 @@ import { GramModesLayer } from "../modes/GramModesLayer";
 import { MatrixView } from "../modes/MatrixView";
 import { ModeLegend } from "../modes/ModeLegend";
 import { useTranscriptGram } from "./useTranscriptGram";
-import { type MapTool, toolCursor, toolWidgets } from "./wandTools";
+import { type MapTool, toolCursor, toolWidgets } from "../selection/wandTools";
 import {
   apply,
   discOnRaster,
@@ -54,8 +54,8 @@ import {
   smoothOutline,
   sweep,
   type WorldMask,
-} from "./worldMask";
-import { gradedCell } from "./gradedNecks";
+} from "../selection/worldMask";
+import { gradedCell } from "../wand/gradedNecks";
 import "@deck.gl/widgets/stylesheet.css";
 
 /** A press on the map: deck's click, or the start, moves and end of a drag. */
