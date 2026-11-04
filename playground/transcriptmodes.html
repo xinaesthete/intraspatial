@@ -21,6 +21,9 @@
     .controls input:not([type=range]), .controls select { background: #111827; color: #e2e8f0; border: 1px solid #334155; border-radius: 4px; padding: 3px 6px; font: inherit; min-width: 0; flex: 1; }
     button { background: #1e293b; color: #e2e8f0; border: 1px solid #334155; border-radius: 4px; padding: 3px 8px; font: inherit; cursor: pointer; }
     .views { min-width: 0; }
+    /* The map tool's cursor (TranscriptModes): deck sets the canvas's own every frame, so this wins with !important. */
+    .tool-cursor canvas { cursor: var(--tool-cursor) !important; }
+    .tool-cursor[data-tool="hand"] canvas:active { cursor: grabbing !important; }
     .deck-canvas { position: relative; height: min(62vh, 640px); min-height: 320px; border-radius: 4px; overflow: hidden; background: #111; }
     .controls label.check { flex-direction: row; align-items: center; gap: 6px; }
     .controls label.check input { flex: none; }

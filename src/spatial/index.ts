@@ -20,6 +20,7 @@ export * from "./permute";
 export * from "./persistence";
 export * from "./pointPatterns";
 export * from "./quadratCorrelation";
+export * from "./regions";
 export * from "./scalarField";
 export * from "./sublevelsetPersistence";
 export * from "./syntheticManifolds";
