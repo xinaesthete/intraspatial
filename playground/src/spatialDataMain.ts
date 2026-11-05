@@ -9,6 +9,7 @@ import { type DecisionStats, DualView } from "./datasource/dualView";
 import { levelColor } from "./datasource/overlays";
 import { openSpatialData, type SpatialDataHandle, type SpatialDataImage } from "./datasource/spatialDataLoader";
 import { type BlendMode, ChannelComposite, type ChannelSettings } from "./datasource/tileChannelMaterial";
+import { attachLocalStorePicker } from "./localStorePickerDom";
 
 const DEFAULT_STORE = "http://localhost:8080/xenium_2.q0.001.htj2k.index-permutations.zarr";
 
@@ -244,6 +245,7 @@ qSlider.addEventListener("input", () => {
 blendSel.addEventListener("change", applyChannels);
 elementSel.addEventListener("change", () => void mountImage()); // reuse the open store, no re-read
 storeInput.addEventListener("change", () => void reopenStore()); // new URL → re-list images
+attachLocalStorePicker(storeInput); // a pick sets the input and fires `change`
 window.addEventListener("resize", () => view?.resize(canvas.clientWidth, canvas.clientHeight));
 
 void reopenStore();

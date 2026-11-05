@@ -37,6 +37,7 @@ import { ChannelPicker } from "./ChannelPicker";
 import { buildChannels, NEGATIVE_CONTROLS, type Selection, STARTER_SETS } from "./channelModel";
 import { TranscriptExplainers } from "./TranscriptExplainers";
 import { useTranscriptGram } from "./useTranscriptGram";
+import { LocalStorePicker } from "../LocalStorePicker";
 import "@deck.gl/widgets/stylesheet.css";
 
 /** BoundaryLayer's op code. */
@@ -413,6 +414,12 @@ export function TranscriptModes() {
               </button>
             </span>
           </label>
+          <LocalStorePicker
+            onPick={(key) => {
+              setStoreDraft(key);
+              openStore(key);
+            }}
+          />
           <label>
             Transcripts
             <select value={pointsEl ?? ""} onChange={(e) => choosePoints(e.target.value)}>

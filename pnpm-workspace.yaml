@@ -37,6 +37,14 @@ catalog:
   # Vite consumer in the workspace (Astro, @vitejs/plugin-react, unplugin-typegpu), so there is one Vite.
   vite: npm:@voidzero-dev/vite-plus-core@1.4.0
   vite-plus: 1.4.0
+# pnpm 11's minimum-release-age guard rejects same-day releases; sd.js 0.15.0 (2026-11-04) was
+# exempted for the local-file picker. Drop these once they have aged.
+minimumReleaseAgeExclude:
+  - '@spatialdata/avivatorish@0.15.0'
+  - '@spatialdata/core@0.15.0'
+  - '@spatialdata/layers@0.15.0'
+  - '@spatialdata/react@0.15.0'
+  - '@spatialdata/vis@0.15.0'
 overrides:
   vite@*: 'catalog:'
 # The core alias reports its own version (1.x), not Vite's, so peers asking for `vite@^8` would warn.

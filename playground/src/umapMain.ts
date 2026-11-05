@@ -42,6 +42,7 @@ import { subsetColumns, umapGraphFor } from "../../src/spatial/umap";
 import type { FuzzyGraph, KnnResult } from "../../src/spatial/umapGraph";
 import { fitAB, initLayout, mulberry32, optimizeLayoutStep, reheatLayout } from "../../src/spatial/umapLayout";
 import { inspectStore, labelColumnsOf, type StoreCatalog, storeDataset, syntheticDataset, type UmapDataset } from "./datasource/umapSource";
+import { attachLocalStorePicker } from "./localStorePickerDom";
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 
@@ -933,6 +934,7 @@ async function main(): Promise<void> {
     void regenerate();
   });
   $<HTMLButtonElement>("inspect").addEventListener("click", () => void inspect());
+  attachLocalStorePicker($<HTMLInputElement>("store"), () => void inspect());
   $<HTMLSelectElement>("tableSel").addEventListener("change", refreshStoreControls);
   $<HTMLButtonElement>("loadStore").addEventListener("click", () => void loadStore());
 

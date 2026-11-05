@@ -16,6 +16,7 @@ import { browserBackend } from "../../src/gpu/graph/backend.browser";
 import type { FieldValue, GpuField } from "../../src/gpu/graph/handle";
 import { imageTileSource } from "./datasource/imageToGraph";
 import { openSpatialDataImage } from "./datasource/spatialDataLoader";
+import { attachLocalStorePicker } from "./localStorePickerDom";
 
 /** The live HTJ2K SpatialData store (zarr v3). Configurable — not hard-coded in library code. */
 const DEFAULT_STORE = "http://localhost:8080/xenium_2.q0.001.htj2k.index-permutations.zarr";
@@ -174,6 +175,7 @@ async function runFixture(): Promise<void> {
 }
 
 runBtn.addEventListener("click", () => void runLive());
+attachLocalStorePicker(storeInput);
 fixtureBtn.addEventListener("click", () => void runFixture());
 // Auto-attempt the live store on load; the fixture button is always available offline.
 void runLive();

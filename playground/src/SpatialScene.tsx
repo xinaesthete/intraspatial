@@ -12,6 +12,7 @@ import { WebGPURenderer } from "three/webgpu";
 import { type GizmoMode, type ImageTransform, type LayerBlend, MultiImageScene, type SceneImageInfo } from "./datasource/multiImageScene";
 import { openSpatialData, type SpatialDataHandle } from "./datasource/spatialDataLoader";
 import type { BlendMode } from "./datasource/tileChannelMaterial";
+import { LocalStorePicker } from "./LocalStorePicker";
 
 const DEFAULT_STORE = "http://localhost:8080/xenium_2.q0.001.htj2k.index-permutations.zarr";
 
@@ -267,6 +268,13 @@ export default function SpatialScene() {
           <button type="button" disabled={busy} onClick={() => void openStore(storeUrl)}>
             Open store
           </button>
+          <LocalStorePicker
+            disabled={busy}
+            onPick={(key) => {
+              setStoreUrl(key);
+              void openStore(key);
+            }}
+          />
         </div>
 
         <div className="field row">
