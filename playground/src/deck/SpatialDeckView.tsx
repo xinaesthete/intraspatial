@@ -14,6 +14,13 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { Rect } from "../../../src/datasource/points";
 import { useElementSize } from "../hooks/useElementSize";
 
+/** The part of deck's pointer event a page needs: which modifier keys were held. */
+export interface PointerInfo {
+  readonly srcEvent?: { readonly shiftKey?: boolean; readonly altKey?: boolean };
+  /** The pointer in canvas pixels: drag events carry the press-down pick, so this is where it is now. */
+  readonly offsetCenter?: { readonly x: number; readonly y: number };
+}
+
 interface Props {
   /** Absent while a store opens: deck stays up, with nothing from sd.js to draw. */
   readonly sdata: SpatialData | undefined;
@@ -25,6 +32,11 @@ interface Props {
   readonly deckProps?: object;
   /** The visible rectangle in the canvas's world frame, whenever the view or its size changes. */
   readonly onViewport?: (r: Rect) => void;
+  /** A click on the canvas, with the world-frame coordinate under it. Not in `deckProps`: the
+   *  viewer sets deck's `onClick` from its own prop, which would override one there. */
+  readonly onClick?: (info: { coordinate?: number[] }, event?: PointerInfo) => void;
+  /** The pointer moving over the canvas, as `onClick`. */
+  readonly onHover?: (info: { coordinate?: number[] }, event?: PointerInfo) => void;
   /** What to frame when no sd.js layer has bounds — e.g. a store with no image — in the world frame. */
   readonly fallbackBounds?: Rect;
   readonly className?: string;
@@ -48,7 +60,18 @@ function useImageInputs(image: string | undefined) {
   }, [image]);
 }
 
-export function SpatialDeckView({ sdata, coordinateSystem, image, layers, deckProps, onViewport, fallbackBounds, className }: Props) {
+export function SpatialDeckView({
+  sdata,
+  coordinateSystem,
+  image,
+  layers,
+  deckProps,
+  onViewport,
+  onClick,
+  onHover,
+  fallbackBounds,
+  className,
+}: Props) {
   const box = useRef<HTMLDivElement>(null);
   const { width, height } = useElementSize(box);
   const [viewState, setViewState] = useState<ViewState | null>(null);
@@ -71,6 +94,8 @@ export function SpatialDeckView({ sdata, coordinateSystem, image, layers, deckPr
   });
 
   const { getWorldBoundsForVisibleLayers, hasEnabledLayers, hasLayersDrawn, isBlocking } = renderer;
+  /** The view rectangle last reported to `onViewport`. */
+  const reported = useRef<Rect>(undefined);
   useEffect(() => {
     if (!sdata || width <= 0 || height <= 0) return;
     const f = fittedFor.current;
@@ -85,6 +110,8 @@ export function SpatialDeckView({ sdata, coordinateSystem, image, layers, deckPr
     }
     if (!bounds) return;
     fittedFor.current = { sdata, coordinateSystem };
+    // A refit reports its view even when it lands on the last one reported (the same store reopened).
+    reported.current = undefined;
     setViewState(viewStateFromBounds(bounds, width, height));
   }, [
     sdata,
@@ -98,8 +125,15 @@ export function SpatialDeckView({ sdata, coordinateSystem, image, layers, deckPr
     fallbackBounds,
   ]);
 
+  // Only when the rectangle moves: deck reports a fresh view state on every gesture start (a drag that
+  // doesn't pan, say), and a page that reanalyses its window per rectangle would redo the work.
   useEffect(() => {
-    if (viewState && width > 0 && height > 0) onViewport?.(visibleRect(viewState, width, height));
+    if (!viewState || width <= 0 || height <= 0) return;
+    const r = visibleRect(viewState, width, height);
+    const p = reported.current;
+    if (p && p.minX === r.minX && p.minY === r.minY && p.maxX === r.maxX && p.maxY === r.maxY) return;
+    reported.current = r;
+    onViewport?.(r);
   }, [viewState, width, height, onViewport]);
 
   return (
@@ -115,6 +149,8 @@ export function SpatialDeckView({ sdata, coordinateSystem, image, layers, deckPr
           layerOrder={renderer.layerOrder}
           vivLayerProps={renderer.vivLayerProps.length > 0 ? renderer.vivLayerProps : undefined}
           deckProps={deckProps}
+          onClick={onClick}
+          onHover={onHover}
         />
       ) : (
         <p className="status">{isBlocking ? "Loading image…" : "Framing view…"}</p>

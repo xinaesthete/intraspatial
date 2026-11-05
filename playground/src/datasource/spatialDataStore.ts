@@ -9,6 +9,7 @@ import type { SpatialData } from "@spatialdata/core";
 // The URL of core's parquet worker, as Vite builds it. Importing it is what puts the worker (and the
 // parquet-wasm it loads on its own side) into the build.
 import parquetWorkerUrl from "@spatialdata/core/parquet-worker?worker&url";
+import { storeReference } from "./localStores";
 
 const storeCache = new Map<string, Promise<SpatialData>>();
 
@@ -16,7 +17,8 @@ const storeCache = new Map<string, Promise<SpatialData>>();
  * Open a store ONCE, at the high level, and hand back the `SpatialData` to pass around.
  *
  * `@spatialdata/core`'s `readZarr`, not `zarrextra`'s `openExtraConsolidated` scattered across every
- * function. Cached per URL, so every reader — `listCellTables`, `readCellTable`, `listVars`,
+ * function. `url` may also be a `local:` key from `localStores` (a folder or zip picked from disk).
+ * Cached per URL, so every reader — `listCellTables`, `readCellTable`, `listVars`,
  * `readVarColumns`, and the image loader — shares one parse and one consolidated store.
  */
 export function openSpatialData(url: string): Promise<SpatialData> {
@@ -29,7 +31,7 @@ export function openSpatialData(url: string): Promise<SpatialData> {
       // default is on, and it is off), and a bundled app must supply its URL. Guarded because
       // `enableParquetWorker` restarts a running worker, failing whatever it has in flight.
       if (!sd.isParquetWorkerEnabled()) sd.enableParquetWorker({ workerUrl: parquetWorkerUrl });
-      return sd.readZarr(url);
+      return sd.readZarr(storeReference(url));
     })();
     storeCache.set(url, cached);
   }

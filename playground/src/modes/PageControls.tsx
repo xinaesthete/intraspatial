@@ -2,6 +2,7 @@
 // map is painted. Each comes with the hook that holds its state, so a page keeps only what is its own.
 
 import { useState } from "react";
+import { LocalStorePicker } from "../LocalStorePicker";
 
 /** How the mode map is painted: what `GramModesLayer` takes as `saturate`, `chromaWeight`, `opacity`. */
 export function useMapStyle(initial: { saturate?: number; chromaWeight?: number; opacity?: number } = {}) {
@@ -46,7 +47,7 @@ export function MapStyleControls({ style }: { style: MapStyle }) {
   );
 }
 
-/** A store URL box; `onOpen` gets the trimmed URL when the button is pressed. */
+/** A store URL box, and the local folder or .zip picker; `onOpen` gets the trimmed URL or the local key. */
 export function StoreInput({ initial, onOpen }: { initial: string; onOpen: (url: string) => void }) {
   const [draft, setDraft] = useState(initial);
   return (
@@ -58,6 +59,12 @@ export function StoreInput({ initial, onOpen }: { initial: string; onOpen: (url:
           open
         </button>
       </span>
+      <LocalStorePicker
+        onPick={(key) => {
+          setDraft(key);
+          onOpen(key);
+        }}
+      />
     </label>
   );
 }

@@ -16,6 +16,7 @@ import { useMemo, useState } from "react";
 import type { Rect } from "../../../src/datasource/points";
 import { envelopeExcursions, type SpectrumEnvelopeResult, spectrumEnvelope } from "../../../src/gpu/spatial/gramEnvelope";
 import { apronCoverage } from "../../../src/spatial/gram";
+import { IDENTITY2 } from "../../../src/spatial/ngffTransform";
 import { equivalentRadius, KERNELS, kernelLabel } from "../../../src/spatial/kernels";
 import { listImageElements } from "../datasource/imageContext";
 import { SpatialDeckView } from "../deck/SpatialDeckView";
@@ -31,6 +32,8 @@ import { ModeMap } from "../modes/ModeMap";
 import { ImagePicker, MapStyleControls, StoreInput, useImageChoice, useMapStyle } from "../modes/PageControls";
 import { useWand, type WandSource, wandLayerProps } from "../modes/useWand";
 import { WandExplain, WandPanel } from "../modes/WandPanel";
+import { useBoundarySettings, useMapSelection } from "../selection/useMapSelection";
+import { BoundariesExplain, BoundaryPanel } from "../wand/WandPanel";
 import { Explain } from "../transcript/Explain";
 import { buildCellChannels, type ChannelSpec, tableBounds, viewDims, WINDOW_MODES, type WindowMode, windowBbox } from "./cellChannels";
 import { ChannelSource, type SourceKind, usableObsColumns } from "./ChannelSource";
@@ -38,6 +41,8 @@ import { useCellGram } from "./useCellGram";
 
 const DEFAULT_STORE = "http://localhost:8080/xenium_2.q0.001.htj2k.index-permutations.zarr/";
 const RASTER_SIDES = [256, 384, 512];
+/** Painting locks nothing here: cellmodes has no mode lock. */
+const noop = () => {};
 
 const outline = ([x0, y0, x1, y1]: readonly number[]): [number, number][] => [
   [x0!, y0!],
@@ -68,11 +73,6 @@ export function CellModes() {
   const [viewport, setViewport] = useState<Rect>();
 
   const device = useSharedDevice();
-  const deckProps = useMemo(
-    () => ({ deviceProps: SHARED_DEVICE_PROPS, onDeviceInitialized: device.onDeviceInitialized }),
-    [device.onDeviceInitialized],
-  );
-
   // Store → table → channels.
   const sd = useSpatialData(storeUrl);
   const tables = useCellTables(sd.value);
@@ -134,6 +134,16 @@ export function CellModes() {
   const env = envelope && g && envelope.generation === g.generation ? envelope.result : undefined;
 
   const K = g?.modes.labels.length ?? 0;
+
+  // PROTOTYPE (docs/wand-metric-and-regions.md): boundaries, and a mask painted with the map's tools.
+  // The table's frame is deck's world, so no transform; no broader scale is computed here.
+  const view = useMemo(() => (g ? { ...g, radius: g.params.radius } : undefined), [g]);
+  const boundaries = useBoundarySettings();
+  const tools = useMapSelection(boundaries, { g: view, modes: g?.modes, basis: undefined, toFrame: IDENTITY2, onPaint: noop });
+  const deckProps = useMemo(
+    () => ({ deviceProps: SHARED_DEVICE_PROPS, onDeviceInitialized: device.onDeviceInitialized, ...tools.deckProps }),
+    [device.onDeviceInitialized, tools.deckProps],
+  );
   const layers = useMemo<Layer[]>(
     () =>
       g
@@ -149,6 +159,7 @@ export function CellModes() {
               ...wandLayerProps(wand, K),
               pickable: false,
             }),
+            ...tools.layers,
             new PathLayer<{ path: [number, number][] }>({
               id: "cell-window",
               data: [{ path: outline(g.res.bbox) }],
@@ -160,7 +171,7 @@ export function CellModes() {
             }),
           ]
         : [],
-    [g, wand, saturate, chromaWeight, opacity, K],
+    [g, wand, saturate, chromaWeight, opacity, K, tools.layers],
   );
 
   /** Simulate the null spectrum. Re-splats this result's own channels and window, so the band is
@@ -196,6 +207,7 @@ export function CellModes() {
     setRangeUm(undefined);
     images.reset();
     setSystem(undefined);
+    tools.clear();
     setViewport(undefined);
   };
   const chooseTable = (name: string) => {
@@ -332,6 +344,7 @@ export function CellModes() {
           </label>
           <MapStyleControls style={style} />
           <WandPanel wand={wand} />
+          <BoundaryPanel {...tools.panel} mixtures="cells" />
           <p className="hint">
             {unit === "µm*" ? "µm*: the store states no unit; the µm-per-unit box is your declaration. " : ""}⚠ The store must be
             CORS-enabled. The mode terrain (3-D) is still on the <a href="./cellmodes-legacy.html">legacy page</a>.
@@ -340,7 +353,7 @@ export function CellModes() {
 
         <main className="views">
           {/* Always mounted, never keyed: see SpatialDeckView on why deck must outlive a store. */}
-          <ModeMap wand={wand} modes={g?.modes} viewport={viewport}>
+          <ModeMap wand={wand} modes={g?.modes} viewport={viewport} selection={tools}>
             <SpatialDeckView
               className="deck-canvas"
               sdata={sd.value}
@@ -349,6 +362,8 @@ export function CellModes() {
               layers={layers}
               deckProps={deckProps}
               onViewport={setViewport}
+              onClick={tools.onClick}
+              onHover={tools.onHover}
               fallbackBounds={full ? { minX: full[0], minY: full[1], maxX: full[2], maxY: full[3] } : undefined}
             />
           </ModeMap>
@@ -434,6 +449,7 @@ export function CellModes() {
               the default; the status line reports how well populated the apron is.
             </Explain>
             <WandExplain />
+            <BoundariesExplain mixtures="cells" />
             <Explain title="How much variation does each mode carry — and is it real?">
               The bars are each mode's share of the total variation; they add up to 1. But 45% means nothing on its own: some structure is
               inevitable just because cells are not spread evenly. "Run null" shuffles which cell carries which mark, many times, keeping

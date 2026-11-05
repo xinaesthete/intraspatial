@@ -45,6 +45,7 @@ import {
   type Tile,
   type Vec3,
 } from "../../../src/datasource";
+import { storeReference } from "./localStores";
 
 let decodeReady: Promise<void> | null = null;
 
@@ -192,12 +193,13 @@ export async function openSpatialDataVolume(url: string): Promise<SpatialDataVol
   const core = await import("@spatialdata/core");
   const zx = await import("zarrextra");
   await ensureVolumeDecode(zx);
-  const sdata = await core.readZarr(url);
+  const source = storeReference(url);
+  const sdata = await core.readZarr(source);
   const images = (sdata.images ?? {}) as Record<string, { getStore(): unknown; attrs?: unknown }>;
   const imageNames = Object.keys(images);
   // Consolidated metadata lives ONLY at the store root — an element's own store view is rooted below
   // it and has no `consolidated_metadata`, so open the root once and navigate down to the element.
-  const opened = await zx.openExtraConsolidated(url);
+  const opened = await zx.openExtraConsolidated(source);
   const { tree } = zx.unwrap(opened);
   return {
     imageNames,

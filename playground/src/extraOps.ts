@@ -24,7 +24,9 @@ import {
   subFieldsOp,
 } from "../../src/gpu/graph/ops/fieldArithmetic";
 import { divergenceOp, gradientMagnitudeOp, gradientOp, laplacianOp, structureOrientationOp } from "../../src/gpu/graph/ops/fieldCalculus";
+import { CHANNEL_OPS } from "../../src/gpu/graph/ops/channelOps";
 import { FILTER_OPS } from "../../src/gpu/graph/ops/filterOps";
+import { REGION_OPS } from "../../src/gpu/graph/ops/regionOps";
 import { reactionDiffusionComplexOp } from "../../src/gpu/graph/ops/reactionDiffusionComplex";
 import { UMAP_OPS } from "../../src/gpu/graph/ops/umapOps";
 import { fdwtOp, idwtOp, thresholdDetailOp } from "../../src/gpu/graph/ops/waveletOps";
@@ -68,6 +70,8 @@ export function registerExtraOps(): void {
     // min/max/invert ops above — a selection is an ordinary field, so composing selections
     // is ordinary field arithmetic.
     ...FILTER_OPS,
+    ...REGION_OPS,
+    ...CHANNEL_OPS,
   ];
   for (const op of ops) if (!hasOp(op.name)) registerOp(op);
 }

@@ -1,10 +1,9 @@
 // Browser backend for the operation-graph runtime. Shares the device that
 // src/gpu/device.ts resolves to `navigator.gpu` (so Tier-1 ops and native ops use
-// one device), and reads back through TypeGPU `.read()` — the same Dawn-stable
-// pattern, which works unchanged in the browser. This is the only file that differs
+// one device), and reads back through a mapped staging copy (the Node backend reads through
+// TypeGPU `.read()` for Dawn's sake; the browser need not). This is the only file that differs
 // from the Node backend; the op definitions and executor are imported verbatim.
 import tgpu from "typegpu";
-import * as d from "typegpu/data";
 import { getDevice, readBackBytes, writeView } from "../device";
 import type { GpuBackend, Root } from "./backend";
 import type { ResidentBuffer, ResidentTexture } from "./handle";
@@ -35,28 +34,15 @@ function getTexPool(): Promise<TexturePool> {
   return texPoolP;
 }
 
-/** One readback wrapper per raw buffer — see backend.node.ts for why this must not be per-call:
- *  wrapping makes the TypeGPU root a second owner of a pooled buffer, and a recycling pool would
- *  otherwise mint a fresh owner on every download. */
-const wrappers = new WeakMap<GPUBuffer, ReturnType<Root["createBuffer"]>>();
-
-function wrapperFor(root: Root, buffer: GPUBuffer) {
-  let w = wrappers.get(buffer);
-  if (!w) {
-    w = root.createBuffer(d.arrayOf(d.f32, Math.max(1, Math.floor(buffer.size / 4))), buffer);
-    wrappers.set(buffer, w);
-  }
-  return w;
-}
-
 export const browserBackend: GpuBackend = {
   kind: "browser",
   getDevice,
   getRoot,
   async readbackF32(buffer: GPUBuffer, n: number): Promise<Float32Array> {
-    const root = await getRoot();
-    const got = (await wrapperFor(root, buffer).read()) as ArrayLike<number>;
-    return Float32Array.from({ length: n }, (_, i) => got[i] ?? 0);
+    // A mapped copy, not TypeGPU's `.read()`: the browser has no Dawn-on-Node teardown to protect
+    // (the reason the Node backend reads through TypeGPU), and `.read()` plus an element-wise copy
+    // costs ~100 ms for a 5 MB stack where a staging copy costs ~5.
+    return new Float32Array(await readBackBytes(await getDevice(), "backend.browser:staging", buffer, 0, n * 4));
   },
 
   async readbackBytes(buffer: GPUBuffer, bytes: number): Promise<ArrayBuffer> {

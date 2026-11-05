@@ -46,6 +46,7 @@ import {
 } from "./datasource/cellTable";
 import { type ContextImage, listImageElements, loadContextImage, uvFromWorld } from "./datasource/imageContext";
 import { listVars, readVarColumns, selectionCost, type VarCatalog } from "./datasource/varMatrix";
+import { attachLocalStorePicker } from "./localStorePickerDom";
 
 const DEFAULT_STORE = "http://localhost:8080/xenium_2.q0.001.htj2k.index-permutations.zarr/";
 const MAX_CHANNELS = 32;
@@ -1081,6 +1082,7 @@ kernelSelect.value = "1"; // Epanechnikov: kernels.ts measures it as the best-be
 tabObs.addEventListener("click", () => selectTab("obs"));
 tabX.addEventListener("click", () => selectTab("x"));
 inspectBtn.addEventListener("click", () => void inspectStore(false));
+attachLocalStorePicker(storeInput, () => void inspectStore(false));
 loadBtn.addEventListener("click", () => void loadTable());
 tableSelect.addEventListener("change", () => fillObsColumns(storeTables.find((t) => t.name === tableSelect.value)));
 computeBtn.addEventListener("click", () => void computeModes());

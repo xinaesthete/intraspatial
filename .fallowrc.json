@@ -17,6 +17,13 @@
   // Loaded via `await import("./htj2kWorkerPool")` so the decoder is not bundled onto the
   // main-thread path; the static graph cannot see it and reported `decodePool` as dead.
   "dynamicallyLoaded": ["playground/src/datasource/htj2kWorkerPool.ts"],
+  // deck.gl calls a custom layer's lifecycle hooks and reads its statics itself.
+  "usedClassMembers": [
+    {
+      "extends": "Layer",
+      "members": ["layerName", "defaultProps", "initializeState", "shouldUpdateState", "updateState", "finalizeState", "draw"]
+    }
+  ],
 
   "duplicates": { "minOccurrences": 3 },
   // Complexity/CRAP skip `scripts/`: one-off CLI tooling with no test coverage, so fallow's CRAP
