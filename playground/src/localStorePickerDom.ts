@@ -15,17 +15,21 @@ export function attachLocalStorePicker(input: HTMLInputElement, onPicked?: (key:
   const status = document.createElement("span");
   status.style.cssText = "font-size:11px;opacity:0.75";
 
+  // The latest pick wins: an earlier one that opens more slowly must not replace it when it lands.
+  let latest = 0;
   const picked = (open: () => Promise<string>, what: string) => {
+    const pick = ++latest;
     status.textContent = `opening ${what}…`;
     open().then(
       (key) => {
+        if (pick !== latest) return;
         status.textContent = "";
         input.value = key;
         input.dispatchEvent(new Event("change"));
         onPicked?.(key);
       },
       (err: unknown) => {
-        status.textContent = `could not open ${what}: ${err instanceof Error ? err.message : String(err)}`;
+        if (pick === latest) status.textContent = `could not open ${what}: ${err instanceof Error ? err.message : String(err)}`;
       },
     );
   };

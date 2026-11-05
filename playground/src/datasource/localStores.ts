@@ -11,6 +11,9 @@ import type { StoreReference } from "@spatialdata/core";
 const LOCAL_SCHEME = "local:";
 const stores = new Map<string, Exclude<StoreReference, string>>();
 let picks = 0;
+// Differs per page load, so a key left over from before a reload (a restored form input, say) never
+// matches a new pick that happens to get the same number.
+const session = Math.random().toString(36).slice(2, 7);
 
 /** Whether `location` names a store picked from disk rather than a URL. */
 function isLocalStore(location: string): boolean {
@@ -32,7 +35,7 @@ export function storeReference(location: string): StoreReference {
 function register(store: Exclude<StoreReference, string>, label: string): string {
   // Numbered, so picking the same folder again (after it changed on disk, say) opens it afresh
   // instead of hitting the per-location cache.
-  const key = `${LOCAL_SCHEME}${++picks}/${label}`;
+  const key = `${LOCAL_SCHEME}${session}.${++picks}/${label}`;
   stores.set(key, store);
   return key;
 }

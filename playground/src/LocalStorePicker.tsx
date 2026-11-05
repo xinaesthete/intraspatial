@@ -8,15 +8,21 @@ export function LocalStorePicker({ onPick, disabled }: { onPick: (key: string) =
   const folderInput = useRef<HTMLInputElement>(null);
   const zipInput = useRef<HTMLInputElement>(null);
   const [status, setStatus] = useState<string>();
+  // The latest pick wins: an earlier one that opens more slowly must not replace it when it lands.
+  const latest = useRef(0);
 
   const picked = (open: () => Promise<string>, what: string) => {
+    const pick = ++latest.current;
     setStatus(`opening ${what}…`);
     open().then(
       (key) => {
+        if (pick !== latest.current) return;
         setStatus(undefined);
         onPick(key);
       },
-      (err: unknown) => setStatus(`could not open ${what}: ${err instanceof Error ? err.message : String(err)}`),
+      (err: unknown) => {
+        if (pick === latest.current) setStatus(`could not open ${what}: ${err instanceof Error ? err.message : String(err)}`);
+      },
     );
   };
   const onFolder = (e: ChangeEvent<HTMLInputElement>) => {
