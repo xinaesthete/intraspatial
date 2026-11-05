@@ -13,7 +13,7 @@ const stores = new Map<string, Exclude<StoreReference, string>>();
 let picks = 0;
 
 /** Whether `location` names a store picked from disk rather than a URL. */
-export function isLocalStore(location: string): boolean {
+function isLocalStore(location: string): boolean {
   return location.startsWith(LOCAL_SCHEME);
 }
 
