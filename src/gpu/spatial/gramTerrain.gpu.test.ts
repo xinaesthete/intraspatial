@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vite-plus/test";
 import { channelsFromLabels, coLocationModes } from "#src/spatial/gram";
 import { EPANECHNIKOV } from "#src/spatial/kernels";
+import { getDevice } from "../device";
 import { gramMatrixGpu } from "./gramMatrix";
 import { modeParams } from "./gramModes";
 import { probeChannels, standardise, whiteningMatrix } from "./gramTerrain";
@@ -53,23 +54,73 @@ describe("probeChannels", () => {
     expect(diff / peak).toBeLessThan(2e-3);
   });
 
-  it("interpolates between pixel centres, so the sample follows the pointer", async () => {
+  it("interpolates between pixel centres on both axes, so the sample follows the pointer", async () => {
     const res = await gramMatrixGpu(CHANNELS, PARAMS);
-    const left = await probeChannels(res, 35, 99);
-    const right = await probeChannels(res, 36, 99);
-    const mid = await probeChannels(res, 35.5, 99);
-    const quarter = await probeChannels(res, 35.25, 99);
+    // One probe at a time: the output buffer is shared. The cell from (35, 99) to (36, 100): its four
+    // corners, then points inside it.
+    const at = async (col: number, row: number) => probeChannels(res, col, row);
+    const c00 = await at(35, 99);
+    const c10 = await at(36, 99);
+    const c01 = await at(35, 100);
+    const c11 = await at(36, 100);
+    const cases = [
+      [35.5, 99],
+      [35.25, 99],
+      [35, 99.5],
+      [35, 99.75],
+      [35.25, 99.75],
+    ] as const;
+    const got: Float64Array[] = [];
+    for (const [col, row] of cases) got.push(await at(col, row));
     let peak = 0;
     let off = 0;
+    cases.forEach(([col, row], i) => {
+      const fx = col - 35;
+      const fy = row - 99;
+      for (let k = 0; k < 3; k++) {
+        const want = (1 - fy) * ((1 - fx) * c00[k]! + fx * c10[k]!) + fy * ((1 - fx) * c01[k]! + fx * c11[k]!);
+        peak = Math.max(peak, Math.abs(c00[k]!), Math.abs(c11[k]!));
+        off = Math.max(off, Math.abs(got[i]![k]! - want));
+      }
+    });
+    // Neighbours must differ along each axis, or rounding that axis would pass too.
+    let across = 0;
+    let down = 0;
     for (let k = 0; k < 3; k++) {
-      peak = Math.max(peak, Math.abs(left[k]!), Math.abs(right[k]!));
-      off = Math.max(off, Math.abs(mid[k]! - (left[k]! + right[k]!) / 2), Math.abs(quarter[k]! - (0.75 * left[k]! + 0.25 * right[k]!)));
+      across = Math.max(across, Math.abs(c00[k]! - c10[k]!));
+      down = Math.max(down, Math.abs(c00[k]! - c01[k]!));
     }
-    // The neighbours must differ, or a nearest-pixel probe would pass too.
-    let step = 0;
-    for (let k = 0; k < 3; k++) step = Math.max(step, Math.abs(left[k]! - right[k]!));
-    expect(step / peak).toBeGreaterThan(1e-3);
+    expect(across / peak).toBeGreaterThan(1e-3);
+    expect(down / peak).toBeGreaterThan(1e-3);
     expect(off / peak).toBeLessThan(1e-5);
+  });
+
+  it("reads a snapshot of the rasters after the next compute has overwritten the pool", async () => {
+    const res = await gramMatrixGpu(CHANNELS, PARAMS);
+    const want = await probeChannels(res, 35, 99);
+    // Copy the rasters aside, as a page does, then let another compute take the pooled buffer.
+    const device = await getDevice();
+    const bytes = res.labels.length * res.height * res.resident.rowWords * 4;
+    const kept = device.createBuffer({ size: bytes, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+    const enc = device.createCommandEncoder();
+    enc.copyBufferToBuffer(res.resident.buffer, 0, kept, 0, bytes);
+    device.queue.submit([enc.finish()]);
+    await gramMatrixGpu(CHANNELS, { ...PARAMS, radius: 30 });
+    const got = await probeChannels(res, 35, 99, kept);
+    const pooled = await probeChannels(res, 35, 99);
+    kept.destroy();
+    let off = 0;
+    let moved = 0;
+    let peak = 0;
+    for (let k = 0; k < 3; k++) {
+      peak = Math.max(peak, Math.abs(want[k]!));
+      off = Math.max(off, Math.abs(got[k]! - want[k]!));
+      moved = Math.max(moved, Math.abs(pooled[k]! - want[k]!));
+    }
+    expect(peak).toBeGreaterThan(0);
+    // The pooled buffer now holds the other compute's rasters; the snapshot still holds these.
+    expect(moved / peak).toBeGreaterThan(1e-3);
+    expect(off / peak).toBeLessThan(1e-6);
   });
 });
 

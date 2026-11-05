@@ -282,11 +282,13 @@ export function TranscriptModes() {
     setLock(undefined);
     setViewport(undefined);
     tools.clear();
+    wand.clear();
   };
   const choosePoints = (name: string) => {
     setPointsName(name);
     setPinned(undefined);
     tools.clear();
+    wand.clear();
   };
 
   return (

@@ -122,8 +122,9 @@ export async function wandDistance(
  * stepping between edge-sharing pixels: 1 inside, 0 outside, row-major like `d`.
  *
  * `seed` is in raster coordinates with pixel centres at whole numbers, as the marker is; the fill
- * starts from the nearest pixel. When that pixel is itself out of range (the field rose past `tol`
- * within half a pixel of the sample) the region is empty rather than guessed at.
+ * starts from the nearest pixel. A fractional seed is interpolated from the four pixels around it, so
+ * when the nearest is out of range the fill starts from the closest of those four that is in range.
+ * Only when none is does the region come back empty.
  */
 export function connectedRegion(
   d: ArrayLike<number>,
@@ -133,10 +134,8 @@ export function connectedRegion(
   tol: number,
 ): Uint8Array {
   const region = new Uint8Array(width * height);
-  const c = Math.max(0, Math.min(width - 1, Math.round(seed.col)));
-  const r = Math.max(0, Math.min(height - 1, Math.round(seed.row)));
-  const start = r * width + c;
-  if (!(d[start]! <= tol)) return region;
+  const start = seedPixel(d, width, height, seed, tol);
+  if (start < 0) return region;
   // Each pixel is queued at most once (marked as it is queued), so the queue never exceeds the raster.
   const queue = new Int32Array(width * height);
   let head = 0;
@@ -158,4 +157,31 @@ export function connectedRegion(
     if (i < width * (height - 1)) visit(i + width);
   }
   return region;
+}
+
+/** The pixel the fill starts from: the nearest to `seed`, else the closest in-range corner of the cell
+ *  `seed` sits in, else -1. */
+function seedPixel(
+  d: ArrayLike<number>,
+  width: number,
+  height: number,
+  seed: { readonly col: number; readonly row: number },
+  tol: number,
+): number {
+  const clampCol = (c: number) => Math.max(0, Math.min(width - 1, c));
+  const clampRow = (r: number) => Math.max(0, Math.min(height - 1, r));
+  const nearest = clampRow(Math.round(seed.row)) * width + clampCol(Math.round(seed.col));
+  if (d[nearest]! <= tol) return nearest;
+  let best = -1;
+  let bestDist = Number.POSITIVE_INFINITY;
+  for (const r of [Math.floor(seed.row), Math.ceil(seed.row)])
+    for (const c of [Math.floor(seed.col), Math.ceil(seed.col)]) {
+      const i = clampRow(r) * width + clampCol(c);
+      const dist = Math.hypot(clampCol(c) - seed.col, clampRow(r) - seed.row);
+      if (d[i]! <= tol && dist < bestDist) {
+        best = i;
+        bestDist = dist;
+      }
+    }
+  return best;
 }

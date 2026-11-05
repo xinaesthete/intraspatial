@@ -59,13 +59,15 @@ export interface MapSelectionInput {
   readonly toFrame: Affine2 | undefined;
   /** Runs as each wand patch lands: the mask is judged by one metric, so the page locks its modes. */
   readonly onPaint: () => void;
+  /** The mask's frame units per µm, the brush's unit (default 1: the frame is in µm). */
+  readonly unitsPerUm?: number;
   /** Places the layers in deck's world, as the mode map is. */
   readonly modelMatrix?: Matrix4;
 }
 
 export function useMapSelection(
   settings: BoundarySettings,
-  { g, modes, basis, twoScale = false, broad, toFrame, onPaint, modelMatrix }: MapSelectionInput,
+  { g, modes, basis, twoScale = false, broad, toFrame, onPaint, unitsPerUm = 1, modelMatrix }: MapSelectionInput,
 ) {
   const { show, setShow, wand } = settings;
   // A page with no broader scale judges at one, whatever the settings say.
@@ -94,7 +96,9 @@ export function useMapSelection(
     if (needsExperiments(s, two)) return async (seed) => wandPatch(boundsNow.field, g.res, seed, s, two);
     return (seed) => wandPatchOnGraph(boundsNow.field, g.res, seed, s);
   }, [boundsNow, g, ws.rule, ws.dSmooth, ws.tol, ws.open, ws.graded, ws.slack, ws.twoScale, thetaNow, bounds.broad, gb]);
-  const paint = useMaskPainting(tools, g?.res, toFrame, patchAt, onPaint, smoothEdges);
+  // The brush is sized in µm, and painted in the frame's units.
+  const brushFrame = brushR * unitsPerUm;
+  const paint = useMaskPainting({ ...tools, brushR: brushFrame }, g?.res, toFrame, patchAt, onPaint, smoothEdges);
   const { onPress, onHover: hoverAt, painting, preview, maskOnMap, brushAt } = paint;
 
   const press = useCallback(
@@ -161,7 +165,7 @@ export function useMapSelection(
               ? [
                   new PathLayer<{ path: [number, number][] }>({
                     id: "brush-outline",
-                    data: [{ path: circle(brushAt, brushR) }],
+                    data: [{ path: circle(brushAt, brushFrame) }],
                     getPath: (d) => d.path,
                     getColor: [255, 255, 255, 230],
                     getWidth: 1.5,
@@ -173,7 +177,7 @@ export function useMapSelection(
               : []),
           ]
         : [],
-    [g, placed, boundsNow, thetaNow, ws.lines, preview, heldOp, smoothEdges, maskOnMap, painting, brushOn, brushAt, brushR],
+    [g, placed, boundsNow, thetaNow, ws.lines, preview, heldOp, smoothEdges, maskOnMap, painting, brushOn, brushAt, brushFrame],
   );
 
   return {

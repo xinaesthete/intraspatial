@@ -12,10 +12,11 @@
 
 import type { Layer } from "@deck.gl/core";
 import { PathLayer } from "@deck.gl/layers";
-import { useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import type { Rect } from "../../../src/datasource/points";
 import { envelopeExcursions, type SpectrumEnvelopeResult, spectrumEnvelope } from "../../../src/gpu/spatial/gramEnvelope";
-import { apronCoverage } from "../../../src/spatial/gram";
+import { type ModeBasis, modeBasis } from "../../../src/gpu/spatial/gramModes";
+import { apronCoverage, type CoLocationModes } from "../../../src/spatial/gram";
 import { IDENTITY2 } from "../../../src/spatial/ngffTransform";
 import { equivalentRadius, KERNELS, kernelLabel } from "../../../src/spatial/kernels";
 import { listImageElements } from "../datasource/imageContext";
@@ -41,8 +42,7 @@ import { useCellGram } from "./useCellGram";
 
 const DEFAULT_STORE = "http://localhost:8080/xenium_2.q0.001.htj2k.index-permutations.zarr/";
 const RASTER_SIDES = [256, 384, 512];
-/** Painting locks nothing here: cellmodes has no mode lock. */
-const noop = () => {};
+const sameLabels = (a: readonly string[], b: readonly string[]) => a.length === b.length && a.every((l, i) => l === b[i]);
 
 const outline = ([x0, y0, x1, y1]: readonly number[]): [number, number][] => [
   [x0!, y0!],
@@ -139,7 +139,23 @@ export function CellModes() {
   // The table's frame is deck's world, so no transform; no broader scale is computed here.
   const view = useMemo(() => (g ? { ...g, radius: g.params.radius } : undefined), [g]);
   const boundaries = useBoundarySettings();
-  const tools = useMapSelection(boundaries, { g: view, modes: g?.modes, basis: undefined, toFrame: IDENTITY2, onPaint: noop });
+  // The mask is judged by one metric, so the first stroke fixes the modes and standardisation the
+  // wand measures with, for as long as the channels stay the same: a new range, raster or window
+  // otherwise changes what "similar" means under a mask already painted.
+  const [paintLock, setPaintLock] = useState<{ modes: CoLocationModes; basis: ModeBasis }>();
+  const lockNow = paintLock && g && sameLabels(paintLock.modes.labels, g.modes.labels) ? paintLock : undefined;
+  const lockOnPaint = useCallback(() => {
+    if (!paintLock && g) setPaintLock({ modes: g.modes, basis: modeBasis(g.res) });
+  }, [paintLock, g]);
+  const tools = useMapSelection(boundaries, {
+    g: view,
+    modes: lockNow?.modes ?? g?.modes,
+    basis: lockNow?.basis,
+    toFrame: IDENTITY2,
+    // The brush is sized in µm; the table's units are the µm-per-unit box's.
+    unitsPerUm: 1 / umPerUnit,
+    onPaint: lockOnPaint,
+  });
   const deckProps = useMemo(
     () => ({ deviceProps: SHARED_DEVICE_PROPS, onDeviceInitialized: device.onDeviceInitialized, ...tools.deckProps }),
     [device.onDeviceInitialized, tools.deckProps],
@@ -198,6 +214,18 @@ export function CellModes() {
     );
   };
 
+  // What is in one table's frame, or measured with one set of channels, is dropped with it — by the
+  // action that changes it: the wand's place, the painted mask and the metric it was painted with.
+  const dropSelection = () => {
+    wand.clear();
+    tools.clear();
+    setPaintLock(undefined);
+  };
+  /** A change of channels keeps the frame but not the metric. */
+  const newChannels = () => {
+    tools.clear();
+    setPaintLock(undefined);
+  };
   const openStore = (url: string) => {
     setStoreUrl(url);
     setTableName(undefined);
@@ -207,7 +235,7 @@ export function CellModes() {
     setRangeUm(undefined);
     images.reset();
     setSystem(undefined);
-    tools.clear();
+    dropSelection();
     setViewport(undefined);
   };
   const chooseTable = (name: string) => {
@@ -216,6 +244,7 @@ export function CellModes() {
     setVars([]);
     setMatrix("X");
     setRangeUm(undefined);
+    dropSelection();
   };
 
   const error = sd.error ?? tables.error ?? base.error ?? built.error ?? gram.error;
@@ -265,15 +294,27 @@ export function CellModes() {
           <ChannelSource
             key={tableEl}
             kind={kind}
-            onKind={setKind}
+            onKind={(k) => {
+              setKind(k);
+              newChannels();
+            }}
             obsColumns={obsColumns}
             obsColumn={obsColumn}
-            onObsColumn={setObsColumn}
+            onObsColumn={(c) => {
+              setObsColumn(c);
+              newChannels();
+            }}
             catalog={catalog.value}
             matrix={matrix}
-            onMatrix={setMatrix}
+            onMatrix={(m) => {
+              setMatrix(m);
+              newChannels();
+            }}
             applied={vars}
-            onApply={setVars}
+            onApply={(v) => {
+              setVars(v);
+              newChannels();
+            }}
           />
           {systems.length > 1 && (
             <label>
@@ -283,6 +324,7 @@ export function CellModes() {
                 onChange={(e) => {
                   setSystem(e.target.value);
                   images.reset();
+                  dropSelection();
                 }}
               >
                 {systems.map((n) => (

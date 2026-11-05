@@ -14,7 +14,7 @@ export function WandPanel({ wand }: { wand: Wand }) {
       {wand.error ? (
         <p className="hint error">wand: {wand.error.message}</p>
       ) : (
-        wand.place && !wand.sample && <p className="hint">The wand's place is outside this window.</p>
+        wand.outside && <p className="hint">The wand's place is outside this window.</p>
       )}
       <label>
         How close counts as similar: {wand.tolerance.toFixed(2)}

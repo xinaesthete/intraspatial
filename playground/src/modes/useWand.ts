@@ -12,7 +12,7 @@
 // places are dropped, and the last one is always read because the loop re-checks after each probe.
 // The connected region's distance field is read back the same way.
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import type { GramMatrixGpuResult } from "../../../src/gpu/spatial/gramMatrix";
 import { type ModeBasis, modeParams } from "../../../src/gpu/spatial/gramModes";
 import { probeChannels, standardise } from "../../../src/gpu/spatial/gramTerrain";
@@ -54,11 +54,13 @@ function toRaster(res: GramMatrixGpuResult, x: number, y: number): { col: number
 
 /**
  * Run `task` for the latest job only, one at a time: a job scheduled while one runs replaces any
- * other waiting job, and the loop re-checks after each run so the last job is never lost.
+ * other waiting job, and the loop re-checks after each run so the last job is never lost. `cancel`
+ * drops the waiting job, and `live()` turns false for the running one, so it can land without effect.
  */
-function coalescing<T>(task: (job: T) => Promise<void>) {
+function coalescing<T>(task: (job: T, live: () => boolean) => Promise<void>) {
   let waiting: { job: T } | null = null;
   let busy = false;
+  let era = 0;
   return {
     schedule(job: T) {
       waiting = { job };
@@ -69,7 +71,8 @@ function coalescing<T>(task: (job: T) => Promise<void>) {
           while (waiting) {
             const { job: next } = waiting;
             waiting = null;
-            await task(next);
+            const at = era;
+            await task(next, () => at === era);
           }
         } finally {
           busy = false;
@@ -78,6 +81,7 @@ function coalescing<T>(task: (job: T) => Promise<void>) {
     },
     cancel() {
       waiting = null;
+      era++;
     },
   };
 }
@@ -100,72 +104,79 @@ export function useWand(source: WandSource | undefined) {
   const [field, setField] = useState<Field>();
   const [error, setError] = useState<Error>();
 
-  const latest = useRef(source);
   const fail = (err: unknown) => setError(err instanceof Error ? err : new Error(String(err)));
 
   const [probe] = useState(() =>
-    coalescing(async ({ at: [x, y], src }: { at: readonly [number, number]; src: WandSource | undefined }) => {
+    coalescing(async ({ at: [x, y], src }: { at: readonly [number, number]; src: WandSource | undefined }, live) => {
       if (!src) return;
-      // Outside this window: nothing to read, and the last sample (another result's) is not drawn.
       const at = toRaster(src.res, x, y);
-      if (!at) return;
+      // Outside this window: nothing to read, and the last sample is not drawn.
+      if (!at) {
+        if (live()) setSample(undefined);
+        return;
+      }
       try {
         const raw = await probeChannels(src.res, at.col, at.row, src.rasters);
+        if (!live()) return;
         setSample({ z: standardise(raw, src.mean, src.sd), raw, ...at, source: src });
         setError(undefined);
       } catch (err) {
-        fail(err);
+        if (live()) fail(err);
       }
     }),
   );
   const [distance] = useState(() =>
-    coalescing(async ({ s, m }: { s: WandSample; m: number }) => {
+    coalescing(async ({ s, m }: { s: WandSample; m: number }, live) => {
       const { res, rasters, vectors, basis } = s.source;
       try {
         const params = modeParams(res, { vectors, reference: s.z, modesUsed: m, ...(basis ? { basis } : {}) });
-        setField({ d: await wandDistance(res, params, rasters), sample: s, m });
+        const d = await wandDistance(res, params, rasters);
+        if (!live()) return;
+        setField({ d, sample: s, m });
+        setError(undefined);
       } catch (err) {
-        fail(err);
+        if (live()) fail(err);
       }
     }),
   );
 
-  const pick = useCallback(
-    (x: number, y: number) => {
-      setPlace([x, y]);
-      probe.schedule({ at: [x, y], src: latest.current });
-    },
-    [probe],
-  );
+  // The place is all a pick sets: the effect below reads the channels there.
+  const pick = useCallback((x: number, y: number) => setPlace([x, y]), []);
   const clear = useCallback(() => {
     probe.cancel();
     distance.cancel();
     setPlace(undefined);
     setSample(undefined);
+    setField(undefined);
+    setError(undefined);
   }, [probe, distance]);
 
-  // A new result re-reads the place: the old z was standardised for another map.
+  // A new place, or a new result, reads the channels there: the old z was standardised for another map.
   useEffect(() => {
-    latest.current = source;
     if (place) probe.schedule({ at: place, src: source });
   }, [source, place, probe]);
 
   // A sample from another result is not drawn on this one: it would mark the wrong pixel.
   const current = sample && sample.source === source ? sample : undefined;
   const m = modesUsed || (source?.res.labels.length ?? 3);
+  /** Known at once, not after a probe: a place this window does not cover. */
+  const outside = !!place && !!source && !toRaster(source.res, place[0], place[1]);
 
   // The connected region needs the whole distance field, read back once per sample and metric; the
   // fill itself is redone on the host whenever the tolerance moves.
   useEffect(() => {
     if (connected && current) distance.schedule({ s: current, m });
   }, [connected, current, m, distance]);
+  // While a newer field is on its way, the last one for this map stands in rather than flashing every
+  // fragment back for a frame — and the outline is measured from that field's sample, so the
+  // reference and the patch it was filled from are always drawn together.
+  const shownField = connected && current && field && field.sample.source === current.source && field.m === m ? field : undefined;
   const region = useMemo(() => {
-    // While a newer field is on its way, the last one for this map stands in rather than flashing
-    // every fragment back for a frame.
-    if (!connected || !current || !field || field.sample.source !== current.source || field.m !== m) return undefined;
-    const { width, height } = current.source.res;
-    return connectedRegion(field.d, width, height, field.sample, tolerance);
-  }, [connected, current, field, m, tolerance]);
+    if (!shownField) return undefined;
+    const { width, height } = shownField.sample.source.res;
+    return connectedRegion(shownField.d, width, height, shownField.sample, tolerance);
+  }, [shownField, tolerance]);
+  const measured = shownField?.sample ?? current;
 
   // One object per state, not per render, so a page's layers can depend on the wand as a whole.
   return useMemo(
@@ -178,13 +189,16 @@ export function useWand(source: WandSource | undefined) {
       modesUsed,
       setModesUsed,
       place,
+      outside,
       sample: current,
+      /** The sample the outline is measured from: the patch's, while a newer one's field computes. */
+      measured,
       error,
       /** Sample the place `x, y`, in the frame of the result's bbox. */
       pick,
       clear,
     }),
-    [tolerance, connected, region, modesUsed, place, current, error, pick, clear],
+    [tolerance, connected, region, modesUsed, place, outside, current, measured, error, pick, clear],
   );
 }
 
@@ -194,7 +208,7 @@ export type Wand = ReturnType<typeof useWand>;
 export function wandLayerProps(wand: Wand, K: number) {
   const s = wand.sample;
   return {
-    reference: s?.z ?? null,
+    reference: wand.measured?.z ?? null,
     marker: s ? { col: s.col, row: s.row } : null,
     tolerance: wand.tolerance,
     // "every mode" is held as 0 so the option need not know K.
