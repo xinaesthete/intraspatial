@@ -2,6 +2,7 @@
 // settings (docs/wand-metric-and-regions.md).
 
 import type { CoLocationModes } from "../../../src/spatial/gram";
+import { Explain } from "../transcript/Explain";
 import { maskArea, type WorldMask } from "../selection/worldMask";
 import type { BoundaryNow } from "./useBoundaryField";
 import { WAND_PRESETS, type WandPresetName, type WandSettingsState } from "./useWandSettings";
@@ -20,7 +21,11 @@ interface Props {
   readonly channels: number | undefined;
   readonly modes: CoLocationModes | undefined;
   /** The broad scale's radius and map, once computed, when judging at two scales. */
-  readonly broad: { radius: number; raster: { width: number; height: number } } | undefined;
+  readonly broad?: { radius: number; raster: { width: number; height: number } } | undefined;
+  /** Whether the page can compute a broader scale; without it the option is hidden. */
+  readonly twoScale?: boolean;
+  /** What the map's channels mix, for the heading: "genes", "cells". */
+  readonly mixtures: string;
   readonly patch: Patch | undefined;
   readonly brushR: number;
   readonly mask: WorldMask | undefined;
@@ -29,7 +34,7 @@ interface Props {
   readonly onSmoothEdges: (on: boolean) => void;
 }
 
-export function WandPanel({
+export function BoundaryPanel({
   show,
   onShow,
   wand,
@@ -44,11 +49,13 @@ export function WandPanel({
   onClear,
   smoothEdges,
   onSmoothEdges,
+  mixtures,
+  twoScale = false,
 }: Props) {
   const { settings: s, set, preset, applyPreset } = wand;
   return (
     <div className="picker">
-      <div className="picker-head">Boundaries (prototype): where the mixture of genes changes fastest</div>
+      <div className="picker-head">Boundaries (prototype): where the mixture of {mixtures} changes fastest</div>
       <label className="check">
         <input type="checkbox" checked={show} onChange={(e) => onShow(e.target.checked)} />
         Show boundaries (the wand, top left of the map, selects by them)
@@ -122,12 +129,14 @@ export function WandPanel({
           Drop parts narrower than (in r): {s.open > 0 ? s.open.toFixed(2) : "off"}
           <input type="range" min={0} max={4} step={0.1} value={s.open} onChange={(e) => set("open", Number(e.target.value))} />
         </label>
-        <label className="check">
-          <input type="checkbox" checked={s.twoScale} onChange={(e) => set("twoScale", e.target.checked)} />
-          Judge the patch at a broader neighbourhood too
-          {s.twoScale && (broad ? ` (r ${broad.radius} µm*, map ${broad.raster.width}×${broad.raster.height})` : " (computing…)")}
-        </label>
-        {s.twoScale && (
+        {twoScale && (
+          <label className="check">
+            <input type="checkbox" checked={s.twoScale} onChange={(e) => set("twoScale", e.target.checked)} />
+            Judge the patch at a broader neighbourhood too
+            {s.twoScale && (broad ? ` (r ${broad.radius} µm*, map ${broad.raster.width}×${broad.raster.height})` : " (computing…)")}
+          </label>
+        )}
+        {twoScale && s.twoScale && (
           <>
             <label>
               Broader neighbourhood: {s.broad.toFixed(1)}× r
@@ -190,5 +199,21 @@ export function WandPanel({
         </p>
       )}
     </div>
+  );
+}
+
+/** What the boundaries show. `mixtures` names what is mixed: "genes", "cells". */
+export function BoundariesExplain({ mixtures }: { mixtures: string }) {
+  return (
+    <Explain
+      title="What do the boundaries show? (prototype)"
+      math={String.raw`u = A z,\quad A_k = \begin{cases} v_k^\top/\sqrt{\lambda_k} & k \le q \\ \sqrt{w}\, v_k^\top/\sigma & k > q \end{cases},\quad \sigma^2 = \overline{\lambda_{k>q}},\qquad \text{strength} = r\,\sqrt{\lambda_{\max}\!\big(\textstyle\sum_k \nabla u_k \nabla u_k^\top\big)}`}
+    >
+      How fast the mixture of {mixtures} changes at each place, in the direction it changes fastest, measured the way the wand measures
+      difference. 1 means "one typical spread of difference across one radius". The <b>main modes</b> count in their own spread. The rest
+      are counted at the noise level, scaled by <b>w</b>: at 0 they are ignored (only what the colours show), at 1 they count as much as
+      noise does. Setting q to every mode is the old "full Mahalanobis" metric, where the faintest modes count most. Amber marks places at
+      or above θ, where a wand patch bounded by edges would stop. White shows weaker change.
+    </Explain>
   );
 }

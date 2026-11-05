@@ -10,46 +10,30 @@
 
 import { PathLayer } from "@deck.gl/layers";
 import { Matrix4 } from "@math.gl/core";
-import { type CSSProperties, useCallback, useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { clampWindow, type PointsTile, type Rect } from "../../../src/datasource/points";
 import { type ModeBasis, modeBasis } from "../../../src/gpu/spatial/gramModes";
 import { type CoLocationModes, radiusToCover } from "../../../src/spatial/gram";
 import { invert2, rectThrough2 } from "../../../src/spatial/ngffTransform";
 import { listImageElements } from "../datasource/imageContext";
 import { DEFAULT_UNTILED_BUDGET, listPointsElements } from "../datasource/pointsTileLoader";
-import { type PointerInfo, SpatialDeckView } from "../deck/SpatialDeckView";
+import { SpatialDeckView } from "../deck/SpatialDeckView";
 import { SHARED_DEVICE_PROPS, useSharedDevice } from "../deck/useSharedDevice";
 import { useAsync, useSettled } from "../hooks/useAsync";
 import { usePointsSource, usePointsTiles, useSpatialData } from "../hooks/useSpatialData";
 import { GramModesLayer } from "../modes/GramModesLayer";
 import { MatrixView } from "../modes/MatrixView";
-import { ModeLegend } from "../modes/ModeLegend";
-import { useMapTools } from "../selection/useMapTools";
-import { type PatchAt, type PressPhase, useMaskPainting } from "../selection/useMaskPainting";
-import { toolWidgets } from "../selection/wandTools";
-import type { PressOp } from "../selection/worldMask";
-import { BoundaryLayer } from "../wand/BoundaryLayer";
-import { useBoundaryField } from "../wand/useBoundaryField";
-import { useWandSettings } from "../wand/useWandSettings";
-import { WandPanel } from "../wand/WandPanel";
-import { needsExperiments, type Patch, wandPatch, wandPatchOnGraph } from "../wand/wandPatch";
+import { ModeCharts } from "../modes/ModeCharts";
+import { ModeMap } from "../modes/ModeMap";
+import { ImagePicker, MapStyleControls, StoreInput, useImageChoice, useMapStyle } from "../modes/PageControls";
+import { useWand, type WandSource, wandLayerProps } from "../modes/useWand";
+import { WandPanel } from "../modes/WandPanel";
+import { useBoundarySettings, useMapSelection } from "../selection/useMapSelection";
+import { BoundaryPanel } from "../wand/WandPanel";
 import { ChannelPicker } from "./ChannelPicker";
 import { buildChannels, NEGATIVE_CONTROLS, type Selection, STARTER_SETS } from "./channelModel";
 import { TranscriptExplainers } from "./TranscriptExplainers";
 import { useTranscriptGram } from "./useTranscriptGram";
-import { LocalStorePicker } from "../LocalStorePicker";
-import "@deck.gl/widgets/stylesheet.css";
-
-/** BoundaryLayer's op code. */
-const OP_INDEX: Record<PressOp, number> = { replace: 0, add: 1, subtract: 2, intersect: 3, piece: 2 };
-
-/** A closed circle of 64 segments, for a PathLayer. */
-function circle(c: readonly [number, number], r: number): [number, number][] {
-  return Array.from({ length: 65 }, (_, i) => {
-    const t = (i / 64) * 2 * Math.PI;
-    return [c[0] + r * Math.cos(t), c[1] + r * Math.sin(t)];
-  });
-}
 
 /** The raster stack's size on the device, in MiB. `bytesPerWordRatio` of 2 reports what the same
  *  stack would cost at f32, which is the comparison the checkbox is making. */
@@ -65,8 +49,7 @@ const DEFAULT_STORE = "http://localhost:8080/xenium_2.q0.001.htj2k.index-permuta
 const DEFAULT_SELECTION: Selection = { sets: [...STARTER_SETS.map((s) => s.name), NEGATIVE_CONTROLS], genes: [] };
 /** How long the view must rest before the window moves to it. */
 const SETTLE_MS = 50;
-/** `imageName` for "no image". `undefined` means "pick one". */
-const NO_IMAGE = "";
+const preferHe = (names: readonly string[]) => names.find((n) => /he/i.test(n)) ?? names[0];
 
 /** Modes fixed from one window, to paint every later window with. Each raster is a density
  *  (molecules per µm², the kernel having unit mass), so the lock stays meaningful when the radius or
@@ -91,9 +74,7 @@ const outline = (r: Rect): [number, number][] => [
 
 export function TranscriptModes() {
   const [storeUrl, setStoreUrl] = useState(DEFAULT_STORE);
-  const [storeDraft, setStoreDraft] = useState(DEFAULT_STORE);
   const [pointsName, setPointsName] = useState<string>();
-  const [imageName, setImageName] = useState<string>();
   const [radius, setRadius] = useState(50);
   const [qvMin, setQvMin] = useState(20);
   const [untiledBudgetM, setUntiledBudgetM] = useState(DEFAULT_UNTILED_BUDGET / 1e6);
@@ -103,9 +84,8 @@ export function TranscriptModes() {
   const [follow, setFollow] = useState(true);
   const [pinned, setPinned] = useState<Rect>();
   const [selection, setSelection] = useState(DEFAULT_SELECTION);
-  const [saturate, setSaturate] = useState(2.5);
-  const [chromaWeight, setChromaWeight] = useState(0.5);
-  const [opacity, setOpacity] = useState(0.75);
+  const style = useMapStyle({ chromaWeight: 0.5, opacity: 0.75 });
+  const { saturate, chromaWeight, opacity } = style;
   const [lock, setLock] = useState<ModeLock>();
 
   const device = useSharedDevice();
@@ -122,7 +102,7 @@ export function TranscriptModes() {
   const hasQv = source.value?.columns.includes("qv") ?? true;
   const qvApplied = hasQv ? qvMin : 0;
   const imageNames = useAsync(() => (sd.value ? listImageElements(sd.value) : undefined), [sd.value], sd.value);
-  const imageEl = imageName === NO_IMAGE ? undefined : (imageName ?? imageNames.value?.find((n) => /he/i.test(n)) ?? imageNames.value?.[0]);
+  const images = useImageChoice(imageNames.value ?? [], preferHe);
 
   // Transcripts' own frame ↔ the frame the canvas draws in.
   const space = source.value?.space;
@@ -180,25 +160,27 @@ export function TranscriptModes() {
   const modes = locked?.modes ?? g?.modes;
   const toggleLock = (on: boolean) => setLock(on && g ? { basis: modeBasis(g.res), modes: g.modes, window: g.window } : undefined);
 
-  // PROTOTYPE (docs/wand-metric-and-regions.md): the boundary field, the wand's patch on it, and a mask
-  // painted with the map's tools. The wand needs the boundary field, and the mask is drawn by the
-  // boundary layer, so choosing either painting tool turns boundaries on; with them off the map is the
-  // hand's.
-  const [showBounds, setShowBounds] = useState(false);
-  const wand = useWandSettings();
-  const ws = wand.settings;
-  const { setSettings: setWand } = wand;
-  const enableBounds = useCallback(() => setShowBounds(true), []);
-  const resizeWand = useCallback((f: (sigma: number) => number) => setWand((s) => ({ ...s, dSmooth: f(s.dSmooth) })), [setWand]);
-  const tools = useMapTools(showBounds, enableBounds, resizeWand);
-  const { active, chooseTool, brushR, heldOp, attachMap } = tools;
-  const brushOn = active === "brush";
-  /** Draw the mask and preview smoothly (quadratic filter, antialiased), or as before, to compare. */
-  const [smoothEdges, setSmoothEdges] = useState(true);
+  // The wand's reference is standardised as the map is painted: with the lock's means, when locked.
+  const lockedBasis = locked?.basis;
+  const vectors = modes?.vectors;
+  const wandSource = useMemo<WandSource | undefined>(() => {
+    if (!g || !vectors) return undefined;
+    const { mean, sd } = lockedBasis ?? g.res.resident;
+    return { res: g.res, rasters: g.rasters, mean, sd, vectors, ...(lockedBasis ? { basis: lockedBasis } : {}) };
+  }, [g, lockedBasis, vectors]);
+  const wand = useWand(wandSource);
+  // The canvas's world frame → the transcripts' frame, which the Gram's bbox is in.
+  const toPlace = (wx: number, wy: number): readonly [number, number] | undefined => {
+    const m = toElement;
+    return m ? [m.a * wx + m.c * wy + m.tx, m.b * wx + m.d * wy + m.ty] : undefined;
+  };
 
+  // PROTOTYPE (docs/wand-metric-and-regions.md): boundaries, and a mask painted with the map's tools.
+  const boundaries = useBoundarySettings();
+  const ws = boundaries.wand.settings;
   // The broad neighbourhood: the same window and channels at ws.broad × r, on its own (coarser)
   // raster, computed only while it is asked for.
-  const broadOn = showBounds && ws.twoScale;
+  const broadOn = boundaries.show && ws.twoScale;
   const rBroad = Math.round(rEff * ws.broad * 10) / 10;
   const tilesBroad = usePointsTiles(source.value, broadOn ? window : undefined, rBroad);
   const gramBroad = useTranscriptGram(
@@ -208,59 +190,24 @@ export function TranscriptModes() {
     source.value,
   );
   const gb = broadOn && g && gramBroad.value && gramBroad.value.window === g.window ? gramBroad.value : undefined;
-  const bounds = useBoundaryField(showBounds, g, modes, locked?.basis, gb, ws);
-  const boundsNow = bounds.main;
-  const thetaNow = ws.theta ?? boundsNow?.field.quantiles.p90 ?? 1;
-  const patchAt = useMemo<PatchAt<Patch> | undefined>(() => {
-    if (!boundsNow || !g) return undefined;
-    const broad = ws.twoScale && bounds.broad && gb ? { field: bounds.broad, res: gb.res } : undefined;
-    // Two scales asked for: wait for the broad field rather than paint with the one-scale patch.
-    if (ws.twoScale && !broad) return undefined;
-    const s = { rule: ws.rule, dSmooth: ws.dSmooth, tol: ws.tol, open: ws.open, graded: ws.graded, slack: ws.slack, theta: thetaNow };
-    if (needsExperiments(s, broad)) return async (seed) => wandPatch(boundsNow.field, g.res, seed, s, broad);
-    return (seed) => wandPatchOnGraph(boundsNow.field, g.res, seed, s);
-  }, [boundsNow, g, ws.rule, ws.dSmooth, ws.tol, ws.open, ws.graded, ws.slack, ws.twoScale, thetaNow, bounds.broad, gb]);
   // The mask is judged by one metric, so the first stroke locks the modes: otherwise every pan would
   // change what "similar" means.
   const lockOnPaint = useCallback(() => {
     if (!lock && g) setLock({ basis: modeBasis(g.res), modes: g.modes, window: g.window });
   }, [lock, g]);
-  const paint = useMaskPainting(tools, g?.res, toElement, patchAt, lockOnPaint, smoothEdges);
-  const { onPress, onHover: hoverAt } = paint;
-  const press = useCallback(
-    (phase: PressPhase) =>
-      (info: { coordinate?: number[]; viewport?: { unproject: (xy: number[]) => number[] } }, event?: PointerInfo): void => {
-        // A drag's info is the press-down pick; its current position is the event's.
-        const at =
-          phase === "move" && event?.offsetCenter && info.viewport
-            ? info.viewport.unproject([event.offsetCenter.x, event.offsetCenter.y])
-            : info.coordinate;
-        const [x, y] = at ?? [];
-        onPress(phase, x, y, event);
-      },
-    [onPress],
-  );
-  const onClick = useMemo(() => press("click"), [press]);
-  const onHover = useCallback(
-    (info: { coordinate?: number[] }) => {
-      const [x, y] = info.coordinate ?? [];
-      hoverAt(x, y);
-    },
-    [hoverAt],
-  );
-  const { painting, preview, maskOnMap, brushAt } = paint;
+  const tools = useMapSelection(boundaries, {
+    g,
+    modes,
+    basis: lockedBasis,
+    twoScale: true,
+    broad: gb,
+    toFrame: toElement,
+    onPaint: lockOnPaint,
+    modelMatrix,
+  });
   const deckProps = useMemo(
-    () => ({
-      deviceProps: SHARED_DEVICE_PROPS,
-      onDeviceInitialized: device.onDeviceInitialized,
-      // Painting takes the drag; scroll still zooms.
-      controller: { dragPan: !painting },
-      onDragStart: press("start"),
-      onDrag: press("move"),
-      onDragEnd: press("end"),
-      widgets: toolWidgets(active, chooseTool),
-    }),
-    [device.onDeviceInitialized, painting, press, active, chooseTool],
+    () => ({ deviceProps: SHARED_DEVICE_PROPS, onDeviceInitialized: device.onDeviceInitialized, ...tools.deckProps }),
+    [device.onDeviceInitialized, tools.deckProps],
   );
 
   const layers = useMemo(
@@ -276,45 +223,11 @@ export function TranscriptModes() {
               saturate,
               chromaWeight,
               opacity,
+              ...wandLayerProps(wand, g.modes.labels.length),
               modelMatrix,
               pickable: false,
             }),
-            ...(boundsNow
-              ? [
-                  new BoundaryLayer({
-                    id: "gram-boundary",
-                    strength: boundsNow.field.field,
-                    bbox: g.res.bbox,
-                    width: g.res.width,
-                    height: g.res.height,
-                    theta: thetaNow,
-                    lines: ws.lines,
-                    // What a press would paint: none under the hand or while Space makes a drag pan.
-                    cell: preview?.cell ?? null,
-                    weight: preview?.weight ?? null,
-                    op: OP_INDEX[heldOp],
-                    smooth: smoothEdges,
-                    mask: maskOnMap,
-                    modelMatrix,
-                    pickable: false,
-                  }),
-                ]
-              : []),
-            // The brush, as a circle on the map: true to size at any zoom, which a cursor cannot be.
-            ...(brushOn && brushAt && painting
-              ? [
-                  new PathLayer<{ path: [number, number][] }>({
-                    id: "brush-outline",
-                    data: [{ path: circle(brushAt, brushR) }],
-                    getPath: (d) => d.path,
-                    getColor: [255, 255, 255, 230],
-                    getWidth: 1.5,
-                    widthUnits: "pixels",
-                    modelMatrix,
-                    pickable: false,
-                  }),
-                ]
-              : []),
+            ...tools.layers,
             new PathLayer<{ path: [number, number][] }>({
               id: "gram-window",
               data: [{ path: outline(g.window) }],
@@ -342,25 +255,7 @@ export function TranscriptModes() {
               : []),
           ]
         : [],
-    [
-      g,
-      locked,
-      modelMatrix,
-      saturate,
-      chromaWeight,
-      opacity,
-      boundsNow,
-      thetaNow,
-      ws.lines,
-      preview,
-      heldOp,
-      smoothEdges,
-      maskOnMap,
-      painting,
-      brushOn,
-      brushAt,
-      brushR,
-    ],
+    [g, locked, modelMatrix, saturate, chromaWeight, opacity, wand, tools.layers],
   );
 
   const error = sd.error ?? source.error ?? tiles.error ?? gram.error;
@@ -382,16 +277,18 @@ export function TranscriptModes() {
   const openStore = (url: string) => {
     setStoreUrl(url);
     setPointsName(undefined);
-    setImageName(undefined);
+    images.reset();
     setPinned(undefined);
     setLock(undefined);
     setViewport(undefined);
-    paint.clear();
+    tools.clear();
+    wand.clear();
   };
   const choosePoints = (name: string) => {
     setPointsName(name);
     setPinned(undefined);
-    paint.clear();
+    tools.clear();
+    wand.clear();
   };
 
   return (
@@ -405,21 +302,7 @@ export function TranscriptModes() {
 
       <div className="layout">
         <aside className="controls">
-          <label>
-            Store
-            <span className="row">
-              <input value={storeDraft} onChange={(e) => setStoreDraft(e.target.value)} />
-              <button type="button" onClick={() => openStore(storeDraft.trim())}>
-                open
-              </button>
-            </span>
-          </label>
-          <LocalStorePicker
-            onPick={(key) => {
-              setStoreDraft(key);
-              openStore(key);
-            }}
-          />
+          <StoreInput initial={DEFAULT_STORE} onOpen={openStore} />
           <label>
             Transcripts
             <select value={pointsEl ?? ""} onChange={(e) => choosePoints(e.target.value)}>
@@ -445,15 +328,7 @@ export function TranscriptModes() {
               Every molecule, at any zoom (off: a zoomed-out view analyses a random sample — fast, approximate)
             </label>
           )}
-          <label>
-            Image
-            <select value={imageEl ?? NO_IMAGE} onChange={(e) => setImageName(e.target.value)}>
-              {(imageNames.value ?? []).map((n) => (
-                <option key={n}>{n}</option>
-              ))}
-              <option value={NO_IMAGE}>(none)</option>
-            </select>
-          </label>
+          <ImagePicker images={images} />
           <label>
             <span>
               Neighbourhood radius r: {radius} µm*
@@ -500,41 +375,9 @@ export function TranscriptModes() {
             <input type="checkbox" checked={!!locked} disabled={!g} onChange={(e) => toggleLock(e.target.checked)} />
             Lock the modes (off: recompute them for each window)
           </label>
-          <label>
-            Colour strength
-            <input type="range" min={0.5} max={6} step={0.1} value={saturate} onChange={(e) => setSaturate(Number(e.target.value))} />
-          </label>
-          <label>
-            Hue weight (0 = by importance, 1 = equalised)
-            <input
-              type="range"
-              min={0}
-              max={1}
-              step={0.05}
-              value={chromaWeight}
-              onChange={(e) => setChromaWeight(Number(e.target.value))}
-            />
-          </label>
-          <label>
-            Map over image
-            <input type="range" min={0} max={1} step={0.05} value={opacity} onChange={(e) => setOpacity(Number(e.target.value))} />
-          </label>
-          <WandPanel
-            show={showBounds}
-            onShow={setShowBounds}
-            wand={wand}
-            theta={thetaNow}
-            bounds={boundsNow}
-            channels={g?.res.labels.length}
-            modes={modes}
-            broad={gb}
-            patch={paint.patch}
-            brushR={brushR}
-            mask={paint.mask}
-            onClear={paint.clear}
-            smoothEdges={smoothEdges}
-            onSmoothEdges={setSmoothEdges}
-          />
+          <MapStyleControls style={style} />
+          <WandPanel wand={wand} />
+          <BoundaryPanel {...tools.panel} broad={gb} mixtures="genes" />
           {source.value && (
             <ChannelPicker features={source.value.features} selection={selection} onChange={setSelection} missing={built.missing} />
           )}
@@ -542,28 +385,21 @@ export function TranscriptModes() {
         </aside>
 
         <main className="views">
-          {/* Always mounted, never keyed: see SpatialDeckView on why deck must outlive a store. */}
-          {/* The tool's cursor, over deck's own (which it rewrites on the canvas every frame). */}
-          <div
-            className="tool-cursor"
-            ref={attachMap}
-            data-tool={painting ? "paint" : "hand"}
-            style={{ "--tool-cursor": paint.cursor } as CSSProperties}
-            onPointerLeave={() => hoverAt()}
-          >
+          <ModeMap wand={wand} modes={modes} viewport={viewport} toPlace={toPlace} selection={tools}>
+            {/* Always mounted, never keyed: see SpatialDeckView on why deck must outlive a store. */}
             <SpatialDeckView
               className="deck-canvas"
               sdata={sd.value}
               coordinateSystem={coordinateSystem}
-              image={imageEl}
+              image={images.image}
               layers={layers}
               deckProps={deckProps}
               onViewport={setViewport}
-              onClick={onClick}
-              onHover={onHover}
+              onClick={tools.onClick}
+              onHover={tools.onHover}
               fallbackBounds={fallbackBounds}
             />
-          </div>
+          </ModeMap>
           <p className="status">
             {error ? <span className="error">{error.message}</span> : busy}
             {!error && !busy && g && (
@@ -604,7 +440,7 @@ export function TranscriptModes() {
                   the percentages are of that window's variation.
                 </p>
               )}
-              {modes && <ModeLegend modes={modes} />}
+              {modes && <ModeCharts modes={modes} />}
               <h3>How often each pair turns up together, compared with chance</h3>
               <MatrixView
                 labels={g.modes.labels}

@@ -18,6 +18,10 @@ function worldAt(el: Element, view: Rect, clientX: number, clientY: number): [nu
   ];
 }
 
+/** A press on a control over the map (deck's widgets, a button): it is the control's, not a pick. */
+const onControl = (e: PointerEvent<HTMLElement>) =>
+  e.target instanceof Element && e.target !== e.currentTarget && e.target.closest("button, a, input, select, .deck-widget") !== null;
+
 /** Further than this, in CSS pixels, and a press is a pan, not a click. */
 const CLICK_SLOP = 4;
 
@@ -28,7 +32,7 @@ export function useWorldPick(view: Rect | undefined, onPick: (x: number, y: numb
   };
   return {
     onPointerDownCapture: (e: PointerEvent<HTMLElement>) => {
-      if (e.button !== 0) return;
+      if (e.button !== 0 || onControl(e)) return;
       const drag = e.shiftKey;
       press.current = { x: e.clientX, y: e.clientY, drag };
       if (!drag) return;

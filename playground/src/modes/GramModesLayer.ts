@@ -38,6 +38,11 @@ type ModeUniforms = {
   selOn: number;
   /** 1 when `rasters` holds packed f16 (two texels per word), 0 for plain f32. */
   half: number;
+  /** 1 when `keep` limits the selection to one connected region. */
+  region: number;
+  pad0: number;
+  pad1: number;
+  pad2: number;
 };
 
 // Named `U` because the shared mixins read `U.K` and `U.m`; luma binds a module's uniform block by
@@ -52,6 +57,7 @@ struct ModeUniforms {
   marker: vec4<f32>,
   width: f32, height: f32, rowWords: f32, K: f32,
   m: f32, selTol: f32, selOn: f32, half: f32,
+  region: f32, pad0: f32, pad1: f32, pad2: f32,
 };
 @group(0) @binding(auto) var<uniform> U: ModeUniforms;
 /** Words, not floats: at f16 one word holds two texels (see gramMatrix's ResidentRasters). */
@@ -60,6 +66,8 @@ struct ModeUniforms {
 @group(0) @binding(auto) var<storage, read> chan: array<f32>;
 /** K floats of wand reference z, then m*K of the whitening matrix — see similarityWgsl. */
 @group(0) @binding(auto) var<storage, read> wand: array<f32>;
+/** One byte per pixel, four to a word: 1 where the pixel is in the wand's connected region. */
+@group(0) @binding(auto) var<storage, read> keep: array<u32>;
 `,
   // Order must match the WGSL struct: luma lays the buffer out from this table.
   uniformTypes: {
@@ -75,6 +83,10 @@ struct ModeUniforms {
     selTol: "f32",
     selOn: "f32",
     half: "f32",
+    region: "f32",
+    pad0: "f32",
+    pad1: "f32",
+    pad2: "f32",
   },
 };
 
@@ -92,6 +104,25 @@ fn fetch(a: u32, col: u32, row: u32) -> f32 {
 ${MARKER_WGSL}
 ${SIMILARITY_WGSL}
 ${OKLAB_TO_SRGB_WGSL}
+
+/** sampleWhitened, with pixels outside the connected region pushed out of range. Applied per pixel,
+ *  before the bilinear blend, so the outline runs between a kept pixel and a dropped one even where
+ *  both are within tolerance — which is what separates the region from a fragment touching it.
+ *
+ *  Only dropped pixels WITHIN tolerance move, reflected about it (d → 2·tol − d), so the outline
+ *  between them and a kept pixel still falls where their distances say. Dropped pixels already out
+ *  of range keep their own d: raising those too (to a fixed 2·tol, say) would drag every crossing on
+ *  the region's edge toward the kept pixel, by a different amount in each cell — a staircase. */
+fn sampleKept(col: u32, row: u32) -> vec4<f32> {
+  var s = sampleWhitened(col, row);
+  if (U.region != 0.0 && s.w <= U.selTol) {
+    let i = row * u32(U.width) + col;
+    if (((keep[i >> 2u] >> ((i & 3u) * 8u)) & 0xffu) == 0u) {
+      s.w = 2.0 * U.selTol - s.w;
+    }
+  }
+  return s;
+}
 
 struct Varyings {
   @builtin(position) position: vec4<f32>,
@@ -127,8 +158,8 @@ fn fragmentMain(input: Varyings) -> @location(0) vec4<f32> {
   let c1 = min(c0 + vec2<u32>(1u), vec2<u32>(size) - vec2<u32>(1u));
   let f = q - vec2<f32>(c0);
   let s = mix(
-    mix(sampleWhitened(c0.x, c0.y), sampleWhitened(c1.x, c0.y), f.x),
-    mix(sampleWhitened(c0.x, c1.y), sampleWhitened(c1.x, c1.y), f.x),
+    mix(sampleKept(c0.x, c0.y), sampleKept(c1.x, c0.y), f.x),
+    mix(sampleKept(c0.x, c1.y), sampleKept(c1.x, c1.y), f.x),
     f.y,
   );
 
@@ -156,6 +187,8 @@ export type GramModesLayerProps = {
   marker?: { col: number; row: number } | null;
   /** Paint with this fixed projection rather than `res`'s own; `vectors` must then be its modes. */
   basis?: ModeBasis | null;
+  /** Limit the selection to these pixels — `connectedRegion`'s mask, one byte per raster pixel. */
+  region?: Uint8Array | null;
 } & LayerProps;
 
 const defaultProps: DefaultProps<GramModesLayerProps> = {
@@ -169,6 +202,7 @@ const defaultProps: DefaultProps<GramModesLayerProps> = {
   tolerance: { type: "number", value: 1.2 },
   marker: { type: "object", value: null, compare: 1 },
   basis: { type: "object", value: null, compare: false },
+  region: { type: "object", value: null, compare: false },
 };
 
 type State = {
@@ -177,11 +211,12 @@ type State = {
   handle?: GPUBuffer;
   chan?: Buffer;
   wand?: Buffer;
+  keep?: Buffer;
   params?: ReturnType<typeof modeParams>;
 };
 
 /** A storage buffer holding `data`, reused while it is large enough. */
-function storage(layer: GramModesLayer, current: Buffer | undefined, data: Float32Array): Buffer {
+function storage(layer: GramModesLayer, current: Buffer | undefined, data: Float32Array | Uint32Array): Buffer {
   if (current && current.byteLength >= data.byteLength) {
     current.write(data);
     return current;
@@ -221,6 +256,15 @@ export class GramModesLayer extends Layer<GramModesLayerProps> {
   override updateState({ props, oldProps }: UpdateParameters<this>): void {
     const { res, vectors } = props;
     if (!res || !vectors) return;
+    if (props.region !== oldProps.region || !this.state.keep) {
+      // Bytes packed four to a word, padded to a whole word; a word of zeros stands in when off, as
+      // the binding must always be filled.
+      const bytes = props.region ?? new Uint8Array(4);
+      const words = new Uint32Array(Math.ceil(bytes.length / 4) || 1);
+      new Uint8Array(words.buffer).set(bytes);
+      this.state.keep = storage(this, this.state.keep, words);
+      this.state.model?.setBindings({ keep: this.state.keep });
+    }
     const changed =
       res !== oldProps.res ||
       vectors !== oldProps.vectors ||
@@ -249,13 +293,14 @@ export class GramModesLayer extends Layer<GramModesLayerProps> {
     this.state.rasters?.destroy(); // a wrapper: luma never destroys a supplied handle
     this.state.chan?.destroy();
     this.state.wand?.destroy();
+    this.state.keep?.destroy();
     this.state.model?.destroy();
     super.finalizeState(context);
   }
 
   override draw(): void {
     const { model, params } = this.state;
-    const { res, rasters, marker, reference, tolerance, opacity } = this.props;
+    const { res, rasters, marker, reference, tolerance, opacity, region } = this.props;
     if (!model || !res || !rasters || !params) return;
     const handle = rasters;
     if (this.state.handle !== handle) {
@@ -283,6 +328,10 @@ export class GramModesLayer extends Layer<GramModesLayerProps> {
       m: params.m,
       selTol: tolerance ?? 1.2,
       selOn: reference ? 1 : 0,
+      region: region && region.length === res.width * res.height ? 1 : 0,
+      pad0: 0,
+      pad1: 0,
+      pad2: 0,
     };
     model.shaderInputs.setProps({ U: uniforms });
     model.draw(this.context.renderPass);

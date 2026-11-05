@@ -197,19 +197,40 @@ fn fs(in: VOut) -> @location(0) vec4f {
 }
 `;
 
-/** Gathers the K raster values at one pixel, so the host can turn a click into a wand reference
- *  without downloading a raster. K floats out, one dispatch. */
+/** Gathers the K raster values at one point, so the host can turn a click into a wand reference
+ *  without downloading a raster. K floats out, one dispatch. Bilinear between pixel centres, as the
+ *  mode map is drawn, so the reading moves smoothly with the pointer rather than in pixel steps.
+ *  Reads words, not floats, so it can unpack f16 rasters (two texels per word) as `gramMatrix` and
+ *  `GramModesLayer` do. */
 const PROBE_SHADER = /* wgsl */ `
-struct Uni { K: f32, col: f32, row: f32, rowFloats: f32, rasterH: f32, pad0: f32, pad1: f32, pad2: f32 };
+struct Uni { K: f32, col: f32, row: f32, rowWords: f32, rasterH: f32, half: f32, rasterW: f32, pad: f32 };
 @group(0) @binding(0) var<uniform> U: Uni;
-@group(0) @binding(1) var<storage, read> rasters: array<f32>;
+@group(0) @binding(1) var<storage, read> rasters: array<u32>;
 @group(0) @binding(2) var<storage, read_write> out: array<f32>;
+
+fn fetch(a: u32, col: u32, row: u32) -> f32 {
+  let base = a * u32(U.rasterH) * u32(U.rowWords) + row * u32(U.rowWords);
+  if (U.half != 0.0) {
+    let pair = unpack2x16float(rasters[base + (col >> 1u)]);
+    return select(pair.y, pair.x, (col & 1u) == 0u);
+  }
+  return bitcast<f32>(rasters[base + col]);
+}
 
 @compute @workgroup_size(64)
 fn probe(@builtin(global_invocation_id) gid: vec3u) {
   let a = gid.x;
   if (a >= u32(U.K)) { return; }
-  out[a] = rasters[a * u32(U.rasterH) * u32(U.rowFloats) + u32(U.row) * u32(U.rowFloats) + u32(U.col)];
+  let size = vec2f(U.rasterW, U.rasterH);
+  let q = clamp(vec2f(U.col, U.row), vec2f(0.0), size - vec2f(1.0));
+  let c0 = vec2u(floor(q));
+  let c1 = min(c0 + vec2u(1u), vec2u(size) - vec2u(1u));
+  let f = q - vec2f(c0);
+  out[a] = mix(
+    mix(fetch(a, c0.x, c0.y), fetch(a, c1.x, c0.y), f.x),
+    mix(fetch(a, c0.x, c1.y), fetch(a, c1.x, c1.y), f.x),
+    f.y,
+  );
 }
 `;
 
@@ -264,7 +285,6 @@ export interface TerrainInfo {
 interface Ctx {
   device: GPUDevice;
   pipeline: GPURenderPipeline;
-  probe: GPUComputePipeline;
   format: GPUTextureFormat;
 }
 let ctxCache: Promise<Ctx> | undefined;
@@ -282,13 +302,7 @@ function getCtx(): Promise<Ctx> {
       primitive: { topology: "triangle-list", cullMode: "none" },
       depthStencil: { format: "depth24plus", depthWriteEnabled: true, depthCompare: "less" },
     });
-    const probeModule = await compileShader(device, PROBE_SHADER, "gramTerrain.probe");
-    const probe = device.createComputePipeline({
-      label: "gramTerrain:probe",
-      layout: "auto",
-      compute: { module: probeModule, entryPoint: "probe" },
-    });
-    return { device, pipeline, probe, format };
+    return { device, pipeline, format };
   })();
   return ctxCache;
 }
@@ -376,30 +390,47 @@ export function whiteningMatrix(vectors: Float64Array, values: Float64Array, K: 
 }
 
 /** Standardise raw raster values at a pixel into the `z` a wand reference is expressed in. */
-export function standardise(raw: ArrayLike<number>, mean: Float64Array, sd: Float64Array): Float64Array {
+export function standardise(raw: ArrayLike<number>, mean: ArrayLike<number>, sd: ArrayLike<number>): Float64Array {
   const out = new Float64Array(mean.length);
   for (let a = 0; a < mean.length; a++) out[a] = sd[a]! > 0 ? ((raw[a] ?? 0) - mean[a]!) / sd[a]! : 0;
   return out;
+}
+
+// Apart from the surface's context: probing needs no canvas format, so it also runs headless.
+let probeCache: Promise<{ device: GPUDevice; probe: GPUComputePipeline }> | undefined;
+
+function getProbe(): Promise<{ device: GPUDevice; probe: GPUComputePipeline }> {
+  probeCache ??= (async () => {
+    const device = await getDevice();
+    const module = await compileShader(device, PROBE_SHADER, "gramTerrain.probe");
+    const probe = device.createComputePipeline({ label: "gramTerrain:probe", layout: "auto", compute: { module, entryPoint: "probe" } });
+    return { device, probe };
+  })();
+  return probeCache;
 }
 
 let probeUni: GPUBuffer | undefined;
 let probeOut: { raw: GPUBuffer; staging: GPUBuffer; cap: number } | undefined;
 
 /**
- * Read the K channel densities at one window pixel — a click turned into a wand reference.
+ * Read the K channel densities at one point of the window — a click turned into a wand reference.
  *
- * `col`/`row` are WINDOW coordinates; the apron offset is applied here so callers work in the
- * coordinates the canvas shows.
+ * `col`/`row` are raster coordinates with pixel centres at whole numbers, the space the mode map's
+ * marker uses; fractions interpolate bilinearly, as the map is drawn. f32 and f16 rasters both read. `rasters` is a buffer in
+ * `res.resident`'s layout to read instead of `res.resident.buffer` — a copy the next compute will not
+ * overwrite, such as the transcript page's snapshot.
+ *
+ * One probe at a time: the output buffers are shared, so callers coalesce rather than overlap.
  */
-export async function probeChannels(res: GramMatrixGpuResult, col: number, row: number): Promise<Float64Array> {
-  const { device, probe } = await getCtx();
+export async function probeChannels(
+  res: GramMatrixGpuResult,
+  col: number,
+  row: number,
+  rasters: GPUBuffer = res.resident.buffer,
+): Promise<Float64Array> {
+  const { device, probe } = await getProbe();
   const K = res.labels.length;
-  // These two surfaces read `rasters` as plain f32 and have not been taught to unpack halves, so
-  // refuse rather than draw noise. Only the transcript page's `GramModesLayer` reads f16 today.
-  if (res.resident.precision === "f16") {
-    throw new Error('gramTerrain: f16 rasters are not supported here yet — rebuild the Gram with precision "f32"');
-  }
-  const { buffer, rowWords: rowFloats } = res.resident;
+  const { rowWords, precision } = res.resident;
   probeUni ??= device.createBuffer({
     label: "gramTerrain:probeUniforms",
     size: 32,
@@ -417,15 +448,15 @@ export async function probeChannels(res: GramMatrixGpuResult, col: number, row: 
       cap,
     };
   }
-  const c = Math.max(0, Math.min(res.width - 1, Math.round(col)));
-  const r = Math.max(0, Math.min(res.height - 1, Math.round(row)));
-  device.queue.writeBuffer(probeUni, 0, new Float32Array([K, c, r, rowFloats, res.height, 0, 0, 0]));
+  const c = Math.max(0, Math.min(res.width - 1, col));
+  const r = Math.max(0, Math.min(res.height - 1, row));
+  device.queue.writeBuffer(probeUni, 0, new Float32Array([K, c, r, rowWords, res.height, precision === "f16" ? 1 : 0, res.width, 0]));
   const bind = device.createBindGroup({
     label: "gramTerrain:probe",
     layout: probe.getBindGroupLayout(0),
     entries: [
       { binding: 0, resource: { buffer: probeUni, size: 32 } },
-      { binding: 1, resource: { buffer } },
+      { binding: 1, resource: { buffer: rasters } },
       { binding: 2, resource: { buffer: probeOut.raw } },
     ],
   });

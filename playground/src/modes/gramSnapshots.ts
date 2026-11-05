@@ -63,13 +63,6 @@ async function snapshot(pool: Snapshot[], shown: readonly number[], res: GramMat
   return slot.buffer;
 }
 
-/** `res` reading its rasters from `rasters` instead of the pooled buffer — for `probeChannels` and
- *  anything else that takes a result and reads `res.resident.buffer`. */
-export const onSnapshot = (res: GramMatrixGpuResult, rasters: GPUBuffer): GramMatrixGpuResult => ({
-  ...res,
-  resident: { ...res.resident, buffer: rasters },
-});
-
 export interface GramSnapshots {
   /** Snapshot `res` under a new generation. Call inside `onGpu`, straight after the compute. */
   readonly take: (res: GramMatrixGpuResult) => Promise<{ readonly generation: number; readonly rasters: GPUBuffer }>;

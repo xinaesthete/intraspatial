@@ -584,10 +584,14 @@ async function loadImage(): Promise<void> {
  *  densities at that pixel off the device and standardise them the same way `corr` was built. */
 async function sampleWandAt(clientX: number, clientY: number): Promise<void> {
   if (!live) return;
-  const { col, row } = pointerToRaster(modeCanvas, live.res.width, live.res.height, clientX, clientY);
+  const at = pointerToRaster(modeCanvas, live.res.width, live.res.height, clientX, clientY);
+  // pointerToRaster measures from pixel edges; the probe and the marker put pixel centres at whole
+  // numbers. Not rounded: the probe interpolates, so the sample follows the pointer, not the grid.
+  const col = at.col - 0.5;
+  const row = at.row - 0.5;
   const raw = await probeChannels(live.res, col, row);
   const z = standardise(raw, live.res.resident.mean, live.res.resident.sd);
-  wand = { z, col: Math.round(col), row: Math.round(row), label: `${Math.round(col)}, ${Math.round(row)}` };
+  wand = { z, col, row, label: `${col.toFixed(1)}, ${row.toFixed(1)}` };
   const K = live.res.labels.length;
 
   // Adaptive precision: a smoothed density for a gene detected in a few percent of cells is genuinely

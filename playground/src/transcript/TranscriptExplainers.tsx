@@ -1,6 +1,9 @@
 // The transcript modes page's explainers: what the channels, matrix, colours, lock, radius, window,
 // boundaries and quality filter mean, in plain language with the maths beside it.
 
+import { ChartsExplain, ColoursExplain } from "../modes/ModeCharts";
+import { WandExplain } from "../modes/WandPanel";
+import { BoundariesExplain } from "../wand/WandPanel";
 import { Explain } from "./Explain";
 
 export function TranscriptExplainers() {
@@ -21,14 +24,9 @@ export function TranscriptExplainers() {
         negative controls, rather than with 1. In the formula, M holds each channel's smoothed map, W its total, |A| the window area and S
         the self-pairs, which are removed.
       </Explain>
-      <Explain
-        title="What do the colours mean?"
-        math={String.raw`\mathrm{corr} = V \Lambda V^\top, \qquad \text{colour}(x) = \mathrm{OKLab}\big(z(x)\!\cdot\! v_1,\ z(x)\!\cdot\! v_2,\ z(x)\!\cdot\! v_3\big)`}
-      >
-        The channels' maps are summarised by a few <b>modes</b>: patterns of channels that rise and fall together across the window. Mode 1
-        sets brightness and modes 2 and 3 set hue, so places with similar colours have similar mixtures of genes. The legend says which
-        channels push each mode each way, and how much of the variation it carries.
-      </Explain>
+      <ColoursExplain mixtures="genes" />
+      <ChartsExplain />
+      <WandExplain />
       <Explain title="Locking the modes">
         Normally each window gets its own modes, and each place is compared with the rest of its window: the same colour in two windows can
         mean different mixtures, and the strongest contrast in a window always gets the strongest colours. Locked, every window is measured
@@ -50,16 +48,7 @@ export function TranscriptExplainers() {
         already seen is fast. Turn off "follow the view" to keep one window while you look around it. Each mode's sign is kept consistent
         between windows so colours do not flip for no reason — but if two modes swap order, the colours change, and that change is real.
       </Explain>
-      <Explain
-        title="What do the boundaries show? (prototype)"
-        math={String.raw`u = A z,\quad A_k = \begin{cases} v_k^\top/\sqrt{\lambda_k} & k \le q \\ \sqrt{w}\, v_k^\top/\sigma & k > q \end{cases},\quad \sigma^2 = \overline{\lambda_{k>q}},\qquad \text{strength} = r\,\sqrt{\lambda_{\max}\!\big(\textstyle\sum_k \nabla u_k \nabla u_k^\top\big)}`}
-      >
-        How fast the mixture of genes changes at each place, in the direction it changes fastest, measured the way the wand measures
-        difference. 1 means "one typical spread of difference across one radius". The <b>main modes</b> count in their own spread. The rest
-        are counted at the noise level, scaled by <b>w</b>: at 0 they are ignored (only what the colours show), at 1 they count as much as
-        noise does. Setting q to every mode is the old "full Mahalanobis" metric, where the faintest modes count most. Amber marks places at
-        or above θ, where a wand patch bounded by edges would stop. White shows weaker change.
-      </Explain>
+      <BoundariesExplain mixtures="genes" />
       <Explain title="What is the quality filter?">
         Every molecule has a quality score, qv. At 20, the chance that it was read as the wrong gene is about 1 in 100. Molecules below the
         threshold are dropped, as in Xenium's own per-cell counts. Points stored without a tiled layout are read whole, and that read brings
