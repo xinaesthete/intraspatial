@@ -13,6 +13,7 @@ import { WebGPURenderer } from "three/webgpu";
 import { type Camera, formatBytes, selectWithinBudget, worldAabbOfArrayBox, worldFromArrayOf } from "../../src/datasource";
 import { NaiveVolumeRenderer } from "./datasource/naiveVolumeRenderer";
 import { openSpatialDataVolume, type SpatialDataVolume, type SpatialDataVolumeHandle } from "./datasource/spatialDataVolume";
+import { attachLocalStorePicker } from "./localStorePickerDom";
 
 const DEFAULT_STORE = "http://localhost:8080/8090_13_Punch1_fused_htj2k_lossy.zarr/";
 const params = new URLSearchParams(location.search);
@@ -302,5 +303,6 @@ elementSel.addEventListener("change", () => void mountVolume());
 channelSel.addEventListener("change", () => void mountVolume());
 if (storeParam) storeInput.value = storeParam;
 storeInput.addEventListener("change", () => void reopenStore());
+attachLocalStorePicker(storeInput); // a pick sets the input and fires `change`
 
 void reopenStore();

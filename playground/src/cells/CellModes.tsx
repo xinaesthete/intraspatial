@@ -36,6 +36,7 @@ import { Explain } from "../transcript/Explain";
 import { buildCellChannels, type ChannelSpec, tableBounds, viewDims, WINDOW_MODES, type WindowMode, windowBbox } from "./cellChannels";
 import { ChannelSource, type SourceKind, usableObsColumns } from "./ChannelSource";
 import { useCellGram } from "./useCellGram";
+import { LocalStorePicker } from "../LocalStorePicker";
 
 const DEFAULT_STORE = "http://localhost:8080/xenium_2.q0.001.htj2k.index-permutations.zarr/";
 /** `imageName` for "no image". `undefined` means "pick one". */
@@ -269,6 +270,12 @@ export function CellModes() {
               </button>
             </span>
           </label>
+          <LocalStorePicker
+            onPick={(key) => {
+              setStoreDraft(key);
+              openStore(key);
+            }}
+          />
           <label>
             Table
             <select value={tableEl ?? ""} onChange={(e) => chooseTable(e.target.value)}>

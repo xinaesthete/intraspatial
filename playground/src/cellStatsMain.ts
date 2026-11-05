@@ -67,6 +67,7 @@ import {
   type TableInfo,
 } from "./datasource/cellTable";
 import { inspectMdvTable, MdvStore, type MdvTableInfo, readMdvCellTable, spatialDatasources } from "./datasource/mdvCellTable";
+import { attachLocalStorePicker } from "./localStorePickerDom";
 
 /** The live Leap034 SpatialData store (zarr v3, CORS `*`). Configurable — not hard-coded downstream. */
 const DEFAULT_STORE = "http://localhost:5055/project/289/spatial/leap034_layers.zarr/";
@@ -1718,6 +1719,7 @@ for (const [i, k] of KERNELS.entries()) {
 kernelSelect.value = "0";
 
 inspectBtn.addEventListener("click", () => void inspectStore(false));
+attachLocalStorePicker(storeInput, () => void inspectStore(false));
 runBtn.addEventListener("click", () => void loadSelected());
 // The pattern list comes from the registry, so adding a process there adds it here with no edit.
 for (const spec of POINT_PATTERNS) {

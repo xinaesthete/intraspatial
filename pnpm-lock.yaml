@@ -219,11 +219,11 @@ importers:
         specifier: ^9.6.1
         version: 9.6.1(@types/react@19.2.17)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)(three@0.185.0)
       '@spatialdata/core':
-        specifier: ^0.13.2
-        version: 0.13.2
+        specifier: ^0.15.1
+        version: 0.15.1
       '@spatialdata/vis':
-        specifier: ^0.13.2
-        version: 0.13.2(869198cce95f59f005a7765a34fe6612)
+        specifier: ^0.15.1
+        version: 0.15.1(869198cce95f59f005a7765a34fe6612)
       '@types/katex':
         specifier: ^0.16.8
         version: 0.16.8
@@ -261,8 +261,8 @@ importers:
         specifier: 'catalog:'
         version: 0.11.9
       zarrextra:
-        specifier: 0.7.0
-        version: 0.7.0
+        specifier: 0.7.1
+        version: 0.7.1
     devDependencies:
       '@types/react':
         specifier: ^19.2.17
@@ -2009,17 +2009,17 @@ packages:
   '@shikijs/vscode-textmate@10.0.2':
     resolution: {integrity: sha512-83yeghZ2xxin3Nj8z1NMd/NCuca+gsYXswywDy5bHvwlWL8tpTQmzGeUuHd9FC3E/SBEMvzJRwWEOz5gGes9Qg==}
 
-  '@spatialdata/avivatorish@0.13.2':
-    resolution: {integrity: sha512-ugL2OCrpuJM9DGD6gzpfZnTXGKfBWB0NxAFmKkpVwf44YoNtP4WSo1Hj8LubmzqP94iPjrRurBlPoFa8PvE+Yg==}
+  '@spatialdata/avivatorish@0.15.1':
+    resolution: {integrity: sha512-Px/yF8UVkza75HU3yXBQHttPCR4LClPuw1cQW26Zx3261h90gYjMpQcxl39S41ulGa1gW72HqzF6F9EFf7cGbQ==}
     peerDependencies:
       react: '>=18 <20'
       react-dom: '>=18 <20'
 
-  '@spatialdata/core@0.13.2':
-    resolution: {integrity: sha512-bgJYBuOhmwHJY2TplYuyvv/gqqk1XYi/jJuPgmr4YPQgF0PjfQT2QW7gvQj5/4o0hc3HUF8vvZPT3EiDpZNWSw==}
+  '@spatialdata/core@0.15.1':
+    resolution: {integrity: sha512-qKrmic0Upd36RT1cxmTfqcRno+5Am2F1a0GO/C4mRXNhwDV/XEWT5YUX6bXzl4Y9jT5SNrR39kWsjLwU+HLu0A==}
 
-  '@spatialdata/layers@0.13.2':
-    resolution: {integrity: sha512-QxIDBTcwpOVmb5xxoulmOcBUetBU8fbaf0BJlxP9LjxJaRfYnrxIq5h0bVlZg81xDf4RxG2S0KJs8HFnwhKVzQ==}
+  '@spatialdata/layers@0.15.1':
+    resolution: {integrity: sha512-Lq04biYKqRuzt2TBjxcYSp7gYECJHyLAX2TKSB+4Gdvhh01R/5oj1nfCjsVdzeVcxavju9NV9A1nRrMgvKGOHw==}
     peerDependencies:
       '@deck.gl/core': ~9.4.0
       '@deck.gl/geo-layers': ~9.4.0
@@ -2027,16 +2027,16 @@ packages:
       '@deck.gl/react': ~9.4.0
       '@deck.gl/widgets': ~9.4.0
 
-  '@spatialdata/react@0.13.2':
-    resolution: {integrity: sha512-tp5zdvsyB/SlBViQZmsu2GCE/lj4SqfEO3goGFm1Zmy7AS1LnE82mQJXbAqbEowJuGhdWL1tDUzo8OFpM28Zkg==}
+  '@spatialdata/react@0.15.1':
+    resolution: {integrity: sha512-S5pzsNLiQ6FGLit5AVThkDwv6Y+6h7YTv5/cMvmsXTVNILPMir5CT5QbN3L9T9V/hdLgRBtSQEdZruos3sN9bQ==}
     peerDependencies:
       anndata.js: ^0.0.2
       react: '>=18 <20'
       react-dom: '>=18 <20'
       zarrita: ^0.7.1
 
-  '@spatialdata/vis@0.13.2':
-    resolution: {integrity: sha512-vKtN/XZFVV02xinYd8GZD27MGDZYEF0Wkkj6Vz2NQ5UKbCJJU1SZ3ZQVuImf4l9H+Scqa9ECteac9F6VY+WWwA==}
+  '@spatialdata/vis@0.15.1':
+    resolution: {integrity: sha512-ggcb/69X4nPRafPr/yQBVCsoPZQnPObq1nxlkLuvjBAAW6j6QWapHBZzb5cDOhntzN5cAXa5M2Ap1c68gb7MAQ==}
     peerDependencies:
       '@deck.gl/core': ~9.4.0
       '@deck.gl/geo-layers': ~9.4.0
@@ -4903,8 +4903,8 @@ packages:
     resolution: {integrity: sha512-XrBh9ZiQK5mJVRxZBAvD6LwRyAYrK3MFtH3+onyuxFL5hFD44EC3QOmIC1FjTj6H2MMwq46/NAI+NZxLZPZgxg==}
     engines: {node: '>=14.18.0'}
 
-  zarrextra@0.7.0:
-    resolution: {integrity: sha512-ElDlzOvZexREUhILTtwrAZwmIiBWe/SqYYUOIL3H41nsyhyWN0fnF7Y4pRjq6FQYRsKMjyr1UsdXv4FK2TzzsQ==}
+  zarrextra@0.7.1:
+    resolution: {integrity: sha512-zlPaEKTLdV/vgdUVaGRu1K2psxV2zuSYuFFODErQPfi/PfFcwKbMC4DRm6k6izLJKvZEzgM87lE7uuzzrNegrg==}
 
   zarrita@0.5.1:
     resolution: {integrity: sha512-cyujP70BOl5DiXuLtM+0j9nq/pAov4SKXRYIQQOVnk2TfBg/jopX+FXLbqkq3ULOxFLB5AwkPbSp5KvZXoJrbQ==}
@@ -6694,13 +6694,13 @@ snapshots:
 
   '@shikijs/vscode-textmate@10.0.2': {}
 
-  '@spatialdata/avivatorish@0.13.2(c1160f8484b8ebaf23e6fde19edea10f)':
+  '@spatialdata/avivatorish@0.15.1(c1160f8484b8ebaf23e6fde19edea10f)':
     dependencies:
       '@hms-dbmi/viv': 0.23.0(6254d74b1fa42574c5243e1a7eb85601)
       '@math.gl/core': 4.1.0
       react: 19.2.7
       react-dom: 19.2.7(react@19.2.7)
-      zarrextra: 0.7.0
+      zarrextra: 0.7.1
       zustand: 5.0.14(@types/react@19.2.17)(react@19.2.7)(use-sync-external-store@1.6.0(react@19.2.7))
     transitivePeerDependencies:
       - '@deck.gl/core'
@@ -6717,7 +6717,7 @@ snapshots:
       - immer
       - use-sync-external-store
 
-  '@spatialdata/core@0.13.2':
+  '@spatialdata/core@0.15.1':
     dependencies:
       '@math.gl/core': 4.1.0
       '@zarrita/storage': 0.2.0
@@ -6725,11 +6725,11 @@ snapshots:
       apache-arrow: 21.2.0
       earcut: 3.2.3
       ol: 10.10.0
-      zarrextra: 0.7.0
+      zarrextra: 0.7.1
       zarrita: 0.7.5
       zod: 4.4.3
 
-  '@spatialdata/layers@0.13.2(05d8576f3bb9ff62594ce6c80634cf18)':
+  '@spatialdata/layers@0.15.1(05d8576f3bb9ff62594ce6c80634cf18)':
     dependencies:
       '@deck.gl/core': 9.4.0(@luma.gl/webgpu@9.4.2(@luma.gl/core@9.4.2)(@luma.gl/shadertools@9.4.2(@luma.gl/core@9.4.2)))
       '@deck.gl/geo-layers': 9.4.0(d007641573d363ae09eb2476186b2756)
@@ -6740,7 +6740,7 @@ snapshots:
       '@luma.gl/core': 9.4.2
       '@luma.gl/engine': 9.4.2(@luma.gl/core@9.4.2)(@luma.gl/shadertools@9.4.2(@luma.gl/core@9.4.2))
       '@math.gl/core': 4.1.0
-      '@spatialdata/core': 0.13.2
+      '@spatialdata/core': 0.15.1
       zod: 4.4.3
     transitivePeerDependencies:
       - '@luma.gl/constants'
@@ -6748,15 +6748,15 @@ snapshots:
       - '@luma.gl/webgl'
       - react
 
-  '@spatialdata/react@0.13.2(anndata.js@0.0.2)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)(zarrita@0.7.5)':
+  '@spatialdata/react@0.15.1(anndata.js@0.0.2)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)(zarrita@0.7.5)':
     dependencies:
-      '@spatialdata/core': 0.13.2
+      '@spatialdata/core': 0.15.1
       anndata.js: 0.0.2
       react: 19.2.7
       react-dom: 19.2.7(react@19.2.7)
       zarrita: 0.7.5
 
-  '@spatialdata/vis@0.13.2(869198cce95f59f005a7765a34fe6612)':
+  '@spatialdata/vis@0.15.1(869198cce95f59f005a7765a34fe6612)':
     dependencies:
       '@deck.gl/core': 9.4.0(@luma.gl/webgpu@9.4.2(@luma.gl/core@9.4.2)(@luma.gl/shadertools@9.4.2(@luma.gl/core@9.4.2)))
       '@deck.gl/geo-layers': 9.4.0(d007641573d363ae09eb2476186b2756)
@@ -6767,10 +6767,10 @@ snapshots:
       '@luma.gl/core': 9.4.2
       '@luma.gl/webgpu': 9.4.2(@luma.gl/core@9.4.2)(@luma.gl/shadertools@9.4.2(@luma.gl/core@9.4.2))
       '@math.gl/core': 4.1.0
-      '@spatialdata/avivatorish': 0.13.2(c1160f8484b8ebaf23e6fde19edea10f)
-      '@spatialdata/core': 0.13.2
-      '@spatialdata/layers': 0.13.2(05d8576f3bb9ff62594ce6c80634cf18)
-      '@spatialdata/react': 0.13.2(anndata.js@0.0.2)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)(zarrita@0.7.5)
+      '@spatialdata/avivatorish': 0.15.1(c1160f8484b8ebaf23e6fde19edea10f)
+      '@spatialdata/core': 0.15.1
+      '@spatialdata/layers': 0.15.1(05d8576f3bb9ff62594ce6c80634cf18)
+      '@spatialdata/react': 0.15.1(anndata.js@0.0.2)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)(zarrita@0.7.5)
       '@tanstack/react-virtual': 3.14.13(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
       '@uidotdev/usehooks': 2.4.1(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
       '@uiw/react-json-view': 2.0.0-alpha.43(@babel/runtime@7.29.7)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
@@ -6779,7 +6779,7 @@ snapshots:
       fast-deep-equal: 3.1.3
       react: 19.2.7
       react-dom: 19.2.7(react@19.2.7)
-      zarrextra: 0.7.0
+      zarrextra: 0.7.1
       zarrita: 0.7.5
       zustand: 5.0.14(@types/react@19.2.17)(react@19.2.7)(use-sync-external-store@1.6.0(react@19.2.7))
     transitivePeerDependencies:
@@ -10624,7 +10624,7 @@ snapshots:
       '@yuku-toolchain/types': 0.19.0
       yuku-core: 0.19.0
 
-  zarrextra@0.7.0:
+  zarrextra@0.7.1:
     dependencies:
       unzipit: 2.1.1
       zarrita: 0.7.5
