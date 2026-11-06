@@ -83,14 +83,16 @@ Bin `[0,10)` is 2–3× worse in every cell, because a small annulus spans fewer
 
 | domain        | h    | exact-pixel                | centre count               |
 | ------------- | ---- | -------------------------- | -------------------------- |
-| square @ 30°  | 1 µm | 0.9999 / 1.0002 / 1.0001   | 0.9998 / 1.0002 / 1.0001   |
-| square @ 30°  | 4 µm | 1.0006 / 1.0006 / 1.0008   | 1.0006 / 1.0013 / 1.0007   |
-| disk R = 250  | 1 µm | 0.9993 / 1.0010 / 1.0001   | 0.9992 / 1.0011 / 1.0001   |
-| disk R = 250  | 4 µm | 1.0032 / 1.0019 / 1.0009   | 1.0034 / 1.0018 / 1.0016   |
+| square @ 30°  | 1 µm | 0.9999 / 1.0002 / 1.0001   | 0.9999 / 1.0003 / 1.0000   |
+| square @ 30°  | 4 µm | 1.0006 / 1.0006 / 1.0008   | 1.0023 / 1.0019 / 1.0013   |
+| disk R = 250  | 1 µm | 0.9993 / 1.0010 / 1.0001   | 0.9992 / 1.0010 / 1.0001   |
+| disk R = 250  | 4 µm | 1.0032 / 1.0019 / 1.0009   | 1.0036 / 1.0023 / 1.0024   |
 
-In `g` the two integrations are indistinguishable, because source 2 averages out. Exact-pixel is
-still the default: it costs almost nothing more (see Cost) and it keeps per-anchor quantities such as
-weights, TCM and highlights honest.
+At 1 µm the two integrations are indistinguishable in `g`, because source 2 averages out. At 4 µm
+centre counting reads up to 0.24% high, as much as three times exact-pixel's error. That is because it
+also miscounts disks the boundary never reaches (re-measured 2026-11-06, with no interior shortcut
+for centre counting). Exact-pixel is the default: it costs almost nothing more (see Cost) and it
+keeps per-anchor quantities such as weights, TCM and highlights honest.
 
 **4. A mis-drawn boundary.** Cells are CSR in the true W. The estimator runs exactly on a W grown
 (+) or shrunk (−) by δ:

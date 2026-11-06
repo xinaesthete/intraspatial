@@ -269,7 +269,10 @@ function ensureBuf(device: GPUDevice, key: string, floats: number, usage: number
   const bufPool = bufPools(device);
   const got = bufPool.get(key);
   if (got && got.cap >= floats) return got.buf;
-  const cap = Math.max(floats, (got?.cap ?? 0) * 2, 4);
+  // Grow by doubling, but never past the device's largest buffer: an over-size createBuffer gives
+  // an invalid buffer and every dispatch that binds it silently does nothing.
+  const largest = Math.floor(device.limits.maxBufferSize / 4);
+  const cap = Math.max(floats, Math.min((got?.cap ?? 0) * 2, largest), 4);
   const buf = device.createBuffer({ label: `gramMatrix:${key}`, size: cap * 4, usage });
   bufPool.set(key, { buf, cap });
   return buf;
@@ -418,6 +421,13 @@ export async function gramMatrixGpu(
   const P = w * h;
   const pixelArea = roiArea / P;
 
+  // Checked before packing: the packed array is as large as the binding, so packing first would
+  // spend that memory only to throw.
+  const nPoints = Math.max(
+    channels.reduce((n, c) => n + c.xs.length, 0),
+    1,
+  );
+  checkBindingSize(device, `gramMatrixGpu: ${nPoints} points over ${K} channels`, 3 * nPoints * 4);
   const { data, offsets, mass, apronMass } = packChannels(channels, p);
   const precision: RasterPrecision = p.precision ?? "f32";
   const half = precision === "f16";
@@ -434,8 +444,8 @@ export async function gramMatrixGpu(
   // Gram matrix, or zeros — see `sized`/`checkBindingSize` in `../device.ts`.
   //
   // `pts` is three floats per point per channel, and an expression channel carries every cell, so
-  // it crosses 128 MiB at about 11M cell-channels: 397k Xenium cells × 32 genes is 152 MB.
-  checkBindingSize(device, `gramMatrixGpu: ${data.length / 3} points over ${K} channels`, data.length * 4);
+  // it crosses 128 MiB at about 11M cell-channels: 397k Xenium cells × 32 genes is 152 MB. It is
+  // checked above, before packing.
   // `rasters`: K channels of a w*h f32 raster crosses 128 MiB at 49 channels of 827x827, and
   // because the pool doubles on growth a preceding call at 585x585 is already enough to push the
   // CAPACITY over. Both the channel count and the raster size come from the caller, so nothing

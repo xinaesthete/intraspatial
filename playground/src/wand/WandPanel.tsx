@@ -38,6 +38,8 @@ interface Props {
   readonly modes: CoLocationModes | undefined;
   /** The broad scale's radius and map, once computed, when judging at two scales. */
   readonly broad?: { radius: number; raster: { width: number; height: number } } | undefined;
+  /** Why the broad scale could not be computed, shown in place of "computing…". */
+  readonly broadError?: string | undefined;
   /** Whether the page can compute a broader scale; without it the option is hidden. */
   readonly twoScale?: boolean;
   /** What the map's channels mix, for the heading: "genes", "cells". */
@@ -59,6 +61,7 @@ export function BoundaryPanel({
   channels,
   modes,
   broad,
+  broadError,
   patch,
   brushR,
   mask,
@@ -149,7 +152,12 @@ export function BoundaryPanel({
           <label className="check">
             <input type="checkbox" checked={s.twoScale} onChange={(e) => set("twoScale", e.target.checked)} />
             Judge the patch at a broader neighbourhood too
-            {s.twoScale && (broad ? ` (r ${broad.radius} µm*, map ${broad.raster.width}×${broad.raster.height})` : " (computing…)")}
+            {s.twoScale &&
+              (broad
+                ? ` (r ${broad.radius} µm*, map ${broad.raster.width}×${broad.raster.height})`
+                : broadError
+                  ? ` (failed: ${broadError})`
+                  : " (computing…)")}
           </label>
         )}
         {twoScale && s.twoScale && (

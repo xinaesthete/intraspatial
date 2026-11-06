@@ -32,6 +32,7 @@ interface Measured {
   readonly mask: WorldMask;
   readonly channels: readonly ChannelCloud[];
   readonly rMax: number;
+  readonly window: readonly [number, number, number, number];
   readonly inMask: PcfMatrixBinnedResult;
   readonly inWindow: PcfMatrixBinnedResult;
   readonly area: number;
@@ -60,7 +61,8 @@ export function MaskStats({ channels, mask, window, rMax, umPerUnit, unit }: Pro
 
   const weighted = channels?.some((c) => c.weights);
   const ready = channels && !weighted && mask && mask.keys.size > 0 && window && rMax > 0;
-  const stale = measured && (measured.mask !== mask || measured.channels !== channels || measured.rMax !== rMax);
+  const sameWindow = (w: readonly number[] | undefined) => !!w && !!measured && w.every((v, i) => v === measured.window[i]);
+  const stale = measured && (measured.mask !== mask || measured.channels !== channels || measured.rMax !== rMax || !sameWindow(window));
 
   const measure = () => {
     if (!ready) return;
@@ -75,7 +77,7 @@ export function MaskStats({ channels, mask, window, rMax, umPerUnit, unit }: Pro
         const common = { bbox: window, rMax, nBins: BINS, nTypes: channels.length, edgeCorrected: true };
         const inMask = crossPCFMatrixBinned(cells, { ...common, domain });
         const inWindow = crossPCFMatrixBinned(cells, { ...common, domain: rectDomain(window) });
-        setMeasured({ mask, channels, rMax, inMask, inWindow, area: domainArea(domain), ms: performance.now() - t0 });
+        setMeasured({ mask, channels, rMax, window, inMask, inWindow, area: domainArea(domain), ms: performance.now() - t0 });
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));
       } finally {
@@ -88,8 +90,10 @@ export function MaskStats({ channels, mask, window, rMax, umPerUnit, unit }: Pro
   const K = m?.channels.length ?? 0;
   const at = (res: PcfMatrixBinnedResult, a: number, b: number) => res.g[a * K * BINS + b * BINS + bin] ?? 0;
   const pairsAt = (res: PcfMatrixBinnedResult, a: number, b: number) => res.pairs[a * K * BINS + b * BINS + bin] ?? 0;
-  // A pair with no cells of either type in the mask has no g, not g = 0.
-  const empty = (a: number, b: number) => !m?.inMask.counts[a] || !m.inMask.counts[b];
+  // A pair with no cells of either type in the mask has no g, not g = 0. Nor does a type with one
+  // cell against itself: self-pairs are excluded, so it has no possible pair. A populated pair with
+  // no neighbours in this bin is a real g = 0 and stays.
+  const empty = (a: number, b: number) => !m?.inMask.counts[a] || !m.inMask.counts[b] || (a === b && m.inMask.counts[a]! < 2);
   const values = m
     ? Float64Array.from({ length: K * K }, (_, i) =>
         empty(Math.floor(i / K), i % K) ? Number.NaN : at(m.inMask, Math.floor(i / K), i % K),
@@ -112,7 +116,7 @@ export function MaskStats({ channels, mask, window, rMax, umPerUnit, unit }: Pro
             : !mask || mask.keys.size === 0
               ? "paint a mask with the wand or brush first"
               : stale
-                ? "the mask or channels changed — measure again"
+                ? "the mask, channels or window changed — measure again"
                 : ""}
           {error && <span className="error"> {error}</span>}
         </span>
@@ -124,8 +128,8 @@ export function MaskStats({ channels, mask, window, rMax, umPerUnit, unit }: Pro
             <input type="range" min={0} max={BINS - 1} value={bin} onChange={(e) => setBin(Number(e.target.value))} />
           </label>
           <p className="hint">
-            Blank: a type with no cells in the mask. {inside} cells in the mask ({m.inMask.outside} outside) · area{" "}
-            {(m.area * umPerUnit * umPerUnit).toPrecision(3)} {unit}² · {m.ms.toFixed(0)} ms
+            Blank: a type with no cells in the mask, or one cell against itself. {inside} cells in the mask ({m.inMask.outside} outside) ·
+            area {(m.area * umPerUnit * umPerUnit).toPrecision(3)} {unit}² · {m.ms.toFixed(0)} ms
           </p>
           <MatrixView
             labels={m.channels.map((c) => c.label)}
@@ -137,6 +141,7 @@ export function MaskStats({ channels, mask, window, rMax, umPerUnit, unit }: Pro
               const nA = m.inMask.counts[a] ?? 0;
               const nB = m.inMask.counts[b] ?? 0;
               if (!nA || !nB) return `${A} → ${B}: no ${!nA ? A : B} cells in the mask`;
+              if (a === b && nA < 2) return `${A} → ${A}: one cell in the mask, so no pairs`;
               const gi = at(m.inMask, a, b);
               const gw = at(m.inWindow, a, b);
               return `${A} → ${B}: g = ${gi.toFixed(2)} in the mask (${pairsAt(m.inMask, a, b)} pairs) · ${gw.toFixed(2)} over the window (${pairsAt(m.inWindow, a, b)} pairs)`;

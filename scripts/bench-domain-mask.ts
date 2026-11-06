@@ -271,13 +271,16 @@ function exp2() {
         const denom = As.length * (Bs.length / area);
         return w.map((v) => v / denom);
       };
-      // Interior fast path: >h from ∂W the mask agrees with W, so a disk >RMAX+2h inside is uncut.
+      // Interior fast path for exact-pixel only: >h from ∂W the mask agrees with W, so a disk
+      // >RMAX+2h inside is uncut and its exact pixel area is the full disk.
       const full = Float64Array.from(R_EDGES.map((r) => Math.PI * r * r));
       const exactAreas = (x: number, y: number) => Float64Array.from(R_EDGES.map((r) => d.diskArea(x, y, r)));
       const results = [
         run(A, B, d.area, exactAreas),
         run(Am, Bm, maskArea, (x, y) => (d.dist(x, y) > RMAX + 2 * h ? full : maskDiskAreas(m, x, y).exact)),
-        run(Am, Bm, maskArea, (x, y) => (d.dist(x, y) > RMAX + 2 * h ? full : maskDiskAreas(m, x, y).centre)),
+        // No interior shortcut here: centre counting has a lattice error even on an uncut disk, and
+        // replacing it with the exact area would benchmark a hybrid, not this model.
+        run(Am, Bm, maskArea, (x, y) => maskDiskAreas(m, x, y).centre),
         run(A, B, bboxArea, (x, y) => Float64Array.from(R_EDGES.map((r) => diskRectArea(x, y, r, bx0, by0, bx1, by1)))),
         run(A, B, d.area, (x, y) => Float64Array.from(R_EDGES.map((r) => diskRectArea(x, y, r, bx0, by0, bx1, by1)))),
         run(A, B, d.area, () => Float64Array.from(R_EDGES.map((r) => Math.PI * r * r))),

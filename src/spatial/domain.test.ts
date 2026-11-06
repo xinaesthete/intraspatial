@@ -302,6 +302,9 @@ describe("crossPCF / crossPCFMatrixBinned with a domain", () => {
     const mem = crossPCFBinMembership(a, b, p);
     const litOutside = a.xs.some((x, i) => x >= 50 && mem.maskA[i] !== 0) || b.xs.some((x, j) => x >= 50 && mem.maskB[j] !== 0);
     expect(litOutside).toBe(false);
+    // …and does light the ones it did: a cell inside with a partner in range.
+    expect(a.xs.some((x, i) => x < 50 && mem.maskA[i] !== 0)).toBe(true);
+    expect(b.xs.some((x, j) => x < 50 && mem.maskB[j] !== 0)).toBe(true);
   });
 
   it("drops nothing and reports nothing without a domain", () => {

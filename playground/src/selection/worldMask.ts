@@ -202,6 +202,9 @@ export function smoothOutline(binary: ArrayLike<number>, width: number, height: 
 /** The mask's area in the frame's units squared. */
 export const maskArea = (mask: WorldMask): number => mask.keys.size * mask.cell * mask.cell;
 
+/** The largest raster `maskToDomain` builds: 64 MB, one byte per cell. */
+const MAX_DOMAIN_CELLS = 64e6;
+
 /**
  * The mask as a `Domain` the cross-PCF can measure inside: one pixel per grid cell over the cells'
  * bounding box, row 0 at the top. Cell `ix` covers `[ix·cell, (ix+1)·cell)`, so the raster's pixels
@@ -225,6 +228,10 @@ export function maskToDomain(mask: WorldMask): MaskDomain | undefined {
   }
   const width = ix1 - ix0 + 1;
   const height = iy1 - iy0 + 1;
+  // One byte per cell of the bounding box: strokes far apart would allocate the whole span between.
+  if (width * height > MAX_DOMAIN_CELLS) {
+    throw new Error(`the mask spans ${width}×${height} map cells, over ${MAX_DOMAIN_CELLS / 1e6}M: clear it and paint one region`);
+  }
   const data = new Uint8Array(width * height);
   for (const [ix, iy] of cells) data[(iy1 - iy) * width + (ix - ix0)] = 1;
   const c = mask.cell;

@@ -15,5 +15,5 @@ The cross-PCF can now be measured on an ROI of any shape, not only a rectangle. 
   - `maskWhere(field, keep, { derivedFrom })` thresholds any `ScalarField`-convention raster (a density field, a mode projection) into a mask.
   - `similarityField` and `pixelZ` compute the Gram wand's "places like this one" distance on the CPU, so it can be thresholded into a mask the same way.
   - `whiteningMatrix` and `standardise` now live in `intraspatial/spatial` too; `gramTerrain` still exports them.
-- Masks built from the data carry `derivedFrom`, and `crossPCFMatrixBinned` returns `confounded`, which flags pairs whose two types both built the mask. Measured on independently clustered types, such pairs read g 14–23% low against a truth of 1. A mask that never saw one type of the pair leaves that pair unbiased.
+- Masks built from the data carry `derivedFrom`, and `crossPCFMatrixBinned` returns `confounded`, which flags pairs whose two types both built the mask. Measured on independently clustered types, such pairs read g 14–23% low against a truth of 1. A mask that never saw the neighbour type B leaves g_AB unbiased. One that left out only the anchor type A still read 2–4% high, and `confounded` does not flag that case.
 - `crossPCFGpu` and `crossPCFBootstrap` throw when given a `domain`. They don't support it yet, and before they would have ignored it silently.

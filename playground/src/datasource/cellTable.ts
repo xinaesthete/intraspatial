@@ -482,8 +482,11 @@ function resolveTableSpace(
  * cells land in the raster's top-left 0.2125 of each axis.
  *
  * The test is the store's own evidence, not a known pixel size: centroids covering under half the
- * raster on both axes, and a shapes or points element whose pure scale to the same system makes
- * them cover between half of it and all of it. The first such element's transform is the table's.
+ * raster on both axes, and a shapes or points element with a pure, isotropic scale to the same
+ * system that makes them cover nearly all of it (≥ 85% on both axes, ≤ 105%). The near-full rule
+ * keeps a table cropped to one corner of a big raster from borrowing an unrelated scale. The first
+ * such element's transform is the table's. This is a correction, not a requirement: a raster whose
+ * shape cannot be read leaves the placement as it was.
  */
 async function centroidsInVectorSpace(
   tree: Record<string, unknown>,
@@ -499,25 +502,39 @@ async function centroidsInVectorSpace(
   const block = (ome?.ome as Record<string, unknown> | undefined) ?? ome;
   const path = (block?.multiscales as Array<{ datasets?: Array<{ path?: string }> }> | undefined)?.[0]?.datasets?.[0]?.path;
   if (path === undefined) return space;
-  const { shape } = await leafAt((tree[kind] as Record<string, unknown>)[region], [path]).get();
+  let shape: readonly number[];
+  try {
+    shape = (await leafAt((tree[kind] as Record<string, unknown>)[region], [path]).get()).shape;
+  } catch {
+    return space;
+  }
   const W = shape[shape.length - 1] ?? 0;
   const H = shape[shape.length - 2] ?? 0;
   let maxX = 0;
   let maxY = 0;
   for (let i = 0; i < xs.length; i++) {
-    if (xs[i]! > maxX) maxX = xs[i]!;
-    if (ys[i]! > maxY) maxY = ys[i]!;
+    const x = xs[i]!;
+    const y = ys[i]!;
+    // A non-finite centroid says nothing about which space the rest are in.
+    if (!(Number.isFinite(x) && Number.isFinite(y))) continue;
+    if (x > maxX) maxX = x;
+    if (y > maxY) maxY = y;
   }
-  if (!(W > 0 && H > 0) || maxX > W / 2 || maxY > H / 2) return space;
+  if (!(W > 0 && H > 0 && maxX > 0 && maxY > 0) || maxX > W / 2 || maxY > H / 2) return space;
   for (const vector of ["shapes", "points"] as const) {
     const group = tree[vector];
     if (!group || typeof group !== "object") continue;
     for (const [name, node] of Object.entries(group as Record<string, unknown>)) {
       const got = resolveNgffXY(symbolAttrs(node, (v) => "coordinateTransformations" in v)?.coordinateTransformations, { target });
       if (!got || got.affine.b !== 0 || got.affine.c !== 0) continue;
-      const x = maxX * got.affine.a + got.affine.tx;
-      const y = maxY * got.affine.d + got.affine.ty;
-      if (x > W * 1.05 || y > H * 1.05 || (x < W / 2 && y < H / 2)) continue;
+      // resolveNgffXY falls back to the first transform when none names `target`; that one places
+      // the element in some other system, which says nothing about this table.
+      if (target !== undefined && got.system !== target) continue;
+      const { a, d } = got.affine;
+      if (!(a > 1 && Math.abs(a - d) <= 0.01 * a)) continue;
+      const x = maxX * a + got.affine.tx;
+      const y = maxY * d + got.affine.ty;
+      if (x > W * 1.05 || y > H * 1.05 || x < W * 0.85 || y < H * 0.85) continue;
       return {
         affine: got.affine,
         units: {
