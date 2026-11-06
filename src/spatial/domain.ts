@@ -12,8 +12,8 @@
 // Each term is closed form: split the edge where it crosses the circle, and every piece is either
 // wholly inside (a triangle) or wholly outside (a circular sector). Rings are oriented on entry so
 // that the sum is the even–odd region — holes and disjoint parts need no flag. Annulus k is the
-// difference of the disks at its two edges. Cost is O(edges × bins) per anchor within rMax of the
-// boundary; anchors farther in take the full-annulus fast path.
+// difference of the disks at its two edges. Only edges within rMax of an anchor need evaluating (see
+// "Only edges near the anchor cost anything"), and anchors farther in take the full-annulus fast path.
 //
 // ## The mask is clipped exactly — its only error is its staircase
 //
@@ -179,34 +179,228 @@ function diskTriangleArea(ax: number, ay: number, bx: number, by: number, r: num
   return sector(ax, ay, px, py) + (px * qy - py * qx) / 2 + sector(qx, qy, bx, by);
 }
 
-/** `|disk(c, r) ∩ P|`, exact. */
-function diskPolygonArea(d: PolygonDomain, cx: number, cy: number, r: number): number {
-  let s = 0;
-  for (const f of d.rings) {
-    const n = f.length;
-    for (let i = 0, j = n - 2; i < n; j = i, i += 2) s += diskTriangleArea(f[j]! - cx, f[j + 1]! - cy, f[i]! - cx, f[i + 1]! - cy, r);
-  }
-  return Math.max(0, s);
+// ## Only edges near the anchor cost anything
+//
+// An edge wholly outside the circle contributes its sector, r²·θ/2, and the θs of every edge sum to
+// 2π × the winding number, which the orientation above makes 1 inside the region and 0 outside. So
+//   |disk(c, r) ∩ P| = π r² · [c ∈ P] + Σ_{edges within r of c} (term − r²·θ/2),
+// and a grid of edges finds the few within rMax. Containment uses horizontal bands of edges.
+
+interface EdgeIndex {
+  /** Per edge: a then b, `[ax, ay, bx, by]`. */
+  readonly e: Float64Array;
+  readonly minX: number;
+  readonly minY: number;
+  readonly cell: number;
+  readonly nx: number;
+  readonly ny: number;
+  /** CSR buckets: edges of grid cell `c` are `ids[start[c] .. start[c + 1])`. */
+  readonly start: Uint32Array;
+  readonly ids: Uint32Array;
+  /** Per edge, the last query that visited it, to visit each once. */
+  readonly seen: Uint32Array;
+  query: number;
 }
 
-/** Distance from `(x, y)` to the nearest polygon edge. */
-function boundaryDistance(d: PolygonDomain, x: number, y: number): number {
-  let best = Infinity;
+const MAX_CELLS_PER_AXIS = 512;
+
+function edgesOf(d: PolygonDomain): Float64Array {
+  let n = 0;
+  for (const f of d.rings) n += f.length / 2;
+  const e = new Float64Array(4 * n);
+  let k = 0;
   for (const f of d.rings) {
-    const n = f.length;
-    for (let i = 0, j = n - 2; i < n; j = i, i += 2) {
-      const ax = f[j]!;
-      const ay = f[j + 1]!;
-      const dx = f[i]! - ax;
-      const dy = f[i + 1]! - ay;
-      const L = dx * dx + dy * dy;
-      const t = L > 0 ? Math.min(1, Math.max(0, ((x - ax) * dx + (y - ay) * dy) / L)) : 0;
-      const ex = ax + t * dx - x;
-      const ey = ay + t * dy - y;
-      best = Math.min(best, ex * ex + ey * ey);
+    const m = f.length;
+    for (let i = 0, j = m - 2; i < m; j = i, i += 2) {
+      e[k++] = f[j]!;
+      e[k++] = f[j + 1]!;
+      e[k++] = f[i]!;
+      e[k++] = f[i + 1]!;
     }
   }
-  return Math.sqrt(best);
+  return e;
+}
+
+/** Edges bucketed by the grid cells their bounding boxes touch. Rows and columns overlap so a
+ *  query of radius ≤ cell visits at most 3×3 cells. */
+function buildEdgeIndex(d: PolygonDomain, cellWanted: number): EdgeIndex {
+  const e = edgesOf(d);
+  const [minX, minY, maxX, maxY] = d.bbox;
+  const cell = Math.max(cellWanted, (maxX - minX) / MAX_CELLS_PER_AXIS, (maxY - minY) / MAX_CELLS_PER_AXIS, 1e-9);
+  const nx = Math.floor((maxX - minX) / cell) + 1;
+  const ny = Math.floor((maxY - minY) / cell) + 1;
+  const nE = e.length / 4;
+  const range = (k: number) => {
+    const i0 = Math.floor((Math.min(e[4 * k]!, e[4 * k + 2]!) - minX) / cell);
+    const i1 = Math.floor((Math.max(e[4 * k]!, e[4 * k + 2]!) - minX) / cell);
+    const j0 = Math.floor((Math.min(e[4 * k + 1]!, e[4 * k + 3]!) - minY) / cell);
+    const j1 = Math.floor((Math.max(e[4 * k + 1]!, e[4 * k + 3]!) - minY) / cell);
+    return [i0, i1, j0, j1] as const;
+  };
+  const count = new Uint32Array(nx * ny + 1);
+  for (let k = 0; k < nE; k++) {
+    const [i0, i1, j0, j1] = range(k);
+    for (let j = j0; j <= j1; j++) for (let i = i0; i <= i1; i++) count[j * nx + i + 1]!++;
+  }
+  for (let c = 0; c < nx * ny; c++) count[c + 1]! += count[c]!;
+  const start = count.slice();
+  const fill = count.slice(0, nx * ny);
+  const ids = new Uint32Array(start[nx * ny]!);
+  for (let k = 0; k < nE; k++) {
+    const [i0, i1, j0, j1] = range(k);
+    for (let j = j0; j <= j1; j++) for (let i = i0; i <= i1; i++) ids[fill[j * nx + i]!++] = k;
+  }
+  return { e, minX, minY, cell, nx, ny, start, ids, seen: new Uint32Array(nE), query: 0 };
+}
+
+/** Calls `visit(k)` once for every edge whose bucket meets the square of half-side `r` round `(x, y)`. */
+function nearEdges(ix: EdgeIndex, x: number, y: number, r: number, visit: (k: number) => void): void {
+  const i0 = Math.max(0, Math.floor((x - r - ix.minX) / ix.cell));
+  const i1 = Math.min(ix.nx - 1, Math.floor((x + r - ix.minX) / ix.cell));
+  const j0 = Math.max(0, Math.floor((y - r - ix.minY) / ix.cell));
+  const j1 = Math.min(ix.ny - 1, Math.floor((y + r - ix.minY) / ix.cell));
+  if (i0 > i1 || j0 > j1) return;
+  const q = ++ix.query;
+  for (let j = j0; j <= j1; j++) {
+    for (let i = i0; i <= i1; i++) {
+      const c = j * ix.nx + i;
+      for (let t = ix.start[c]!; t < ix.start[c + 1]!; t++) {
+        const k = ix.ids[t]!;
+        if (ix.seen[k] === q) continue;
+        ix.seen[k] = q;
+        visit(k);
+      }
+    }
+  }
+}
+
+/** Horizontal bands of edges for the crossing test: a point's crossings come only from its band. */
+interface BandIndex {
+  readonly e: Float64Array;
+  readonly minY: number;
+  readonly band: number;
+  readonly start: Uint32Array;
+  readonly ids: Uint32Array;
+}
+
+function buildBandIndex(d: PolygonDomain): BandIndex {
+  const e = edgesOf(d);
+  const nE = e.length / 4;
+  const [, minY, , maxY] = d.bbox;
+  const nb = Math.max(1, Math.min(4096, Math.ceil(Math.sqrt(nE))));
+  const band = Math.max((maxY - minY) / nb, 1e-12);
+  const span = (k: number) => {
+    const lo = Math.max(0, Math.floor((Math.min(e[4 * k + 1]!, e[4 * k + 3]!) - minY) / band));
+    const hi = Math.min(nb - 1, Math.floor((Math.max(e[4 * k + 1]!, e[4 * k + 3]!) - minY) / band));
+    return [lo, hi] as const;
+  };
+  const count = new Uint32Array(nb + 1);
+  for (let k = 0; k < nE; k++) {
+    const [lo, hi] = span(k);
+    for (let b = lo; b <= hi; b++) count[b + 1]!++;
+  }
+  for (let b = 0; b < nb; b++) count[b + 1]! += count[b]!;
+  const fill = count.slice(0, nb);
+  const ids = new Uint32Array(count[nb]!);
+  for (let k = 0; k < nE; k++) {
+    const [lo, hi] = span(k);
+    for (let b = lo; b <= hi; b++) ids[fill[b]!++] = k;
+  }
+  return { e, minY, band, start: count, ids };
+}
+
+const bandIndices = new WeakMap<PolygonDomain, BandIndex>();
+
+function polygonContains(d: PolygonDomain, x: number, y: number): boolean {
+  let ix = bandIndices.get(d);
+  if (!ix) {
+    ix = buildBandIndex(d);
+    bandIndices.set(d, ix);
+  }
+  const nb = ix.start.length - 1;
+  const b = Math.min(nb - 1, Math.floor((y - ix.minY) / ix.band));
+  if (b < 0) return false;
+  const e = ix.e;
+  let inside = false;
+  for (let t = ix.start[b]!; t < ix.start[b + 1]!; t++) {
+    const k = 4 * ix.ids[t]!;
+    const xj = e[k]!;
+    const yj = e[k + 1]!;
+    const xi = e[k + 2]!;
+    const yi = e[k + 3]!;
+    if (yi > y !== yj > y && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) inside = !inside;
+  }
+  return inside;
+}
+
+/** Edge grids per domain, keyed by cell size: a query radius sets the cell. */
+const edgeIndices = new WeakMap<PolygonDomain, Map<number, EdgeIndex>>();
+
+function edgeIndex(d: PolygonDomain, cell: number): EdgeIndex {
+  let byCell = edgeIndices.get(d);
+  if (!byCell) {
+    byCell = new Map();
+    edgeIndices.set(d, byCell);
+  }
+  let ix = byCell.get(cell);
+  if (!ix) {
+    ix = buildEdgeIndex(d, cell);
+    byCell.set(cell, ix);
+  }
+  return ix;
+}
+
+function segmentDistance2(e: Float64Array, k: number, x: number, y: number): number {
+  const ax = e[4 * k]!;
+  const ay = e[4 * k + 1]!;
+  const dx = e[4 * k + 2]! - ax;
+  const dy = e[4 * k + 3]! - ay;
+  const L = dx * dx + dy * dy;
+  const t = L > 0 ? Math.min(1, Math.max(0, ((x - ax) * dx + (y - ay) * dy) / L)) : 0;
+  const ex = ax + t * dx - x;
+  const ey = ay + t * dy - y;
+  return ex * ex + ey * ey;
+}
+
+/** Annulus areas `[k·dr, (k+1)·dr)` of a polygon, exact. */
+function polygonAnnulusAreasInto(out: Float64Array, d: PolygonDomain, cx: number, cy: number, dr: number, nBins: number): void {
+  const rMax = nBins * dr;
+  const ix = edgeIndex(d, rMax);
+  const e = ix.e;
+  const near: number[] = [];
+  nearEdges(ix, cx, cy, rMax, (k) => {
+    if (segmentDistance2(e, k, cx, cy) < rMax * rMax) near.push(k);
+  });
+  const inside = polygonContains(d, cx, cy) ? 1 : 0;
+  let prev = 0;
+  for (let b = 0; b < nBins; b++) {
+    const r = (b + 1) * dr;
+    let s = Math.PI * r * r * inside;
+    for (const k of near) {
+      const ax = e[4 * k]! - cx;
+      const ay = e[4 * k + 1]! - cy;
+      const bx = e[4 * k + 2]! - cx;
+      const by = e[4 * k + 3]! - cy;
+      s += diskTriangleArea(ax, ay, bx, by, r) - (r * r * Math.atan2(ax * by - ay * bx, ax * bx + ay * by)) / 2;
+    }
+    const a = Math.max(0, s);
+    out[b] = Math.max(0, a - prev);
+    prev = a;
+  }
+}
+
+/** Whether the disk of `rMax` round `(x, y)` lies wholly inside the polygon. */
+function polygonInterior(d: PolygonDomain, rMax: number): (x: number, y: number) => boolean {
+  const ix = edgeIndex(d, rMax);
+  const r2 = rMax * rMax;
+  return (x, y) => {
+    if (!polygonContains(d, x, y)) return false;
+    let clear = true;
+    nearEdges(ix, x, y, rMax, (k) => {
+      if (clear && segmentDistance2(ix.e, k, x, y) < r2) clear = false;
+    });
+    return clear;
+  };
 }
 
 export function rectDomain(bbox: Box): RectDomain {
@@ -267,11 +461,7 @@ export function domainContains(d: Domain, x: number, y: number): boolean {
   const [minX, minY, maxX, maxY] = d.bbox;
   if (!(x >= minX && x <= maxX && y >= minY && y <= maxY)) return false;
   if (d.kind === "rect") return true;
-  if (d.kind === "polygon") {
-    let inside = false;
-    for (const f of d.rings) if (inRing(f, x, y)) inside = !inside;
-    return inside;
-  }
+  if (d.kind === "polygon") return polygonContains(d, x, y);
   const i = Math.min(d.width - 1, Math.floor(((x - minX) / (maxX - minX)) * d.width));
   const j = Math.min(d.height - 1, Math.floor(((maxY - y) / (maxY - minY)) * d.height));
   return d.data[j * d.width + i] !== 0;
@@ -288,12 +478,7 @@ export function domainAnnulusAreasInto(out: Float64Array, d: Domain, cx: number,
     return;
   }
   if (d.kind === "polygon") {
-    let prev = 0;
-    for (let k = 0; k < nBins; k++) {
-      const a = diskPolygonArea(d, cx, cy, (k + 1) * dr);
-      out[k] = Math.max(0, a - prev);
-      prev = a;
-    }
+    polygonAnnulusAreasInto(out, d, cx, cy, dr, nBins);
     return;
   }
   out.fill(0, 0, nBins);
@@ -372,7 +557,7 @@ export function inverseAnnulusAreas(d: Domain, rMax: number, nBins: number): (x:
 function interiorTest(d: Domain, rMax: number): (x: number, y: number) => boolean {
   const [minX, minY, maxX, maxY] = d.bbox;
   if (d.kind === "rect") return (x, y) => x - minX >= rMax && maxX - x >= rMax && y - minY >= rMax && maxY - y >= rMax;
-  if (d.kind === "polygon") return (x, y) => domainContains(d, x, y) && boundaryDistance(d, x, y) >= rMax;
+  if (d.kind === "polygon") return polygonInterior(d, rMax);
   const w = d.width;
   const h = d.height;
   const pw = (maxX - minX) / w;

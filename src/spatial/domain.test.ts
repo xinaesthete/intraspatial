@@ -454,6 +454,53 @@ describe("polygonDomain", () => {
     }
   });
 
+  it("finds only the near edges on a many-vertex gate, and agrees with a fine mask of it", () => {
+    // A lasso-like 300-vertex outline with a 120-vertex hole: the edge grid and the crossing bands
+    // decide which edges each anchor sees, so compare against a raster that sees every pixel.
+    const wobbly = (n: number, R: number, cx: number, cy: number): [number, number][] =>
+      Array.from({ length: n }, (_, i) => {
+        const t = (2 * Math.PI * i) / n;
+        const r = R * (1 + 0.15 * Math.sin(3 * t + 1) + 0.07 * Math.sin(11 * t + 2));
+        return [cx + r * Math.cos(t), cy + r * Math.sin(t)];
+      });
+    const outer = wobbly(300, 100, 0, 0);
+    const hole = wobbly(120, 25, 20, -10);
+    const d = polygonDomain([outer, hole]);
+    const naive = (x: number, y: number) => {
+      let inside = false;
+      for (const ring of [outer, hole]) {
+        for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+          const [xi, yi] = ring[i]!;
+          const [xj, yj] = ring[j]!;
+          if (yi > y !== yj > y && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) inside = !inside;
+        }
+      }
+      return inside;
+    };
+    const mask = rasterise([-130, -130, 130, 130], 2600, 2600, naive);
+    const rnd = mulberry32(0x6a7e);
+    for (let t = 0; t < 400; t++) {
+      const x = (rnd() * 2 - 1) * 125;
+      const y = (rnd() * 2 - 1) * 125;
+      expect(domainContains(d, x, y)).toBe(naive(x, y));
+    }
+    let worst = 0;
+    for (let t = 0; t < 40; t++) {
+      // Anchors near the boundary, where clipping matters: on the outline, nudged in or out.
+      const [bx, by] = outer[Math.floor(rnd() * outer.length)]!;
+      const x = bx + (rnd() * 2 - 1) * 8;
+      const y = by + (rnd() * 2 - 1) * 8;
+      const a = areas(d, x, y, 4, 5);
+      const m = areas(mask, x, y, 4, 5);
+      for (let k = 0; k < 5; k++) {
+        const full = Math.PI * ((k + 1) ** 2 - k ** 2) * 16;
+        worst = Math.max(worst, Math.abs(a[k]! - m[k]!) / full);
+      }
+    }
+    // 0.1 µm pixels: the staircase is well under 1% of a full annulus.
+    expect(worst).toBeLessThan(0.01);
+  });
+
   it("restores g ≈ 1 on a round ROI given as a 96-gon, with no staircase", () => {
     const ring: [number, number][] = Array.from({ length: 96 }, (_, i) => [
       100 * Math.cos((2 * Math.PI * i) / 96),

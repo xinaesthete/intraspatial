@@ -1,15 +1,16 @@
 # Statistics on arbitrarily shaped domains
 
-Status: **design note** (2026-10-27). **Slice 1 is built** (2026-10-28): `src/spatial/domain.ts`,
+Status: **design note** (2026-10-27). **Slices 1 and 2 are built**: `src/spatial/domain.ts`,
 threaded through `crossPCF`, `crossPCFMatrixBinned` and `crossPCFBinMembership`. So are masks taken
 from density fields and the Gram wand, with their selection bias measured (see "Masks from the
-data"). Slices 2–4 are not. Every error number below comes from `pnpm bench:domain-mask --all`
+data"), and exact polygon domains (2026-11-06). Slices 3–4 are not. Every error number below comes from `pnpm bench:domain-mask --all`
 (`scripts/bench-domain-mask.ts`).
 
 ## Decision
 
-- **A domain is a binary raster mask in world placement.** The rectangle stays as the analytic
-  special case it already is (`edgeCorrection.ts`). Polygons are rasterised, not clipped exactly.
+- **A domain is a rectangle, a polygon or a binary raster mask, in world placement.** The rectangle
+  is the analytic case `edgeCorrection.ts` already handled. A polygon is clipped exactly. A mask is
+  for shapes that have no outline: tissue masks, density thresholds, the wand.
 - **The clipped annulus area is computed exactly on the mask**, as
   `A_k(x) = Σ_{mask pixels p} |annulus_k(x) ∩ p|`. Each term is an existing `diskRectArea` call. The
   integration therefore adds no error. What is left is how well the mask's staircase represents the
@@ -17,9 +18,10 @@ data"). Slices 2–4 are not. Every error number below comes from `pnpm bench:do
 - **The same mask decides membership.** Cells outside it are dropped from A and B, and the drop is
   reported. Area, ρ_B and membership must agree, or the estimator compares counts from one region
   against expectations from another.
-- **No exact-polygon path.** At the covid binning the mask costs ≤ 0.1% on `g` at h ≤ 2 µm and
-  ≤ 0.34% at 4 µm. That is below the existing parity's 0.26% median. A polygon path would be exact,
-  but it would cost per-edge work for every anchor and give up the GPU-friendly raster.
+- **Polygons are clipped exactly, not rasterised** (revised 2026-11-06). The original plan was to
+  rasterise them, because the mask costs only ≤ 0.1% on `g` at h ≤ 2 µm. But the closed form takes
+  about 20 lines, has no staircase, and only anchors near the boundary pay its per-edge cost. The
+  raster stays the GPU-friendly form for slice 4.
 
 ## Why: what today's code does on a non-rectangular ROI
 
