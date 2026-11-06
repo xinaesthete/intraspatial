@@ -174,7 +174,8 @@ mask's average density.
 ```ts
 type Domain =
   | { kind: "rect"; bbox }                                         // rectDomain(bbox)
-  | { kind: "mask"; bbox; width; height; data: Uint8Array };       // maskDomain(...), checked
+  | { kind: "mask"; bbox; width; height; data: Uint8Array }        // maskDomain(...), checked
+  | { kind: "polygon"; bbox; rings: Float64Array[] };              // polygonDomain(rings), exact
 
 domainArea(d): number
 domainContains(d, x, y): boolean
@@ -196,6 +197,14 @@ similarityField(gram, whiteningMatrix(...), m, zRef): Float64Array   // d at eve
   CPU/GPU parity at the level set is unchecked: a mask from the CPU field and the outline from the
   GPU field can disagree by f32 rounding for pixels right at `d = tolerance`.
 
+- **A polygon is clipped exactly, not rasterised.** `|disk ∩ P|` sums, per edge, the signed area of
+  disk ∩ triangle(centre, edge), each a triangle plus up to two sectors. This costs O(edges × bins)
+  for each anchor within rMax of the boundary.
+  - Rings are oriented by nesting depth, so the region is even–odd: holes and multipolygons need no
+    flag.
+  - Rings must not cross. Repairing a self-crossing gate, or taking booleans between gates, belongs
+    upstream (Clipper2 would fit there). It is not for the area kernel, where circles would have to
+    become n-gons.
 - **The mask uses the `ScalarField` raster convention:** row-major, row 0 at the top (maxY), and
   pixels need not be square. Non-zero means inside.
 - **The interior fast path uses a summed-area table of outside pixels**, not a distance transform.
@@ -257,9 +266,11 @@ The 1 µm mask is 1.25 M pixels, and the 57 ms includes building its summed-area
 
 ## Open
 
-- **Where the masks come from.** `src/datasource` has no SpatialData `shapes` (polygon) loader.
-  Polygons need one, plus a scanline rasteriser (nonzero winding, holes, multipolygons). Raster
-  `labels` and tissue masks only need resampling to the world grid.
+- **Where the shapes come from.** `polygonDomain` takes rings directly, so an MDV gate passes as is.
+  `src/datasource` still has no SpatialData `shapes` loader to feed it. Raster `labels` and tissue
+  masks only need resampling to the world grid.
+- **Polygon interior test is O(edges) per anchor.** That is fine for gates, which have hundreds of
+  vertices. A traced tissue outline with 10⁴ vertices over 10⁵ cells would want an edge grid.
 - **The `COVID_SAMPLE_17_*` geometry is unknown.** The MDV project carries region images with W×H.
   Whether it carries the acquisition outline is unchecked. The fallback is a concave hull of the
   cells, which sits on the safe (tight) side by source 4. It hugs boundary cells, though, so measure
@@ -278,7 +289,15 @@ The 1 µm mask is 1.25 M pixels, and the 57 ms includes building its summed-area
 
    Two deliberate breakages each fail the suite: a wrong bin-edge walk, and a fast path that lets
    one outside pixel through.
-2. Polygon rasteriser. Re-run the MDV parity on the five excluded ROIs if their geometry turns up.
+2. **Done.** `polygonDomain`, exact, with no rasteriser. Tests:
+   - an axis-aligned rectangle matches `edgeCorrection.ts` to 1e-9, and so does a rotated one in its
+     own frame;
+   - a hole matches outer − inner to 1e-9 for every orientation and closing vertex;
+   - the fast path agrees with the exact path;
+   - a tilted ROI gives g within 1e-9 of the frame estimator, where the mask needs 0.5%.
+
+   Breaking the hole orientation, or the fast path, fails the suite. Still to do: re-run the MDV
+   parity on the five excluded ROIs if their geometry turns up.
 3. Envelope nulls on W, with the size test as the gate.
 4. TCM, QCM, Gram and GPU `crossPcf`.
 

@@ -1,9 +1,19 @@
 // The region a set of cells was observed in — the `W` that the cross-PCF's ρ_B, edge correction and
 // membership all refer to. See docs/stats-on-arbitrary-domains.md.
 //
-// Two kinds. A **rect** is the analytic case `edgeCorrection.ts` already handles exactly. A **mask**
-// is a raster of in/out pixels, which is how any other shape gets in: a tissue mask, a rasterised
-// annotation polygon, a TMA core.
+// Three kinds. A **rect** is the analytic case `edgeCorrection.ts` already handles exactly. A
+// **polygon** is a drawn shape — an MDV gate, a SpatialData `shapes` annotation, a TMA core outline —
+// and is clipped exactly too. A **mask** is a raster of in/out pixels, which is how a shape with no
+// outline gets in: a tissue mask, a density threshold, the Gram wand.
+//
+// ## The polygon is clipped exactly
+//
+// `|disk(c, r) ∩ P|` is the sum, over P's edges (p, q), of the signed area of `disk ∩ triangle(c, p, q)`.
+// Each term is closed form: split the edge where it crosses the circle, and every piece is either
+// wholly inside (a triangle) or wholly outside (a circular sector). Rings are oriented on entry so
+// that the sum is the even–odd region — holes and disjoint parts need no flag. Annulus k is the
+// difference of the disks at its two edges. Cost is O(edges × bins) per anchor within rMax of the
+// boundary; anchors farther in take the full-annulus fast path.
 //
 // ## The mask is clipped exactly — its only error is its staircase
 //
@@ -47,7 +57,157 @@ export interface MaskDomain {
   readonly derivedFrom?: readonly number[];
 }
 
-export type Domain = RectDomain | MaskDomain;
+export interface PolygonDomain {
+  readonly kind: "polygon";
+  /** The rings' bounding box. */
+  readonly bbox: Box;
+  /** Flat `[x0, y0, x1, y1, …]` per ring, open (no repeated closing vertex), oriented so outer
+   *  boundaries run counter-clockwise and holes clockwise: the even–odd region of the input. */
+  readonly rings: readonly Float64Array[];
+}
+
+export type Domain = RectDomain | MaskDomain | PolygonDomain;
+
+type Ring = readonly (readonly [number, number])[];
+
+/**
+ * A polygon domain from GeoJSON-style rings: one ring `[[x, y], …]`, or several (`[[[x, y], …], …]`,
+ * a Polygon's coordinates or a MultiPolygon's rings flattened). The region is even–odd: a ring
+ * inside another is a hole, a ring inside a hole is an island. A closing vertex equal to the first
+ * is dropped. Rings must not cross each other or themselves; orientation does not matter.
+ */
+export function polygonDomain(shape: Ring | readonly Ring[]): PolygonDomain {
+  const first = shape[0];
+  const rings: readonly Ring[] = first !== undefined && typeof first[0] === "number" ? [shape as Ring] : (shape as readonly Ring[]);
+  const flat = rings.map((ring, r) => {
+    let n = ring.length;
+    if (n > 1 && ring[0]![0] === ring[n - 1]![0] && ring[0]![1] === ring[n - 1]![1]) n--;
+    if (n < 3) throw new Error(`polygonDomain: ring ${r} has ${n} distinct vertices, fewer than 3`);
+    const f = new Float64Array(2 * n);
+    for (let i = 0; i < n; i++) {
+      const [x, y] = ring[i]!;
+      if (!(Number.isFinite(x) && Number.isFinite(y))) throw new Error(`polygonDomain: ring ${r} vertex ${i} is not finite`);
+      f[2 * i] = x;
+      f[2 * i + 1] = y;
+    }
+    return f;
+  });
+  if (flat.length === 0) throw new Error("polygonDomain: no rings");
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (const f of flat) {
+    for (let i = 0; i < f.length; i += 2) {
+      minX = Math.min(minX, f[i]!);
+      maxX = Math.max(maxX, f[i]!);
+      minY = Math.min(minY, f[i + 1]!);
+      maxY = Math.max(maxY, f[i + 1]!);
+    }
+  }
+  // A ring nested in an odd number of others is a hole: orient it clockwise, the rest counter-
+  // clockwise, so the signed sums below count the even–odd region once.
+  const oriented = flat.map((f, r) => {
+    let depth = 0;
+    for (let o = 0; o < flat.length; o++) if (o !== r && inRing(flat[o]!, f[0]!, f[1]!)) depth++;
+    const wantCcw = depth % 2 === 0;
+    return signedRingArea(f) > 0 === wantCcw ? f : reverseRing(f);
+  });
+  if (oriented.some((f) => signedRingArea(f) === 0)) throw new Error("polygonDomain: a ring has zero area");
+  return { kind: "polygon", bbox: [minX, minY, maxX, maxY], rings: oriented };
+}
+
+function signedRingArea(f: Float64Array): number {
+  let s = 0;
+  const n = f.length;
+  for (let i = 0; i < n; i += 2) {
+    const j = (i + 2) % n;
+    s += f[i]! * f[j + 1]! - f[j]! * f[i + 1]!;
+  }
+  return s / 2;
+}
+
+function reverseRing(f: Float64Array): Float64Array {
+  const n = f.length / 2;
+  const out = new Float64Array(f.length);
+  for (let i = 0; i < n; i++) {
+    out[2 * i] = f[2 * (n - 1 - i)]!;
+    out[2 * i + 1] = f[2 * (n - 1 - i) + 1]!;
+  }
+  return out;
+}
+
+/** Even–odd crossing test against one ring. */
+function inRing(f: Float64Array, x: number, y: number): boolean {
+  let inside = false;
+  const n = f.length;
+  for (let i = 0, j = n - 2; i < n; j = i, i += 2) {
+    const xi = f[i]!;
+    const yi = f[i + 1]!;
+    const xj = f[j]!;
+    const yj = f[j + 1]!;
+    if (yi > y !== yj > y && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) inside = !inside;
+  }
+  return inside;
+}
+
+/** Signed area of `disk(0, r) ∩ triangle(0, a, b)`, positive when a → b turns counter-clockwise. */
+function diskTriangleArea(ax: number, ay: number, bx: number, by: number, r: number): number {
+  const dx = bx - ax;
+  const dy = by - ay;
+  const r2 = r * r;
+  // |a + t·d|² = r² → t² (d·d) + 2t (a·d) + (a·a − r²) = 0.
+  const A = dx * dx + dy * dy;
+  if (A === 0) return 0;
+  const B = ax * dx + ay * dy;
+  const C = ax * ax + ay * ay - r2;
+  const disc = B * B - A * C;
+  let t0 = 1;
+  let t1 = 1;
+  if (disc > 0) {
+    const sq = Math.sqrt(disc);
+    t0 = Math.min(1, Math.max(0, (-B - sq) / A));
+    t1 = Math.min(1, Math.max(0, (-B + sq) / A));
+  }
+  // Pieces [0, t0] and [t1, 1] lie outside the circle (sectors); [t0, t1] inside (a triangle).
+  const px = ax + t0 * dx;
+  const py = ay + t0 * dy;
+  const qx = ax + t1 * dx;
+  const qy = ay + t1 * dy;
+  const sector = (ux: number, uy: number, vx: number, vy: number) => (r2 * Math.atan2(ux * vy - uy * vx, ux * vx + uy * vy)) / 2;
+  if (disc <= 0 || t0 >= t1) return sector(ax, ay, bx, by);
+  return sector(ax, ay, px, py) + (px * qy - py * qx) / 2 + sector(qx, qy, bx, by);
+}
+
+/** `|disk(c, r) ∩ P|`, exact. */
+function diskPolygonArea(d: PolygonDomain, cx: number, cy: number, r: number): number {
+  let s = 0;
+  for (const f of d.rings) {
+    const n = f.length;
+    for (let i = 0, j = n - 2; i < n; j = i, i += 2) s += diskTriangleArea(f[j]! - cx, f[j + 1]! - cy, f[i]! - cx, f[i + 1]! - cy, r);
+  }
+  return Math.max(0, s);
+}
+
+/** Distance from `(x, y)` to the nearest polygon edge. */
+function boundaryDistance(d: PolygonDomain, x: number, y: number): number {
+  let best = Infinity;
+  for (const f of d.rings) {
+    const n = f.length;
+    for (let i = 0, j = n - 2; i < n; j = i, i += 2) {
+      const ax = f[j]!;
+      const ay = f[j + 1]!;
+      const dx = f[i]! - ax;
+      const dy = f[i + 1]! - ay;
+      const L = dx * dx + dy * dy;
+      const t = L > 0 ? Math.min(1, Math.max(0, ((x - ax) * dx + (y - ay) * dy) / L)) : 0;
+      const ex = ax + t * dx - x;
+      const ey = ay + t * dy - y;
+      best = Math.min(best, ex * ex + ey * ey);
+    }
+  }
+  return Math.sqrt(best);
+}
 
 export function rectDomain(bbox: Box): RectDomain {
   if (!(bbox[2] > bbox[0] && bbox[3] > bbox[1])) throw new Error(`rectDomain: bbox [${bbox.join(", ")}] has no positive extent`);
@@ -91,8 +251,9 @@ export function maskWhere(
   return maskDomain(field.bbox, field.width, field.height, data, opts.derivedFrom);
 }
 
-/** |W|. For a mask, the area of its non-zero pixels. */
+/** |W|. For a mask, the area of its non-zero pixels; for a polygon, of its even–odd region. */
 export function domainArea(d: Domain): number {
+  if (d.kind === "polygon") return d.rings.reduce((s, f) => s + signedRingArea(f), 0);
   const [minX, minY, maxX, maxY] = d.bbox;
   if (d.kind === "rect") return (maxX - minX) * (maxY - minY);
   let n = 0;
@@ -106,6 +267,11 @@ export function domainContains(d: Domain, x: number, y: number): boolean {
   const [minX, minY, maxX, maxY] = d.bbox;
   if (!(x >= minX && x <= maxX && y >= minY && y <= maxY)) return false;
   if (d.kind === "rect") return true;
+  if (d.kind === "polygon") {
+    let inside = false;
+    for (const f of d.rings) if (inRing(f, x, y)) inside = !inside;
+    return inside;
+  }
   const i = Math.min(d.width - 1, Math.floor(((x - minX) / (maxX - minX)) * d.width));
   const j = Math.min(d.height - 1, Math.floor(((maxY - y) / (maxY - minY)) * d.height));
   return d.data[j * d.width + i] !== 0;
@@ -113,12 +279,21 @@ export function domainContains(d: Domain, x: number, y: number): boolean {
 
 /**
  * Clipped areas of every annulus `[k·dr, (k+1)·dr)` around `(cx, cy)`, written into `out` (length
- * `nBins`). Exact for a rect, and exact for the pixel union of a mask.
+ * `nBins`). Exact for a rect and a polygon, and exact for the pixel union of a mask.
  */
 export function domainAnnulusAreasInto(out: Float64Array, d: Domain, cx: number, cy: number, dr: number, nBins: number): void {
   const [minX, minY, maxX, maxY] = d.bbox;
   if (d.kind === "rect") {
     annulusAreasInto(out, cx, cy, dr, nBins, minX, minY, maxX, maxY);
+    return;
+  }
+  if (d.kind === "polygon") {
+    let prev = 0;
+    for (let k = 0; k < nBins; k++) {
+      const a = diskPolygonArea(d, cx, cy, (k + 1) * dr);
+      out[k] = Math.max(0, a - prev);
+      prev = a;
+    }
     return;
   }
   out.fill(0, 0, nBins);
@@ -190,12 +365,14 @@ export function inverseAnnulusAreas(d: Domain, rMax: number, nBins: number): (x:
   };
 }
 
-/** Whether the disk of `rMax` around a point is wholly inside the domain. Conservative for a mask:
+/** Whether the disk of `rMax` around a point is wholly inside the domain. Exact for a rect and a
+ *  polygon (inside, and no edge nearer than rMax). Conservative for a mask:
  *  it checks the disk's bounding square through a summed-area table of OUTSIDE pixels, so an anchor
  *  near a concave corner may be sent down the exact path needlessly, never the reverse. */
 function interiorTest(d: Domain, rMax: number): (x: number, y: number) => boolean {
   const [minX, minY, maxX, maxY] = d.bbox;
   if (d.kind === "rect") return (x, y) => x - minX >= rMax && maxX - x >= rMax && y - minY >= rMax && maxY - y >= rMax;
+  if (d.kind === "polygon") return (x, y) => domainContains(d, x, y) && boundaryDistance(d, x, y) >= rMax;
   const w = d.width;
   const h = d.height;
   const pw = (maxX - minX) / w;

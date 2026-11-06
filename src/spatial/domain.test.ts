@@ -7,6 +7,7 @@ import {
   type MaskDomain,
   maskDomain,
   maskWhere,
+  polygonDomain,
   rectDomain,
 } from "./domain";
 import { annulusAreasInto, diskRectArea } from "./edgeCorrection";
@@ -331,5 +332,159 @@ describe("maskWhere — masks from fields", () => {
     expect(
       crossPCFMatrixBinned(cells, { bbox: mask.bbox, domain: maskWhere(field, () => true), rMax: 10, nBins: 2, nTypes: 3 }).confounded,
     ).toBeUndefined();
+  });
+});
+
+// A polygon domain is clipped in closed form, so every check is to rounding against an exact answer:
+// an axis-aligned rectangle against `edgeCorrection.ts`; a rotated one against the same, in its own
+// frame; a hole against the difference of two rectangles.
+describe("polygonDomain", () => {
+  const box = (x0: number, y0: number, x1: number, y1: number): [number, number][] => [
+    [x0, y0],
+    [x1, y0],
+    [x1, y1],
+    [x0, y1],
+  ];
+  const anchors: [number, number][] = [
+    [50, 40], // deep inside
+    [3, 40], // near the left edge
+    [2, 1], // in a corner
+    [97, 78], // the opposite corner
+    [-5, 40], // just outside
+    [130, 130], // far outside
+  ];
+  const areas = (d: Parameters<typeof domainAnnulusAreasInto>[1], x: number, y: number, dr: number, n: number) => {
+    const out = new Float64Array(n);
+    domainAnnulusAreasInto(out, d, x, y, dr, n);
+    return out;
+  };
+
+  it("refuses rings that are not polygons", () => {
+    expect(() => polygonDomain([])).toThrow(/no rings/);
+    expect(() =>
+      polygonDomain([
+        [0, 0],
+        [1, 0],
+        [0, 0],
+      ]),
+    ).toThrow(/fewer than 3/);
+    expect(() =>
+      polygonDomain([
+        [0, 0],
+        [1, 1],
+        [2, 2],
+      ]),
+    ).toThrow(/zero area/);
+    expect(() =>
+      polygonDomain([
+        [0, 0],
+        [1, Number.NaN],
+        [0, 1],
+      ]),
+    ).toThrow(/not finite/);
+  });
+
+  it("reproduces the rectangle's annulus areas to rounding, at any anchor", () => {
+    const poly = polygonDomain(box(0, 0, 100, 80));
+    const rect = rectDomain([0, 0, 100, 80]);
+    expect(domainArea(poly)).toBeCloseTo(8000, 9);
+    for (const [x, y] of anchors) {
+      const a = areas(poly, x, y, 7, 6);
+      const b = areas(rect, x, y, 7, 6);
+      expect(Math.max(...a.map((v, k) => Math.abs(v - b[k]!)))).toBeLessThan(1e-9);
+    }
+  });
+
+  it("is exact on a rotated rectangle: the same areas as the axis-aligned one in its own frame", () => {
+    const sq = tiltedSquare(80, 23);
+    const poly = polygonDomain([sq.fromFrame(-40, -40), sq.fromFrame(40, -40), sq.fromFrame(40, 40), sq.fromFrame(-40, 40)]);
+    const rect = rectDomain([-40, -40, 40, 40]);
+    for (const [u, v] of [
+      [0, 0],
+      [37, 5],
+      [38, -39],
+      [-45, 0],
+    ] as const) {
+      const [x, y] = sq.fromFrame(u, v);
+      const a = areas(poly, x, y, 6, 5);
+      const b = areas(rect, u, v, 6, 5);
+      expect(Math.max(...a.map((q, k) => Math.abs(q - b[k]!)))).toBeLessThan(1e-9);
+      expect(domainContains(poly, x, y)).toBe(Math.abs(u) <= 40 && Math.abs(v) <= 40);
+    }
+  });
+
+  it("reads a nested ring as a hole, whatever the rings' orientation or closing vertex", () => {
+    const outer = box(0, 0, 100, 100);
+    const hole = box(30, 30, 70, 60);
+    const closed = (r: [number, number][]) => [...r, r[0]!];
+    const variants = [
+      polygonDomain([outer, hole]),
+      polygonDomain([[...outer].reverse(), [...hole].reverse()]),
+      polygonDomain([closed(hole), closed(outer)]),
+    ];
+    const big = rectDomain([0, 0, 100, 100]);
+    const small = rectDomain([30, 30, 70, 60]);
+    for (const d of variants) {
+      expect(domainArea(d)).toBeCloseTo(10000 - 1200, 9);
+      expect(domainContains(d, 50, 45)).toBe(false);
+      expect(domainContains(d, 10, 45)).toBe(true);
+      for (const [x, y] of [
+        [50, 45],
+        [25, 45],
+        [5, 5],
+      ] as const) {
+        const a = areas(d, x, y, 5, 6);
+        const outerA = areas(big, x, y, 5, 6);
+        const holeA = areas(small, x, y, 5, 6);
+        expect(Math.max(...a.map((q, k) => Math.abs(q - (outerA[k]! - holeA[k]!))))).toBeLessThan(1e-9);
+      }
+    }
+  });
+
+  it("takes the full-annulus fast path only where nothing is clipped", () => {
+    const d = polygonDomain([box(0, 0, 100, 100), box(40, 40, 60, 60)]);
+    const inv = inverseAnnulusAreas(d, 12, 4);
+    const rnd = mulberry32(0x9a7);
+    for (let t = 0; t < 300; t++) {
+      const x = rnd() * 100;
+      const y = rnd() * 100;
+      const want = areas(d, x, y, 3, 4).map((a) => (a > 0 ? 1 / a : 0));
+      const got = inv(x, y);
+      expect(Math.max(...want.map((w, k) => Math.abs(w - got[k]!) / Math.max(w, 1e-12)))).toBeLessThan(1e-9);
+    }
+  });
+
+  it("restores g ≈ 1 on a round ROI given as a 96-gon, with no staircase", () => {
+    const ring: [number, number][] = Array.from({ length: 96 }, (_, i) => [
+      100 * Math.cos((2 * Math.PI * i) / 96),
+      100 * Math.sin((2 * Math.PI * i) / 96),
+    ]);
+    const d = polygonDomain(ring);
+    const cells = csrIn((x, y) => domainContains(d, x, y), 100, 6000, 1, 0xd15c);
+    const res = crossPCFMatrixBinned(cells, { bbox: d.bbox, domain: d, rMax: 30, nBins: 3, nTypes: 1, edgeCorrected: true });
+    expect(res.outside).toBe(0);
+    for (let k = 0; k < 3; k++) {
+      expect(res.g[k]!).toBeGreaterThan(0.98);
+      expect(res.g[k]!).toBeLessThan(1.02);
+    }
+  });
+
+  it("matches the exact rectangle estimator on a tilted ROI, run in the ROI's own frame", () => {
+    const sq = tiltedSquare(805, 30);
+    const h = sq.half;
+    const d = polygonDomain([sq.fromFrame(-h, -h), sq.fromFrame(h, -h), sq.fromFrame(h, h), sq.fromFrame(-h, h)]);
+    const cells = csrIn(sq.inside, 570, 2600, 2, 0x7a11);
+    const p = { rMax: 30, nBins: 3, nTypes: 2, edgeCorrected: true } as const;
+    const poly = crossPCFMatrixBinned(cells, { ...p, bbox: d.bbox, domain: d });
+    const framed = { ...cells, xs: [] as number[], ys: [] as number[] };
+    for (let i = 0; i < cells.xs.length; i++) {
+      const [u, v] = sq.toFrame(cells.xs[i]!, cells.ys[i]!);
+      framed.xs.push(u);
+      framed.ys.push(v);
+    }
+    const exact = crossPCFMatrixBinned(framed, { ...p, bbox: [-h, -h, h, h] });
+    // The mask version needs 0.5% for its staircase; the polygon has none.
+    expect(poly.outside).toBe(0);
+    expect(Array.from(poly.g, (g, i) => Math.abs(g / exact.g[i]! - 1)).every((e) => e < 1e-9)).toBe(true);
   });
 });
