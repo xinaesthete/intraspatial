@@ -4,6 +4,7 @@
 // carried onto it, combined Photoshop-style, and carried back onto whatever map is showing. A drag is
 // one stroke: its patches are unioned, then combined with the mask as it was when the stroke began.
 
+import { type MaskDomain, maskDomain } from "../../../src/spatial/domain";
 import { distanceTo } from "../../../src/spatial/regions";
 
 /** The window map a patch was computed on: row 0 at bbox maxY, as `GramMatrixGpuResult`. */
@@ -200,3 +201,32 @@ export function smoothOutline(binary: ArrayLike<number>, width: number, height: 
 
 /** The mask's area in the frame's units squared. */
 export const maskArea = (mask: WorldMask): number => mask.keys.size * mask.cell * mask.cell;
+
+/**
+ * The mask as a `Domain` the cross-PCF can measure inside: one pixel per grid cell over the cells'
+ * bounding box, row 0 at the top. Cell `ix` covers `[ix·cell, (ix+1)·cell)`, so the raster's pixels
+ * are exactly the mask's cells and the area clipping is exact for them.
+ */
+export function maskToDomain(mask: WorldMask): MaskDomain | undefined {
+  if (mask.keys.size === 0) return undefined;
+  let ix0 = Infinity;
+  let ix1 = -Infinity;
+  let iy0 = Infinity;
+  let iy1 = -Infinity;
+  const cells: [number, number][] = [];
+  for (const k of mask.keys) {
+    const ix = Math.floor(k / 2 ** 21) - OFFSET;
+    const iy = (k % 2 ** 21) - OFFSET;
+    cells.push([ix, iy]);
+    if (ix < ix0) ix0 = ix;
+    if (ix > ix1) ix1 = ix;
+    if (iy < iy0) iy0 = iy;
+    if (iy > iy1) iy1 = iy;
+  }
+  const width = ix1 - ix0 + 1;
+  const height = iy1 - iy0 + 1;
+  const data = new Uint8Array(width * height);
+  for (const [ix, iy] of cells) data[(iy1 - iy) * width + (ix - ix0)] = 1;
+  const c = mask.cell;
+  return maskDomain([ix0 * c, iy0 * c, (ix1 + 1) * c, (iy1 + 1) * c], width, height, data);
+}

@@ -33,6 +33,7 @@ import { ModeMap } from "../modes/ModeMap";
 import { ImagePicker, MapStyleControls, StoreInput, useImageChoice, useMapStyle } from "../modes/PageControls";
 import { useWand, type WandSource, wandLayerProps } from "../modes/useWand";
 import { WandExplain, WandPanel } from "../modes/WandPanel";
+import { MaskStats } from "../selection/MaskStats";
 import { useBoundarySettings, useMapSelection } from "../selection/useMapSelection";
 import { BoundariesExplain, BoundaryPanel } from "../wand/WandPanel";
 import { Explain } from "../transcript/Explain";
@@ -466,6 +467,14 @@ export function CellModes() {
                   const how = r > 0.2 ? "found in the same places" : r < -0.2 ? "spatially exclusive" : "little spatial relation";
                   return `${g.modes.labels[a]} × ${g.modes.labels[b]}: r = ${r.toFixed(3)} (${how}) · g = ${gg.toFixed(3)} (1 = random)`;
                 }}
+              />
+              <MaskStats
+                channels={built.value?.channels}
+                mask={tools.panel.mask}
+                window={g.res.bbox}
+                rMax={toWorld(rangeUm)}
+                umPerUnit={umPerUnit}
+                unit={unit}
               />
             </>
           )}
