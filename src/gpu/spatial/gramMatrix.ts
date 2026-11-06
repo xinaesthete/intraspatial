@@ -429,12 +429,17 @@ export async function gramMatrixGpu(
   // the stride is roughly halved — which is where the memory goes.
   const rowWords = align256(w * (half ? 2 : 4)) / 4;
 
-  // `rasters` is the one binding here that can reach `maxStorageBufferBindingSize`: K channels
-  // of a w*h f32 raster crosses 128 MiB at 49 channels of 827x827, and because the pool doubles
-  // on growth a preceding call at 585x585 is already enough to push the CAPACITY over. Both the
-  // channel count and the raster size come from the caller, so nothing bounds this. Past the
-  // limit the bind group is invalid and every dispatch silently returns the previous call's Gram
-  // matrix — see `sized`/`checkBindingSize` in `../device.ts`.
+  // `rasters` and `pts` are the bindings here that can reach `maxStorageBufferBindingSize`. Past
+  // the limit the bind group is invalid and every dispatch silently returns the previous call's
+  // Gram matrix, or zeros — see `sized`/`checkBindingSize` in `../device.ts`.
+  //
+  // `pts` is three floats per point per channel, and an expression channel carries every cell, so
+  // it crosses 128 MiB at about 11M cell-channels: 397k Xenium cells × 32 genes is 152 MB.
+  checkBindingSize(device, `gramMatrixGpu: ${data.length / 3} points over ${K} channels`, data.length * 4);
+  // `rasters`: K channels of a w*h f32 raster crosses 128 MiB at 49 channels of 827x827, and
+  // because the pool doubles on growth a preceding call at 585x585 is already enough to push the
+  // CAPACITY over. Both the channel count and the raster size come from the caller, so nothing
+  // bounds this.
   const rasterWords = K * h * rowWords;
   checkBindingSize(device, `gramMatrixGpu: ${K} channels at ${w}x${h} (${precision})`, rasterWords * 4);
 
