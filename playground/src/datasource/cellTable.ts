@@ -474,6 +474,65 @@ function resolveTableSpace(
 }
 
 /**
+ * Correct a table whose `region` is a raster but whose centroids are not in its pixels.
+ *
+ * spatialdata-io's Xenium reader does exactly this: it annotates the table to `cell_labels`, a label
+ * image in pixels placed by identity, yet writes `obsm/spatial` in µm. Its shapes and points carry
+ * the µm → pixel scale (1/0.2125 ≈ 4.706) and the labels do not, so taken at the region's word the
+ * cells land in the raster's top-left 0.2125 of each axis.
+ *
+ * The test is the store's own evidence, not a known pixel size: centroids covering under half the
+ * raster on both axes, and a shapes or points element whose pure scale to the same system makes
+ * them cover between half of it and all of it. The first such element's transform is the table's.
+ */
+async function centroidsInVectorSpace(
+  tree: Record<string, unknown>,
+  region: string,
+  target: string | undefined,
+  space: { affine: Affine2; units: TableUnits },
+  xs: ArrayLike<number>,
+  ys: ArrayLike<number>,
+): Promise<{ affine: Affine2; units: TableUnits }> {
+  const kind = space.units.via?.split("/")[0];
+  if (kind !== "labels" && kind !== "images") return space;
+  const ome = symbolAttrs((tree[kind] as Record<string, unknown>)[region], (v) => "ome" in v || "multiscales" in v);
+  const block = (ome?.ome as Record<string, unknown> | undefined) ?? ome;
+  const path = (block?.multiscales as Array<{ datasets?: Array<{ path?: string }> }> | undefined)?.[0]?.datasets?.[0]?.path;
+  if (path === undefined) return space;
+  const { shape } = await leafAt((tree[kind] as Record<string, unknown>)[region], [path]).get();
+  const W = shape[shape.length - 1] ?? 0;
+  const H = shape[shape.length - 2] ?? 0;
+  let maxX = 0;
+  let maxY = 0;
+  for (let i = 0; i < xs.length; i++) {
+    if (xs[i]! > maxX) maxX = xs[i]!;
+    if (ys[i]! > maxY) maxY = ys[i]!;
+  }
+  if (!(W > 0 && H > 0) || maxX > W / 2 || maxY > H / 2) return space;
+  for (const vector of ["shapes", "points"] as const) {
+    const group = tree[vector];
+    if (!group || typeof group !== "object") continue;
+    for (const [name, node] of Object.entries(group as Record<string, unknown>)) {
+      const got = resolveNgffXY(symbolAttrs(node, (v) => "coordinateTransformations" in v)?.coordinateTransformations, { target });
+      if (!got || got.affine.b !== 0 || got.affine.c !== 0) continue;
+      const x = maxX * got.affine.a + got.affine.tx;
+      const y = maxY * got.affine.d + got.affine.ty;
+      if (x > W * 1.05 || y > H * 1.05 || (x < W / 2 && y < H / 2)) continue;
+      return {
+        affine: got.affine,
+        units: {
+          raw: got.unit,
+          micrometres: got.micrometres,
+          via: `${vector}/${name} (obsm/spatial is in its space, not ${region}'s pixels)`,
+          unsupported: got.unsupported.length ? got.unsupported : undefined,
+        },
+      };
+    }
+  }
+  return space;
+}
+
+/**
  * Read a SpatialData regions table and group its centroids into per-`cell_type_id` clouds.
  *
  * Placement and units come from the element the table ANNOTATES (`resolveTableSpace`): a table is
@@ -547,7 +606,14 @@ export async function readCellTable(
   const rootAttrs = symbolAttrs(tree, (v) => "coordinate_system" in v || "spatialdata_attrs" in v);
   const system = opts.system ?? (typeof rootAttrs?.coordinate_system === "string" ? rootAttrs.coordinate_system : "Leap034");
 
-  const space = resolveTableSpace(tree as Record<string, unknown>, region, system);
+  const space = await centroidsInVectorSpace(
+    tree as Record<string, unknown>,
+    region,
+    system,
+    resolveTableSpace(tree as Record<string, unknown>, region, system),
+    xs,
+    ys,
+  );
   const placement: ResolvedPlacement = { system, worldFromArray: affine3From(space.affine) };
 
   // Group by cell_type_id into separate clouds.
