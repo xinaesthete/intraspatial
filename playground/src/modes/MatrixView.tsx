@@ -13,7 +13,7 @@ const position = (v: number, scale: MatrixScale): number =>
 
 interface Props {
   readonly labels: readonly string[];
-  /** Row-major, `values[i*K + j]`. */
+  /** Row-major, `values[i*K + j]`. NaN marks a pair with no value, drawn blank. */
   readonly values: ArrayLike<number>;
   readonly scale: MatrixScale;
   /** The hover text for one cell. Default: the pair and its value. */
@@ -34,7 +34,12 @@ export function MatrixView({ labels, values, scale, describe }: Props) {
             <div
               key={`${a}|${b}`}
               className="matrix-cell"
-              style={{ background: cssRgb(diverging(position(values[i * K + j] ?? 0, scale), RAMP)) }}
+              // An undefined pair (NaN: no cells to measure) is left blank rather than coloured as "apart".
+              style={{
+                background: Number.isFinite(values[i * K + j])
+                  ? cssRgb(diverging(position(values[i * K + j]!, scale), RAMP))
+                  : "transparent",
+              }}
               title={text(i, j)}
             />
           )),

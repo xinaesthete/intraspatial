@@ -11,10 +11,13 @@ import { useCallback, useState } from "react";
 import { adoptDevice } from "../../../src/gpu/device";
 
 /** Module-level: a new object each render would make deck rebuild its device. `float32-blendable`
- *  is what the Gram splat needs to blend into r32float. */
+ *  is what the Gram splat needs to blend into r32float. `featureLevel: "max"` is how luma asks for
+ *  the adapter's own limits rather than WebGPU's defaults: the default 128 MiB storage binding is
+ *  too small for a whole Xenium table's expression channels (397k cells × 32 genes is 152 MB). */
 export const SHARED_DEVICE_PROPS = {
   type: "webgpu" as const,
   adapters: [webgpuAdapter],
+  featureLevel: "max" as const,
   optionalFeatures: ["float32-blendable" as const],
 };
 

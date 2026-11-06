@@ -38,6 +38,7 @@
 // gives a channel covariance. The Gram form is what makes the full case computable.
 
 import type { Oklab } from "#src/color/oklab";
+import { standardise, whiteningMatrix } from "#src/spatial/gram";
 import { compileShader, getDevice } from "../device";
 import type { GramMatrixGpuResult } from "./gramMatrix";
 import { IMAGE_OVERLAY_WGSL, type ImageOverlay, overlayResources } from "./imageOverlayWgsl";
@@ -371,30 +372,10 @@ const norm = (a: number[]): V3 => {
   return [(a[0] ?? 0) / l, (a[1] ?? 0) / l, (a[2] ?? 0) / l];
 };
 
-/**
- * The whitening matrix `A = Λ^{-1/2} Vᵀ` truncated to `m` modes, row-major (m rows of K).
- *
- * Eigenvalues are floored before the inverse square root: `corr` is PSD by construction but its
- * trailing eigenvalues can be zero to machine precision (K channels spanning fewer than K
- * dimensions — perfectly collinear genes will do it), and 1/√0 would turn one pixel of numerical
- * noise into an infinite distance.
- */
-export function whiteningMatrix(vectors: Float64Array, values: Float64Array, K: number, m: number): Float64Array {
-  const floor = Math.max(values[0] ?? 1, 1e-12) * 1e-6;
-  const out = new Float64Array(m * K);
-  for (let k = 0; k < m; k++) {
-    const inv = 1 / Math.sqrt(Math.max(values[k] ?? 0, floor));
-    for (let a = 0; a < K; a++) out[k * K + a] = inv * (vectors[k * K + a] ?? 0);
-  }
-  return out;
-}
-
-/** Standardise raw raster values at a pixel into the `z` a wand reference is expressed in. */
-export function standardise(raw: ArrayLike<number>, mean: ArrayLike<number>, sd: ArrayLike<number>): Float64Array {
-  const out = new Float64Array(mean.length);
-  for (let a = 0; a < mean.length; a++) out[a] = sd[a]! > 0 ? ((raw[a] ?? 0) - mean[a]!) / sd[a]! : 0;
-  return out;
-}
+// `whiteningMatrix` and `standardise` live in the CPU module so the CPU similarity field
+// (`similarityField`) and these shaders build the wand from one definition; re-exported here for
+// existing callers.
+export { standardise, whiteningMatrix };
 
 // Apart from the surface's context: probing needs no canvas format, so it also runs headless.
 let probeCache: Promise<{ device: GPUDevice; probe: GPUComputePipeline }> | undefined;

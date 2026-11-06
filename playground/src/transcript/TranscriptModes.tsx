@@ -377,7 +377,12 @@ export function TranscriptModes() {
           </label>
           <MapStyleControls style={style} />
           <WandPanel wand={wand} />
-          <BoundaryPanel {...tools.panel} broad={gb} mixtures="genes" />
+          <BoundaryPanel
+            {...tools.panel}
+            broad={gb}
+            broadError={broadOn ? (tilesBroad.error ?? gramBroad.error)?.message : undefined}
+            mixtures="genes"
+          />
           {source.value && (
             <ChannelPicker features={source.value.features} selection={selection} onChange={setSelection} missing={built.missing} />
           )}

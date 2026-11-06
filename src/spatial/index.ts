@@ -3,6 +3,7 @@
 export * from "./bucketGrid";
 export * from "./cellCsv";
 export * from "./contactNetwork";
+export * from "./domain";
 export * from "./edgeCorrection";
 export * from "./eigenSym";
 export * from "./envelope";

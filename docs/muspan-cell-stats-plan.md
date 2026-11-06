@@ -148,7 +148,8 @@ the store genuinely carries no unit. Wire the B2 ingestion to read this.
 > under the bounding-box area. The four `COVID_SAMPLE_17_*` ROIs do not respond to the area convention
 > at all and their residual grows monotonically as the ROI shrinks (1.5 / 2.5 / 4.0 / 7.8%) — the
 > signature of a **non-rectangular ROI**, which the rectangular clip cannot represent. Closing those
-> needs the polygon mask §5 already anticipates (`annot_region`).
+> needs the polygon mask §5 already anticipates (`annot_region`). Scoped, with a measured error
+> budget, in [`stats-on-arbitrary-domains.md`](./stats-on-arbitrary-domains.md).
 >
 > One more thing worth keeping: agreement is markedly worse for small populations — median 0.98% and
 > p95 12.3% at min(n) < 50, against 0.26% / 1.7% above it. Both pipelines compute the same quantity

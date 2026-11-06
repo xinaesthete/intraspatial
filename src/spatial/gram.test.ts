@@ -10,8 +10,11 @@ import {
   effectiveRadius,
   type GramParams,
   gramMatrix,
+  pixelZ,
   projectMode,
+  similarityField,
   splatChannel,
+  whiteningMatrix,
 } from "./gram";
 import { EPANECHNIKOV, GAUSSIAN, KERNELS, kernelLabel, QUARTIC, roughness, TOPHAT, TRIWEIGHT } from "./kernels";
 import { crossPCFMatrix } from "./pcf";
@@ -524,5 +527,50 @@ describe("alignModeSigns", () => {
     expect(Array.from(alignModeSigns(swapped, prev).vectors)).toEqual([0, 1, 1, 0]);
     const other = modes(["a", "c"], [-1, 0, 0, -1]);
     expect(alignModeSigns(other, prev)).toBe(other);
+  });
+});
+
+describe("similarityField — the wand's distance, on the CPU", () => {
+  // The whitened distance is derived as Mahalanobis distance under `corr`; with every mode kept it
+  // must BE that, so it is checked against a direct solve of corr·x = Δz rather than against the
+  // eigen-route it is built from.
+  const channels = [uniformCloud("a", 400, 11), uniformCloud("b", 400, 12), uniformCloud("c", 400, 13)];
+  const gram = gramMatrix(channels, { bbox: BBOX, width: 40, height: 40, radius: 15 });
+  const modes = coLocationModes(gram);
+  const K = 3;
+
+  function solve(m: number[][], v: number[]): number[] {
+    const a = m.map((row, i) => [...row, v[i]!]);
+    for (let c = 0; c < K; c++) {
+      const p = a.reduce((best, row, i) => (i >= c && Math.abs(row[c]!) > Math.abs(a[best]![c]!) ? i : best), c);
+      [a[c], a[p]] = [a[p]!, a[c]!];
+      for (let r = 0; r < K; r++) {
+        if (r === c) continue;
+        const f = a[r]![c]! / a[c]![c]!;
+        for (let k = c; k <= K; k++) a[r]![k]! -= f * a[c]![k]!;
+      }
+    }
+    return a.map((row, i) => row[K]! / row[i]!);
+  }
+
+  it("is zero at the reference pixel and Mahalanobis under corr everywhere, with every mode kept", () => {
+    const zRef = pixelZ(gram, 7, 31);
+    const d = similarityField(gram, whiteningMatrix(modes.vectors, modes.values, K, K), K, zRef);
+    expect(d[31 * 40 + 7]).toBeCloseTo(0, 12);
+    const corr = [0, 1, 2].map((a) => [0, 1, 2].map((b) => gram.corr[a * K + b]!));
+    let worst = 0;
+    for (const q of [0, 123, 801, 1599]) {
+      const dz = pixelZ(gram, q % 40, Math.floor(q / 40)).map((z, a) => z - zRef[a]!);
+      const x = solve(corr, Array.from(dz));
+      const want = Math.sqrt(dz.reduce((s, v, a) => s + v * x[a]!, 0));
+      worst = Math.max(worst, Math.abs(d[q]! - want) / want);
+    }
+    expect(worst).toBeLessThan(1e-9);
+  });
+
+  it("refuses a reference or metric of the wrong size", () => {
+    const W = whiteningMatrix(modes.vectors, modes.values, K, 2);
+    expect(() => similarityField(gram, W, 3, new Float64Array(3))).toThrow(/whitening/);
+    expect(() => similarityField(gram, W, 2, new Float64Array(2))).toThrow(/reference/);
   });
 });
