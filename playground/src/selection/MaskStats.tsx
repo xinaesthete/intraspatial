@@ -3,14 +3,17 @@
 // analysis window. The mask's area sets ρ_B and its outline clips each cell's annuli, so the two
 // read the same scale: g = 1 is chance inside each region.
 //
-// Measured on demand, on the host: a pan or a new stroke would otherwise recount every pair.
+// Measured on demand, in a worker (maskStatsWorker.ts): a pan or a new stroke would otherwise recount
+// every pair, and on the host the count froze the page for seconds. A run whose mask, channels,
+// window or rMax change under it is terminated rather than left to report stale numbers.
 
-import { useState } from "react";
-import { crossPCFMatrixBinned, type LabelledCells, type PcfMatrixBinnedResult } from "../../../src/spatial/pcf";
-import { domainArea, rectDomain } from "../../../src/spatial/domain";
+import { useEffect, useRef, useState } from "react";
+import type { PcfMatrixBinnedResult } from "../../../src/spatial/pcf";
+import { domainArea } from "../../../src/spatial/domain";
 import type { ChannelCloud } from "../../../src/spatial/gram";
 import { MatrixView } from "../modes/MatrixView";
 import { Explain } from "../transcript/Explain";
+import type { MaskStatsRequest, MaskStatsResponse } from "./maskStatsWorker";
 import { maskToDomain, type WorldMask } from "./worldMask";
 
 const BINS = 8;
@@ -28,62 +31,99 @@ interface Props {
   readonly unit: string;
 }
 
-interface Measured {
-  readonly mask: WorldMask;
-  readonly channels: readonly ChannelCloud[];
-  readonly rMax: number;
-  readonly window: readonly [number, number, number, number];
+interface Measured extends Inputs {
   readonly inMask: PcfMatrixBinnedResult;
   readonly inWindow: PcfMatrixBinnedResult;
   readonly area: number;
   readonly ms: number;
 }
 
-function labelled(channels: readonly ChannelCloud[]): LabelledCells {
-  const xs: number[] = [];
-  const ys: number[] = [];
-  const typeId: number[] = [];
+/** Every channel's cells in one list, typed by channel index, as arrays the worker can take over. */
+function labelled(channels: readonly ChannelCloud[]): Pick<MaskStatsRequest, "xs" | "ys" | "typeId"> {
+  const n = channels.reduce((s, c) => s + c.xs.length, 0);
+  const xs = new Float64Array(n);
+  const ys = new Float64Array(n);
+  const typeId = new Int32Array(n);
+  let at = 0;
   channels.forEach((c, t) => {
-    for (let i = 0; i < c.xs.length; i++) {
-      xs.push(c.xs[i]!);
-      ys.push(c.ys[i]!);
-      typeId.push(t);
+    for (let i = 0; i < c.xs.length; i++, at++) {
+      xs[at] = c.xs[i]!;
+      ys[at] = c.ys[i]!;
+      typeId[at] = t;
     }
   });
   return { xs, ys, typeId };
 }
 
+/** The inputs a run was started from, to tell when it has gone stale. */
+interface Inputs {
+  readonly mask: WorldMask;
+  readonly channels: readonly ChannelCloud[];
+  readonly rMax: number;
+  readonly window: readonly [number, number, number, number];
+}
+
+const sameInputs = (a: Inputs, b: Partial<Inputs>) =>
+  a.mask === b.mask && a.channels === b.channels && a.rMax === b.rMax && !!b.window && b.window.every((v, i) => v === a.window[i]);
+
 export function MaskStats({ channels, mask, window, rMax, umPerUnit, unit }: Props) {
   const [measured, setMeasured] = useState<Measured>();
   const [bin, setBin] = useState(BINS / 2 - 1);
-  const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
 
   const weighted = channels?.some((c) => c.weights);
   const ready = channels && !weighted && mask && mask.keys.size > 0 && window && rMax > 0;
-  const sameWindow = (w: readonly number[] | undefined) => !!w && !!measured && w.every((v, i) => v === measured.window[i]);
-  const stale = measured && (measured.mask !== mask || measured.channels !== channels || measured.rMax !== rMax || !sameWindow(window));
+  const stale = measured && !sameInputs(measured, { mask, channels, rMax, window });
+
+  // The run in flight: the inputs it was started from, and its worker. Inputs that move under it
+  // end it, since its numbers would describe a mask or window no longer shown; the check runs during
+  // render, and the effect below then terminates the worker.
+  const [running, setRunning] = useState<Inputs>();
+  if (running && !sameInputs(running, { mask, channels, rMax, window })) setRunning(undefined);
+  const busy = running !== undefined;
+  const worker = useRef<Worker>(undefined);
+  useEffect(() => {
+    if (running) return;
+    worker.current?.terminate();
+    worker.current = undefined;
+  }, [running]);
+  useEffect(() => () => worker.current?.terminate(), []);
 
   const measure = () => {
     if (!ready) return;
-    setBusy(true);
     setError(undefined);
-    // Yield first, so "measuring…" paints before the host is busy.
-    setTimeout(() => {
-      try {
-        const t0 = performance.now();
-        const domain = maskToDomain(mask)!;
-        const cells = labelled(channels);
-        const common = { bbox: window, rMax, nBins: BINS, nTypes: channels.length, edgeCorrected: true };
-        const inMask = crossPCFMatrixBinned(cells, { ...common, domain });
-        const inWindow = crossPCFMatrixBinned(cells, { ...common, domain: rectDomain(window) });
-        setMeasured({ mask, channels, rMax, window, inMask, inWindow, area: domainArea(domain), ms: performance.now() - t0 });
-      } catch (err) {
-        setError(err instanceof Error ? err.message : String(err));
-      } finally {
-        setBusy(false);
-      }
-    }, 0);
+    const t0 = performance.now();
+    let domain;
+    try {
+      domain = maskToDomain(mask)!;
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+      return;
+    }
+    const area = domainArea(domain);
+    const inputs: Inputs = { mask, channels, rMax, window };
+    const cells = labelled(channels);
+    const req: MaskStatsRequest = { ...cells, nTypes: channels.length, domain, window, rMax, nBins: BINS };
+    worker.current?.terminate();
+    const w = new Worker(new URL("./maskStatsWorker.ts", import.meta.url), { type: "module" });
+    worker.current = w;
+    setRunning(inputs);
+    w.onmessage = (e: MessageEvent<MaskStatsResponse>) => {
+      if (worker.current !== w) return; // stopped or superseded
+      const res = e.data;
+      if (res.ok) setMeasured({ ...inputs, inMask: res.inMask, inWindow: res.inWindow, area, ms: performance.now() - t0 });
+      else setError(res.error);
+      setRunning(undefined);
+    };
+    // Failures inside the count come back as messages, so an error event here is the worker itself:
+    // with no message, its script never loaded (in development, the dev server is not reachable).
+    w.onerror = (e) => {
+      if (worker.current !== w) return;
+      setError(e.message ? `measurement worker: ${e.message}` : "the measurement worker could not load its script — reload the page");
+      setRunning(undefined);
+    };
+    // The cells and the mask raster were built for this run alone, so hand them over rather than copy.
+    w.postMessage(req, [cells.xs.buffer, cells.ys.buffer, cells.typeId.buffer, domain.data.buffer]);
   };
 
   const m = measured;
