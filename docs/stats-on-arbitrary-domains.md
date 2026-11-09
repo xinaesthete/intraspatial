@@ -273,8 +273,6 @@ The 1 µm mask is 1.25 M pixels, and the 57 ms includes building its summed-area
 - **Where the shapes come from.** `polygonDomain` takes rings directly, so an MDV gate passes as is.
   `src/datasource` still has no SpatialData `shapes` loader to feed it. Raster `labels` and tissue
   masks only need resampling to the world grid.
-- **Polygon interior test is O(edges) per anchor.** That is fine for gates, which have hundreds of
-  vertices. A traced tissue outline with 10⁴ vertices over 10⁵ cells would want an edge grid.
 - **The `COVID_SAMPLE_17_*` geometry is unknown.** The MDV project carries region images with W×H.
   Whether it carries the acquisition outline is unchecked. The fallback is a concave hull of the
   cells, which sits on the safe (tight) side by source 4. It hugs boundary cells, though, so measure
