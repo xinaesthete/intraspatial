@@ -529,6 +529,77 @@ export function projectMode(gram: GramResult, modes: CoLocationModes, k: number)
 }
 
 /**
+ * The whitening matrix `A = Λ^{-1/2} Vᵀ` truncated to `m` modes, row-major (m rows of K).
+ *
+ * Eigenvalues are floored before the inverse square root: `corr` is PSD by construction but its
+ * trailing eigenvalues can be zero to machine precision (K channels spanning fewer than K
+ * dimensions — perfectly collinear genes will do it), and 1/√0 would turn one pixel of numerical
+ * noise into an infinite distance.
+ */
+export function whiteningMatrix(vectors: Float64Array, values: Float64Array, K: number, m: number): Float64Array {
+  const floor = Math.max(values[0] ?? 1, 1e-12) * 1e-6;
+  const out = new Float64Array(m * K);
+  for (let k = 0; k < m; k++) {
+    const inv = 1 / Math.sqrt(Math.max(values[k] ?? 0, floor));
+    for (let a = 0; a < K; a++) out[k * K + a] = inv * (vectors[k * K + a] ?? 0);
+  }
+  return out;
+}
+
+/** Standardise raw raster values at a pixel into the `z` a wand reference is expressed in. */
+export function standardise(raw: ArrayLike<number>, mean: ArrayLike<number>, sd: ArrayLike<number>): Float64Array {
+  const out = new Float64Array(mean.length);
+  for (let a = 0; a < mean.length; a++) out[a] = sd[a]! > 0 ? ((raw[a] ?? 0) - mean[a]!) / sd[a]! : 0;
+  return out;
+}
+
+/** The standardised channel vector at one window pixel (row 0 = top) — a wand reference taken from
+ *  the CPU rasters, as `probeChannels` takes one from the GPU's. */
+export function pixelZ(gram: Pick<GramResult, "rasters" | "mean" | "sd" | "width" | "height">, col: number, row: number): Float64Array {
+  const P = gram.width * gram.height;
+  const q = Math.max(0, Math.min(gram.height - 1, row)) * gram.width + Math.max(0, Math.min(gram.width - 1, col));
+  const raw = Array.from(gram.mean, (_, a) => gram.rasters[a * P + q]!);
+  return standardise(raw, gram.mean, gram.sd);
+}
+
+/**
+ * The wand's whitened distance `d(p) = |A (z(p) − z_ref)|` at every window pixel: "how unlike the
+ * reference is this place", in the metric `gramTerrain.ts` derives. `A` is `whiteningMatrix(…, m)`.
+ *
+ * The CPU twin of `sampleWhitened(...).w` in `similarityWgsl.ts`, term for term, so a mask taken at
+ * `d ≤ tolerance` is the region the GPU outline draws — up to f32 rounding right at the level set.
+ * Threshold it with `maskWhere` to measure statistics over "places like this one".
+ */
+export function similarityField(
+  gram: Pick<GramResult, "rasters" | "mean" | "sd" | "width" | "height" | "labels">,
+  whitening: Float64Array,
+  m: number,
+  zRef: Float64Array,
+): Float64Array {
+  const K = gram.labels.length;
+  if (whitening.length < m * K) throw new Error(`similarityField: whitening has ${whitening.length} entries, ${m}×${K} needed`);
+  if (zRef.length !== K) throw new Error(`similarityField: reference has ${zRef.length} channels, the Gram ${K}`);
+  const P = gram.width * gram.height;
+  const u = new Float64Array(m * P);
+  for (let a = 0; a < K; a++) {
+    const mu = gram.mean[a]!;
+    const inv = gram.sd[a]! > 0 ? 1 / gram.sd[a]! : 0;
+    const zr = zRef[a]!;
+    for (let q = 0; q < P; q++) {
+      const dz = (gram.rasters[a * P + q]! - mu) * inv - zr;
+      for (let k = 0; k < m; k++) u[k * P + q]! += whitening[k * K + a]! * dz;
+    }
+  }
+  const d = new Float64Array(P);
+  for (let q = 0; q < P; q++) {
+    let s = 0;
+    for (let k = 0; k < m; k++) s += u[k * P + q]! ** 2;
+    d[q] = Math.sqrt(s);
+  }
+  return d;
+}
+
+/**
  * Build one-hot channels from a flat labelled cloud — the cell-type case, in the shape
  * `crossPCFMatrix` already takes.
  */

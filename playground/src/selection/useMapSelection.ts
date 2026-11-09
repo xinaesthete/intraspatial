@@ -19,6 +19,7 @@ import type { PointerInfo } from "../deck/SpatialDeckView";
 import { BoundaryLayer } from "../wand/BoundaryLayer";
 import { type GramView, useBoundaryField } from "../wand/useBoundaryField";
 import { useWandSettings } from "../wand/useWandSettings";
+import { boundarySummary, patchSummary } from "../wand/WandPanel";
 import { needsExperiments, type Patch, wandPatch, wandPatchOnGraph } from "../wand/wandPatch";
 import { useMapTools } from "./useMapTools";
 import { type PatchAt, type PressPhase, useMaskPainting } from "./useMaskPainting";
@@ -197,11 +198,11 @@ export function useMapSelection(
       onShow: setShow,
       wand,
       theta: thetaNow,
-      bounds: boundsNow,
+      bounds: boundarySummary(boundsNow),
       channels: g?.res.labels.length,
       twoScale,
       modes,
-      patch: paint.patch,
+      patch: patchSummary(paint.patch),
       brushR,
       mask: paint.mask,
       onClear: paint.clear,

@@ -4,9 +4,25 @@
 import type { CoLocationModes } from "../../../src/spatial/gram";
 import { Explain } from "../transcript/Explain";
 import { maskArea, type WorldMask } from "../selection/worldMask";
+import type { BoundaryField } from "./boundaryStrength";
 import type { BoundaryNow } from "./useBoundaryField";
 import { WAND_PRESETS, type WandPresetName, type WandSettingsState } from "./useWandSettings";
 import type { Patch } from "./wandPatch";
+
+// Only the numbers the panel reads. React's dev build diffs changed props into the Performance panel
+// and walks a typed array element by element: a patch's mask or the field's raster cost seconds a click.
+/** What the panel shows of the boundary field. */
+export type BoundarySummary = Pick<BoundaryNow, "sigma2" | "q"> & Pick<BoundaryField, "quantiles">;
+/** What the panel shows of the wand's patch. */
+export type PatchSummary = Pick<Patch, "count" | "total" | "dEdge" | "gated" | "moved" | "scales">;
+
+export function boundarySummary(b: BoundaryNow | undefined): BoundarySummary | undefined {
+  return b && { sigma2: b.sigma2, q: b.q, quantiles: b.field.quantiles };
+}
+
+export function patchSummary(p: Patch | undefined): PatchSummary | undefined {
+  return p && { count: p.count, total: p.total, dEdge: p.dEdge, gated: p.gated, moved: p.moved, scales: p.scales };
+}
 
 const PRESET_NAMES = Object.keys(WAND_PRESETS) as WandPresetName[];
 
@@ -16,17 +32,19 @@ interface Props {
   readonly wand: WandSettingsState;
   /** θ in effect: the chosen one, or the window's 90th percentile. */
   readonly theta: number;
-  readonly bounds: BoundaryNow | undefined;
+  readonly bounds: BoundarySummary | undefined;
   /** The window's channel count, the most main modes there can be. */
   readonly channels: number | undefined;
   readonly modes: CoLocationModes | undefined;
   /** The broad scale's radius and map, once computed, when judging at two scales. */
   readonly broad?: { radius: number; raster: { width: number; height: number } } | undefined;
+  /** Why the broad scale could not be computed, shown in place of "computing…". */
+  readonly broadError?: string | undefined;
   /** Whether the page can compute a broader scale; without it the option is hidden. */
   readonly twoScale?: boolean;
   /** What the map's channels mix, for the heading: "genes", "cells". */
   readonly mixtures: string;
-  readonly patch: Patch | undefined;
+  readonly patch: PatchSummary | undefined;
   readonly brushR: number;
   readonly mask: WorldMask | undefined;
   readonly onClear: () => void;
@@ -43,6 +61,7 @@ export function BoundaryPanel({
   channels,
   modes,
   broad,
+  broadError,
   patch,
   brushR,
   mask,
@@ -133,7 +152,12 @@ export function BoundaryPanel({
           <label className="check">
             <input type="checkbox" checked={s.twoScale} onChange={(e) => set("twoScale", e.target.checked)} />
             Judge the patch at a broader neighbourhood too
-            {s.twoScale && (broad ? ` (r ${broad.radius} µm*, map ${broad.raster.width}×${broad.raster.height})` : " (computing…)")}
+            {s.twoScale &&
+              (broad
+                ? ` (r ${broad.radius} µm*, map ${broad.raster.width}×${broad.raster.height})`
+                : broadError
+                  ? ` (failed: ${broadError})`
+                  : " (computing…)")}
           </label>
         )}
         {twoScale && s.twoScale && (
@@ -174,8 +198,8 @@ export function BoundaryPanel({
           <input
             type="range"
             min={0}
-            max={bounds ? bounds.field.quantiles.max : 10}
-            step={(bounds?.field.quantiles.max ?? 10) / 200}
+            max={bounds ? bounds.quantiles.max : 10}
+            step={(bounds?.quantiles.max ?? 10) / 200}
             value={theta}
             onChange={(e) => set("theta", Number(e.target.value))}
           />
@@ -188,8 +212,8 @@ export function BoundaryPanel({
       </details>
       {bounds && (
         <p className="hint">
-          Strength per radius r: median {bounds.field.quantiles.p50.toPrecision(3)} · 90% {bounds.field.quantiles.p90.toPrecision(3)} · 99%{" "}
-          {bounds.field.quantiles.p99.toPrecision(3)} · max {bounds.field.quantiles.max.toPrecision(3)}
+          Strength per radius r: median {bounds.quantiles.p50.toPrecision(3)} · 90% {bounds.quantiles.p90.toPrecision(3)} · 99%{" "}
+          {bounds.quantiles.p99.toPrecision(3)} · max {bounds.quantiles.max.toPrecision(3)}
           {patch
             ? ` · cell: ${patch.count.toLocaleString()} of ${patch.total.toLocaleString()} map pixels (${((100 * patch.count) / patch.total).toFixed(1)}%)${patch.dEdge !== undefined ? `, d at its edge ≈ ${patch.dEdge.toFixed(2)}${patch.gated ? `, ${(100 * patch.gated).toFixed(0)}% of the edge set by the tolerance` : ""}${patch.moved ? ", the pointer is on a branch narrower than the opening: nothing to pick" : ""}${patch.scales ? ` (broad cell ${(100 * patch.scales.broad).toFixed(1)}%, narrow ${(100 * patch.scales.narrow).toFixed(1)}%)` : ""}` : ""}`
             : ""}
