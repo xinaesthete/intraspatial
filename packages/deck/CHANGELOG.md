@@ -1,5 +1,15 @@
 # @intraspatial/deck
 
+## 0.1.2
+
+### Patch Changes
+
+- Updated dependencies [b9cf5ae]
+- Updated dependencies [b9cf5ae]
+- Updated dependencies [3a20a06]
+- Updated dependencies [15635f9]
+  - intraspatial@0.2.0
+
 ## 0.1.1
 
 ### Patch Changes
