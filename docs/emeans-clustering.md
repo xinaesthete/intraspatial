@@ -49,10 +49,9 @@ These are:
 2. **No hyperparameters beyond Lloyd's.** Ours is a catalogue of self-describing ops. An op that
    needs a batch size and learning rate tuned per dataset would be a poor entry. The scaling laws
    remove that.
-3. **Mini-batches suit streamed data.** Pixel clustering over multiplexed imagery (IMC/CODEX,
-   10⁷–10⁸ pixels × 30–50 channels, k ≈ 100) does not need to be resident. Batches can be drawn from
-   tiles as the datasource delivers them, and the full-assignment pass at the end can be tiled the
-   same way. This is our case where the paper's large-n speedups apply directly.
+3. **It fits the tiled, lazy model.** Fitting needs only a sample, and points-zarr's coarse
+   levels are one. Assignment is per point against a frozen table, so it runs tile by tile as the
+   viewport loads. Nothing has to be resident at full resolution (see "Applications").
 4. **The GPU kernels are ones we already have**, as listed under slice 4 below.
 
 ## What we measured (slice 1, CPU golden)
@@ -88,81 +87,103 @@ This is also about 4× less assignment work (6 passes against 26). On the host, 
 
 ## Applications
 
-All three target domains have the same shape: compute a descriptor per entity, standardise it, fit
-e-means on a stream of samples, then assign everything tile by tile. The output is a label per
-entity (a column, or a raster) plus a centroid table. The descriptor is usually a *windowed local
-statistic* (what is around this point), which the repo already computes. So "neighbourhood
-descriptor → e-means" is one op that serves cells, transcripts and pixels alike. That fits the
-intra-spatial thesis.
+There is no committed application yet. e-means is in the toolbox because it is a better default
+than Lloyd. The notes below record how it would be used in the settings we expect, so that the API
+fits them.
 
-### Spatial transcripts (Atera and similar imaging platforms)
+Every use has the same shape: compute a descriptor per entity, standardise it, fit e-means, then
+assign. The output is a label per entity (a column, or a raster) plus a centroid table. The
+descriptor is usually a *windowed local statistic* (what is around this point), which the repo
+already computes. So "neighbourhood descriptor → e-means" is one op that serves cells, transcripts
+and pixels alike.
 
-- **Segmentation-free domains.** For each transcript, or each bin, take the smoothed gene
-  composition around it (the KDE splats behind `transcriptChannels.ts`), then cluster. This is the
-  Points2Regions / SSAM approach, which is mini-batch k-means at heart. The sizes are n ≈ 10⁸–10⁹
-  transcripts per slide and d = genes (hundreds to thousands; reduce with PCA first, `pcaGpu`).
-  k ≈ 10–30. That is far too large to be resident, so it needs streamed batches.
-- **Large-k sketching.** A k ≈ 4096 codebook summarises a slide's local compositions. Downstream
-  statistics then run on the centroids, weighted by their counts. This is the paper's own regime,
-  where the ~10× epoch saving and the revival both matter most.
-- Count data needs `log1p` and library-size normalisation *before* clustering. k-means is
-  Euclidean, so raw counts let the highly expressed genes decide the clusters.
+### The operating model: fit on a sample, assign lazily per tile
+
+The data is zarr: points-zarr through sd.js (experimental) for transcripts, and zarr / OME-Zarr
+pyramids for imagery and environmental grids. Work is tiled and driven lazily by the viewport.
+Two consequences:
+
+- **Never fit on what is in view.** Clusters fitted on the viewport would change as you pan. The
+  same structure would get different labels in different places. So fit **once**, on a sample of
+  the whole element. Then **assign** each tile as the viewport loads it, against the frozen
+  centroid table. Assignment is per point and deterministic, so labels are stable across pans
+  and zooms, and two tiles always agree where they meet. (Descriptors near a tile edge need an
+  apron, as `transcriptChannels.ts` already handles.)
+- **The sample is often free.** In points-zarr the coarser levels are *uniform random samples*
+  of the element. `openPointsSource` serves them with `sampleFraction`. A coarse level is
+  therefore an unbiased training set of a size we choose. The scaling laws then take n = the
+  sample size, and the fit costs a few passes over that sample, not over 10⁹ points. Image
+  pyramids need care here. A **subsampled** level is fine (IMC's is, per
+  `covid-spatialdata-migration.md`). A **mean-pooled** level is not: its pixels are blends of
+  classes, which pulls centroids towards mixtures. For mean-pooled pyramids, sample level-0
+  pixels from random tiles instead.
+- **Shuffle across tiles.** This caveat is specific to the EMA. The update forgets old batches at
+  rate α. Fed tile after tile, the centroids would drift towards the region read last. Load the
+  training sample (or a spread of tiles) first, then batch it in shuffled order. Several slides
+  are the same problem one level up: batches must mix slides.
+
+### Whole-transcriptome points (Atera)
+
+Atera holds more than 10⁹ transcripts on a small sample, with whole-transcriptome panels of about
+18k genes. A dense per-entity gene vector (72 KB in f32) is out of the question, so the descriptor
+must be **reduced as it is built**. Give each gene a fixed embedding row `E[g]` (d′ ≈ 32–64,
+from PCA on a pseudo-bulk sample or from gene modules). The neighbourhood descriptor is then
+Σ over nearby transcripts of `E[gene]`: a d′-channel splat, which is exactly the
+projection of the neighbourhood's count vector. The cost is that it is linear. A `log1p` on
+counts does not commute with the projection, so normalise per gene (scale the rows of `E`)
+rather than per entity after the fact. This descriptor serves both uses:
+
+- **Segmentation-free domains** at k ≈ 10–30 (the Points2Regions / SSAM approach, which is
+  mini-batch k-means at heart);
+- **large-k sketching**, where a k ≈ 4096 codebook summarises the slide, and downstream statistics
+  run on centroids weighted by their counts. This is the paper's own regime.
 
 ### Several slides
 
-- **Fit once, assign everywhere.** Fit one centroid table on batches pooled across slides, then
-  assign each slide independently against the frozen table. Every slide gets the same niche
-  vocabulary, and a new slide can be labelled later without refitting. The table is small
-  (k × d), so it is a natural content-addressed graph node, which helps reproducibility (FAIR).
-- **The stream must interleave the slides.** This caveat is specific to the EMA. The update
-  forgets old batches at rate α. If it ran slide 1 and then slide 2, the centroids would drift
-  towards slide 2. Each batch should therefore mix slides. Sampling should be balanced (or
-  weighted) per slide, so a large slide doesn't dominate. The finalisation epoch averages over
-  everything, but by then the cluster *structure* has already been shaped by the stream order.
+- **One centroid table, every slide.** Fit on a sample pooled across slides, then assign each
+  slide against the frozen table. Every slide gets the same niche vocabulary, and a new slide can
+  be labelled later without refitting. The table is small (k × d), so it is a natural
+  content-addressed graph node (FAIR).
+- **Balance the sample per slide** (or weight it), so that a large slide does not dominate.
 - **Batch effects show up as clusters.** If slides differ technically, pooled k-means will split
   by slide. Integration is out of scope here, but a cheap diagnostic is in scope: a per-cluster ×
   per-slide count table, and its entropy. A cluster that lives on one slide is a warning sign,
   unless that slide really is different.
-- Serial sections given shared labels become comparable across z
-  ([`serial-section-alignment-and-multi-viewport.md`](serial-section-alignment-and-multi-viewport.md)).
 
-### Environmental data
+### Environmental grids (zarr)
 
-- **Unsupervised land-cover and environmental classes.** Pixels are clustered on stacked bands:
-  Sentinel-2 / Landsat bands, climate and soil layers, or a per-pixel time series (NDVI
-  phenology, with d = time steps). The sizes are n ≈ 10⁸–10¹⁰ pixels, d ≈ 5–50 and k ≈ 10–100.
-  GeoTIFF tiles already come through the datasource, so this is slice 5 below with a different
-  reader.
+- **Unsupervised environmental classes.** Pixels are clustered on stacked variables: bands,
+  climate and soil layers, or a per-pixel time series with d = time steps. The machinery is the
+  same tiled-zarr fit-then-assign as above.
 - **Area weights.** On a geographic (lat/lon) grid, pixel area shrinks with cos(latitude). Without
-  weights, high latitudes are over-counted. Weighted e-means is a small change: accumulate
-  `w·x` and `w` in place of `x` and 1. The same weights serve per-slide balancing above.
-- **Variables come in different units**, so standardise them (`standardise` / `whiteningMatrix`
-  in `gram.ts`). Nodata pixels must be excluded from both fitting and assignment, not written
-  as zeros.
-- **k-means ignores space.** For contiguous regions (*regionalisation*), add windowed local
-  statistics (smoothed neighbours) to the descriptor. This is the neighbourhood construction
-  again, which is why it is one op.
-- For clustering point locations (stations, sightings) in d ≤ 3, revival is off by default, as
-  noted above.
+  weights, high latitudes are over-counted. Weighted e-means is a small change: accumulate `w·x`
+  and `w` in place of `x` and 1. The same weights serve per-slide balancing.
+- **Variables come in different units**, so standardise them (`standardise` /
+  `whiteningMatrix` in `gram.ts`). Nodata (zarr `fill_value`) must be excluded from both fitting
+  and assignment, not treated as a value.
+- **k-means ignores space.** For contiguous regions, add windowed local statistics to the
+  descriptor. This is the neighbourhood construction again.
 
 ### What these add to the API
 
-The slice-1 `emeans` takes one resident array and returns everything at once. These applications
-need four more things:
+The slice-1 `emeans` takes one resident array and returns everything at once. The applications
+need:
 
-- a **fit / assign split**: `fit` returns the centroid table, and `assign` takes a frozen table;
+- a **fit / assign split**: `fit` returns the centroid table, and `assign` takes a frozen table
+  and runs per tile;
 - **per-sample weights** (area, slide balancing);
-- **batches from a source**: an iterator of batches rather than an array, interleaving across
-  slides or tiles, with the epoch counted as samples seen;
 - **masks** (nodata, out-of-domain), reusing `domain.ts` where the data is points.
+
+A streaming batch *source* is not needed. Because the fit runs on a sample that fits in memory,
+the resident-array `fit` is enough. Only `assign` needs to be tiled.
 
 ## Slices
 
 1. **CPU golden** — built. It is in f64, deterministic per seed, and pinned by tests: the schedule
    against the published laws, the Lloyd corner reproducing `lloyd` exactly, escape from the line
    trap, revival, and the d ≤ 3 default.
-2. **Fit/assign split, weights and a batch source** (CPU). This adds the four API needs above. It
-   comes before the op slices, because each of them needs it.
+2. **Fit/assign split, weights and masks** (CPU). This adds the API needs above. It comes before
+   the op slices, because each of them needs it.
 3. **Neighbourhood clustering op.** A k-hop (or radius) type-composition gather over the existing
    uniform-grid index, then `emeans`, giving a per-cell niche label and a centroid table (each
    niche's mean composition). This works on the CPU first, so it can be checked against
@@ -181,6 +202,6 @@ need four more things:
    GPU should default to the `"default"` batch law, to fill the device. The test is
    loss-equivalence to the golden within a bound, not label equality, since argmin can flip on
    near-ties.
-5. **Streamed pixel and transcript clustering.** Batches are pulled from tiles through the
-   datasource (OME-Zarr imagery, GeoTIFF, points tiles), with a tiled final assignment that writes
-   a label raster or column.
+5. **Tiled assignment over zarr.** Fit on a points-zarr sampled level (or on random level-0
+   tiles), then label tiles lazily as the viewport loads them. The output is a label column for
+   points, or a label raster for OME-Zarr imagery and environmental grids.
