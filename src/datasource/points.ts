@@ -43,6 +43,16 @@ export interface PointsTile {
   /** Share of the element's points this tile was read from, when it is a uniform random sample
    *  (a coarser level of a multiscale element). Absent means every point. Counts scale by its inverse. */
   readonly sampleFraction?: number;
+  /** Per feature code, the share of that feature's points this tile holds, when features were
+   *  sampled separately (a points-zarr subset read: rare genes whole, abundant ones sampled). A code
+   *  absent from it takes `sampleFraction`, or 1. */
+  readonly featureFractions?: ReadonlyMap<number, number>;
+}
+
+/** The share of a feature's points that `tile` holds: what one of its molecules stands for is the
+ *  inverse. */
+export function pointFraction(tile: Pick<PointsTile, "sampleFraction" | "featureFractions">, code: number): number {
+  return tile.featureFractions?.get(code) ?? tile.sampleFraction ?? 1;
 }
 
 /** Points as a reader returns them for a tile's (closed) bounds, before ownership is applied. */

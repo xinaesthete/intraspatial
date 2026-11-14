@@ -57,7 +57,23 @@ export interface PointsSource {
   readonly totalRows: number;
   /** Element space → its coordinate system, when the element declares one. */
   readonly space?: ResolvedSpace;
+  /**
+   * The same element, reading only these features' points (points-zarr only). The budget is shared
+   * by the selected features, so a small panel on a whole-transcriptome element is read from a much
+   * finer level than an all-features read would reach: on Atera, 6 998 marker molecules in a 400 µm
+   * tile instead of 427. Each feature picks its own level, so tiles carry `featureFractions`.
+   * The cost is a few range requests per feature per tile row, so it suits tens of features, not
+   * hundreds (`SUBSET_READ_MAX_FEATURES`).
+   */
+  readonly forFeatures?: (codes: readonly number[]) => PointsSource;
+  /** The features this source reads, when it is a {@link forFeatures} subset. */
+  readonly featureSubset?: readonly number[];
 }
+
+/** Most features a {@link PointsSource.forFeatures} read is worth it for. Measured on Atera (24 674
+ *  features): 62 genes cost about what an all-features read does, while 409 genes took 2 600–4 000
+ *  requests per tile against 66–94. */
+export const SUBSET_READ_MAX_FEATURES = 128;
 
 export interface OpenPointsOptions {
   /** Passthrough numeric columns to carry per point, e.g. `["qv"]`. */
@@ -169,7 +185,7 @@ async function openPointsZarr(
   const features = (catalog?.entries ?? []).map((e) => ({ code: e.code, name: e.name, count: e.count }));
   const levelFractions = pointsZarrLevelFractions(sdata, element);
   const pointBudget = opts.tilePointBudget ?? (await import("@spatialdata/core")).POINTS_TILE_TARGET_ROWS;
-  const loader: Loader<PointsTile> = {
+  const loaderFor = (featureCodes?: readonly number[]): Loader<PointsTile> => ({
     async getChunk(id) {
       const grid = gridAt(id.level);
       // sd.js filters `[min, max)`, so the far edges are pushed out a hair: `ownedTile` keeps a point
@@ -181,23 +197,34 @@ async function openPointsZarr(
       const bounds = { ...rect, maxX: lastX ? rect.maxX + pad : rect.maxX, maxY: lastY ? rect.maxY + pad : rect.maxY };
       // The level is chosen for the UNCLIPPED tile, so an edge tile samples like its neighbours.
       const levelBounds = { ...rect, maxX: rect.minX + grid.tileSize, maxY: rect.minY + grid.tileSize };
-      const res = await el.loadPointsZarrInBounds({ bounds, levelBounds, pointBudget });
+      const res = await el.loadPointsZarrInBounds({ bounds, levelBounds, pointBudget, ...(featureCodes ? { featureCodes } : {}) });
       const [xs, ys] = res.data;
       if (!xs || !ys) throw new Error(`points/${element}: the points-zarr read returned no coordinates`);
       const tile = ownedTile(grid, id, { xs, ys, codes: res.featureCodes });
+      const fractionOf = (level: number): number => {
+        const f = level === 0 ? 1 : levelFractions?.[level];
+        if (!f) throw new Error(`points/${element}: tile served from level ${level}, whose share of the points is unknown`);
+        return f;
+      };
+      if (featureCodes) {
+        // One level per selected feature, in the order asked.
+        const featureFractions = new Map<number, number>();
+        featureCodes.forEach((code, i) => {
+          const level = res.levels[i] ?? 0;
+          if (level > 0) featureFractions.set(code, fractionOf(level));
+        });
+        return featureFractions.size ? { ...tile, featureFractions } : tile;
+      }
       // An all-features read is served from one level.
       const level = res.levels[0] ?? 0;
-      if (level === 0) return tile;
-      const sampleFraction = levelFractions?.[level];
-      if (!sampleFraction) throw new Error(`points/${element}: tile served from level ${level}, whose share of the points is unknown`);
-      return { ...tile, sampleFraction };
+      return level === 0 ? tile : { ...tile, sampleFraction: fractionOf(level) };
     },
-  };
-  return {
+  });
+  const source: PointsSource = {
     element,
     grid: gridAt(finest),
     gridFor,
-    loader,
+    loader: loaderFor(),
     features,
     columns: [],
     missingColumns: [...(opts.columns ?? [])],
@@ -205,7 +232,12 @@ async function openPointsZarr(
     ...(levelFractions ? { levelFractions } : {}),
     totalRows: meta.totalRows,
     space: elementSpace(sdata, element),
+    forFeatures: (codes) => {
+      const featureSubset = [...codes];
+      return { ...source, loader: loaderFor(featureSubset), featureSubset };
+    },
   };
+  return source;
 }
 
 /** Each level's `points:n_points` over level 0's, from the element's `multiscales` layout — on the

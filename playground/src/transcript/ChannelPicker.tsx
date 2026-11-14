@@ -45,7 +45,7 @@ export function ChannelPicker({ features, selection, onChange, missing }: Props)
             key={name}
             type="button"
             className={selection.sets.includes(name) ? "chip on" : "chip"}
-            title={setMembers(name, features).join(", ")}
+            title={memberList(setMembers(name, features))}
             onClick={() => toggleSet(name)}
           >
             {name}
@@ -87,4 +87,9 @@ export function ChannelPicker({ features, selection, onChange, missing }: Props)
       )}
     </div>
   );
+}
+
+/** A set's members for a tooltip: all of a marker set, the first few of thousands of control probes. */
+function memberList(names: readonly string[], max = 40): string {
+  return names.length <= max ? names.join(", ") : `${names.slice(0, max).join(", ")} … and ${names.length - max} more`;
 }

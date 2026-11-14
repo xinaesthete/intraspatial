@@ -75,9 +75,16 @@ export interface EmeansOptions {
   /** Revival threshold as a fraction of the mean EMA count; 0 disables. Default 0 when
    *  d ≤ 3, else 0.1. */
   revive?: number;
-  /** Optional initial centroids (k × d, row-major) instead of k distinct random points. */
+  /** Optional initial centroids (k × d, row-major) instead of seeding from the data. */
   init?: ArrayLike<number>;
+  /** How centroids are seeded from the data when `init` is not given: k distinct random points
+   *  (default, as the reference implementation does) or k-means++ (Arthur & Vassilvitskii 2007).
+   *  Prefer k-means++ when clusters may be well separated: e-means escapes a bad start only
+   *  through points between clusters, so with none there it keeps the start it was given. */
+  seeding?: Seeding;
 }
+
+export type Seeding = "random" | "kmeans++";
 
 export interface KMeansResult {
   /** k × d, row-major. */
@@ -187,12 +194,47 @@ function shuffled(rng: Rng, n: number): Int32Array {
   return p;
 }
 
-/** k distinct points as the starting centroids (partial Fisher–Yates). */
-function seedCentroids(data: ArrayLike<number>, n: number, d: number, k: number, rng: Rng, init?: ArrayLike<number>): Float64Array {
+/** Starting centroids: the given `init`, k-means++, or k distinct random points (partial Fisher–Yates). */
+function seedCentroids(
+  data: ArrayLike<number>,
+  n: number,
+  d: number,
+  k: number,
+  rng: Rng,
+  init?: ArrayLike<number>,
+  seeding: Seeding = "random",
+): Float64Array {
   const C = new Float64Array(k * d);
   if (init) {
     if (init.length !== k * d) throw new Error(`k-means init has ${init.length} values; expected k·d = ${k * d}`);
     for (let i = 0; i < k * d; i++) C[i] = init[i]!;
+    return C;
+  }
+  if (seeding === "kmeans++") {
+    // Each next seed is drawn with probability ∝ its squared distance to the nearest seed so far.
+    const dist = new Float64Array(n).fill(Number.POSITIVE_INFINITY);
+    let pick = Math.floor(rng() * n);
+    for (let j = 0; j < k; j++) {
+      for (let t = 0; t < d; t++) C[j * d + t] = data[pick * d + t]!;
+      if (j === k - 1) break;
+      let total = 0;
+      for (let i = 0; i < n; i++) {
+        let s = 0;
+        for (let t = 0; t < d; t++) s += (data[i * d + t]! - C[j * d + t]!) ** 2;
+        if (s < dist[i]!) dist[i] = s;
+        total += dist[i]!;
+      }
+      // All remaining points coincide with a seed: fall back to any point not yet drawn.
+      let u = rng() * total;
+      pick = n - 1;
+      for (let i = 0; i < n; i++) {
+        u -= dist[i]!;
+        if (u < 0) {
+          pick = i;
+          break;
+        }
+      }
+    }
     return C;
   }
   const idx = shuffled(rng, n);
@@ -252,7 +294,7 @@ export function emeans(data: ArrayLike<number>, n: number, d: number, k: number,
   const cosine = (opts.schedule ?? "cosine") === "cosine";
   const rng = mulberry32(opts.seed ?? 0);
 
-  const C = seedCentroids(data, n, d, k, rng, opts.init);
+  const C = seedCentroids(data, n, d, k, rng, opts.init, opts.seeding);
   const N = new Float64Array(k).fill(INIT_USAGE);
   const cnt = new Float64Array(k);
   const sum = new Float64Array(k * d);
@@ -324,6 +366,7 @@ export interface LloydOptions {
   iters?: number;
   seed?: number;
   init?: ArrayLike<number>;
+  seeding?: Seeding;
 }
 
 /**
@@ -334,7 +377,7 @@ export function lloyd(data: ArrayLike<number>, n: number, d: number, k: number, 
   validate(n, d, k, data.length);
   const iters = Math.max(1, Math.floor(opts.iters ?? 25));
   const rng = mulberry32(opts.seed ?? 0);
-  const C = seedCentroids(data, n, d, k, rng, opts.init);
+  const C = seedCentroids(data, n, d, k, rng, opts.init, opts.seeding);
   const labels = new Int32Array(n);
   const N = new Float64Array(k);
   const sum = new Float64Array(k * d);

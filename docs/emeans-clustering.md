@@ -1,8 +1,10 @@
 # k-means by e-means
 
 Status: **design note** (2026-11-14). **Slice 1 is built**: the CPU golden `src/spatial/emeans.ts`
-(`emeans`, `lloyd`, `emeansSchedule`, `assignNearest`), exported from `intraspatial/spatial`. Slices
-2–5 are not.
+(`emeans`, `lloyd`, `emeansSchedule`, `assignNearest`; k-means++ seeding as an option), exported from
+`intraspatial/spatial`. So is its **first use: gene modules** for whole-transcriptome points
+(`src/spatial/geneModules.ts`), now a channel option on the transcript-modes page, which also reads
+the SD.js demo's Atera store well (see "Built: gene modules on Atera" below). Slices 2–5 are not.
 
 Source: Bessa, Mazaré, Szilvasy, Touvron, Picard, Douze & Jégou, *e-means: outperforming k-means (in
 one-tenth the epochs)*, [arXiv:2611.09501](https://arxiv.org/abs/2611.09501) (Meta FAIR, 2026). The
@@ -137,6 +139,69 @@ rather than per entity after the fact. This descriptor serves both uses:
   mini-batch k-means at heart);
 - **large-k sketching**, where a k ≈ 4096 codebook summarises the slide, and downstream statistics
   run on centroids weighted by their counts. This is the paper's own regime.
+
+### Built: gene modules on Atera
+
+The transcript-modes page computes its co-location modes from a handful of channels, so on a
+whole-transcriptome panel the genes have to be reduced first. The page now has a second kind of
+channel, **gene modules** (`geneModules.ts`, run in a worker):
+
+1. **Sample the whole element**, never the view. The page's own tiles over the full extent come
+   from a points-zarr coarse level, which is a uniform random sample. On Atera that is level 4:
+   4.6M of 1.19B molecules, in 40 tiles.
+2. **Embed the genes.** Bin the sample at a side giving ~750 molecules per bin (117 µm here).
+   Normalise and log each bin, then standardise each gene (scanpy's recipe). A randomized PCA runs
+   on the sparse matrix without densifying it. Only components above the **Marchenko–Pastur noise
+   edge** are kept: 9 of 30 on Atera. Keeping the noise components let noise genes borrow
+   structure from them, and the unit test caught that. A gene's embedding is its correlations with
+   the kept components.
+3. **Cluster with e-means.** Genes whose communality is below 0.1 are left out (12k of 12.4k at
+   this sample depth). The rest are clustered with **k-means++ seeding and 5 restarts**. Gene
+   clusters can be well separated, and e-means cannot repair a bad start across empty space.
+
+Each module is a disjoint gene set with weight 1, which is exactly the channel `transcriptChannels`
+already takes. So `g`, the modes, the lock and the wand all work unchanged. Raw PCA axes would not:
+they are signed and overlapping, and the Gram refuses both.
+
+On Atera kidney the modules are recognisable anatomy. Each line gives a structure and its top genes:
+
+| Structure                          | Top genes                |
+| ---------------------------------- | ------------------------ |
+| Proximal tubule                    | PCK1, LRP2, GATM         |
+| Thick ascending limb               | UMOD, SLC12A1            |
+| Distal convoluted tubule           | CALB1, SLC12A3           |
+| Collecting duct                    | AQP2, GATA3, SCNN1G      |
+| Podocytes                          | NPHS1, NPHS2, PODXL      |
+| Vascular smooth muscle / pericytes | TAGLN, MYH11, NOTCH3     |
+| Immune                             | TRAC, IL7R, CD53, MS4A1  |
+
+The fit takes ~6 s on the host.
+
+**Reading picked genes on a whole-transcriptome element.** An all-genes read shares each tile's
+point budget among 24,674 features, so a small panel gets almost none of it. A 400 µm tile read
+from the 1/16 level held 427 of the starter sets' molecules. sd.js can read a feature subset, with
+each gene at the finest level its share of the budget allows: the same tile then held all 6,998,
+from level 0. `PointsSource.forFeatures` uses that for panels of at most 128 genes. Larger panels
+read all genes, because subset reads cost requests per gene: 62 genes took 249–695 requests per
+tile against 66–94, and 409 genes took 2,600–4,000.
+
+Because each gene comes from its own level, every molecule is now **weighted by 1/(its gene's
+sample fraction)** (`pointFraction`, `PointsTile.featureFractions`). Otherwise a gene set's rare
+genes, read whole, would outweigh its abundant ones, which are sampled. Uniformly sampled tiles get
+the same treatment, so densities are in molecules per µm² at every zoom.
+
+The default selection drops "Negative controls" when they are many (6,624 probes on Atera). The
+"every molecule at any zoom" option is withheld above 50M molecules.
+
+**What was checked, and how.** The CPU pieces have unit tests. The randomized PCA matches a dense
+eigendecomposition to 8 decimals, and the modules recover planted programs. In headless Chromium
+against the real store, the page opened Atera, read its tiles and fitted the modules in the worker.
+The WebGPU Gram could not run there: headless Chromium in this sandbox cannot create the shared
+image a WebGPU canvas presents to, which breaks deck's device. So the rest was run in Node on real
+Atera tiles through the Gram's CPU twin, which the GPU path is tested against: tiles → weighted
+channels → `gramMatrix` → modes. Both channel kinds gave PSD modes. The marker subset read all 62
+genes from level 0, 192k molecules in a 1.6 mm window. An all-genes read at that zoom comes from the
+1/64 level, which would leave roughly 3k.
 
 ### Several slides
 

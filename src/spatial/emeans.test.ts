@@ -150,6 +150,23 @@ describe("emeans", () => {
     expect(emeans(x, n, 2, 5, { init, revive: 0.1 }).splits).toBeGreaterThan(0);
   });
 
+  it("seeds with k-means++ when asked, which finds well-separated clusters random seeding misses", () => {
+    // Three tight, far-apart blobs: no point lies between them, so a bad start is never repaired.
+    const n = 900;
+    const x = mixture(
+      8,
+      n,
+      4,
+      [0, 1, 2].map((c) => ({ w: 1, mu: [c * 50, 0, 0, c * 50], s: 0.5 })),
+    );
+    const seeds = Array.from({ length: 10 }, (_, s) => s);
+    const random = seeds.map((seed) => emeans(x, n, 4, 3, { seed }).mse);
+    const plusPlus = seeds.map((seed) => emeans(x, n, 4, 3, { seed, seeding: "kmeans++" }).mse);
+    const best = Math.min(...random, ...plusPlus);
+    expect(plusPlus.every((m) => m < 1.01 * best)).toBe(true);
+    expect(random.some((m) => m > 2 * best)).toBe(true);
+  });
+
   it("rejects malformed input", () => {
     const x = new Float64Array(20);
     expect(() => emeans(x, 10, 2, 0)).toThrow(/k ≥ 1/);

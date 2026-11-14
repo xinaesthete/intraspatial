@@ -8,6 +8,7 @@ export * from "./edgeCorrection";
 export * from "./emeans";
 export * from "./eigenSym";
 export * from "./envelope";
+export * from "./geneModules";
 export * from "./gram";
 export * from "./kernelAnalysis";
 export * from "./kernelSpectrum";

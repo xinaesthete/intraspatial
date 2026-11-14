@@ -16,7 +16,7 @@ import { type ModeBasis, modeBasis } from "../../../src/gpu/spatial/gramModes";
 import { type CoLocationModes, radiusToCover } from "../../../src/spatial/gram";
 import { invert2, rectThrough2 } from "../../../src/spatial/ngffTransform";
 import { listImageElements } from "../datasource/imageContext";
-import { DEFAULT_UNTILED_BUDGET, listPointsElements } from "../datasource/pointsTileLoader";
+import { DEFAULT_UNTILED_BUDGET, listPointsElements, type PointsSource, SUBSET_READ_MAX_FEATURES } from "../datasource/pointsTileLoader";
 import { SpatialDeckView } from "../deck/SpatialDeckView";
 import { SHARED_DEVICE_PROPS, useSharedDevice } from "../deck/useSharedDevice";
 import { useAsync, useSettled } from "../hooks/useAsync";
@@ -31,8 +31,9 @@ import { WandPanel } from "../modes/WandPanel";
 import { useBoundarySettings, useMapSelection } from "../selection/useMapSelection";
 import { BoundaryPanel } from "../wand/WandPanel";
 import { ChannelPicker } from "./ChannelPicker";
-import { buildChannels, NEGATIVE_CONTROLS, type Selection, STARTER_SETS } from "./channelModel";
+import { buildChannels, channelCodes, defaultSelection, type Selection } from "./channelModel";
 import { TranscriptExplainers } from "./TranscriptExplainers";
+import { useGeneModules } from "./useGeneModules";
 import { useTranscriptGram } from "./useTranscriptGram";
 
 /** The raster stack's size on the device, in MiB. `bytesPerWordRatio` of 2 reports what the same
@@ -45,8 +46,16 @@ function rasterMiB(
   return ((words * 4 * scale) / (1024 * 1024)).toFixed(1);
 }
 
-const DEFAULT_STORE = "http://localhost:8080/xenium_2.q0.001.htj2k.index-permutations.zarr/";
-const DEFAULT_SELECTION: Selection = { sets: [...STARTER_SETS.map((s) => s.name), NEGATIVE_CONTROLS], genes: [] };
+/** The SD.js demo's default store (`DEFAULT_DEMO_SPATIALDATA_URL` in @spatialdata/vis, not exported
+ *  from its root): Atera whole-transcriptome kidney, 1.19 billion molecules of 24 674 features in a
+ *  points-zarr element. `?url=` opens another store, as in the SD.js demo. */
+const ATERA_DEMO = "https://oranus.cmd.ox.ac.uk/publicprojects/project/13/spatial/Atera_v1_WTA_Kidney_non_diseased_FFPE.zarr";
+const DEFAULT_STORE = new URLSearchParams(location.search).get("url")?.trim() || ATERA_DEMO;
+/** Past this many molecules, "every molecule at any zoom" is not offered: zoomed out, it would read
+ *  all of them (on Atera, 1.19 billion). Subset reads keep a small panel at full depth anyway. */
+const EXACT_MAX_ROWS = 50_000_000;
+const DEFAULT_MODULES = 12;
+type ChannelMode = "picked" | "modules";
 /** How long the view must rest before the window moves to it. */
 const SETTLE_MS = 50;
 const preferHe = (names: readonly string[]) => names.find((n) => /he/i.test(n)) ?? names[0];
@@ -83,7 +92,9 @@ export function TranscriptModes() {
   const [halfRasters, setHalfRasters] = useState(false);
   const [follow, setFollow] = useState(true);
   const [pinned, setPinned] = useState<Rect>();
-  const [selection, setSelection] = useState(DEFAULT_SELECTION);
+  const [picked, setPicked] = useState<Selection>();
+  const [channelMode, setChannelMode] = useState<ChannelMode>("picked");
+  const [moduleCount, setModuleCount] = useState(DEFAULT_MODULES);
   const style = useMapStyle({ chromaWeight: 0.5, opacity: 0.75 });
   const { saturate, chromaWeight, opacity } = style;
   const [lock, setLock] = useState<ModeLock>();
@@ -140,12 +151,25 @@ export function TranscriptModes() {
     [window],
   );
 
-  const tiles = usePointsTiles(source.value, window, rEff);
-  const sampled = sampleNote(tiles.value?.tiles);
-  const built = useMemo(
-    () => (source.value ? buildChannels(selection, source.value.features) : { channels: [], missing: {} }),
-    [selection, source.value],
+  // Channels: genes and sets picked by hand, or gene modules fitted once to the whole element.
+  const features = source.value?.features;
+  const selection = useMemo(
+    () => picked ?? (features ? defaultSelection(features, SUBSET_READ_MAX_FEATURES) : undefined),
+    [picked, features],
   );
+  const modules = useGeneModules(source.value, channelMode === "modules", moduleCount);
+  const built = useMemo(() => {
+    if (channelMode === "modules") return { channels: modules.value?.channels ?? [], missing: {} };
+    return features && selection ? buildChannels(selection, features) : { channels: [], missing: {} };
+  }, [channelMode, modules.value, selection, features]);
+  // A small panel reads only its own genes, each from the finest level its share of the budget
+  // allows; a large one (modules: hundreds of genes) reads every gene, which costs far fewer requests.
+  const codesKey = channelCodes(built.channels).join(",");
+  const readSource = useMemo(() => subsetSource(source.value, codesKey), [source.value, codesKey]);
+  const subset = readSource?.featureSubset?.length;
+
+  const tiles = usePointsTiles(readSource, window, rEff);
+  const sampled = sampleNote(tiles.value?.tiles);
   // No compute until deck's device is ours: resources made on another device could not be drawn.
   // Memoised by hand (no React Compiler here): a fresh `[]` each render is a new dep for the Gram,
   // which reruns, sets state, renders…
@@ -182,7 +206,7 @@ export function TranscriptModes() {
   // raster, computed only while it is asked for.
   const broadOn = boundaries.show && ws.twoScale;
   const rBroad = Math.round(rEff * ws.broad * 10) / 10;
-  const tilesBroad = usePointsTiles(source.value, broadOn ? window : undefined, rBroad);
+  const tilesBroad = usePointsTiles(readSource, broadOn ? window : undefined, rBroad);
   const gramBroad = useTranscriptGram(
     broadOn ? tilesBroad.value : undefined,
     channels,
@@ -277,6 +301,8 @@ export function TranscriptModes() {
   const openStore = (url: string) => {
     setStoreUrl(url);
     setPointsName(undefined);
+    setPicked(undefined);
+    setExact(false);
     images.reset();
     setPinned(undefined);
     setLock(undefined);
@@ -286,6 +312,8 @@ export function TranscriptModes() {
   };
   const choosePoints = (name: string) => {
     setPointsName(name);
+    setPicked(undefined);
+    setExact(false);
     setPinned(undefined);
     tools.clear();
     wand.clear();
@@ -295,9 +323,10 @@ export function TranscriptModes() {
     <div className="page">
       <h2 className="page">Where genes are found together — transcript co-location modes</h2>
       <p className="page">
-        Every dot in a Xenium experiment is one detected RNA molecule of a known gene. Instead of first assigning molecules to cells, this
-        page looks at where each gene's molecules sit, smoothed over a neighbourhood, and asks which genes turn up in the same places. Pan
-        and zoom the slide; when you stop, the part in view is analysed and the colours show which mixtures of genes dominate where.
+        Every dot in an imaging spatial transcriptomics experiment (Xenium, Atera…) is one detected RNA molecule of a known gene. Instead of
+        first assigning molecules to cells, this page looks at where each gene's molecules sit, smoothed over a neighbourhood, and asks
+        which genes turn up in the same places. Pan and zoom the slide; when you stop, the part in view is analysed and the colours show
+        which mixtures of genes dominate where.
       </p>
 
       <div className="layout">
@@ -322,7 +351,13 @@ export function TranscriptModes() {
               onChange={(e) => setUntiledBudgetM(Math.max(0.5, Number(e.target.value) || 0.5))}
             />
           </label>
-          {source.value?.levelFractions && (
+          {source.value?.levelFractions && source.value.totalRows > EXACT_MAX_ROWS && (
+            <p className="hint">
+              {(source.value.totalRows / 1e9).toFixed(2)} billion molecules: zoomed out, tiles are read from a random sample and each
+              molecule is weighted to stand for the ones left out.
+            </p>
+          )}
+          {source.value?.levelFractions && source.value.totalRows <= EXACT_MAX_ROWS && (
             <label className="check">
               <input type="checkbox" checked={exact} onChange={(e) => setExact(e.target.checked)} />
               Every molecule, at any zoom (off: a zoomed-out view analyses a random sample — fast, approximate)
@@ -383,8 +418,42 @@ export function TranscriptModes() {
             broadError={broadOn ? (tilesBroad.error ?? gramBroad.error)?.message : undefined}
             mixtures="genes"
           />
-          {source.value && (
-            <ChannelPicker features={source.value.features} selection={selection} onChange={setSelection} missing={built.missing} />
+          <fieldset className="channel-mode">
+            <legend>Channels</legend>
+            <label className="check">
+              <input type="radio" checked={channelMode === "picked"} onChange={() => setChannelMode("picked")} />
+              Genes and gene sets I pick
+            </label>
+            <label className="check">
+              <input type="radio" checked={channelMode === "modules"} onChange={() => setChannelMode("modules")} />
+              Gene modules from every gene (PCA + e-means)
+            </label>
+          </fieldset>
+          {channelMode === "picked" && source.value && selection && (
+            <ChannelPicker features={source.value.features} selection={selection} onChange={setPicked} missing={built.missing} />
+          )}
+          {channelMode === "picked" && source.value?.forFeatures && !subset && built.channels.length > 0 && (
+            <p className="hint">
+              These channels cover {codesKey.split(",").length.toLocaleString()} genes, so every gene is read and most tiles come from a
+              sample. With at most {SUBSET_READ_MAX_FEATURES} genes (leave out the negative controls), only those genes are read, at far
+              greater depth.
+            </p>
+          )}
+          {channelMode === "modules" && (
+            <div className="modules">
+              <label>
+                Modules: {moduleCount}
+                <input
+                  type="range"
+                  min={4}
+                  max={24}
+                  step={1}
+                  value={moduleCount}
+                  onChange={(e) => setModuleCount(Number(e.target.value))}
+                />
+              </label>
+              <ModulesNote modules={modules} />
+            </div>
           )}
           <p className="hint">µm*: the store does not declare a unit; Xenium writes transcript coordinates in micrometres.</p>
         </aside>
@@ -411,6 +480,7 @@ export function TranscriptModes() {
               <>
                 window {span(g.window)} µm*{follow ? "" : " (kept)"} · r {g.radius} µm*
                 {raised !== undefined ? ` (raised from ${radius} to cover the view)` : ""} · {g.modes.labels.length} channels ·{" "}
+                {subset ? `reading only their ${subset} genes · ` : ""}
                 {g.stats.perChannel.reduce((s, n) => s + n, 0).toLocaleString()} molecules in them
                 {sampled ? ` (${sampled})` : ""} ·{" "}
                 {qvApplied > 0 ? `${g.stats.belowMinimum.toLocaleString()} below qv ${qvApplied} · ` : ""}map {g.raster.width}×
@@ -465,12 +535,50 @@ export function TranscriptModes() {
   );
 }
 
-/** How much of the element the tiles hold, when any came from a sampled level: "≈25% sample". */
+/** The source to read `codesKey`'s genes through: a subset read when the element offers one and the
+ *  genes are few enough, else the element itself. */
+function subsetSource(source: PointsSource | undefined, codesKey: string): PointsSource | undefined {
+  if (!source?.forFeatures || !codesKey) return source;
+  const codes = codesKey.split(",").map(Number);
+  return codes.length <= SUBSET_READ_MAX_FEATURES ? source.forFeatures(codes) : source;
+}
+
+/** How much of the element the tiles hold, when any came from a sampled level: "≈25% sample". A
+ *  subset read samples each gene separately, so it reports the range over genes. */
 function sampleNote(tiles: readonly PointsTile[] | undefined): string | undefined {
-  const fractions = (tiles ?? []).map((t) => t.sampleFraction ?? 1);
+  const all = tiles ?? [];
+  const perGene = all.some((t) => t.featureFractions);
+  const fractions = all.flatMap((t) => (t.featureFractions ? [...t.featureFractions.values(), 1] : [t.sampleFraction ?? 1]));
   if (!fractions.some((f) => f < 1)) return undefined;
   const pct = (f: number) => `${+(f * 100).toPrecision(2)}%`;
   const lo = Math.min(...fractions);
   const hi = Math.max(...fractions);
-  return lo === hi ? `≈${pct(lo)} sample` : `≈${pct(lo)}–${pct(hi)} sample, varying by tile`;
+  if (perGene) return `abundant genes from ≥${pct(lo)} samples, rare ones whole; each molecule weighted by its sample`;
+  return lo === hi ? `≈${pct(lo)} sample, weighted` : `≈${pct(lo)}–${pct(hi)} sample, varying by tile, weighted`;
+}
+
+/** What the gene modules were fitted on, and how far along the fit is. */
+function ModulesNote({ modules }: { modules: ReturnType<typeof useGeneModules> }) {
+  if (modules.sampleError ?? modules.error) return <p className="hint error">{(modules.sampleError ?? modules.error)?.message}</p>;
+  if (modules.sampleProgress)
+    return (
+      <p className="hint">
+        Reading a sample of the whole element: tile {modules.sampleProgress.done} of {modules.sampleProgress.total}…
+      </p>
+    );
+  if (modules.loading) return <p className="hint">Embedding every gene and clustering (PCA + e-means)…</p>;
+  const m = modules.value;
+  if (!m) return null;
+  const s = m.summary;
+  const pct = (f: number) => `${+(f * 100).toPrecision(2)}%`;
+  return (
+    <p className="hint">
+      Fitted once to the whole element, never to the view, so a module means the same genes everywhere you pan:{" "}
+      {s.molecules.toLocaleString()} molecules ({pct(m.sampleFraction)} random sample) in {s.bins.toLocaleString()} bins of{" "}
+      {Math.round(s.binSize)} µm*. {s.components} principal components rise above noise ({pct(s.explained)} of the variance).{" "}
+      {s.modules.reduce((n, g) => n + g.length, 0).toLocaleString()} genes with spatial structure fall into {s.modules.length} modules;{" "}
+      {s.unstructured.toLocaleString()} without it, {s.dropped.rare.toLocaleString()} too rare in the sample and{" "}
+      {s.dropped.excluded.toLocaleString()} control probes are left out. {(s.ms / 1000).toFixed(1)} s.
+    </p>
+  );
 }

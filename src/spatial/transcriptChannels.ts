@@ -3,14 +3,18 @@
 //
 // A channel is a WEIGHT VECTOR over feature codes: one gene is the one-hot case, a gene set is just
 // more entries. Weights are non-negative (the Gram normalisation divides by mass), so a signed
-// contrast is not a channel. A transcript contributes `weights[code]` to the channel listing its code.
+// contrast is not a channel. A transcript contributes `weights[code]` to the channel listing its code,
+// divided by the share of that gene's points its tile was read from (`pointFraction`): a molecule
+// from a 1/16 sample stands for 16. That keeps a channel's density in molecules per unit area
+// whatever level each tile, or each gene of a subset read, came from, and keeps a gene set's
+// composition right when its rare genes were read whole and its abundant ones sampled.
 //
 // Channels must be DISJOINT — no code in two channels. `gram.ts` and `permute.ts` decide whether
 // channels share points by array identity, so two overlapping sets built as separate arrays would
 // get a zero off-diagonal `selfTerm` and be permuted as if disjoint: a plausible, wrong answer.
 // Overlap is therefore refused here rather than computed.
 
-import type { PointsTile, Rect } from "../datasource/points";
+import { type PointsTile, pointFraction, type Rect } from "../datasource/points";
 import type { ChannelCloud } from "./gram";
 
 export interface WeightedChannel {
@@ -121,7 +125,10 @@ export function transcriptChannels(
       if (c < 0) continue;
       const k = cursor[c] ?? 0;
       cursor[c] = k + 1;
-      const weight = weightOf.get(tile.codes[i] ?? -1) ?? 0;
+      // A molecule from a sampled read stands for 1/fraction molecules, so channel densities stay
+      // in molecules per unit area whatever level each gene, or each tile, was read from.
+      const code = tile.codes[i] ?? -1;
+      const weight = (weightOf.get(code) ?? 0) / pointFraction(tile, code);
       (xs[c] as Float32Array)[k] = tile.xs[i] ?? 0;
       (ys[c] as Float32Array)[k] = tile.ys[i] ?? 0;
       (ws[c] as Float32Array)[k] = weight;
