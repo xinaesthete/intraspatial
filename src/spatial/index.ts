@@ -5,6 +5,7 @@ export * from "./cellCsv";
 export * from "./contactNetwork";
 export * from "./domain";
 export * from "./edgeCorrection";
+export * from "./emeans";
 export * from "./eigenSym";
 export * from "./envelope";
 export * from "./gram";
