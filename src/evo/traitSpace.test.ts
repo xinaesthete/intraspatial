@@ -127,6 +127,21 @@ describe("warped traits", () => {
   });
 });
 
+describe("a curve too steep to evaluate", () => {
+  it("falls back to linear, with a warning", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const space = traitSpaceFromParams([{ name: "x", type: "number", default: 5, min: 0, max: 10, warp: 1000 }]);
+      expect(warn).toHaveBeenCalledOnce();
+      expect(space.traits[0]?.warp).toBeUndefined();
+      const p = specimenToParams(space, { ...neutralSpecimen(space, 1), pos: Float64Array.from([0.25]) });
+      expect(p.x).toBe(2.5);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+});
+
 describe("delta → deltaNorm", () => {
   it("is absent without a delta", () => {
     expect(traitSpaceFromParams(SPECS).traits.map((t) => t.deltaNorm)).toEqual([undefined, undefined, undefined, undefined, undefined]);

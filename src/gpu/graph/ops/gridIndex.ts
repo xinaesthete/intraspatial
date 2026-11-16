@@ -129,13 +129,12 @@ export const gridIndexOp: OpType = {
       type: "number",
       default: 1,
       min: 1e-6,
-      units: "world",
       describe: "Cell side in world units — set it to the query radius.",
     },
-    { name: "minX", type: "number", default: 0, units: "world", describe: "Lattice origin x." },
-    { name: "minY", type: "number", default: 0, units: "world", describe: "Lattice origin y." },
-    { name: "maxX", type: "number", default: 1, units: "world", describe: "Lattice extent x (the far corner, not a width)." },
-    { name: "maxY", type: "number", default: 1, units: "world", describe: "Lattice extent y." },
+    { name: "minX", type: "number", default: 0, describe: "Lattice origin x." },
+    { name: "minY", type: "number", default: 0, describe: "Lattice origin y." },
+    { name: "maxX", type: "number", default: 1, describe: "Lattice extent x (the far corner, not a width)." },
+    { name: "maxY", type: "number", default: 1, describe: "Lattice extent y." },
   ],
   inferShapes(inputs, params) {
     const n = pointsN(inputs[0]!);

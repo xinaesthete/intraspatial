@@ -185,7 +185,8 @@ convertUnit(v, from, to)             // defined exactly when the bases agree and
   0.1–40 still assumes a dataset scale; making declared ranges rescale with the data is open.
 - **Declared so far:** `cells` on the integer radii of `convolveSeparable` (and its σ), `morphology`,
   `getisOrd` and the structure-tensor radius; `world` on the σ of `splatDensity`, `maskedDensity` and
-  `fuzzyAdjacency`, and on `gridIndex`'s lattice. No op converts yet: the executor does not
+  `fuzzyAdjacency`. (`gridIndex`'s lattice declares none: it is in the point cloud's own array
+  coordinates, which its placement maps to world, so it is neither cells nor world.) No op converts yet: the executor does not
   resolve units, and an op that wants a world length in cells calls `resolveUnit` with its input's
   placement itself. Wiring that (and the equivariance test it enables) is the next step.
 

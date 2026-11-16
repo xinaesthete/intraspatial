@@ -30,9 +30,11 @@ const clip01 = (u: number) => Math.min(1, Math.max(0, u));
 const roundTo = (v: number, step: number | undefined) => (step ? Math.round(v / step) * step : v);
 
 /** Whether `warp` can traverse [min, max]: an exp warp needs both ends non-zero and of the
- *  same sign; the others take any finite range. Unknown names are invalid. */
+ *  same sign; a curve needs `exp(curve)` finite (past about 709 it overflows, and the map
+ *  turns to NaN); the others take any finite range. Unknown names are invalid. */
 export function warpValid(warp: Warp | undefined, min: number, max: number): boolean {
-  if (warp === undefined || typeof warp === "number") return warp === undefined || Number.isFinite(warp);
+  if (warp === undefined) return true;
+  if (typeof warp === "number") return Number.isFinite(warp) && Number.isFinite(Math.exp(warp));
   if (warp === "exp") return min !== 0 && max !== 0 && Math.sign(min) === Math.sign(max);
   return warp === "lin" || warp === "amp" || warp === "db";
 }

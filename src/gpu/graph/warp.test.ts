@@ -49,6 +49,8 @@ describe("warps, as SuperCollider's", () => {
     expect(warpValid("exp", -1, 1)).toBe(false);
     expect(warpValid("amp", 0, 1)).toBe(true);
     expect(warpValid(3, -1, 1)).toBe(true);
+    expect(warpValid(1000, 0, 1)).toBe(false); // exp(1000) overflows: the map would be NaN
+    expect(warpValid(Number.NaN, 0, 1)).toBe(false);
     expect(warpValid("cos" as never, 0, 1)).toBe(false);
     expect([warpIsLinear(undefined), warpIsLinear("lin"), warpIsLinear(0), warpIsLinear("exp"), warpIsLinear(2)]).toEqual([
       true,

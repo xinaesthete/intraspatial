@@ -37,9 +37,11 @@ How a coord maps onto a param's [min, max], with SuperCollider's ControlSpec nam
 (absent ⇒ this), `"exp"` (evenly in ratio; min and max non-zero and of the same sign), `"amp"`,
 `"db"`, or a number (a curve). Read-out is `warpMap(coord, {min, max, warp})`, encoding is
 `warpUnmap` ([`src/gpu/graph/warp.ts`](../gpu/graph/warp.ts)). A `freq` of 50–3000 Hz with
-`warp: "exp"` reads 387 Hz (the geometric mean) at coord 0.5, so breeding, sliders and MIDI move
-evenly in pitch. Declare frequencies in Hz with an exp warp, not as MIDI-valued params. An exp warp
-over a range touching or crossing zero falls back to linear, with a console warning.
+`warp: "exp"` reads 387 Hz (the geometric mean) at coord 0.5, so breeding (mutate, marry, steer,
+which all work on coords) moves evenly in pitch. Sliders and MIDI mapping don't apply warps yet:
+they still traverse [min, max] linearly. Declare frequencies in Hz with an exp warp, not as
+MIDI-valued params. An exp warp over a range touching or crossing zero, or a curve too steep to
+evaluate, falls back to linear, with a console warning.
 _Avoid_: scale, curve (a curve is one kind of warp).
 
 **Delta**:
