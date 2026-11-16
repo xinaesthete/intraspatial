@@ -26,8 +26,8 @@ export const convolveSeparableOp: OpType = {
   outputs: [{ name: "out", kind: "grid", dtype: "f32" }],
   params: [
     { name: "kernel", type: "enum", default: "box", options: ["box", "gaussian"] },
-    { name: "radius", type: "int", default: 2, min: 1, max: 64 },
-    { name: "sigma", type: "number", default: 0, min: 0, max: 32, step: 0.1, describe: "gaussian σ (0 = radius/3)" },
+    { name: "radius", type: "int", default: 2, min: 1, max: 64, units: "cells" },
+    { name: "sigma", type: "number", default: 0, min: 0, max: 32, step: 0.1, units: "cells", describe: "gaussian σ (0 = radius/3)" },
   ],
   inferShapes(inputs) {
     return [inputs[0]!];

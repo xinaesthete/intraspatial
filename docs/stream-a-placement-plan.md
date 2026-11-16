@@ -101,6 +101,8 @@ centroid-extract source (the dominant real case); `ParamSpec.units`.
   loaded raster tile carries a placement into the graph.
 
 ### Slice 4 — param units (small; enables the equivariance test)
+**Landed 2026-11-16, amended:** `units` is an open string resolved by `UnitResolver`s, and absent
+means undeclared; see ADR-0018 decision 5. Ops don't convert yet. The original plan:
 - `ParamSpec.units?: "cells" | "world"` (absent ⇒ `cells`, today's behaviour). Lets the UI say
   "2 cells = 0.8 µm" and lets a world-unit param convert against the field's placement. Prerequisite
   for scale-equivariance being *testable*.

@@ -16,8 +16,9 @@ import { gauss, hashSeed, mulberry32, type Rng } from "./rng";
 import { cloneSpecimen, type Specimen } from "./specimen";
 import type { TraitSpace } from "./traitSpace";
 
-/** Stochastic perturbation. NUMBER traits get Gaussian noise scaled by `rate`
- *  (clamped back into [0,1]); ENABLE traits flip with probability `rate`. Locked
+/** Stochastic perturbation. NUMBER traits get Gaussian noise with σ = `rate` × the
+ *  trait's `deltaNorm` (the param's `delta` in coord units; 1 when it declares none),
+ *  clamped back into [0,1]; ENABLE traits flip with probability `rate`. Locked
  *  traits are untouched. Velocity is inherited unchanged (mutation moves where you
  *  are, not how you're moving). */
 export function mutate(space: TraitSpace, sp: Specimen, rate: number, rng: Rng): Specimen {
@@ -25,7 +26,8 @@ export function mutate(space: TraitSpace, sp: Specimen, rate: number, rng: Rng):
   for (const trait of space.traits) {
     if (trait.locked) continue;
     if (trait.kind === "number") {
-      out.pos[trait.slot] = clamp01(out.pos[trait.slot]! + gauss(rng) * rate);
+      // (× 1 is exact, so a trait with no delta mutates bit-for-bit as before)
+      out.pos[trait.slot] = clamp01(out.pos[trait.slot]! + gauss(rng) * rate * (trait.deltaNorm ?? 1));
     } else if (trait.kind === "enable") {
       if (rng() < rate) out.enable[trait.slot] = out.enable[trait.slot] ? 0 : 1;
     }

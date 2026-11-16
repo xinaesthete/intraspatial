@@ -63,7 +63,7 @@ Numbers 0019–0021 are **retired, not reused**, so commit history keeps pointin
 | [0015](0015-channel-axis-labels-coordinate-systems.md) | Channel axis, labels, coordinate systems | draft | **partial** | `FieldRole`/`LabelMeta` **and** `ResolvedPlacement` now landed (via 0018); vector `ParamType` still missing |
 | [0016](0016-topact-box-vs-kde-reproduce-then-improve.md) | TopACT: reproduce then improve | draft | **open** | no code |
 | [0017](0017-tier2-resident-buffer-edges.md) | Tier-2 resident buffer edges | accepted | **partial** | stages 1–3 + invariant 5 landed; 4–5 remain |
-| [0018](0018-field-domains-placement-and-resolution.md) | Field domains: extent, placement, resolution | draft | **partial** | `placement` on `GpuField`+`FieldValue` + `inferPlacement`/`outPlacements` landed (2026-08); `boundsOf` + `ParamSpec.units` remain |
+| [0018](0018-field-domains-placement-and-resolution.md) | Field domains: extent, placement, resolution | draft | **partial** | `placement` on `GpuField`+`FieldValue` + `inferPlacement`/`outPlacements` landed (2026-08); `ParamSpec.units` + `UnitResolver` landed (2026-11, dec 5 amended); `boundsOf` remains |
 | [0019](0019-package-surface-and-prebuilt-kernels.md) | Package surface: `intraspatial` subpath exports, pre-transformed kernels, Dawn optional | accepted | **landed** | `package.json` exports, `vite.lib.config.ts`, `tsconfig.build.json`, barrels, lazy Dawn in `device.ts`; amended 2026-10-23: `packages/deck`, `@intraspatial/source` condition |
 | [0022](0022-gpu-uniform-grid-index.md) | GPU uniform-grid spatial index (2D, on-device build) | accepted | **partial** | `src/gpu/spatial/gridIndex.ts`, `latticeFor` in `bucketGrid.ts`, consumed by `crossPcf.ts` + `tcm.ts` (2026-08-22); no graph op, no 3D |
 | [0023](0023-composite-values-and-borrowed-leases.md) | Composite field values (bundles) + borrowed resident leases | accepted | **partial** | `bundle` shape + `parts`, borrow liveness in `executor.ts`, `bundleOps.ts` factories, `gridIndex` + `cellCounts` (2026-08-22); no bundle feedback |
@@ -81,8 +81,9 @@ package was cut, 2026-08-22 — the first ADR since the audit, and written about
 
 - **`ResolvedPlacement` (0015 §3 / 0018) landed** (2026-08). It is on `GpuField`+`FieldValue` in
   `src/gpu/graph/handle.ts` with `placementOf`/`systemsAgree`, an `inferPlacement` hook, executor
-  stamping, tests, and a `placements[]` array on `src/datasource/types.ts`. The remaining pieces are
-  `boundsOf` and `ParamSpec.units` (0018 dec 4–5), not the facet itself.
+  stamping, tests, and a `placements[]` array on `src/datasource/types.ts`. `ParamSpec.units` landed
+  in 2026-11 as an open name with pluggable `UnitResolver`s (0018 dec 5, amended); the remaining
+  piece is `boundsOf` (dec 4), plus ops actually converting their units.
 - **There are two expression systems** (0007). `src/geometry/expr.ts` builds `(s, θ)` expressions for
   procedural geometry; `src/gpu/graph` is a separate DAG. The claimed duality is aspirational.
 - **The value lattice is half-built** (0004/0005/0006/0018): element algebra, `axes`, `role`, and

@@ -3,7 +3,8 @@
 The ubiquitous language for the datasource / demand-pull / multiscale-rendering design
 (the flagship being an image/volume pyramid renderer for spatialdata.js & MDV). This
 document currently covers **only** that design; other subsystems in this repo (the dance
-sim, evo/Mutator, the HTJ2K codec, the op-graph internals) are not yet glossed here.
+sim, the HTJ2K codec, the op-graph internals) are not yet glossed here; evo/Mutator has its own
+glossary in [`src/evo/CONTEXT.md`](src/evo/CONTEXT.md).
 
 ## Language
 

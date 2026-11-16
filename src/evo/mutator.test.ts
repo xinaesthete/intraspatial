@@ -4,7 +4,7 @@ import type { ParamSpec } from "../gpu/graph/op";
 import { advance, breed, marry, mutate, steer, toward } from "./mutator";
 import { mulberry32 } from "./rng";
 import { neutralSpecimen, randomSpecimen } from "./specimen";
-import { traitSpaceFromParams, withLocked } from "./traitSpace";
+import { specimenToParams, traitSpaceFromParams, withLocked } from "./traitSpace";
 
 const SPECS: ParamSpec[] = [
   { name: "attract", type: "number", default: 0.5, min: 0, max: 2 },
@@ -131,5 +131,61 @@ describe("breed", () => {
     // not all identical
     const first = Array.from(gen[0]!.pos).join();
     expect(gen.some((sp) => Array.from(sp.pos).join() !== first)).toBe(true);
+  });
+});
+
+describe("mutate through warps and deltas", () => {
+  const median = (xs: number[]) => {
+    const s = [...xs].sort((a, b) => a - b);
+    return (s[(s.length - 1) >> 1]! + s[s.length >> 1]!) / 2;
+  };
+  const sd = (xs: number[]) => {
+    const m = xs.reduce((a, b) => a + b, 0) / xs.length;
+    return Math.sqrt(xs.reduce((a, b) => a + (b - m) ** 2, 0) / xs.length);
+  };
+  /** `n` independent mutations of `sp`, each param's value read out. */
+  const samples = (sp: ParamSpec[], name: string, rate: number, n = 4000) => {
+    const sp0 = traitSpaceFromParams(sp);
+    const start = neutralSpecimen(sp0, 1);
+    const rng = mulberry32(2024);
+    return Array.from({ length: n }, () => specimenToParams(sp0, mutate(sp0, start, rate, rng))[name] as number);
+  };
+
+  it("leaves a param without delta exactly as before (σ = rate)", () => {
+    // deltaNorm 1 is the identity: a delta of the whole range must give bit-identical mutations
+    const plain = traitSpaceFromParams([{ name: "a", type: "number", default: 0.5, min: 0, max: 2 }]);
+    const full = traitSpaceFromParams([{ name: "a", type: "number", default: 0.5, min: 0, max: 2, delta: 2 }]);
+    const sp = neutralSpecimen(plain, 3);
+    expect(Array.from(mutate(full, sp, 0.3, mulberry32(9)).pos)).toEqual(Array.from(mutate(plain, sp, 0.3, mulberry32(9)).pos));
+  });
+
+  it("mutates an exp param from its midpoint around the geometric mean, not the arithmetic", () => {
+    const freq: ParamSpec = { name: "freq", type: "number", default: 500, min: 50, max: 3000, warp: "exp" };
+    const xs = samples([freq], "freq", 0.15);
+    const geo = Math.sqrt(50 * 3000); // 387
+    expect(median(xs) / geo).toBeGreaterThan(0.95);
+    expect(median(xs) / geo).toBeLessThan(1.05);
+    // even in pitch: as many mutations land below the geometric mean as above, where linearly
+    // most of them would sit above 1 kHz
+    expect(xs.filter((x) => x > 1000).length / xs.length).toBeLessThan(0.3);
+    const linear = samples([{ ...freq, warp: undefined }], "freq", 0.15);
+    expect(median(linear)).toBeCloseTo(1525, -2);
+  });
+
+  it("scales the spread by delta", () => {
+    const spec = (delta: number): ParamSpec[] => [{ name: "a", type: "number", default: 50, min: 0, max: 100, delta }];
+    const small = sd(samples(spec(1), "a", 1));
+    const big = sd(samples(spec(5), "a", 1));
+    expect(small).toBeCloseTo(1, 1); // rate 1 ⇒ one mutation moves about one delta
+    expect(big / small).toBeCloseTo(5, 1);
+    // and `rate` still multiplies it
+    expect(sd(samples(spec(5), "a", 0.5)) / big).toBeCloseTo(0.5, 1);
+  });
+
+  it("gives a warped param a delta-sized step in ratio", () => {
+    // delta 50 Hz at a default of 500 Hz ⇒ steps of about ×1.1 anywhere in the range
+    const freq: ParamSpec[] = [{ name: "freq", type: "number", default: 500, min: 50, max: 3000, warp: "exp", delta: 50 }];
+    const logs = samples(freq, "freq", 1).map((f) => Math.log(f));
+    expect(sd(logs) / Math.log(1.1)).toBeCloseTo(1, 1);
   });
 });

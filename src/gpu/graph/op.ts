@@ -11,6 +11,7 @@
 
 import type { GpuBackend } from "./backend";
 import type { Basis, Dtype, ElementType, FieldRole, FieldValue, ResolvedPlacement, Shape, ShapeKind, TensorAxis } from "./handle";
+import type { Warp } from "./warp";
 
 export interface PortSpec {
   name: string;
@@ -42,6 +43,25 @@ export interface ParamSpec {
    *  namespace). Used by param-exploration UIs to filter a set and apply operations to it
    *  (freeze/mutate/steer/…). Optional and additive — ops that don't set it are unaffected. */
   tags?: string[];
+  /** How a normalised position in [0, 1] (a slider, a MIDI CC, a Mutator trait coord) maps
+   *  onto [min, max], by SuperCollider's ControlSpec warp names: "lin"; "exp", evenly in
+   *  ratio (frequencies, times; min and max non-zero and of the same sign); "amp"; "db"; or
+   *  a number, a curve. Absent ⇒ linear. See `./warp`. A frequency is best declared in Hz
+   *  with `warp: "exp"`, rather than as a MIDI-valued parameter. */
+  warp?: Warp;
+  /** How far one mutation typically moves this param, in its own units (organic's gene
+   *  `delta`). The Mutator scales this param's Gaussian step by `delta` expressed in
+   *  normalised units (rule in `src/evo/traitSpace.ts`), times its global `rate`. Absent ⇒
+   *  the step is `rate` in normalised units, as before this field existed. Number/int params
+   *  only: an enum's options have no distance between them. */
+  delta?: number;
+  /** What the value is measured in (ADR-0018 decision 5, amended). A name no `UnitResolver`
+   *  claims is a fixed unit: "Hz", "s", "dB", a label. A relative unit means something only
+   *  against a context and converts through a resolver (`./units`): "cells" and "world" against
+   *  the field's placement (`spatialUnits`), and others (samples, beats, scale degrees) from
+   *  whoever supplies their resolver. `min`, `max`, `default` and `delta` are all in these units.
+   *  Absent ⇒ undeclared. */
+  units?: string;
 }
 
 export type Params = Record<string, unknown>;

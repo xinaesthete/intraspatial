@@ -26,7 +26,7 @@ export const morphologyOp: OpType = {
   outputs: [{ name: "out", kind: "grid", dtype: "f32" }],
   params: [
     { name: "op", type: "enum", default: "open", options: ["erode", "dilate", "open", "close"] },
-    { name: "radius", type: "int", default: 1, min: 1, max: 64 },
+    { name: "radius", type: "int", default: 1, min: 1, max: 64, units: "cells" },
   ],
   inferShapes(inputs) {
     return [inputs[0]!];

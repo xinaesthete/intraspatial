@@ -17,7 +17,7 @@ export const fuzzyAdjacencyOp: OpType = {
   inputs: [{ name: "points", kind: "points" }],
   outputs: [{ name: "membership", kind: "matrix", dtype: "f32" }],
   params: [
-    { name: "sigma", type: "number", default: 2, min: 0.05, max: 40, step: 0.05, describe: "bandwidth σ (world units)" },
+    { name: "sigma", type: "number", default: 2, min: 0.05, max: 40, step: 0.05, units: "world", describe: "bandwidth σ (world units)" },
     { name: "radiusSigma", type: "number", default: 3, min: 1, max: 8, step: 0.5 },
   ],
   inferShapes(inputs) {

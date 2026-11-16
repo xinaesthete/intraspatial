@@ -124,7 +124,13 @@ export const gridIndexOp: OpType = {
   inputs: [{ name: "points", kind: "points", dtype: "f32" }],
   outputs: [{ name: "buckets", kind: "bundle", bundle: { name: GRID_INDEX_BUNDLE.name, parts: partNames(GRID_INDEX_BUNDLE) } }],
   params: [
-    { name: "cell", type: "number", default: 1, min: 1e-6, describe: "Cell side in world units — set it to the query radius." },
+    {
+      name: "cell",
+      type: "number",
+      default: 1,
+      min: 1e-6,
+      describe: "Cell side in world units — set it to the query radius.",
+    },
     { name: "minX", type: "number", default: 0, describe: "Lattice origin x." },
     { name: "minY", type: "number", default: 0, describe: "Lattice origin y." },
     { name: "maxX", type: "number", default: 1, describe: "Lattice extent x (the far corner, not a width)." },
