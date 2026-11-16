@@ -2,19 +2,18 @@
 "intraspatial": minor
 ---
 
-Parameters can say what they're measured in, and parameters whose natural scale isn't linear now mutate and map evenly. Frequencies and times can be declared in their own units (e.g. `freq` in Hz) instead of as MIDI-valued workarounds. Specs without the new fields behave exactly as before.
+Op parameters can now say what they are measured in, and how their range should be traversed. Specs that don't use the new fields behave exactly as before.
 
 - `ParamSpec` gains three optional fields:
-  - `warp?: "lin" | "exp" | "amp" | "db" | number`: how a normalised position in [0, 1] maps onto [min, max], using SuperCollider's ControlSpec warp names. A number is a curve.
-  - `delta?: number`: how far one mutation typically moves the param, in its own units. Number and int params only: a `delta` on an enum is ignored with a warning.
-  - `units?: string`: what the value is measured in. It can be a fixed unit ("Hz", "s", "dB"), which is just a label. It can also be a relative unit, which means something only against a context and converts through a resolver. Absent means undeclared.
-- New `UnitResolver` interface in `intraspatial/graph`, with `resolveUnit`, `convertUnit` and `fixedUnit`. A resolver claims some unit names and resolves each against its context into a label plus a map into a base unit. Two units convert into each other exactly when they share a base, so other domains (sample rates, tempi, musical scales) can supply their own resolvers.
-- `spatialUnits` resolves "cells" and "world" against a field's placement and the store's µm-per-unit scale (ADR-0018 decision 5, now amended). A world length's base is µm when the scale is known. A cell length reaches the same base through the placement's cell size, so "2 cells = 0.8 µm" can be computed. The spatial params of `convolveSeparable`, `morphology`, `getisOrd`, the structure-tensor op, `splatDensity`, `maskedDensity`, `fuzzyAdjacency` and `gridIndex` now declare their units. No op converts units yet.
-- `warpMap`, `warpUnmap`, `warpValid`, `warpIsLinear` and the `Warp` / `WarpSpec` types are exported from `intraspatial/graph`. They are a port of sclang's Warp classes and are tested against values sclang 3.13 computes.
-- In `intraspatial/evo`, a trait's coord goes through its param's warp. `{ name: "freq", type: "number", default: 500, min: 50, max: 3000, warp: "exp" }` reads 387 Hz, the geometric mean, at coord 0.5. Mutation, marriage and steering therefore move evenly in pitch.
-  - An exp warp over a range touching or crossing zero falls back to linear with a console warning.
-  - `Trait` gains optional `warp` and `deltaNorm`.
-- `mutate` scales each trait's Gaussian step by its `deltaNorm`, the param's `delta` in coord units (σ = `rate × deltaNorm`).
-  - For a linear param, `deltaNorm` is `delta / (max - min)`.
-  - For a warped param, it is the coord distance from the default to `default + delta`. That keeps an exp param's step the same ratio across its range.
-  - A param with no `delta` mutates with σ = `rate`, as before.
+  - `warp?: "lin" | "exp" | "amp" | "db" | number` sets how a position in [0, 1] (a slider, a controller, a bred trait) maps onto [min, max]. With `"exp"`, each step multiplies the value by the same factor. That suits scale-like params such as bandwidths, radii, times and frequencies, where 0.1–40 should not spend most of its travel above 20. A number gives a curve. The names follow SuperCollider's, so specs written there carry over.
+  - `delta?: number` is how far one mutation typically moves the param, in its own units.
+  - `units?: string` is what the value is measured in. A plain name such as `"Hz"` or `"s"` is a label. A relative unit such as `"cells"` or `"world"` means something only in context and can be converted by a resolver (see below). Absent means undeclared.
+- New in `intraspatial/graph`:
+  - `warpMap` and `warpUnmap` convert between positions and values for any warp.
+  - `UnitResolver`, `resolveUnit` and `convertUnit` provide a pluggable way to resolve relative units. Two units convert into each other when they resolve to the same base unit, so other domains can supply their own resolvers.
+  - `spatialUnits` resolves `"cells"` and `"world"` against a field's placement and the dataset's µm-per-unit scale, so a UI can say "2 cells = 0.8 µm" (ADR-0018 decision 5, now amended).
+  - The spatial params of `convolveSeparable`, `morphology`, `getisOrd`, the structure-tensor op, `splatDensity`, `maskedDensity`, `fuzzyAdjacency` and `gridIndex` now declare their units. Ops don't convert units yet.
+- In `intraspatial/evo`, breeding follows each param's warp and delta:
+  - A param with `warp: "exp"` over 50–3000 reads 387 (the geometric mean) at the midpoint of its trait, and mutation moves it by even ratios.
+  - `mutate` scales each param's step by its `delta`. A param without one mutates as before.
+  - An exp warp over a range that touches or crosses zero falls back to linear with a console warning. A `delta` on an enum is ignored with a warning, since its options have no distance between them.
