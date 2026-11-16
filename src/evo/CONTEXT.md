@@ -11,7 +11,8 @@ covers **only** that layer; the other contexts have their own (see the root
 
 **Param spec**:
 An op's declaration of one parameter ([`ParamSpec`](../gpu/graph/op.ts)): `name`, `type`,
-`default`, `min`/`max`/`step`, `options`, `tags`, and, for evolution, `warp` and `delta`. The op
+`default`, `min`/`max`/`step`, `options`, `tags`, `units` (see ADR-0018 decision 5), and, for
+evolution, `warp` and `delta`. The op
 author controls the trait space by how they declare params: nothing in `src/evo` is per-op.
 _Avoid_: gene (this repo also handles real genomic data).
 
@@ -46,7 +47,8 @@ A param spec's `delta`: how far one mutation typically moves the param, in its o
 (organic's gene delta). The trait carries it as `deltaNorm`, in coord units: `delta / (max - min)`
 when linear; when warped, the coord distance from the default to `default + delta` (from
 `default - delta` if that would leave the range). So an exp param's step is the same *ratio*
-everywhere in its range.
+everywhere in its range. Number/int params only: an enum's options have no distance between them,
+so a delta there is ignored with a warning.
 _Avoid_: step (that is `ParamSpec.step`, the quantisation), sigma.
 
 ### The individual and its operators

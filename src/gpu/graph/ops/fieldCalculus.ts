@@ -214,5 +214,5 @@ export const structureOrientationOp = unary(
   ["scalar"],
   VEC2,
   (d, w, h, p) => structureOrientation(d, w, h, (p.radius as number) ?? 2),
-  [{ name: "radius", type: "int", default: 2, min: 0, max: 16, describe: "structure-tensor smoothing radius" }],
+  [{ name: "radius", type: "int", default: 2, min: 0, max: 16, units: "cells", describe: "structure-tensor smoothing radius" }],
 );

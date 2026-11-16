@@ -9,7 +9,9 @@ See the first "Consequences" bullet for the full reasoning. **The points-placeme
 resolved** (2026-07-23): points carry the *full* `ResolvedPlacement`, not a bare `system` — and the
 dominant real case is not a points element but table cell-centroids (`obsm['spatial']`), whose
 placement is resolved by walking the table→element annotation, not read off a transform. See the
-second bullet.
+second bullet. **Decision 5 is amended and landed** (2026-11-16): `units` is an open string
+resolved by pluggable `UnitResolver`s, not the closed `"cells" | "world"`, and absent means
+undeclared, not cells. See decision 5.
 
 ## Context
 
@@ -131,10 +133,61 @@ by making the host dependency a visible node rather than a hidden one.
 
 ### 5. Ops declare the units of their spatial params.
 
-`ParamSpec` gains an optional `units?: "cells" | "world"`. Absent ⇒ `cells` (today's behaviour for
-every integer radius). This is the smallest change that lets the UI say "2 cells = 0.8 µm" and lets
-a world-unit param be converted against the field's placement. It is also the prerequisite for
-scale-equivariance being *testable*: the same world-unit filter at two resolutions should agree.
+*As first proposed:* `ParamSpec` gains an optional `units?: "cells" | "world"`. Absent ⇒ `cells`
+(today's behaviour for every integer radius). This is the smallest change that lets the UI say
+"2 cells = 0.8 µm" and lets a world-unit param be converted against the field's placement. It is
+also the prerequisite for scale-equivariance being *testable*: the same world-unit filter at two
+resolutions should agree.
+
+**Amended and landed (2026-11-16): an open unit name, resolved by pluggable resolvers.** The same
+`ParamSpec` now serves params from other domains too (synth parameters in Hz, seconds and dB, from
+xinaesthete/inorganic, alongside `warp` and `delta`), and "cells" and "world" turned out to be two
+members of a family nobody can enumerate. A *relative* unit is one that means something only
+against a context: cells and world against a placement, but equally samples against a sample rate,
+beats against a tempo, or transposition in scale degrees against a scale. A *fixed* unit ("Hz",
+"s", "dB") means the same everywhere and needs only a label. So
+([`units.ts`](../../src/gpu/graph/units.ts)):
+
+```ts
+interface ParamSpec { /* … */ units?: string }      // absent ⇒ undeclared
+
+interface ResolvedUnit {
+  label: string;                  // "cells", "world units", "Hz"
+  base: string;                   // the unit toBase lands in: "µm", "semitones"
+  toBase(v: number): number;      // a function, not a factor: degrees → semitones is a table
+  fromBase?(v: number): number;   // absent where there is no inverse
+}
+interface UnitResolver<C> {
+  units: readonly string[];                           // the names it claims
+  resolve(unit: string, ctx: C): ResolvedUnit | undefined;
+}
+resolveUnit(units, ctx, resolvers)   // first claiming resolver; unclaimed ⇒ a fixed unit
+convertUnit(v, from, to)             // defined exactly when the bases agree and `to` inverts
+```
+
+- **Two units convert into each other exactly when they resolve to the same base.** That is the
+  only rule; there is no unit algebra here (in the same spirit as this ADR's refusal of a transform
+  algebra).
+- **Unclaimed names are fixed units.** A resolver set decides which names are relative, so a
+  domain adds its own (a music layer's `degrees`, an audio layer's `samples`) without touching
+  this repo.
+- **Absent ⇒ undeclared, not `cells`.** Most params (strengths, counts, thresholds) have no
+  length, and defaulting them to cells would claim one. Ops that work in cells behave as before
+  whether or not they declare it.
+- **The spatial resolver lives here** (`spatialUnits`, context `{ placement?, micrometresPerUnit? }`),
+  because cells and world are this repo's own. A world length's base is µm when the store gives a
+  physical scale, else `world:<system>`, else `world` (unplaced). A cell length reaches the same base
+  through the cell size, `|worldFromArray · ê|` (decision 2: derived, not stored), when the x and y
+  steps are equal; with non-square cells or no placement, cells are their own base and convert into
+  nothing. An unknown physical scale stays distinct from 1, as `micrometresPerUnit` in
+  `src/datasource/mdvStore.ts` insists.
+- **`min`, `max`, `default` and `delta` are in the declared units.** A world-unit range written as
+  0.1–40 still assumes a dataset scale; making declared ranges rescale with the data is open.
+- **Declared so far:** `cells` on the integer radii of `convolveSeparable` (and its σ), `morphology`,
+  `getisOrd` and the structure-tensor radius; `world` on the σ of `splatDensity`, `maskedDensity` and
+  `fuzzyAdjacency`, and on `gridIndex`'s lattice. No op converts yet: the executor does not
+  resolve units, and an op that wants a world length in cells calls `resolveUnit` with its input's
+  placement itself. Wiring that (and the equivariance test it enables) is the next step.
 
 ## Consequences / open questions
 

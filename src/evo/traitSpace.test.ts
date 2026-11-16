@@ -132,13 +132,23 @@ describe("delta → deltaNorm", () => {
     expect(traitSpaceFromParams(SPECS).traits.map((t) => t.deltaNorm)).toEqual([undefined, undefined, undefined, undefined, undefined]);
   });
 
-  it("is delta / (max - min) for a linear param (and an enum, over its indices)", () => {
+  it("is delta / (max - min) for a linear param", () => {
     const space = traitSpaceFromParams([
       { name: "a", type: "number", default: 0.5, min: 0, max: 2, delta: 0.1 },
       { name: "n", type: "int", default: 8, min: 1, max: 33, delta: 4 },
-      { name: "e", type: "enum", default: "a", options: ["a", "b", "c", "d", "e"], delta: 1 },
     ]);
-    expect(space.traits.map((t) => t.deltaNorm)).toEqual([0.05, 0.125, 0.25]);
+    expect(space.traits.map((t) => t.deltaNorm)).toEqual([0.05, 0.125]);
+  });
+
+  it("ignores a delta on an enum, with a warning (its options have no distance between them)", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const space = traitSpaceFromParams([{ name: "e", type: "enum", default: "a", options: ["a", "b", "c"], delta: 1 }]);
+      expect(warn).toHaveBeenCalledOnce();
+      expect(space.traits[0]?.deltaNorm).toBeUndefined();
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it("is the coord distance from the default to default + delta for a warped param", () => {

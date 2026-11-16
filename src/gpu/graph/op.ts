@@ -52,8 +52,16 @@ export interface ParamSpec {
   /** How far one mutation typically moves this param, in its own units (organic's gene
    *  `delta`). The Mutator scales this param's Gaussian step by `delta` expressed in
    *  normalised units (rule in `src/evo/traitSpace.ts`), times its global `rate`. Absent ⇒
-   *  the step is `rate` in normalised units, as before this field existed. */
+   *  the step is `rate` in normalised units, as before this field existed. Number/int params
+   *  only: an enum's options have no distance between them. */
   delta?: number;
+  /** What the value is measured in (ADR-0018 decision 5, amended). A name no `UnitResolver`
+   *  claims is a fixed unit: "Hz", "s", "dB", a label. A relative unit means something only
+   *  against a context and converts through a resolver (`./units`): "cells" and "world" against
+   *  the field's placement (`spatialUnits`), and others (samples, beats, scale degrees) from
+   *  whoever supplies their resolver. `min`, `max`, `default` and `delta` are all in these units.
+   *  Absent ⇒ undeclared. */
+  units?: string;
 }
 
 export type Params = Record<string, unknown>;

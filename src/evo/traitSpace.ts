@@ -33,13 +33,15 @@
 // one mutation step in coord units, which `mutate` multiplies into its Gaussian step
 // alongside the global `rate` (σ = rate · deltaNorm; absent ⇒ deltaNorm 1, as before).
 // The rule:
-//   linear (and enum, over [0, options-1])  deltaNorm = delta / (max - min)
+//   linear  deltaNorm = delta / (max - min)
 //   warped  the coord distance from the default to `default + delta`, i.e.
 //           |unmap(default + delta) - unmap(default)|; if `default + delta` passes max,
 //           from `default - delta` instead; if both leave the range, the larger clipped
 //           distance. (A missing/non-numeric default is taken as the range's warped
 //           midpoint.) So the step is `delta` at the default, and the same *ratio*
 //           (for exp) everywhere else.
+//   enum    none: an enum's options have no distance between them (the order they're
+//           listed in is arbitrary), so a `delta` there is ignored with a warning.
 //
 // Pure + deterministic; no GPU. `specimenToParams` feeds straight into a graph node's
 // `params`, so a live specimen can drive a simulation with no graph rebuild.
@@ -124,7 +126,12 @@ function numberTrait(s: ParamSpec, slot: number): Trait {
   const trait: Trait = enumOptions
     ? { paramName: s.name, kind: "number", locked: false, min: 0, max: enumOptions.length - 1, isInt: true, enumOptions, slot }
     : { paramName: s.name, kind: "number", locked: false, min: s.min ?? 0, max: s.max ?? 0, isInt: s.type === "int", slot };
-  const warp = trait.enumOptions ? undefined : traitWarp(s, trait.min, trait.max);
+  if (enumOptions) {
+    if (s.delta !== undefined)
+      console.warn(`intraspatial/evo: enum param "${s.name}" has a delta; its options have no distance between them, so ignoring it`);
+    return trait;
+  }
+  const warp = traitWarp(s, trait.min, trait.max);
   if (warp !== undefined) trait.warp = warp;
   const deltaNorm = normalisedDelta(s, trait.min, trait.max, warp);
   if (deltaNorm !== undefined) trait.deltaNorm = deltaNorm;

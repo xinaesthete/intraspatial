@@ -262,7 +262,7 @@ export const maskedDensityOp: OpType = {
   params: [
     { name: "width", type: "int", default: 64, min: 8, max: 512, describe: "grid width" },
     { name: "height", type: "int", default: 64, min: 8, max: 512, describe: "grid height" },
-    { name: "sigma", type: "number", default: 2, min: 0.1, max: 40, step: 0.1, describe: "bandwidth (world units)" },
+    { name: "sigma", type: "number", default: 2, min: 0.1, max: 40, step: 0.1, units: "world", describe: "bandwidth (world units)" },
     { name: "radiusSigma", type: "number", default: 4, min: 1, max: 8, step: 0.5 },
   ],
   inferShapes(_inputs, params) {

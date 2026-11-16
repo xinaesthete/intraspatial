@@ -14,7 +14,7 @@ export const getisOrdOp: OpType = {
   describe: "Local hotspot z-scores over a box neighbourhood (grid -> grid).",
   inputs: [{ name: "grid", kind: "grid" }],
   outputs: [{ name: "z", kind: "grid", dtype: "f32" }],
-  params: [{ name: "radius", type: "int", default: 2, min: 1, max: 32, describe: "box neighbourhood radius (cells)" }],
+  params: [{ name: "radius", type: "int", default: 2, min: 1, max: 32, units: "cells", describe: "box neighbourhood radius (cells)" }],
   inferShapes(inputs) {
     return [inputs[0]!];
   },
