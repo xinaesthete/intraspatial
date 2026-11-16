@@ -61,8 +61,8 @@ _Avoid_: genome, individual (fine informally).
 **Rate**:
 The global mutation strength. `mutate` adds Gaussian noise with σ = `rate × deltaNorm` to each
 unlocked NUMBER trait (`deltaNorm` 1 when the param declares no delta, so σ = `rate`, as before
-deltas existed), and flips each ENABLE trait with probability `rate`.
-_Avoid_: temperature.
+deltas existed), and flips each ENABLE trait with probability `rate`. Temperature is a fair name
+for it, as in sampling or simulated annealing: lowering `rate` over generations anneals a lineage.
 
 **Mutate / marry / steer / advance**:
 The operators ([`mutator.ts`](./mutator.ts)): noise on position; per-trait crossover of two
