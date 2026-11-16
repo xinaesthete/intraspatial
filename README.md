@@ -86,7 +86,7 @@ Everything below is for working on this repository rather than using the package
 | [`src/gpu/spatial/`](src/gpu/spatial/) | Spatial-statistics catalogue — neighbour distances, KDE splat, Getis-Ord, ANNI, cKNN, fuzzy adjacency, separable convolution, … each with a CPU golden. |
 | [`src/gpu/sim/`](src/gpu/sim/) | Simulation catalogue — reaction–diffusion, force/body/spline dynamics, the HsPf figure sim. |
 | [`src/gpu/fields/`](src/gpu/fields/), [`src/gpu/interop/`](src/gpu/interop/) | Field types and the three.js / canvas interop seams (no `three` import inside `src/`). |
-| [`src/geometry/`](src/geometry/), [`src/evo/`](src/evo/) | Swept/superellipsoid geometry and the Mutator-lineage evolutionary catalogue (ParamSpec, pedigree, trait space). |
+| [`src/geometry/`](src/geometry/), [`src/evo/`](src/evo/) | Swept/superellipsoid geometry and the Mutator-lineage evolutionary catalogue (ParamSpec, pedigree, trait space with SuperCollider-style warps; glossary in [`src/evo/CONTEXT.md`](src/evo/CONTEXT.md)). |
 | [`src/datasource/`](src/datasource/) | Tiled / multiscale sources: view-driven tile-to-field, caches, synthetic and SpatialData-backed loaders. |
 | [`src/spatial/`](src/spatial/), [`src/color/`](src/color/), [`src/coords.ts`](src/coords.ts) | CPU-side spatial utilities, colour spaces, coordinate systems (ADR-0015). |
 | [`playground/`](playground/) | The **operation-graph composer** and viewer prototypes — React Flow + three.js apps that run the engine in the browser. See [`playground/README.md`](playground/README.md). |

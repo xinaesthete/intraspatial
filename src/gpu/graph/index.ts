@@ -35,6 +35,8 @@ export type { PoolStats } from "./pool";
 export { BufferPool, residentUsage } from "./pool";
 export { getOp, hasOp, listOps, registerOp } from "./registry";
 export { FieldRing, RingBuffer } from "./ringBuffer";
+export type { Warp, WarpSpec } from "./warp";
+export { warpIsLinear, warpMap, warpUnmap, warpValid } from "./warp";
 
 // Side-effect import: ensure built-in ops are registered when this entry is used.
 import "./ops/index";

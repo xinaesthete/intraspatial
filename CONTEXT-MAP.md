@@ -11,6 +11,9 @@ This repo now hosts more than one bounded context, each with its own ubiquitous 
 - [HsPf spatial population-genetics example](./src/gpu/sim/hspf/CONTEXT.md) — a stand-alone
   selection–migration GPU sim over a raster map of Africa (genotype-frequency field + LD,
   sampled mosquito-bite neighbourhood, GeoTIFF scaffold), recorded in ADR-0011.
+- [evo / Mutator](./src/evo/CONTEXT.md) — the evolutionary layer: trait spaces derived from
+  `ParamSpec[]` (through each param's `warp`, with its `delta` as the mutation step), specimens,
+  and the mutate / marry / steer / advance operators.
 
 ## Relationships
 
