@@ -113,6 +113,54 @@ function selectRows(d: Domain | undefined, include: RowMask | undefined, xs: Coo
   return { idx: kept === n ? null : buf.subarray(0, kept), kept, included };
 }
 
+/** A uniform grid over a point set as flat typed arrays (CSR): the points of bucket `b` are
+ *  `items[start[b] .. start[b+1])`, in ascending input order. Counting sort in two passes over the
+ *  points, so a large set costs three allocations rather than one array per bucket. `colOf`/`rowOf`
+ *  clamp, so a query point outside the set's own extent lands in the nearest edge bucket. */
+interface PointGrid {
+  readonly cols: number;
+  readonly rows: number;
+  readonly start: Int32Array;
+  readonly items: Int32Array;
+  readonly colOf: (x: number) => number;
+  readonly rowOf: (y: number) => number;
+}
+
+/** Grid of cell size `cell` over the `n` points `idx` selects (all of them when `idx` is null), built
+ *  over THEIR extent. Items are indices into the original `xs`/`ys`. */
+function buildGrid(xs: Coords, ys: Coords, idx: Int32Array | null, n: number, cell: number): PointGrid {
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (let k = 0; k < n; k++) {
+    const i = idx ? idx[k]! : k;
+    const x = xs[i]!;
+    const y = ys[i]!;
+    if (x < minX) minX = x;
+    if (x > maxX) maxX = x;
+    if (y < minY) minY = y;
+    if (y > maxY) maxY = y;
+  }
+  const cols = n > 0 ? Math.max(1, Math.ceil((maxX - minX) / cell) + 1) : 1;
+  const rows = n > 0 ? Math.max(1, Math.ceil((maxY - minY) / cell) + 1) : 1;
+  const colOf = (x: number) => Math.min(cols - 1, Math.max(0, Math.floor((x - minX) / cell)));
+  const rowOf = (y: number) => Math.min(rows - 1, Math.max(0, Math.floor((y - minY) / cell)));
+  const start = new Int32Array(cols * rows + 1);
+  for (let k = 0; k < n; k++) {
+    const i = idx ? idx[k]! : k;
+    start[rowOf(ys[i]!) * cols + colOf(xs[i]!) + 1]!++;
+  }
+  for (let b = 0; b < cols * rows; b++) start[b + 1]! += start[b]!;
+  const cursor = start.slice(0, cols * rows);
+  const items = new Int32Array(n);
+  for (let k = 0; k < n; k++) {
+    const i = idx ? idx[k]! : k;
+    items[cursor[rowOf(ys[i]!) * cols + colOf(xs[i]!)]!++] = i;
+  }
+  return { cols, rows, start, items, colOf, rowOf };
+}
+
 export function crossPCF(a0: CellCloud, b0: CellCloud, p: PcfParams): PcfResult {
   const domain = domainOf(p);
   checkMask("crossPCF", p.includeA, a0.xs.length);
@@ -144,29 +192,9 @@ export function crossPCF(a0: CellCloud, b0: CellCloud, p: PcfParams): PcfResult 
   // Bucket grid over B, cell size = rMax: every B within rMax of an anchor lies in the anchor's 3×3
   // bucket neighbourhood (same argument as computeTcm), so the exact per-pair distance test runs
   // over only those candidates.
-  let bMinX = Infinity;
-  let bMinY = Infinity;
-  let bMaxX = -Infinity;
-  let bMaxY = -Infinity;
-  for (let jj = 0; jj < nB; jj++) {
-    const j = rowsB ? rowsB[jj]! : jj;
-    const x = b.xs[j]!;
-    const y = b.ys[j]!;
-    if (x < bMinX) bMinX = x;
-    if (x > bMaxX) bMaxX = x;
-    if (y < bMinY) bMinY = y;
-    if (y > bMaxY) bMaxY = y;
-  }
   const cell = Math.max(p.rMax, 1e-9);
-  const cols = nB > 0 ? Math.max(1, Math.ceil((bMaxX - bMinX) / cell) + 1) : 1;
-  const rows = nB > 0 ? Math.max(1, Math.ceil((bMaxY - bMinY) / cell) + 1) : 1;
-  const buckets: number[][] = Array.from({ length: cols * rows }, () => []);
-  const colOf = (x: number) => Math.min(cols - 1, Math.max(0, Math.floor((x - bMinX) / cell)));
-  const rowOf = (y: number) => Math.min(rows - 1, Math.max(0, Math.floor((y - bMinY) / cell)));
-  for (let jj = 0; jj < nB; jj++) {
-    const j = rowsB ? rowsB[jj]! : jj;
-    buckets[rowOf(b.ys[j]!) * cols + colOf(b.xs[j]!)]!.push(j);
-  }
+  const grid = buildGrid(b.xs, b.ys, rowsB, nB, cell);
+  const { cols, rows, colOf, rowOf } = grid;
 
   for (let ii = 0; ii < nA; ii++) {
     const i = rowsA ? rowsA[ii]! : ii;
@@ -181,7 +209,8 @@ export function crossPCF(a0: CellCloud, b0: CellCloud, p: PcfParams): PcfResult 
       for (let dCol = -1; dCol <= 1; dCol++) {
         const cc = c0 + dCol;
         if (cc < 0 || cc >= cols) continue;
-        for (const j of buckets[rr * cols + cc]!) {
+        for (let q = grid.start[rr * cols + cc]!, qEnd = grid.start[rr * cols + cc + 1]!; q < qEnd; q++) {
+          const j = grid.items[q]!;
           const dx = b.xs[j]! - ax;
           const dy = b.ys[j]! - ay;
           const d2 = dx * dx + dy * dy;
@@ -249,33 +278,13 @@ export function crossPCFBinMembership(a: CellCloud, b: CellCloud, p: PcfParams):
   if (nA === 0 || nB === 0) return { maskA, maskB, countA, countB, nBins: p.nBins };
 
   // Same bucket grid as `crossPCF` — cell size rMax, so every in-range B is in the anchor's 3×3.
-  let bMinX = Infinity;
-  let bMinY = Infinity;
-  let bMaxX = -Infinity;
-  let bMaxY = -Infinity;
-  for (let j = 0; j < nB; j++) {
-    const x = b.xs[j]!;
-    const y = b.ys[j]!;
-    if (x < bMinX) bMinX = x;
-    if (x > bMaxX) bMaxX = x;
-    if (y < bMinY) bMinY = y;
-    if (y > bMaxY) bMaxY = y;
-  }
-  const cell = Math.max(p.rMax, 1e-9);
-  const cols = Math.max(1, Math.ceil((bMaxX - bMinX) / cell) + 1);
-  const rows = Math.max(1, Math.ceil((bMaxY - bMinY) / cell) + 1);
-  const buckets: number[][] = Array.from({ length: cols * rows }, () => []);
-  const colOf = (x: number) => Math.min(cols - 1, Math.max(0, Math.floor((x - bMinX) / cell)));
-  const rowOf = (y: number) => Math.min(rows - 1, Math.max(0, Math.floor((y - bMinY) / cell)));
   // Cells outside `domain` or excluded by a row mask are not in `crossPCF`'s pairs, so they stay unlit here too.
   const d = p.domain;
   checkMask("crossPCFBinMembership", p.includeA, nA);
   checkMask("crossPCFBinMembership", p.includeB, nB);
   const selB = selectRows(d, p.includeB, b.xs, b.ys);
-  for (let jj = 0; jj < selB.kept; jj++) {
-    const j = selB.idx ? selB.idx[jj]! : jj;
-    buckets[rowOf(b.ys[j]!) * cols + colOf(b.xs[j]!)]!.push(j);
-  }
+  const grid = buildGrid(b.xs, b.ys, selB.idx, selB.kept, Math.max(p.rMax, 1e-9));
+  const { cols, rows, colOf, rowOf } = grid;
 
   for (let i = 0; i < nA; i++) {
     const ax = a.xs[i]!;
@@ -291,7 +300,8 @@ export function crossPCFBinMembership(a: CellCloud, b: CellCloud, p: PcfParams):
       for (let dCol = -1; dCol <= 1; dCol++) {
         const cc = c0 + dCol;
         if (cc < 0 || cc >= cols) continue;
-        for (const j of buckets[rr * cols + cc]!) {
+        for (let q = grid.start[rr * cols + cc]!, qEnd = grid.start[rr * cols + cc + 1]!; q < qEnd; q++) {
+          const j = grid.items[q]!;
           const dx = b.xs[j]! - ax;
           const dy = b.ys[j]! - ay;
           const d2 = dx * dx + dy * dy;
@@ -367,12 +377,8 @@ export function crossPCFMatrix(cells: LabelledCells, p: PcfMatrixParams): PcfMat
   }
 
   // Bucket grid over all cells, cell size = radius (in-radius neighbours lie in the 3×3 neighbourhood).
-  const cols = Math.max(1, Math.ceil((maxX - minX) / r) + 1);
-  const rows = Math.max(1, Math.ceil((maxY - minY) / r) + 1);
-  const buckets: number[][] = Array.from({ length: cols * rows }, () => []);
-  const colOf = (x: number) => Math.min(cols - 1, Math.max(0, Math.floor((x - minX) / r)));
-  const rowOf = (y: number) => Math.min(rows - 1, Math.max(0, Math.floor((y - minY) / r)));
-  for (let i = 0; i < n; i++) buckets[rowOf(cells.ys[i]!) * cols + colOf(cells.xs[i]!)]!.push(i);
+  const grid = buildGrid(cells.xs, cells.ys, null, n, Math.max(r, 1e-9));
+  const { cols, rows, colOf, rowOf } = grid;
 
   const count = new Float64Array(N * N); // count[a*N + b] = ordered pairs (a-cell, b-cell) within r
   for (let i = 0; i < n; i++) {
@@ -387,7 +393,8 @@ export function crossPCFMatrix(cells: LabelledCells, p: PcfMatrixParams): PcfMat
       for (let dCol = -1; dCol <= 1; dCol++) {
         const cc = c0 + dCol;
         if (cc < 0 || cc >= cols) continue;
-        for (const j of buckets[rr * cols + cc]!) {
+        for (let q = grid.start[rr * cols + cc]!, qEnd = grid.start[rr * cols + cc + 1]!; q < qEnd; q++) {
+          const j = grid.items[q]!;
           if (j === i) continue; // exclude self-pairs
           const dx = cells.xs[j]! - ax;
           const dy = cells.ys[j]! - ay;
@@ -494,29 +501,9 @@ export function crossPCFMatrixBinned(all: LabelledCells, p: PcfMatrixBinnedParam
   // Bucket grid over the cells, cell size = rMax, so every in-range neighbour is in the 3×3
   // neighbourhood. Built over the cells' own extent rather than the bbox: an ROI whose recorded
   // rectangle is larger than the data (a padded image) would otherwise allocate empty buckets.
-  let gMinX = Infinity;
-  let gMinY = Infinity;
-  let gMaxX = -Infinity;
-  let gMaxY = -Infinity;
-  for (let ii = 0; ii < n; ii++) {
-    const i = rowIdx ? rowIdx[ii]! : ii;
-    const x = cells.xs[i]!;
-    const y = cells.ys[i]!;
-    if (x < gMinX) gMinX = x;
-    if (x > gMaxX) gMaxX = x;
-    if (y < gMinY) gMinY = y;
-    if (y > gMaxY) gMaxY = y;
-  }
   const cell = Math.max(p.rMax, 1e-9);
-  const cols = n > 0 ? Math.max(1, Math.ceil((gMaxX - gMinX) / cell) + 1) : 1;
-  const rows = n > 0 ? Math.max(1, Math.ceil((gMaxY - gMinY) / cell) + 1) : 1;
-  const buckets: number[][] = Array.from({ length: cols * rows }, () => []);
-  const colOf = (x: number) => Math.min(cols - 1, Math.max(0, Math.floor((x - gMinX) / cell)));
-  const rowOf = (y: number) => Math.min(rows - 1, Math.max(0, Math.floor((y - gMinY) / cell)));
-  for (let ii = 0; ii < n; ii++) {
-    const i = rowIdx ? rowIdx[ii]! : ii;
-    buckets[rowOf(cells.ys[i]!) * cols + colOf(cells.xs[i]!)]!.push(i);
-  }
+  const grid = buildGrid(cells.xs, cells.ys, rowIdx, n, cell);
+  const { cols, rows, colOf, rowOf } = grid;
 
   // Reciprocal annulus areas: the interior (uncut) case once, the per-anchor case into a scratch
   // buffer only for anchors the boundary actually reaches.
@@ -546,7 +533,8 @@ export function crossPCFMatrixBinned(all: LabelledCells, p: PcfMatrixBinnedParam
       for (let dCol = -1; dCol <= 1; dCol++) {
         const cc = c0 + dCol;
         if (cc < 0 || cc >= cols) continue;
-        for (const j of buckets[rr * cols + cc]!) {
+        for (let q = grid.start[rr * cols + cc]!, qEnd = grid.start[rr * cols + cc + 1]!; q < qEnd; q++) {
+          const j = grid.items[q]!;
           if (j === i) continue; // exclude self-pairs
           const dx = cells.xs[j]! - ax;
           const dy = cells.ys[j]! - ay;
