@@ -34,9 +34,9 @@ const PACKAGE_DIRS = {
  *  playground/package.json. Linked packages not listed here (layers, react: reached through vis)
  *  are removed again on unlink. */
 const PUBLISHED_RANGES = {
-  "@spatialdata/core": "^0.12.0",
-  "@spatialdata/vis": "^0.12.0",
-  zarrextra: "0.5.1",
+  "@spatialdata/core": "^0.16.1",
+  "@spatialdata/vis": "^0.16.1",
+  zarrextra: "0.7.1",
 };
 
 const expandHome = (p) => (p.startsWith("~/") ? path.join(os.homedir(), p.slice(2)) : p);
