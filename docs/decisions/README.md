@@ -1,6 +1,6 @@
 # Decision records — index and implementation status
 
-Last audited: **2026-07-23** (this table). Gap analysis refreshed **2026-08-22** across all
+Last audited: **2026-11-17** (this table, per issue #54; earlier audit 2026-07-23). Gap analysis refreshed **2026-08-22** across all
 ADRs *and* the forward-looking design notes — see [`../gap-analysis.md`](../gap-analysis.md).
 The rows below are corrected inline where the newer audit found them stale.
 
@@ -11,8 +11,8 @@ The 2026-07-23 audit found a clean pattern, and it is the reason this file exist
 > **Every ADR that landed was written about work already in flight or just finished. Every ADR that
 > did not land was written about direction.**
 
-Landed: 0001, 0002, 0003, 0008, 0011, 0017, 0019, 0010-loader. Partial: 0005 (kernel + filterOps, no
-facet), 0022 (index built + graph op), 0023 (bundles land, feedback of one does not). Not landed: 0006, 0009, 0012, 0014, 0016, 0018 — none of which are *wrong*, and several of which are good. They were simply speculation
+Landed: 0001, 0002, 0003, 0008, 0010-geometry, 0011, 0019, 0010-loader. Partial: 0004, 0006, 0007, 0013, 0005 (kernel + filterOps, no
+facet), 0015, 0017, 0018, 0022 (index, graph op, 3D build; queries 2D), 0023 (bundles land, feedback of one does not). Not landed: 0009, 0012, 0014, 0016 — none of which are *wrong*, and several of which are good. They were simply speculation
 wearing the costume of a decision, which turns the log into a source of guilt rather than a map.
 
 So:
@@ -48,7 +48,7 @@ Numbers 0019–0021 are **retired, not reused**, so commit history keeps pointin
 | [0001](0001-language-split.md) | Rust/wasm CPU core + TS/TypeGPU GPU | accepted | **landed** (moved to `tgpu-htj2k` repo) | `src/gpu`; Rust core now in the codec repo |
 | [0002](0002-runtime-node-not-bun.md) | Node toolchain, not Bun | accepted | **landed** | vitest configs, CLAUDE.md override |
 | [0003](0003-use-gpu-tgsl-kernels.md) | `"use gpu"` TGSL kernels | accepted | **landed** | used throughout `src/gpu` |
-| [0004](0004-field-type-model-and-volumetric-splat.md) | Field type model + volumetric splat | proposed | **partial** | element algebra + `axes` (via 0015) landed; `splatDensity.ts` exists |
+| [0004](0004-field-type-model-and-volumetric-splat.md) | Field type model + volumetric splat | proposed | **partial** | element algebra + `axes` (via 0015, `handle.ts`) landed; `splatDensity.ts` exists; 3D domain and volumetric splat remain |
 | [0005](0005-columnar-filters-and-sparse-support.md) | `support` facet, sparse columns | proposed | **partial** | scan/compaction kernel landed (`src/gpu/scan/`) and mask-as-field ops landed (`src/gpu/graph/ops/filterOps.ts`, 2026-08-22); still no `support` in the value lattice; operator set **corrected** 2026-08-01 (see [`mdv-dimension-vs-support-facet.md`](../mdv-dimension-vs-support-facet.md)) |
 | [0006](0006-spectral-and-wavelet-domain-representation.md) | `basis` facet | exploratory | **partial** | `Basis` + `inferBasis` consumed at build; `registerWaveletOps` ships `fdwt`/`idwt` (CPU nodes); **Fourier/FFT absent**; wavelet GPU-layout bridge unbuilt |
 | [0007](0007-expression-ir-dsl-graph-duality.md) | Expression IR ⇄ DSL ⇄ graph | proposed | **partial** | `src/geometry/expr.ts` has its *own* `Expr`, not unified with the graph |
@@ -60,12 +60,12 @@ Numbers 0019–0021 are **retired, not reused**, so commit history keeps pointin
 | [0012](0012-geometry-provenance-and-pick-to-feature-editing.md) | Provenance / pick-to-feature | exploratory | **open** | no `resolve`, no picking channel |
 | [0013](0013-hybrid-strategy-dispatch-and-progen-parallelism.md) | Hybrid strategy dispatch | exploratory | **partial** | `src/geometry/hybrid.ts` |
 | [0014](0014-procedural-geometry-render-contract.md) | Render contract (depth · distance · G-buffer) | exploratory | **open** | not a contract; raymarch is playground-local |
-| [0015](0015-channel-axis-labels-coordinate-systems.md) | Channel axis, labels, coordinate systems | draft | **partial** | `FieldRole`/`LabelMeta` **and** `ResolvedPlacement` now landed (via 0018); vector `ParamType` still missing |
+| [0015](0015-channel-axis-labels-coordinate-systems.md) | Channel axis, labels, coordinate systems | draft | **partial** | `FieldRole`/`LabelMeta` **and** `ResolvedPlacement` landed (via 0018), role/axes threading closed; vector `ParamType` still missing (`op.ts` is scalar/enum/bool) |
 | [0016](0016-topact-box-vs-kde-reproduce-then-improve.md) | TopACT: reproduce then improve | draft | **open** | no code |
 | [0017](0017-tier2-resident-buffer-edges.md) | Tier-2 resident buffer edges | accepted | **partial** | stages 1–3 + invariant 5 landed; 4–5 remain |
 | [0018](0018-field-domains-placement-and-resolution.md) | Field domains: extent, placement, resolution | draft | **partial** | `placement` on `GpuField`+`FieldValue` + `inferPlacement`/`outPlacements` landed (2026-08); `ParamSpec.units` + `UnitResolver` landed (2026-11, dec 5 amended); `boundsOf` remains |
 | [0019](0019-package-surface-and-prebuilt-kernels.md) | Package surface: `intraspatial` subpath exports, pre-transformed kernels, Dawn optional | accepted | **landed** | `package.json` exports, `vite.lib.config.ts`, `tsconfig.build.json`, barrels, lazy Dawn in `device.ts`; amended 2026-10-23: `packages/deck`, `@intraspatial/source` condition |
-| [0022](0022-gpu-uniform-grid-index.md) | GPU uniform-grid spatial index (2D, on-device build) | accepted | **partial** | `src/gpu/spatial/gridIndex.ts`, `latticeFor` in `bucketGrid.ts`, consumed by `crossPcf.ts` + `tcm.ts` (2026-08-22); no graph op, no 3D |
+| [0022](0022-gpu-uniform-grid-index.md) | GPU uniform-grid spatial index (2D, on-device build) | accepted | **partial** | `src/gpu/spatial/gridIndex.ts`, `latticeFor` in `bucketGrid.ts`, consumed by `crossPcf.ts` + `tcm.ts` (2026-08-22); graph op (`ops/gridIndex.ts`), indexed `nnDistance`/`knn` and 3D lattice build since landed; queries are 2D only, CkNN/fuzzy adjacency still brute-force, no compaction |
 | [0023](0023-composite-values-and-borrowed-leases.md) | Composite field values (bundles) + borrowed resident leases | accepted | **partial** | `bundle` shape + `parts`, borrow liveness in `executor.ts`, `bundleOps.ts` factories, `gridIndex` + `cellCounts` (2026-08-22); no bundle feedback |
 
 ⚠ **Two ADRs share the number 0010** (`procedural-geometry-composable-ops` and
@@ -73,7 +73,7 @@ Numbers 0019–0021 are **retired, not reused**, so commit history keeps pointin
 and across the ADRs themselves, so it has been left alone and is recorded here instead. Refer to them
 as *ADR-0010-geometry* and *ADR-0010-loader*.
 
-Roughly **9 landed, 7 partial, 4 open** across 20 records (0018 moved open→partial when the
+Roughly **8 landed, 10 partial, 4 open** across 22 records (0018 moved open→partial when the
 placement facet landed in 2026-08; 0019 was promoted from the packaging design note on the day the
 package was cut, 2026-08-22 — the first ADR since the audit, and written about work in flight).
 
@@ -97,8 +97,8 @@ package was cut, 2026-08-22 — the first ADR since the audit, and written about
   package cheap. See [`packaging-and-consumers.md`](../packaging-and-consumers.md).
 - **`src/gpu/spatial` already has ten GPU-tested ops** — ANNI, cKNN, separable convolution, empty
   space, fuzzy adjacency (+ adaptive), Getis-Ord, kth-neighbour distance, NN distance, splat density.
-  Running spatial statistics on real data is blocked on a *bridge from SpatialData elements*, not on
-  missing ops.
+  The SpatialData→field bridge now exists (`datasource/tileToField.ts`, `centroidsToField.ts`,
+  `playground/src/datasource/imageToGraph.ts`).
 - **Sharing one `GPUDevice` between three.js and deck.gl/luma.gl is already possible** — three's
   `WebGPUBackend` accepts `parameters.device`/`parameters.context`, and `luma.attachDevice` takes a
   `GPUDevice` explicitly for interleaving. What is missing is on deck's side (no WebGPU interleaving

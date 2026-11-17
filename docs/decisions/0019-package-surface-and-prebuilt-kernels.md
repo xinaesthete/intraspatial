@@ -54,7 +54,7 @@ package could ship them at all.
 ## Consequences
 
 - `pnpm build:lib` (also `prepack`) produces `dist/`; `files` ships only `dist`, README, LICENSE.
-  Version bumped to **0.1.0**. **Not published** — `npm publish` needs Peter's credentials.
+  Version bumped to **0.1.0**. Since published to npm (now at 0.3.0, released via Changesets).
 - `fallow` (run 2026-08-22, maintainability 89) surfaced follow-ups that the export map now makes
   public surface: `src/gpu/sim/jet.ts` is 100 % dead; `ops/danceForces.ts` exports 13 unused
   symbols; `src/geometry/swept.ts` ↔ `geometry/index.ts` is an import cycle. Prune before 0.2.

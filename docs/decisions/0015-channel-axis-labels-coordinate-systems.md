@@ -1,6 +1,6 @@
 # ADR-0015 — Channel axis, label polarity, and coordinate systems (NGFF/spatialdata-grounded)
 
-Status: **draft / proposed** (2026-07-12)
+Status: **partial** (2026-07-12; `axes`/`role` threading and `ResolvedPlacement` landed, vector `ParamType` still open)
 
 ## Context
 
@@ -231,7 +231,7 @@ reasoning is visible; the remaining two are the only ones needing a call.
   synthetic image as `axes:[{c,channel,4}]` (element scalar, **not** `vec4`) and emits the mask as
   a real `label(u32)` field through the actual `Graph`/executor/memo. Provenance↔memo behaviour
   holds unchanged (edit ⇒ 1 fill, unchanged ⇒ 0). #1 and #2 are now resolved *in the model*.
-- **Known gap for the full landing (not the spike):** `graph.ts` `makeField`/`op()` thread
+- **Known gap for the full landing (not the spike) — now closed:** `graph.ts` `makeField`/`op()` thread
   `element`/`basis` onto the returned `GpuField` handle but **not** `axes`/`role`, so *build-time*
   inference can't yet see them — the spike works only because ops read `axes` off the resolved
   `FieldValue` at *execute* time. Threading `axes`/`role` through the builder (parallel to
@@ -243,7 +243,7 @@ reasoning is visible; the remaining two are the only ones needing a call.
   channel-weighted op cannot expose its weights as editable. A vector/array `ParamType` (or a
   per-axis-index param family) is needed before channel weights become user-facing. Orthogonal to
   the axis/label facets themselves; recorded here so it isn't rediscovered.
-- **Still proposed:** `ResolvedPlacement` consumption at the `Loader` seam; the datasource
+- **Landed since (via ADR-0018):** `ResolvedPlacement` and `placements[]`. Originally listed as proposed: `ResolvedPlacement` consumption at the `Loader` seam; the datasource
   `Multiscale.worldFromArray → placements[]` change; wiring the `nearest` invariant into the
   floor-halving pyramid; the real 4-channel Xenium tile end-to-end.
 

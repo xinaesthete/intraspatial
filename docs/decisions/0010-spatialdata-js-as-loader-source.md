@@ -1,6 +1,6 @@
 # ADR-0010 — spatialdata.js as the Milestone-2 `Loader` source
 
-Status: **proposed** (2026-07-06). Amends the cross-repo layering table of
+Status: **landed** (proposed 2026-07-06; `playground/src/datasource/spatialDataLoader.ts`). Amends the cross-repo layering table of
 [ADR-0008](./0008-view-driven-multiscale-datasource.md).
 
 ## Decision
@@ -85,7 +85,7 @@ make the bounded-working-set behaviour tangible).
   Selection) into the SpatialData tile path — needed because real HTJ2K decode is expensive where
   the synthetic in-memory loader was free.
 - Working set bounded by **natural Nyquist + frustum + LOD gradient + `TileCache` LRU**; the
-  explicit `selectWithinBudget` degrade-to-fit ceiling (ADR-0008 §5) is **deferred** until an
+  explicit `selectWithinBudget` degrade-to-fit ceiling (ADR-0008 §5) was **deferred** until an (since built: `selectWithinBudget` in `playground/src/spatialVolumeMain.ts`)
   actual OOM (e.g. a grazing oblique strip) can be provoked. To be reviewed against
   viv / psychogeo / others later.
 - **Exit:** orbit/zoom over the real `he_image` visibly changes chunk levels and the byte budget,
