@@ -387,6 +387,37 @@ describe("polygonDomain", () => {
     ).toThrow(/not finite/);
   });
 
+  it("rejects self-crossing and mutually crossing rings, naming the edges", () => {
+    const figureEight: [number, number][] = [
+      [0, 0],
+      [10, 10],
+      [10, 0],
+      [0, 10],
+    ];
+    expect(() => polygonDomain(figureEight)).toThrow(/edges cross \(ring 0 edge \d and ring 0 edge \d/);
+    expect(() => polygonDomain([box(0, 0, 10, 10), box(5, 5, 15, 15)])).toThrow(/ring 0 edge \d and ring 1 edge \d/);
+    // Collinear overlap of two rings' edges is a crossing too.
+    expect(() => polygonDomain([box(0, 0, 10, 10), box(5, 0, 15, 10)])).toThrow(/edges cross/);
+  });
+
+  it("accepts rings that only touch at a vertex, and nested or disjoint rings", () => {
+    // Two squares sharing a single corner point.
+    expect(() => polygonDomain([box(0, 0, 10, 10), box(10, 10, 20, 20)])).not.toThrow();
+    // A pinched ring touching itself at a vertex (two triangles joined at (5, 5)).
+    expect(() =>
+      polygonDomain([
+        [0, 0],
+        [5, 5],
+        [10, 0],
+        [10, 10],
+        [5, 5],
+        [0, 10],
+      ]),
+    ).not.toThrow();
+    expect(() => polygonDomain([box(0, 0, 100, 100), box(40, 40, 60, 60)])).not.toThrow();
+    expect(() => polygonDomain([box(0, 0, 10, 10), box(20, 0, 30, 10)])).not.toThrow();
+  });
+
   it("reproduces the rectangle's annulus areas to rounding, at any anchor", () => {
     const poly = polygonDomain(box(0, 0, 100, 80));
     const rect = rectDomain([0, 0, 100, 80]);

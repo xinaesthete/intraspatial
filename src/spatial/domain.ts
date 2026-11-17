@@ -74,7 +74,9 @@ type Ring = readonly (readonly [number, number])[];
  * A polygon domain from GeoJSON-style rings: one ring `[[x, y], …]`, or several (`[[[x, y], …], …]`,
  * a Polygon's coordinates or a MultiPolygon's rings flattened). The region is even–odd: a ring
  * inside another is a hole, a ring inside a hole is an island. A closing vertex equal to the first
- * is dropped. Rings must not cross each other or themselves; orientation does not matter.
+ * is dropped. Rings must not cross each other or themselves (this throws, naming the ring and edge
+ * indices); touching at a vertex is allowed. Orientation does not matter. Repairing a crossing
+ * ring (e.g. a self-intersecting lasso) belongs upstream of this function.
  */
 export function polygonDomain(shape: Ring | readonly Ring[]): PolygonDomain {
   const first = shape[0];
@@ -105,6 +107,7 @@ export function polygonDomain(shape: Ring | readonly Ring[]): PolygonDomain {
       maxY = Math.max(maxY, f[i + 1]!);
     }
   }
+  assertNoCrossings(flat, [minX, minY, maxX, maxY]);
   // A ring nested in an odd number of others is a hole: orient it clockwise, the rest counter-
   // clockwise, so the signed sums below count the even–odd region once.
   const oriented = flat.map((f, r) => {
@@ -115,6 +118,68 @@ export function polygonDomain(shape: Ring | readonly Ring[]): PolygonDomain {
   });
   if (oriented.some((f) => signedRingArea(f) === 0)) throw new Error("polygonDomain: a ring has zero area");
   return { kind: "polygon", bbox: [minX, minY, maxX, maxY], rings: oriented };
+}
+
+/** Proper crossing or positive-length collinear overlap of segments (a→b) and (c→d). Touching at
+ *  an endpoint, or an endpoint resting on the other segment, is not a crossing. */
+function segmentsCross(ax: number, ay: number, bx: number, by: number, cx: number, cy: number, dx: number, dy: number): boolean {
+  const o1 = Math.sign((bx - ax) * (cy - ay) - (by - ay) * (cx - ax));
+  const o2 = Math.sign((bx - ax) * (dy - ay) - (by - ay) * (dx - ax));
+  const o3 = Math.sign((dx - cx) * (ay - cy) - (dy - cy) * (ax - cx));
+  const o4 = Math.sign((dx - cx) * (by - cy) - (dy - cy) * (bx - cx));
+  if (o1 * o2 < 0 && o3 * o4 < 0) return true;
+  if (o1 === 0 && o2 === 0) {
+    // Collinear: overlap of positive length along the dominant axis.
+    const useX = Math.abs(bx - ax) >= Math.abs(by - ay);
+    const [a0, a1] = useX ? [ax, bx] : [ay, by];
+    const [c0, c1] = useX ? [cx, dx] : [cy, dy];
+    return Math.min(Math.max(a0, a1), Math.max(c0, c1)) > Math.max(Math.min(a0, a1), Math.min(c0, c1));
+  }
+  return false;
+}
+
+/**
+ * Throws if any two edges of the rings cross (each other or themselves). Candidate pairs come from
+ * a coarse grid over the edges' bounding boxes, so this is near-linear for ordinary polygons.
+ * Edge `i` of a ring runs from vertex `i - 1` to vertex `i`, matching `edgesOf`.
+ */
+function assertNoCrossings(rings: readonly Float64Array[], bbox: Box): void {
+  const d: PolygonDomain = { kind: "polygon", bbox, rings };
+  const nE = rings.reduce((n, f) => n + f.length / 2, 0);
+  const cell = Math.max(bbox[2] - bbox[0], bbox[3] - bbox[1]) / Math.max(1, Math.ceil(Math.sqrt(nE)));
+  const ix = buildEdgeIndex(d, cell);
+  const e = ix.e;
+  const ringStart: number[] = [];
+  let acc = 0;
+  for (const f of rings) {
+    ringStart.push(acc);
+    acc += f.length / 2;
+  }
+  const where = (k: number) => {
+    let r = ringStart.length - 1;
+    while (ringStart[r]! > k) r--;
+    return { ring: r, edge: k - ringStart[r]!, len: rings[r]!.length / 2 };
+  };
+  for (let c = 0; c < ix.nx * ix.ny; c++) {
+    for (let p = ix.start[c]!; p < ix.start[c + 1]!; p++) {
+      const k = ix.ids[p]!;
+      const wk = where(k);
+      for (let q = p + 1; q < ix.start[c + 1]!; q++) {
+        const m = ix.ids[q]!;
+        const wm = where(m);
+        if (wk.ring === wm.ring) {
+          const gap = Math.abs(wk.edge - wm.edge);
+          if (gap === 1 || gap === wk.len - 1) continue; // adjacent edges share a vertex
+        }
+        if (segmentsCross(e[4 * k]!, e[4 * k + 1]!, e[4 * k + 2]!, e[4 * k + 3]!, e[4 * m]!, e[4 * m + 1]!, e[4 * m + 2]!, e[4 * m + 3]!)) {
+          throw new Error(
+            `polygonDomain: edges cross (ring ${wk.ring} edge ${wk.edge} and ring ${wm.ring} edge ${wm.edge}; edge i runs from vertex i-1 to i). ` +
+              "Rings must not cross themselves or each other; repair the polygon upstream.",
+          );
+        }
+      }
+    }
+  }
 }
 
 function signedRingArea(f: Float64Array): number {
