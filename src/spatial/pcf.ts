@@ -89,43 +89,46 @@ function checkMask(who: string, mask: RowMask | undefined, n: number): void {
   if (mask && mask.length !== n) throw new Error(`${who}: row mask has ${mask.length} entries for ${n} cells`);
 }
 
-/** Indices of the points `include` keeps (all, when absent) that lie inside `d` (anywhere, when absent). */
-function keptIndices(d: Domain | undefined, include: RowMask | undefined, xs: Coords, ys: Coords): number[] {
-  const keep: number[] = [];
-  for (let i = 0; i < xs.length; i++) {
+/** The rows a call uses. `idx` lists them in order, or is `null` when every row is used — the
+ *  common case allocates nothing. `included` counts rows `include` keeps, before the domain test. */
+interface RowSelection {
+  readonly idx: Int32Array | null;
+  readonly kept: number;
+  readonly included: number;
+}
+
+/** One pass, one preallocated buffer, no column copies: callers read the original columns at `idx[k]`. */
+function selectRows(d: Domain | undefined, include: RowMask | undefined, xs: Coords, ys: Coords): RowSelection {
+  const n = xs.length;
+  if (!d && !include) return { idx: null, kept: n, included: n };
+  const buf = new Int32Array(n);
+  let kept = 0;
+  let included = 0;
+  for (let i = 0; i < n; i++) {
     if (include && !include[i]) continue;
+    included++;
     if (d && !domainContains(d, xs[i]!, ys[i]!)) continue;
-    keep.push(i);
+    buf[kept++] = i;
   }
-  return keep;
-}
-
-/** `c` restricted to the rows `include` keeps that lie in `d`; `c` itself when neither restricts. */
-function restrictCloud(d: Domain | undefined, include: RowMask | undefined, c: CellCloud): { cloud: CellCloud; kept: number } {
-  if (!d && !include) return { cloud: c, kept: c.xs.length };
-  const keep = keptIndices(d, include, c.xs, c.ys);
-  if (keep.length === c.xs.length) return { cloud: c, kept: keep.length };
-  return { cloud: { xs: keep.map((i) => c.xs[i]!), ys: keep.map((i) => c.ys[i]!) }, kept: keep.length };
-}
-
-/** How many of the rows `include` keeps lie outside `d`. */
-function countOutside(d: Domain, include: RowMask | undefined, c: CellCloud, kept: number): number {
-  const included = include ? keptIndices(undefined, include, c.xs, c.ys).length : c.xs.length;
-  return included - kept;
+  return { idx: kept === n ? null : buf.subarray(0, kept), kept, included };
 }
 
 export function crossPCF(a0: CellCloud, b0: CellCloud, p: PcfParams): PcfResult {
   const domain = domainOf(p);
   checkMask("crossPCF", p.includeA, a0.xs.length);
   checkMask("crossPCF", p.includeB, b0.xs.length);
-  const { cloud: a, kept: keptA } = restrictCloud(p.domain, p.includeA, a0);
-  const { cloud: b, kept: keptB } = restrictCloud(p.domain, p.includeB, b0);
+  const a = a0;
+  const b = b0;
+  const selA = selectRows(p.domain, p.includeA, a.xs, a.ys);
+  const selB = selectRows(p.domain, p.includeB, b.xs, b.ys);
+  const rowsA = selA.idx;
+  const rowsB = selB.idx;
   const roiArea = Math.max(p.roiArea ?? domainArea(domain), 1e-12);
-  const rhoB = b.xs.length / roiArea; // global density of B (Mode 1)
+  const rhoB = selB.kept / roiArea; // global density of B (Mode 1)
   const dr = p.rMax / p.nBins;
   const rMax2 = p.rMax * p.rMax;
-  const nA = a.xs.length;
-  const nB = b.xs.length;
+  const nA = selA.kept;
+  const nB = selB.kept;
   const counts = new Float64Array(p.nBins);
   // Σ_a Σ_b 1/A_{r_k}(x_a) — equal to counts/(full annulus area) when uncorrected, but the anchor's
   // own clipped area when it is not, so the two cases share one accumulation.
@@ -145,7 +148,8 @@ export function crossPCF(a0: CellCloud, b0: CellCloud, p: PcfParams): PcfResult 
   let bMinY = Infinity;
   let bMaxX = -Infinity;
   let bMaxY = -Infinity;
-  for (let j = 0; j < nB; j++) {
+  for (let jj = 0; jj < nB; jj++) {
+    const j = rowsB ? rowsB[jj]! : jj;
     const x = b.xs[j]!;
     const y = b.ys[j]!;
     if (x < bMinX) bMinX = x;
@@ -159,9 +163,13 @@ export function crossPCF(a0: CellCloud, b0: CellCloud, p: PcfParams): PcfResult 
   const buckets: number[][] = Array.from({ length: cols * rows }, () => []);
   const colOf = (x: number) => Math.min(cols - 1, Math.max(0, Math.floor((x - bMinX) / cell)));
   const rowOf = (y: number) => Math.min(rows - 1, Math.max(0, Math.floor((y - bMinY) / cell)));
-  for (let j = 0; j < nB; j++) buckets[rowOf(b.ys[j]!) * cols + colOf(b.xs[j]!)]!.push(j);
+  for (let jj = 0; jj < nB; jj++) {
+    const j = rowsB ? rowsB[jj]! : jj;
+    buckets[rowOf(b.ys[j]!) * cols + colOf(b.xs[j]!)]!.push(j);
+  }
 
-  for (let i = 0; i < nA; i++) {
+  for (let ii = 0; ii < nA; ii++) {
+    const i = rowsA ? rowsA[ii]! : ii;
     const ax = a.xs[i]!;
     const ay = a.ys[i]!;
     const inv = invAt(ax, ay);
@@ -198,7 +206,7 @@ export function crossPCF(a0: CellCloud, b0: CellCloud, p: PcfParams): PcfResult 
     out.push(counts[k]!);
   }
   if (!p.domain) return { r, g, counts: out };
-  return { r, g, counts: out, outside: countOutside(p.domain, p.includeA, a0, keptA) + countOutside(p.domain, p.includeB, b0, keptB) };
+  return { r, g, counts: out, outside: selA.included - selA.kept + (selB.included - selB.kept) };
 }
 
 export interface PcfBinMembership {
@@ -263,8 +271,11 @@ export function crossPCFBinMembership(a: CellCloud, b: CellCloud, p: PcfParams):
   const d = p.domain;
   checkMask("crossPCFBinMembership", p.includeA, nA);
   checkMask("crossPCFBinMembership", p.includeB, nB);
-  const bIndices = keptIndices(d, p.includeB, b.xs, b.ys);
-  for (const j of bIndices) buckets[rowOf(b.ys[j]!) * cols + colOf(b.xs[j]!)]!.push(j);
+  const selB = selectRows(d, p.includeB, b.xs, b.ys);
+  for (let jj = 0; jj < selB.kept; jj++) {
+    const j = selB.idx ? selB.idx[jj]! : jj;
+    buckets[rowOf(b.ys[j]!) * cols + colOf(b.xs[j]!)]!.push(j);
+  }
 
   for (let i = 0; i < nA; i++) {
     const ax = a.xs[i]!;
@@ -468,19 +479,14 @@ export function crossPCFMatrixBinned(all: LabelledCells, p: PcfMatrixBinnedParam
   let K = p.nTypes ?? 0;
   if (!p.nTypes) for (let i = 0; i < all.xs.length; i++) K = Math.max(K, all.typeId[i]! + 1);
   checkMask("crossPCFMatrixBinned", p.include, all.xs.length);
-  let cells = all;
-  if (p.domain || p.include) {
-    const keep = keptIndices(p.domain, p.include, all.xs, all.ys);
-    if (keep.length !== all.xs.length) {
-      cells = { xs: keep.map((i) => all.xs[i]!), ys: keep.map((i) => all.ys[i]!), typeId: keep.map((i) => all.typeId[i]!) };
-    }
-  }
-  const included = p.include ? keptIndices(undefined, p.include, all.xs, all.ys).length : all.xs.length;
-  const n = cells.xs.length;
+  const cells = all;
+  const sel = selectRows(p.domain, p.include, all.xs, all.ys);
+  const rowIdx = sel.idx;
+  const n = sel.kept;
   const roiArea = Math.max(p.roiArea ?? domainArea(domain), 1e-12);
   const nPer = new Array<number>(K).fill(0);
-  for (let i = 0; i < n; i++) {
-    const t = cells.typeId[i]!;
+  for (let ii = 0; ii < n; ii++) {
+    const t = cells.typeId[rowIdx ? rowIdx[ii]! : ii]!;
     if (t < 0 || t >= K) throw new Error(`crossPCFMatrixBinned: type id ${t} outside [0, ${K})`);
     nPer[t]!++;
   }
@@ -492,7 +498,8 @@ export function crossPCFMatrixBinned(all: LabelledCells, p: PcfMatrixBinnedParam
   let gMinY = Infinity;
   let gMaxX = -Infinity;
   let gMaxY = -Infinity;
-  for (let i = 0; i < n; i++) {
+  for (let ii = 0; ii < n; ii++) {
+    const i = rowIdx ? rowIdx[ii]! : ii;
     const x = cells.xs[i]!;
     const y = cells.ys[i]!;
     if (x < gMinX) gMinX = x;
@@ -506,7 +513,10 @@ export function crossPCFMatrixBinned(all: LabelledCells, p: PcfMatrixBinnedParam
   const buckets: number[][] = Array.from({ length: cols * rows }, () => []);
   const colOf = (x: number) => Math.min(cols - 1, Math.max(0, Math.floor((x - gMinX) / cell)));
   const rowOf = (y: number) => Math.min(rows - 1, Math.max(0, Math.floor((y - gMinY) / cell)));
-  for (let i = 0; i < n; i++) buckets[rowOf(cells.ys[i]!) * cols + colOf(cells.xs[i]!)]!.push(i);
+  for (let ii = 0; ii < n; ii++) {
+    const i = rowIdx ? rowIdx[ii]! : ii;
+    buckets[rowOf(cells.ys[i]!) * cols + colOf(cells.xs[i]!)]!.push(i);
+  }
 
   // Reciprocal annulus areas: the interior (uncut) case once, the per-anchor case into a scratch
   // buffer only for anchors the boundary actually reaches.
@@ -521,7 +531,8 @@ export function crossPCFMatrixBinned(all: LabelledCells, p: PcfMatrixBinnedParam
   const weighted = new Float64Array(K * K * B);
   const pairs = new Float64Array(K * K * B);
 
-  for (let i = 0; i < n; i++) {
+  for (let ii = 0; ii < n; ii++) {
+    const i = rowIdx ? rowIdx[ii]! : ii;
     const ax = cells.xs[i]!;
     const ay = cells.ys[i]!;
     const a = cells.typeId[i]!;
@@ -565,8 +576,8 @@ export function crossPCFMatrixBinned(all: LabelledCells, p: PcfMatrixBinnedParam
   }
   if (!p.domain) return { nTypes: K, nBins: B, counts: nPer, r, g, pairs };
   const from = p.domain.kind === "mask" ? p.domain.derivedFrom : undefined;
-  if (!from) return { nTypes: K, nBins: B, counts: nPer, r, g, pairs, outside: included - n };
+  if (!from) return { nTypes: K, nBins: B, counts: nPer, r, g, pairs, outside: sel.included - n };
   const confounded = new Uint8Array(K * K);
   for (const a of from) for (const b of from) if (a >= 0 && a < K && b >= 0 && b < K) confounded[a * K + b] = 1;
-  return { nTypes: K, nBins: B, counts: nPer, r, g, pairs, outside: included - n, confounded };
+  return { nTypes: K, nBins: B, counts: nPer, r, g, pairs, outside: sel.included - n, confounded };
 }
