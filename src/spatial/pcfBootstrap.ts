@@ -65,6 +65,7 @@
 import { annulusAreasInto } from "./edgeCorrection";
 import { mulberry32 } from "./kernelAnalysis";
 import type { PcfParams } from "./pcf";
+import { buildGrid } from "./pointGrid";
 import type { CellCloud } from "./tcm";
 
 /**
@@ -153,25 +154,9 @@ export function crossPCFBootstrap(a: CellCloud, b: CellCloud, p: PcfParams, opts
   if (nA === 0 || nB === 0) return { r, g, lo, hi, nA, resamples, alpha, scheme, blocks: 0 };
 
   // ---- one pass: per-anchor contributions --------------------------------------------------------
-  let bMinX = Infinity;
-  let bMinY = Infinity;
-  let bMaxX = -Infinity;
-  let bMaxY = -Infinity;
-  for (let j = 0; j < nB; j++) {
-    const x = b.xs[j]!;
-    const y = b.ys[j]!;
-    if (x < bMinX) bMinX = x;
-    if (x > bMaxX) bMaxX = x;
-    if (y < bMinY) bMinY = y;
-    if (y > bMaxY) bMaxY = y;
-  }
   const cell = Math.max(p.rMax, 1e-9);
-  const cols = Math.max(1, Math.ceil((bMaxX - bMinX) / cell) + 1);
-  const rows = Math.max(1, Math.ceil((bMaxY - bMinY) / cell) + 1);
-  const buckets: number[][] = Array.from({ length: cols * rows }, () => []);
-  const colOf = (x: number) => Math.min(cols - 1, Math.max(0, Math.floor((x - bMinX) / cell)));
-  const rowOf = (y: number) => Math.min(rows - 1, Math.max(0, Math.floor((y - bMinY) / cell)));
-  for (let j = 0; j < nB; j++) buckets[rowOf(b.ys[j]!) * cols + colOf(b.xs[j]!)]!.push(j);
+  const grid = buildGrid(b.xs, b.ys, null, nB, cell);
+  const { cols, rows, colOf, rowOf } = grid;
 
   const invFull = new Float64Array(B);
   for (let k = 0; k < B; k++) {
@@ -204,7 +189,8 @@ export function crossPCFBootstrap(a: CellCloud, b: CellCloud, p: PcfParams, opts
       for (let dCol = -1; dCol <= 1; dCol++) {
         const cc = c0 + dCol;
         if (cc < 0 || cc >= cols) continue;
-        for (const j of buckets[rr * cols + cc]!) {
+        for (let q = grid.start[rr * cols + cc]!, qEnd = grid.start[rr * cols + cc + 1]!; q < qEnd; q++) {
+          const j = grid.items[q]!;
           const dx = b.xs[j]! - ax;
           const dy = b.ys[j]! - ay;
           const d2 = dx * dx + dy * dy;
