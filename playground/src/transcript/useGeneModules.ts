@@ -15,7 +15,7 @@ import { usePointsTiles } from "../hooks/useSpatialData";
 import { isControl } from "./channelModel";
 import type { GeneModulesRequest, GeneModulesResponse, GeneModulesSummary } from "./geneModulesWorker";
 
-export interface GeneModuleChannels {
+interface GeneModuleChannels {
   readonly channels: WeightedChannel[];
   readonly summary: GeneModulesSummary;
   /** Share of the element the sample was read from. */
@@ -23,7 +23,7 @@ export interface GeneModuleChannels {
 }
 
 /** "M3 · PCK1 LRP2 GATM": a module's label is its index and its most structured genes. */
-export function moduleLabel(i: number, codes: readonly number[], names: ReadonlyMap<number, string>): string {
+function moduleLabel(i: number, codes: readonly number[], names: ReadonlyMap<number, string>): string {
   return `M${i + 1} · ${codes
     .slice(0, 3)
     .map((c) => names.get(c) ?? `#${c}`)
