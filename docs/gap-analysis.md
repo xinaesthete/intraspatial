@@ -1,8 +1,10 @@
 # Gap analysis — what's decided/planned but not yet built
 
-**Last refreshed: 2026-08-22.** Verified against the code (three parallel audits of ADRs
-0001–0009, 0010–0018, and the forward-looking design notes in `docs/`), not against the
-documents' own status claims — several of which are stale. Companion to the per-ADR table
+**Last refreshed: 2026-11-17** (issue [#54](https://github.com/xinaesthete/intraspatial/issues/54),
+checked against `main` at 4a2e26c; previous full audit 2026-08-22). Verified against the code, not
+against the documents' own status claims — several of which are stale. Items that landed since
+the August audit are corrected inline below; the full per-item triage list (with doc line
+references) lives in #54. Companion to the per-ADR table
 in [`decisions/README.md`](decisions/README.md); this doc adds the plan-note gaps and the
 cross-cutting picture.
 
@@ -70,8 +72,10 @@ compaction ~9–11 ms, readback-dominated). Companion helpers `dispatchGrid` / `
   **2D build landed** ([ADR-0022](decisions/0022-gpu-uniform-grid-index.md),
   [`src/gpu/spatial/gridIndex.ts`](../src/gpu/spatial/gridIndex.ts), 2026-08-22): on-device
   histogram → scan → scatter, consumed by `crossPcf.ts` and `tcm.ts`; 10M points in 5.5 ms.
-  Still missing: the graph op, indexed `nnDistance`/`knn` (point stats are still brute-force
-  O(N²)), and 3D. Also unbuilt from ADR-0004: **3D domain**
+  Since landed: indexed `nnDistance`/`knn` ([`gridIndexQuery.ts`](../src/gpu/spatial/gridIndexQuery.ts)),
+  the graph op ([`ops/gridIndex.ts`](../src/gpu/graph/ops/gridIndex.ts)) and the 3D lattice build.
+  Still missing (ADR-0022 follow-ups): query helpers are 2D only, CkNN/fuzzy adjacency still
+  brute-force, no occupied-cell compaction, no resident `separate`/`spring` force op. Also unbuilt from ADR-0004: **3D domain**
   (`Shape` in [`handle.ts`](../src/gpu/graph/handle.ts) is 2D-only, no `dim: 2|3`) and
   **volumetric splat** (points → voxel grid).
 - **The resident render op** — [ADR-0009](decisions/0009-rendering-as-ops.md) (rendering-as-ops),
@@ -106,13 +110,16 @@ compaction ~9–11 ms, readback-dominated). Companion helpers `dispatchGrid` / `
   The demand-pull pipeline is real and well-tested as plain functions, but `Select`/`Resolve`/
   `Tileset` are **not registered ops**, and the **pull-time camera input** (the one new
   runtime concept) was never added to the executor.
-- **Facet loose ends** — `ParamSpec.units` ([ADR-0018](decisions/0018-field-domains-placement-and-resolution.md)
-  dec 5 / [`stream-a-placement-plan.md`](stream-a-placement-plan.md) slice 4);
-  the `boundsOf(points)→domain` escape op (ADR-0018 dec 4, so `splatDensity` still
+- **Facet loose ends** — `ParamSpec.units` **landed** ([`units.ts`](../src/gpu/graph/units.ts));
+  still open from [ADR-0018](decisions/0018-field-domains-placement-and-resolution.md) dec 5 /
+  [`stream-a-placement-plan.md`](stream-a-placement-plan.md) slice 4: ops that convert units
+  and the scale-equivariance test.
+  The `boundsOf(points)→domain` escape op (ADR-0018 dec 4, so `splatDensity` still
   host-falls-back for the default bbox); **vector `ParamType`**
   ([ADR-0015](decisions/0015-channel-axis-labels-coordinate-systems.md) — blocks any
-  UI-editable placement/bbox/channel-weights). Also: the `inferAxes` hook exists but **no op
-  implements it**.
+  UI-editable placement/bbox/channel-weights). The `inferAxes` hook is implemented by
+  [`channelOps.ts`](../src/gpu/graph/ops/channelOps.ts) and
+  [`regionOps.ts`](../src/gpu/graph/ops/regionOps.ts).
 
 ## Tier 3 — Science / analysis slices
 
@@ -120,14 +127,17 @@ compaction ~9–11 ms, readback-dominated). Companion helpers `dispatchGrid` / `
   [`muspan-cell-stats-plan.md`](muspan-cell-stats-plan.md) §7 and
   [`cell-stats.md`](cell-stats.md). The *global* Gram/PCF/TCM path is built and
   parity-checked; the **per-pixel windowed** Gram and **Mode 2** (viewport-apron, live
-  envelopes) are not. `crossPCFMatrixGpu` is **not wired into the demo** (still CPU), and
-  "permutation envelopes remain unbuilt on every path."
+  envelopes) are not. `crossPCFMatrixGpu` is **not wired into the demo** (still CPU).
+  Permutation envelopes exist ([`pcfEnvelope.ts`](../src/spatial/pcfEnvelope.ts),
+  [`gramEnvelope.ts`](../src/gpu/spatial/gramEnvelope.ts)); windowing is not yet validated
+  against quadrats (type-I error, power). Follow-ups tracked in #45, #47, #48, #53.
 - **TopACT reproduction** — [ADR-0016](decisions/0016-topact-box-vs-kde-reproduce-then-improve.md).
   **Nothing**: no box/square pool op, no summed-area-table fast path, no classifier.
 - **Toolbox gaps** — [`gpu-spatial-analysis-toolbox.md`](gpu-spatial-analysis-toolbox.md):
   `GpuShapes` + polygon morphology, GPU contact network (only CPU
   [`contactNetwork.ts`](../src/spatial/contactNetwork.ts) exists), higher-order co-occurrence
-  tensor, generic Monte-Carlo-in-one-sweep. (Ten GPU spatial ops already exist in
+  tensor, k-hop/GPU k-means, KL/Sinkhorn, hexgrid, generic Monte-Carlo-in-one-sweep with a
+  counter-based RNG. (crossPCF, QCM and TCM are built.) (Ten GPU spatial ops already exist in
   [`src/gpu/spatial`](../src/gpu/spatial) — the gap is the index and the shape/network family,
   not the point stats.)
 
@@ -152,9 +162,11 @@ Three interlocking design notes, **none built**, plus the data migrations:
   `covid-he-registration-check.py`, `covid-spatialdata-validate.py`); the outcome, the
   three facts that did not survive contact with the data, and the validation numbers are in
   [`covid-spatialdata-migration.md`](covid-spatialdata-migration.md). The store itself lives
-  on an external volume, not in this repo. Still open from the same plans: the
-  ADR-0010-loader **Alignment gizmo fed back into `Select`** isn't there, and
-  `loadScheduler` still isn't wired into the SpatialData tile path.
+  on an external volume, not in this repo. Still open from the same plans: the alignment gizmo
+  now feeds `Select` (`playground/src/datasource/multiImageScene.ts`) but there is no persisted
+  `Alignment` type, and `loadScheduler` still isn't wired into the SpatialData tile path
+  (only the volume renderer uses it). The tile→field bridge exists
+  (`datasource/tileToField.ts`, `centroidsToField.ts`).
 
 ## Tier 5 — Geometry / art deferred
 
@@ -174,12 +186,12 @@ Three interlocking design notes, **none built**, plus the data migrations:
 
 ## Tier 6 — Packaging & consumers
 
-[`packaging-and-consumers.md`](packaging-and-consumers.md) is **entirely unbuilt**:
-`package.json` is `version 0.0.0` with **no `exports` field**, Dawn `webgpu` is still a hard
-`dependencies` entry (not optional/peer), there is no `packages/` dir and no `@intraspatial/*`,
-and the viewer layer still lives inside `playground/`. This is the concrete backlog behind
-the "publishable modules" direction. (The renderer-agnostic boundary it depends on *does*
-hold — `src/` is verified three.js-free.)
+[`packaging-and-consumers.md`](packaging-and-consumers.md) is **largely landed**: `package.json`
+has an `exports` map, Dawn `webgpu` is an optional peer, `packages/deck`
+(`@intraspatial/deck`) exists, and the npm release is at 0.3.0 via Changesets (#31); build
+tooling is settled by ADR-0019. Remaining: promote `viewer-three` out of `playground/`
+(and finish the playground→deck.gl move), and the open items in #46. (The renderer-agnostic
+boundary holds — `src/` is verified three.js-free.)
 
 ---
 
@@ -211,9 +223,8 @@ write:
 
 ## Incidental bug (not a plan gap)
 
-The `cellID` **string** branch in [`scripts/mdv-h5-to-zarr.ts`](../scripts/mdv-h5-to-zarr.ts)
-is missing the `rows`-length assertion the numeric branch has — a latent data-corruption
-risk in the MDV→zarr path.
+Resolved: the `cellID` string branch in [`scripts/mdv-h5-to-zarr.ts`](../scripts/mdv-h5-to-zarr.ts)
+now has the `rows`-length assertion (line 238).
 
 ## Corrections to the 2026-07-23 ADR README audit
 
@@ -230,3 +241,14 @@ gaps" are now stale and are corrected here:
 - **The `basis` facet has consumers.** `inferBasis` is used at graph-build time and
   `registerWaveletOps()` ships `fdwt`/`idwt`/`thresholdDetail` — so "a type with no consumer"
   is stale (the remaining ADR-0006 gaps are Fourier and the wavelet GPU-layout bridge).
+
+## Update 2026-11-17 (issue #54)
+
+Other corrections: ADR-0022 has a graph op and a 3D build (only queries are 2D); the
+`axes` facet landed via ADR-0015 and the role-threading gap is closed; the `ResolvedPlacement`
+note above also applies to ADR-0018 (partial, not draft). Op-graph Tier 2 (resident buffer
+edges, ADR-0017 stages 1–3) has landed with 12 resident ops; stages 4–5 (render op) have not.
+Not yet in this doc, tracked in #54: memo eviction releasing resident buffers, `AbortSignal`
+cancellation in `pull`/`advance`, `PortSpec` buffer usage, bundles through feedback, narrow
+(u8/u16) buffers, `complexMulGpu` wiring, union-find H₀/H₁, channel axis in `Selection`, and
+the UMAP "not done" list.
