@@ -271,6 +271,43 @@ describe("crossPCF / crossPCFMatrixBinned with a domain", () => {
     expect(boxed.g[2]!).toBeLessThan(0.95);
   });
 
+  it("defaults edgeCorrected on with a domain, off with a bare bbox, and honours an explicit value", () => {
+    const inside = (x: number, y: number) => Math.hypot(x, y) <= 100;
+    const cells = csrIn(inside, 100, 3000, 1, 0xedc0);
+    const mask = rasterise([-110.37, -110.37, 109.63, 109.63], 220, 220, inside);
+    const p = { rMax: 30, nBins: 3, nTypes: 1 } as const;
+    const implicit = crossPCFMatrixBinned(cells, { ...p, domain: mask });
+    const on = crossPCFMatrixBinned(cells, { ...p, domain: mask, edgeCorrected: true });
+    const off = crossPCFMatrixBinned(cells, { ...p, domain: mask, edgeCorrected: false });
+    expect(Array.from(implicit.g)).toEqual(Array.from(on.g));
+    expect(off.g[2]!).toBeLessThan(on.g[2]!);
+    // A bare bbox keeps the old default.
+    const box = [-100, -100, 100, 100] as const;
+    const bareDefault = crossPCFMatrixBinned(cells, { ...p, bbox: box });
+    const bareOff = crossPCFMatrixBinned(cells, { ...p, bbox: box, edgeCorrected: false });
+    expect(Array.from(bareDefault.g)).toEqual(Array.from(bareOff.g));
+    // Same default through crossPCF.
+    const a = { xs: cells.xs.slice(0, 1500), ys: cells.ys.slice(0, 1500) };
+    const b = { xs: cells.xs.slice(1500), ys: cells.ys.slice(1500) };
+    expect(crossPCF(a, b, { ...p, domain: mask }).g).toEqual(crossPCF(a, b, { ...p, domain: mask, edgeCorrected: true }).g);
+  });
+
+  it("needs no bbox when a domain is given, and reads typed columns in place", () => {
+    const inside = (x: number, y: number) => Math.hypot(x, y) <= 100;
+    const cells = csrIn(inside, 100, 2000, 2, 0x7ed1);
+    const mask = rasterise([-110.37, -110.37, 109.63, 109.63], 220, 220, inside);
+    const typed: LabelledCells = {
+      xs: Float32Array.from(cells.xs),
+      ys: Float64Array.from(cells.ys),
+      typeId: Uint8Array.from(cells.typeId),
+    };
+    const roundTrip: LabelledCells = { xs: Array.from(typed.xs), ys: Array.from(typed.ys), typeId: Array.from(typed.typeId) };
+    const p = { domain: mask, rMax: 30, nBins: 3, nTypes: 2 } as const;
+    const fromTyped = crossPCFMatrixBinned(typed, p);
+    expect(Array.from(fromTyped.g)).toEqual(Array.from(crossPCFMatrixBinned(roundTrip, p).g));
+    expect(() => crossPCFMatrixBinned(cells, { rMax: 30, nBins: 3 } as never)).toThrow(/bbox.*domain/);
+  });
+
   it("drops cells outside the domain from both populations, and counts them", () => {
     // Left half of [0,100]² is the domain. Every cell on the right is dropped.
     const mask = rasterise([0, 0, 100, 100], 100, 100, (x) => x < 50);

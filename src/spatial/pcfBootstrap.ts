@@ -132,6 +132,7 @@ export function crossPCFBootstrap(a: CellCloud, b: CellCloud, p: PcfParams, opts
   // Refused rather than ignored: blocks partly outside a non-rectangular domain need a weighting
   // decision first (docs/stats-on-arbitrary-domains.md).
   if (p.domain) throw new Error("crossPCFBootstrap: `domain` is not supported yet");
+  if (!p.bbox) throw new Error("crossPCFBootstrap: `bbox` is required");
   const [minX, minY, maxX, maxY] = p.bbox;
   const roiArea = Math.max(p.roiArea ?? (maxX - minX) * (maxY - minY), 1e-12);
   const nA = a.xs.length;

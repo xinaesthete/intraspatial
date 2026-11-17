@@ -23,24 +23,38 @@
 import { type Domain, domainArea, domainContains, inverseAnnulusAreas, rectDomain } from "./domain";
 import type { CellCloud, Coords } from "./tcm";
 
-export interface PcfParams {
-  /** ROI `[minX, minY, maxX, maxY]` — sets ρ_B = N_B/|ROI|, and the clipping rectangle when
-   *  `edgeCorrected`. Ignored when `domain` is given. */
-  readonly bbox: readonly [number, number, number, number];
-  /** The region the cells were observed in, when it is not `bbox`. Sets ρ_B's area (unless
-   *  `roiArea` overrides it), the clip when `edgeCorrected`, and membership: cells outside it are
-   *  dropped from A and B and counted in `outside`. Without it no cell is dropped, as before. */
-  readonly domain?: Domain;
+type Box = readonly [number, number, number, number];
+
+/**
+ * The region the cells were observed in: a `bbox`, a `domain`, or both. Sets ρ_B's area (unless
+ * `roiArea` overrides it), the clip when `edgeCorrected`, and — for a `domain` — membership: cells
+ * outside it are dropped from A and B and counted in `outside`. Without a `domain` no cell is
+ * dropped. When both are given `domain` wins and `bbox` is ignored.
+ */
+export type PcfRegion = { readonly bbox: Box; readonly domain?: Domain } | { readonly bbox?: Box; readonly domain: Domain };
+
+interface PcfBase {
   /** Maximum radius (world units). Bins are equal width `dr = rMax / nBins`. */
   readonly rMax: number;
   /** Number of radial bins. */
   readonly nBins: number;
-  /** Area for ρ_B. Defaults to the bbox area; pass the ROI's own recorded area where one exists. */
+  /** Area for ρ_B. Defaults to the region's area; pass the ROI's own recorded area where one exists. */
   readonly roiArea?: number;
-  /** Clip each anchor's annulus to `bbox` — the paper's `A_{r_k}(x_a)` (eq 8). Default `false`, the
-   *  full annulus, which is exact for anchors ≥`rMax` inside the ROI and low near the boundary by an
-   *  amount set by the ROI's perimeter-to-area ratio. See `edgeCorrection.ts`. */
+  /** Clip each anchor's annulus to the region — the paper's `A_{r_k}(x_a)` (eq 8). The full annulus
+   *  is exact for anchors ≥`rMax` inside the ROI and low near the boundary by an amount set by the
+   *  ROI's perimeter-to-area ratio. See `edgeCorrection.ts`.
+   *
+   *  Default: `true` when a `domain` is given, `false` for a bare `bbox` (which keeps its earlier
+   *  behaviour). A drawn gate has a long boundary relative to its area, so the uncorrected estimate
+   *  is the biased one there. Pass `false` to opt out. */
   readonly edgeCorrected?: boolean;
+}
+
+export type PcfParams = PcfBase & PcfRegion;
+
+/** Resolves `edgeCorrected`'s default: on when there is an explicit domain. */
+function edgeCorrectedOf(p: { readonly domain?: Domain; readonly edgeCorrected?: boolean }): boolean {
+  return p.edgeCorrected ?? p.domain !== undefined;
 }
 
 export interface PcfResult {
@@ -55,8 +69,10 @@ export interface PcfResult {
 }
 
 /** The domain a call measures over: the explicit one, else the bbox. */
-function domainOf(p: { readonly bbox: readonly [number, number, number, number]; readonly domain?: Domain }): Domain {
-  return p.domain ?? rectDomain(p.bbox);
+function domainOf(p: PcfRegion): Domain {
+  if (p.domain) return p.domain;
+  if (!p.bbox) throw new Error("PCF: give a `bbox` or a `domain`");
+  return rectDomain(p.bbox);
 }
 
 /** Indices of the points inside `d`. */
@@ -94,7 +110,7 @@ export function crossPCF(a0: CellCloud, b0: CellCloud, p: PcfParams): PcfResult 
     const r1 = r0 + dr;
     invFull[k] = 1 / (Math.PI * (r1 * r1 - r0 * r0));
   }
-  const invAt = p.edgeCorrected ? inverseAnnulusAreas(domain, p.rMax, p.nBins) : () => invFull;
+  const invAt = edgeCorrectedOf(p) ? inverseAnnulusAreas(domain, p.rMax, p.nBins) : () => invFull;
 
   // Bucket grid over B, cell size = rMax: every B within rMax of an anchor lies in the anchor's 3×3
   // bucket neighbourhood (same argument as computeTcm), so the exact per-pair distance test runs
@@ -261,11 +277,14 @@ export function crossPCFBinMembership(a: CellCloud, b: CellCloud, p: PcfParams):
   return { maskA, maskB, countA, countB, nBins: p.nBins };
 }
 
+/** Per-cell type ids: a plain array or the integer typed columns a table store hands out. */
+export type TypeIds = readonly number[] | Uint8Array | Uint16Array | Int32Array;
+
 export interface LabelledCells {
-  readonly xs: readonly number[];
-  readonly ys: readonly number[];
-  /** Per-cell type id, index-aligned to xs/ys. */
-  readonly typeId: readonly number[];
+  readonly xs: Coords;
+  readonly ys: Coords;
+  /** Per-cell type id, index-aligned to xs/ys. Typed columns are read in place, not copied. */
+  readonly typeId: TypeIds;
 }
 
 export interface PcfMatrixParams {
@@ -350,12 +369,7 @@ export function crossPCFMatrix(cells: LabelledCells, p: PcfMatrixParams): PcfMat
   return { types, counts: nPer, g };
 }
 
-export interface PcfMatrixBinnedParams {
-  /** ROI `[minX, minY, maxX, maxY]`. Also the clipping rectangle when `edgeCorrected`. Ignored when
-   *  `domain` is given. */
-  readonly bbox: readonly [number, number, number, number];
-  /** The region the cells were observed in, when it is not `bbox` — as `PcfParams.domain`. */
-  readonly domain?: Domain;
+interface PcfMatrixBinnedBase {
   /** Maximum radius; bins are equal width `dr = rMax / nBins`. */
   readonly rMax: number;
   readonly nBins: number;
@@ -368,10 +382,14 @@ export interface PcfMatrixBinnedParams {
   /** Area used for `ρ_B = N_B / area`. Defaults to the bbox area; pass the ROI's own recorded area
    *  when the source defines one (MDV carries `roi_area`, which is not always the bbox). */
   readonly roiArea?: number;
-  /** Clip each anchor's annulus to `bbox` — the paper's `A_{r_k}(x_a)` (eq 8). Default `false`,
-   *  which is the full annulus: exact for anchors ≥`rMax` inside the ROI, low near the boundary. */
+  /** Clip each anchor's annulus to the region — the paper's `A_{r_k}(x_a)` (eq 8). Default: `true`
+   *  when a `domain` is given, `false` for a bare `bbox` (the full annulus: exact for anchors
+   *  ≥`rMax` inside the ROI, low near the boundary). See `PcfBase.edgeCorrected`. */
   readonly edgeCorrected?: boolean;
 }
+
+/** `bbox` and/or `domain`, as `PcfParams`. */
+export type PcfMatrixBinnedParams = PcfMatrixBinnedBase & PcfRegion;
 
 export interface PcfMatrixBinnedResult {
   readonly nTypes: number;
@@ -407,6 +425,7 @@ export interface PcfMatrixBinnedResult {
  */
 export function crossPCFMatrixBinned(all: LabelledCells, p: PcfMatrixBinnedParams): PcfMatrixBinnedResult {
   const domain = domainOf(p);
+  const edgeCorrected = edgeCorrectedOf(p);
   const B = p.nBins;
   const dr = p.rMax / B;
   const rMax2 = p.rMax * p.rMax;
@@ -462,7 +481,7 @@ export function crossPCFMatrixBinned(all: LabelledCells, p: PcfMatrixBinnedParam
     const r1 = r0 + dr;
     invFull[k] = 1 / (Math.PI * (r1 * r1 - r0 * r0));
   }
-  const invAt = p.edgeCorrected ? inverseAnnulusAreas(domain, p.rMax, B) : () => invFull;
+  const invAt = edgeCorrected ? inverseAnnulusAreas(domain, p.rMax, B) : () => invFull;
 
   const weighted = new Float64Array(K * K * B);
   const pairs = new Float64Array(K * K * B);
