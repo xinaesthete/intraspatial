@@ -308,13 +308,13 @@ ring/crypt scale, short-range exclusion). That makes it an ideal golden.
 | MuSpAn module | Method (paper) | GPU primitive | Status |
 | --- | --- | --- | --- |
 | geometry | area, perimeter, circularity, principal angle | per-polygon reduction (one wg/shape) | → |
-| spatial statistics | cross-PCF, Ripley's cross-K | radius histogram over neighbour pairs | → |
+| spatial statistics | cross-PCF, Ripley's cross-K | radius histogram over neighbour pairs | ✓ built (`crossPcf.ts`) |
 | spatial statistics | nearest-neighbour distance (per point) | brute-force `"use gpu"` kernel | ✓ |
 | spatial statistics | ANNI (clustered/random/dispersed) | NN distance + Clark-Evans z | ✓ |
 | spatial statistics | nearest-neighbour distribution | NN distance + MC null | → |
 | spatial statistics | empty-space (F) function | min-distance from random samples | ✓ |
 | spatial statistics | Local Getis-Ord\* (LISA hotspots) | splat → box window → standardise | ✓ |
-| spatial statistics | QCM, TCM (LISA) | splat layers → blend/window (render-then-compute) | → |
+| spatial statistics | QCM, TCM (LISA) | splat layers → blend/window (render-then-compute) | ✓ built (`tcm.ts`) |
 | (enabling) | separable convolution (box / Gaussian window) | `"use gpu"` two-pass gather | ✓ |
 | spatial statistics | higher-order co-occurrence (k≥3, small N) | joint co-occurrence tensor + MC null | → |
 | spatial statistics | adjacency permutation test | proximity network + MC null | → |
@@ -356,7 +356,7 @@ ring/crypt scale, short-range exclusion). That makes it an ideal golden.
 The discrete-cell front runs as a **parallel track** (it shares the kernel runner
 but adds its own handles and index kernel):
 
-A. **Spatial index** (`GpuPoints` + uniform-grid index = scan + counting-sort).
+A. **Spatial index** (`GpuPoints` + uniform-grid index = scan + counting-sort). **Built** (ADR-0022).
    This is the unlock for the whole point front, the way `GpuField` + runner is the
    unlock for the image front — and it drops scan/sort into the reductions toolbox
    for free.
