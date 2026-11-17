@@ -66,6 +66,7 @@ import { annulusAreasInto } from "./edgeCorrection";
 import { mulberry32 } from "./kernelAnalysis";
 import type { PcfParams } from "./pcf";
 import { buildGrid } from "./pointGrid";
+import { checkMask, selectRows } from "./rowSelection";
 import type { CellCloud } from "./tcm";
 
 /**
@@ -126,18 +127,28 @@ export interface PcfBootstrapResult {
 /**
  * Observed cross-PCF plus a percentile bootstrap CI over anchor cells.
  *
- * Honours the same `edgeCorrected` / `roiArea` as `crossPCF`, and returns the same `g`, so the band
- * and the line are one estimator.
+ * Honours the same `edgeCorrected` / `roiArea` and `includeA` / `includeB` as `crossPCF`, and returns
+ * the same `g`, so the band and the line are one estimator. Tiles are laid over the ROI, not over the
+ * kept cells: an excluded anchor contributes nothing, exactly like a cell that is not there, so the
+ * tile pool (empty tiles included) is the same with or without a mask.
  */
 export function crossPCFBootstrap(a: CellCloud, b: CellCloud, p: PcfParams, opts: PcfBootstrapOptions = {}): PcfBootstrapResult {
   // Refused rather than ignored: blocks partly outside a non-rectangular domain need a weighting
   // decision first (docs/stats-on-arbitrary-domains.md).
-  if (p.domain) throw new Error("crossPCFBootstrap: `domain` is not supported yet");
+  if (p.domain)
+    throw new Error(
+      "crossPCFBootstrap: `domain` is not supported yet (tile weighting is undecided; see docs/stats-on-arbitrary-domains.md). Use `includeA` / `includeB` for a row filter.",
+    );
   if (!p.bbox) throw new Error("crossPCFBootstrap: `bbox` is required");
   const [minX, minY, maxX, maxY] = p.bbox;
   const roiArea = Math.max(p.roiArea ?? (maxX - minX) * (maxY - minY), 1e-12);
-  const nA = a.xs.length;
-  const nB = b.xs.length;
+  checkMask("crossPCFBootstrap", p.includeA, a.xs.length);
+  checkMask("crossPCFBootstrap", p.includeB, b.xs.length);
+  const selA = selectRows(undefined, p.includeA, a.xs, a.ys);
+  const selB = selectRows(undefined, p.includeB, b.xs, b.ys);
+  const rowsA = selA.idx;
+  const nA = selA.kept;
+  const nB = selB.kept;
   const B = p.nBins;
   const dr = p.rMax / B;
   const rMax2 = p.rMax * p.rMax;
@@ -155,7 +166,7 @@ export function crossPCFBootstrap(a: CellCloud, b: CellCloud, p: PcfParams, opts
 
   // ---- one pass: per-anchor contributions --------------------------------------------------------
   const cell = Math.max(p.rMax, 1e-9);
-  const grid = buildGrid(b.xs, b.ys, null, nB, cell);
+  const grid = buildGrid(b.xs, b.ys, selB.idx, nB, cell);
   const { cols, rows, colOf, rowOf } = grid;
 
   const invFull = new Float64Array(B);
@@ -168,7 +179,8 @@ export function crossPCFBootstrap(a: CellCloud, b: CellCloud, p: PcfParams, opts
   const invAnchor = new Float64Array(B);
   const contrib = new Float64Array(nA * B); // c_a(r_k), already divided by ρ_B
 
-  for (let i = 0; i < nA; i++) {
+  for (let ii = 0; ii < nA; ii++) {
+    const i = rowsA ? rowsA[ii]! : ii;
     const ax = a.xs[i]!;
     const ay = a.ys[i]!;
     let inv = invFull;
@@ -180,7 +192,7 @@ export function crossPCFBootstrap(a: CellCloud, b: CellCloud, p: PcfParams, opts
         inv = invAnchor;
       }
     }
-    const base = i * B;
+    const base = ii * B;
     const c0 = colOf(ax);
     const r0 = rowOf(ay);
     for (let dRow = -1; dRow <= 1; dRow++) {
@@ -228,12 +240,13 @@ export function crossPCFBootstrap(a: CellCloud, b: CellCloud, p: PcfParams, opts
     blocks = bCols * bRows;
     const blockContrib = new Float64Array(blocks * B);
     const blockN = new Float64Array(blocks);
-    for (let i = 0; i < nA; i++) {
+    for (let ii = 0; ii < nA; ii++) {
+      const i = rowsA ? rowsA[ii]! : ii;
       const bx = Math.min(bCols - 1, Math.max(0, Math.floor((a.xs[i]! - minX) / bs)));
       const by = Math.min(bRows - 1, Math.max(0, Math.floor((a.ys[i]! - minY) / bs)));
       const blk = by * bCols + bx;
       blockN[blk] = blockN[blk]! + 1;
-      const src = i * B;
+      const src = ii * B;
       const dst = blk * B;
       for (let k = 0; k < B; k++) blockContrib[dst + k] = blockContrib[dst + k]! + contrib[src + k]!;
     }

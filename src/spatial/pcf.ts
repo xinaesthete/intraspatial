@@ -22,6 +22,7 @@
 
 import { type Domain, domainArea, domainContains, inverseAnnulusAreas, rectDomain } from "./domain";
 import { buildGrid } from "./pointGrid";
+import { checkMask, type RowMask, selectRows } from "./rowSelection";
 import type { CellCloud, Coords } from "./tcm";
 
 type Box = readonly [number, number, number, number];
@@ -51,9 +52,7 @@ interface PcfBase {
   readonly edgeCorrected?: boolean;
 }
 
-/** Per-cell row filter: index-aligned to the cloud, nonzero keeps the cell. Excluded cells are
- *  skipped in place — no column copy — and are not counted in `outside`. */
-export type RowMask = ArrayLike<number>;
+export type { RowMask };
 
 export type PcfParams = PcfBase &
   PcfRegion & {
@@ -84,34 +83,6 @@ function domainOf(p: PcfRegion): Domain {
   if (p.domain) return p.domain;
   if (!p.bbox) throw new Error("PCF: give a `bbox` or a `domain`");
   return rectDomain(p.bbox);
-}
-
-function checkMask(who: string, mask: RowMask | undefined, n: number): void {
-  if (mask && mask.length !== n) throw new Error(`${who}: row mask has ${mask.length} entries for ${n} cells`);
-}
-
-/** The rows a call uses. `idx` lists them in order, or is `null` when every row is used — the
- *  common case allocates nothing. `included` counts rows `include` keeps, before the domain test. */
-interface RowSelection {
-  readonly idx: Int32Array | null;
-  readonly kept: number;
-  readonly included: number;
-}
-
-/** One pass, one preallocated buffer, no column copies: callers read the original columns at `idx[k]`. */
-function selectRows(d: Domain | undefined, include: RowMask | undefined, xs: Coords, ys: Coords): RowSelection {
-  const n = xs.length;
-  if (!d && !include) return { idx: null, kept: n, included: n };
-  const buf = new Int32Array(n);
-  let kept = 0;
-  let included = 0;
-  for (let i = 0; i < n; i++) {
-    if (include && !include[i]) continue;
-    included++;
-    if (d && !domainContains(d, xs[i]!, ys[i]!)) continue;
-    buf[kept++] = i;
-  }
-  return { idx: kept === n ? null : buf.subarray(0, kept), kept, included };
 }
 
 export function crossPCF(a0: CellCloud, b0: CellCloud, p: PcfParams): PcfResult {
