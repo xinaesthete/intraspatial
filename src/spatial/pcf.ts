@@ -50,7 +50,17 @@ interface PcfBase {
   readonly edgeCorrected?: boolean;
 }
 
-export type PcfParams = PcfBase & PcfRegion;
+/** Per-cell row filter: index-aligned to the cloud, nonzero keeps the cell. Excluded cells are
+ *  skipped in place — no column copy — and are not counted in `outside`. */
+export type RowMask = ArrayLike<number>;
+
+export type PcfParams = PcfBase &
+  PcfRegion & {
+    /** Which A cells take part. Absent keeps all. Length must equal the A cloud's. */
+    readonly includeA?: RowMask;
+    /** Which B cells take part. Absent keeps all. Length must equal the B cloud's. */
+    readonly includeB?: RowMask;
+  };
 
 /** Resolves `edgeCorrected`'s default: on when there is an explicit domain. */
 function edgeCorrectedOf(p: { readonly domain?: Domain; readonly edgeCorrected?: boolean }): boolean {
@@ -75,25 +85,41 @@ function domainOf(p: PcfRegion): Domain {
   return rectDomain(p.bbox);
 }
 
-/** Indices of the points inside `d`. */
-function insideIndices(d: Domain, xs: Coords, ys: Coords): number[] {
+function checkMask(who: string, mask: RowMask | undefined, n: number): void {
+  if (mask && mask.length !== n) throw new Error(`${who}: row mask has ${mask.length} entries for ${n} cells`);
+}
+
+/** Indices of the points `include` keeps (all, when absent) that lie inside `d` (anywhere, when absent). */
+function keptIndices(d: Domain | undefined, include: RowMask | undefined, xs: Coords, ys: Coords): number[] {
   const keep: number[] = [];
-  for (let i = 0; i < xs.length; i++) if (domainContains(d, xs[i]!, ys[i]!)) keep.push(i);
+  for (let i = 0; i < xs.length; i++) {
+    if (include && !include[i]) continue;
+    if (d && !domainContains(d, xs[i]!, ys[i]!)) continue;
+    keep.push(i);
+  }
   return keep;
 }
 
-/** `c` restricted to `d`, or `c` itself when there is no explicit domain to restrict to. */
-function restrictCloud(d: Domain | undefined, c: CellCloud): CellCloud {
-  if (!d) return c;
-  const keep = insideIndices(d, c.xs, c.ys);
-  if (keep.length === c.xs.length) return c;
-  return { xs: keep.map((i) => c.xs[i]!), ys: keep.map((i) => c.ys[i]!) };
+/** `c` restricted to the rows `include` keeps that lie in `d`; `c` itself when neither restricts. */
+function restrictCloud(d: Domain | undefined, include: RowMask | undefined, c: CellCloud): { cloud: CellCloud; kept: number } {
+  if (!d && !include) return { cloud: c, kept: c.xs.length };
+  const keep = keptIndices(d, include, c.xs, c.ys);
+  if (keep.length === c.xs.length) return { cloud: c, kept: keep.length };
+  return { cloud: { xs: keep.map((i) => c.xs[i]!), ys: keep.map((i) => c.ys[i]!) }, kept: keep.length };
+}
+
+/** How many of the rows `include` keeps lie outside `d`. */
+function countOutside(d: Domain, include: RowMask | undefined, c: CellCloud, kept: number): number {
+  const included = include ? keptIndices(undefined, include, c.xs, c.ys).length : c.xs.length;
+  return included - kept;
 }
 
 export function crossPCF(a0: CellCloud, b0: CellCloud, p: PcfParams): PcfResult {
   const domain = domainOf(p);
-  const a = restrictCloud(p.domain, a0);
-  const b = restrictCloud(p.domain, b0);
+  checkMask("crossPCF", p.includeA, a0.xs.length);
+  checkMask("crossPCF", p.includeB, b0.xs.length);
+  const { cloud: a, kept: keptA } = restrictCloud(p.domain, p.includeA, a0);
+  const { cloud: b, kept: keptB } = restrictCloud(p.domain, p.includeB, b0);
   const roiArea = Math.max(p.roiArea ?? domainArea(domain), 1e-12);
   const rhoB = b.xs.length / roiArea; // global density of B (Mode 1)
   const dr = p.rMax / p.nBins;
@@ -172,7 +198,7 @@ export function crossPCF(a0: CellCloud, b0: CellCloud, p: PcfParams): PcfResult 
     out.push(counts[k]!);
   }
   if (!p.domain) return { r, g, counts: out };
-  return { r, g, counts: out, outside: a0.xs.length - nA + (b0.xs.length - nB) };
+  return { r, g, counts: out, outside: countOutside(p.domain, p.includeA, a0, keptA) + countOutside(p.domain, p.includeB, b0, keptB) };
 }
 
 export interface PcfBinMembership {
@@ -233,14 +259,17 @@ export function crossPCFBinMembership(a: CellCloud, b: CellCloud, p: PcfParams):
   const buckets: number[][] = Array.from({ length: cols * rows }, () => []);
   const colOf = (x: number) => Math.min(cols - 1, Math.max(0, Math.floor((x - bMinX) / cell)));
   const rowOf = (y: number) => Math.min(rows - 1, Math.max(0, Math.floor((y - bMinY) / cell)));
-  // Cells outside `domain` are not in `crossPCF`'s pairs, so they stay unlit here too.
+  // Cells outside `domain` or excluded by a row mask are not in `crossPCF`'s pairs, so they stay unlit here too.
   const d = p.domain;
-  const bIndices = d ? insideIndices(d, b.xs, b.ys) : Array.from({ length: nB }, (_, j) => j);
+  checkMask("crossPCFBinMembership", p.includeA, nA);
+  checkMask("crossPCFBinMembership", p.includeB, nB);
+  const bIndices = keptIndices(d, p.includeB, b.xs, b.ys);
   for (const j of bIndices) buckets[rowOf(b.ys[j]!) * cols + colOf(b.xs[j]!)]!.push(j);
 
   for (let i = 0; i < nA; i++) {
     const ax = a.xs[i]!;
     const ay = a.ys[i]!;
+    if (p.includeA && !p.includeA[i]) continue;
     if (d && !domainContains(d, ax, ay)) continue;
     const c0 = colOf(ax);
     const r0 = rowOf(ay);
@@ -388,8 +417,12 @@ interface PcfMatrixBinnedBase {
   readonly edgeCorrected?: boolean;
 }
 
-/** `bbox` and/or `domain`, as `PcfParams`. */
-export type PcfMatrixBinnedParams = PcfMatrixBinnedBase & PcfRegion;
+/** `bbox` and/or `domain`, as `PcfParams`; `include` is the row filter, as `PcfParams.includeA`. */
+export type PcfMatrixBinnedParams = PcfMatrixBinnedBase &
+  PcfRegion & {
+    /** Which cells take part (all types). Absent keeps all. Length must equal the cell count. */
+    readonly include?: RowMask;
+  };
 
 export interface PcfMatrixBinnedResult {
   readonly nTypes: number;
@@ -434,13 +467,15 @@ export function crossPCFMatrixBinned(all: LabelledCells, p: PcfMatrixBinnedParam
   // outside still keeps its row and column.
   let K = p.nTypes ?? 0;
   if (!p.nTypes) for (let i = 0; i < all.xs.length; i++) K = Math.max(K, all.typeId[i]! + 1);
+  checkMask("crossPCFMatrixBinned", p.include, all.xs.length);
   let cells = all;
-  if (p.domain) {
-    const keep = insideIndices(p.domain, all.xs, all.ys);
+  if (p.domain || p.include) {
+    const keep = keptIndices(p.domain, p.include, all.xs, all.ys);
     if (keep.length !== all.xs.length) {
       cells = { xs: keep.map((i) => all.xs[i]!), ys: keep.map((i) => all.ys[i]!), typeId: keep.map((i) => all.typeId[i]!) };
     }
   }
+  const included = p.include ? keptIndices(undefined, p.include, all.xs, all.ys).length : all.xs.length;
   const n = cells.xs.length;
   const roiArea = Math.max(p.roiArea ?? domainArea(domain), 1e-12);
   const nPer = new Array<number>(K).fill(0);
@@ -530,8 +565,8 @@ export function crossPCFMatrixBinned(all: LabelledCells, p: PcfMatrixBinnedParam
   }
   if (!p.domain) return { nTypes: K, nBins: B, counts: nPer, r, g, pairs };
   const from = p.domain.kind === "mask" ? p.domain.derivedFrom : undefined;
-  if (!from) return { nTypes: K, nBins: B, counts: nPer, r, g, pairs, outside: all.xs.length - n };
+  if (!from) return { nTypes: K, nBins: B, counts: nPer, r, g, pairs, outside: included - n };
   const confounded = new Uint8Array(K * K);
   for (const a of from) for (const b of from) if (a >= 0 && a < K && b >= 0 && b < K) confounded[a * K + b] = 1;
-  return { nTypes: K, nBins: B, counts: nPer, r, g, pairs, outside: all.xs.length - n, confounded };
+  return { nTypes: K, nBins: B, counts: nPer, r, g, pairs, outside: included - n, confounded };
 }
