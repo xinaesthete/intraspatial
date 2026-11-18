@@ -420,6 +420,50 @@ describe("polygonDomain", () => {
     expect(() => polygonDomain([box(0, 0, 10, 10), box(20, 0, 30, 10)])).not.toThrow();
   });
 
+  it("reads a hole as a hole when its vertices and edge midpoints all touch the shell", () => {
+    const hole: [number, number][] = [
+      [8, 0],
+      [0, 8],
+      [0, -8],
+    ];
+    const shell: [number, number][] = [
+      [8, 0],
+      [7, 3],
+      [4, 4],
+      [3, 7],
+      [0, 8],
+      [-2, 4],
+      [0, 0],
+      [-2, -4],
+      [0, -8],
+      [3, -7],
+      [4, -4],
+      [7, -3],
+    ];
+    const d = polygonDomain([shell, hole]);
+    expect(domainArea(d)).toBeCloseTo(32, 9);
+  });
+
+  it("keeps the area of a ring far from the origin", () => {
+    const n = 2 ** 27;
+    expect(domainArea(polygonDomain(box(n, n, n + 1, n + 1)))).toBe(1);
+    expect(() =>
+      polygonDomain(
+        [
+          [n, n + 1],
+          [n + 1, n + 2],
+          [n + 5, n + 6],
+        ],
+        { fillRule: "evenodd" },
+      ),
+    ).toThrow(/zero area/);
+  });
+
+  it("can be mapped over shapes directly", () => {
+    const ds = [box(0, 0, 1, 1), box(0, 0, 2, 2)].map(polygonDomain);
+    expect(ds.map(domainArea)).toEqual([1, 4]);
+  });
+
   it("reads a hole whose every vertex touches the outer ring as a hole", () => {
     // Each of the triangle's vertices lies on the square, so none of them can say which side of
     // the square the triangle is on; an edge midpoint can.
@@ -713,6 +757,51 @@ describe("normaliseRings / polygonDomain with a fillRule", () => {
     for (const rule of ["evenodd", "nonzero"] as const) expect(() => polygonDomain(normaliseRings(rings, rule))).not.toThrow();
   });
 
+  it("returns simple rings when a hole touches its shell, splitting the walk there", () => {
+    const rings = normaliseRings(
+      [
+        box(0, 0, 10, 10),
+        [
+          [5, 0],
+          [7, 4],
+          [3, 4],
+        ] as Pt[],
+      ],
+      "evenodd",
+    );
+    expect(rings).toHaveLength(2);
+    for (const r of rings) expect(new Set(r.map(([x, y]) => `${x},${y}`)).size).toBe(r.length);
+    const d = polygonDomain(rings);
+    expect(domainArea(d)).toBeCloseTo(92, 9);
+    expect(domainContains(d, 5, 2)).toBe(false);
+  });
+
+  it("keeps a small ring that lies far from the others", () => {
+    const rings = [box(0, 0, 1, 1), box(1e11, 0, 1e11 + 100, 100)];
+    for (const rule of ["evenodd", "nonzero"] as const) {
+      const d = polygonDomain(rings, { fillRule: rule });
+      expect(domainContains(d, 0.5, 0.5)).toBe(true);
+      expect(domainArea(d)).toBeCloseTo(10001, 3);
+    }
+  });
+
+  it("visits each crossing once however many grid cells the two edges share", () => {
+    // 200 figure-eights drawn over each other: every diagonal crosses every opposite one at the
+    // centre, across a grid of cells, which used to record the crossing once per shared cell.
+    const ring: Pt[] = [];
+    for (let i = 0; i < 200; i++) ring.push([0, 0], [100, 100], [100, 0], [0, 100]);
+    const d = polygonDomain(ring, { fillRule: "nonzero" });
+    expect(domainArea(d)).toBeCloseTo(5000, 6);
+  });
+
+  it("seeds many separate components without scanning every piece for each", () => {
+    const squares = Array.from({ length: 3000 }, (_, i) =>
+      box(3 * (i % 60), 3 * Math.floor(i / 60), 3 * (i % 60) + 2, 3 * Math.floor(i / 60) + 2),
+    );
+    const d = polygonDomain(squares, { fillRule: "nonzero" });
+    expect(domainArea(d)).toBeCloseTo(12000, 6);
+  });
+
   it("still throws on bad input, with polygonDomain's messages", () => {
     for (const rule of ["evenodd", "nonzero"] as const) {
       expect(() => polygonDomain([], { fillRule: rule })).toThrow(/polygonDomain: no rings/);
@@ -806,26 +895,17 @@ describe("normaliseRings / polygonDomain with a fillRule", () => {
     for (let trial = 0; trial < 300; trial++) {
       const rings = Array.from({ length: 1 + Math.floor(rnd() * 3) }, randomRing);
       for (const rule of ["evenodd", "nonzero"] as const) {
-        const anyFilled = (() => {
-          for (let i = 0; i < 400; i++) if (filled(rule, winding(rings, rnd() * 100, rnd() * 100))) return true;
-          return false;
-        })();
-        let d: ReturnType<typeof polygonDomain>;
-        try {
-          d = polygonDomain(rings, { fillRule: rule });
-        } catch (err) {
-          // Only an empty region may throw, and then no sample is filled.
-          expect(String(err)).toMatch(/enclose no area/);
-          expect(anyFilled).toBe(false);
-          continue;
-        }
+        // Random rings in general position always enclose area under either rule (empty regions
+        // are tested deterministically above), so this must not throw.
+        const d = polygonDomain(rings, { fillRule: rule });
         // The normalised rings also pass the strict constructor and give the same domain.
         const strict = polygonDomain(normaliseRings(rings, rule));
         expect(domainArea(strict)).toBeCloseTo(domainArea(d), 6);
         let hits = 0;
         for (let i = 0; i < 200; i++) {
-          const x = rnd() * 100;
-          const y = rnd() * 100;
+          // The generator reaches [-15, 115]; sample past it on every side.
+          const x = rnd() * 140 - 20;
+          const y = rnd() * 140 - 20;
           const want = filled(rule, winding(rings, x, y));
           if (want) hits++;
           checked++;
@@ -834,10 +914,10 @@ describe("normaliseRings / polygonDomain with a fillRule", () => {
         // Area against a grid count of the raw rings. Only boundary cells can disagree, so the
         // error is at most perimeter × cell size; orientation is pinned by the strict comparison.
         let inGrid = 0;
-        const g = 100;
-        const h = 100 / g;
+        const g = 140;
+        const h = 140 / g;
         for (let j = 0; j < g; j++) {
-          for (let i = 0; i < g; i++) if (filled(rule, winding(rings, (i + 0.5) * h, (j + 0.5) * h))) inGrid++;
+          for (let i = 0; i < g; i++) if (filled(rule, winding(rings, (i + 0.5) * h - 20, (j + 0.5) * h - 20))) inGrid++;
         }
         let perimeter = 0;
         for (const r of rings)

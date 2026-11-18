@@ -73,7 +73,9 @@ type Ring = readonly (readonly [number, number])[];
 /** How a set of rings, possibly crossing, encloses a region. `evenodd`: a point is inside when a ray
  *  from it crosses the rings an odd number of times (SVG/canvas `evenodd`, and what a ray-casting
  *  point-in-polygon filter computes). `nonzero`: inside when the rings wind round it a non-zero
- *  number of times, so overlapping parts merge; a hole must then run opposite to its outer ring. */
+ *  number of times. Overlapping rings that run the same way merge; where rings running opposite
+ *  ways overlap, their windings cancel and that part is outside, which is how a hole must be
+ *  drawn under this rule. */
 export type FillRule = "evenodd" | "nonzero";
 
 /**
@@ -87,6 +89,10 @@ export type FillRule = "evenodd" | "nonzero";
  * are first normalised by `normaliseRings` under that rule. Choose the rule the caller's own
  * selection uses, so the domain covers exactly what it selects. Without it nothing is repaired.
  */
+export function polygonDomain(shape: Ring | readonly Ring[], opts: { readonly fillRule?: FillRule }): PolygonDomain;
+// The one-argument form last, so `shapes.map(polygonDomain)` infers from it rather than reading
+// the index as options.
+export function polygonDomain(shape: Ring | readonly Ring[]): PolygonDomain;
 export function polygonDomain(shape: Ring | readonly Ring[], opts: { readonly fillRule?: FillRule } = {}): PolygonDomain {
   const parsed = parseRings(shape, "polygonDomain");
   const flat = opts.fillRule === undefined ? parsed : fillRings(parsed, opts.fillRule, "polygonDomain");
@@ -210,17 +216,26 @@ function boxesMeet(ax: number, ay: number, bx: number, by: number, cx: number, c
 }
 
 /**
- * Calls `visit(k, m)` for pairs of edges whose bounding boxes share a cell of a coarse grid, which
- * includes every pair that touches. A pair may be visited more than once. Near-linear for ordinary
- * polygons. `e` is laid out as `edgesOf` lays it out.
+ * Calls `visit(k, m)` once for each pair of edges whose bounding boxes share a cell of a coarse
+ * grid, which includes every pair that touches. Near-linear for ordinary polygons. `e` is laid out
+ * as `edgesOf` lays it out.
  */
 function forEachCandidatePair(e: Float64Array, bbox: Box, visit: (k: number, m: number) => void): void {
   const nE = e.length / 4;
   const cell = Math.max(bbox[2] - bbox[0], bbox[3] - bbox[1]) / Math.max(1, Math.ceil(Math.sqrt(nE)));
   const ix = buildEdgeIndex(e, bbox, cell);
   for (let c = 0; c < ix.nx * ix.ny; c++) {
+    const ci = c % ix.nx;
+    const cj = (c - ci) / ix.nx;
     for (let p = ix.start[c]!; p < ix.start[c + 1]!; p++) {
-      for (let q = p + 1; q < ix.start[c + 1]!; q++) visit(ix.ids[p]!, ix.ids[q]!);
+      const k = ix.ids[p]!;
+      const [ki, , kj] = edgeCells(e, k, ix.minX, ix.minY, ix.cell);
+      for (let q = p + 1; q < ix.start[c + 1]!; q++) {
+        const m = ix.ids[q]!;
+        const [mi, , mj] = edgeCells(e, m, ix.minX, ix.minY, ix.cell);
+        // Long edges share many cells; visit the pair only in the first cell both reach.
+        if (Math.max(ki, mi) === ci && Math.max(kj, mj) === cj) visit(k, m);
+      }
     }
   }
 }
@@ -272,29 +287,39 @@ function assertNoCrossings(rings: readonly Float64Array[], bbox: Box): void {
 // vertex. The fill rule turns windings into in/out, and the pieces with in on the left and out on
 // the right, traced by the same turning rule, are the output rings.
 //
-// Intersection points are rounded to the nearest float, so vertices within 1e-10 of the extent are
-// snapped together; that is far below any drawn feature and keeps three edges through one point
-// meeting at one vertex.
+// Input vertices are kept exactly; only computed crossing points, which are rounded, snap to a
+// vertex within 1e-10 of the crossing edges' length. That is far below any drawn feature and keeps
+// three edges through one point meeting at one vertex.
 
 /** The simple, region-on-the-left rings bounding `rings`' region under `rule`; empty when it is. */
 function fillRegion(rings: readonly Float64Array[], rule: FillRule): Float64Array[] {
   const bbox = ringsBbox(rings);
   const extent = Math.max(bbox[2] - bbox[0], bbox[3] - bbox[1]);
-  const eps = extent > 0 ? extent * 1e-10 : 1;
+  // Coordinates' rounding unit: a snap can never be finer than a few of these.
+  const ulp = Math.max(Math.abs(bbox[0]), Math.abs(bbox[1]), Math.abs(bbox[2]), Math.abs(bbox[3])) * Number.EPSILON;
+  const snapCell = Math.max(4e-10 * extent, 16 * ulp) || 1;
   const vx: number[] = [];
   const vy: number[] = [];
+  const exact = new Map<string, number>();
   const snapCells = new Map<string, number[]>();
-  const vertex = (x: number, y: number): number => {
-    const i = Math.floor(x / eps);
-    const j = Math.floor(y / eps);
-    for (let dj = -1; dj <= 1; dj++) {
-      for (let di = -1; di <= 1; di++) {
-        for (const id of snapCells.get(`${i + di},${j + dj}`) ?? []) {
-          if (Math.abs(vx[id]! - x) <= eps && Math.abs(vy[id]! - y) <= eps) return id;
+  /** Vertex id for `(x, y)`: an exact match, or with `tol > 0` (a computed crossing) any vertex
+   *  within `tol`, so three edges through one point meet at one vertex. `tol` ≤ `snapCell`. */
+  const vertex = (x: number, y: number, tol = 0): number => {
+    const i = Math.floor(x / snapCell);
+    const j = Math.floor(y / snapCell);
+    const hit = exact.get(`${x},${y}`);
+    if (hit !== undefined) return hit;
+    if (tol > 0) {
+      for (let dj = -1; dj <= 1; dj++) {
+        for (let di = -1; di <= 1; di++) {
+          for (const id of snapCells.get(`${i + di},${j + dj}`) ?? []) {
+            if (Math.abs(vx[id]! - x) <= tol && Math.abs(vy[id]! - y) <= tol) return id;
+          }
         }
       }
     }
     const id = vx.length;
+    exact.set(`${x},${y}`, id);
     vx.push(x);
     vy.push(y);
     const key = `${i},${j}`;
@@ -356,7 +381,11 @@ function fillRegion(rings: readonly Float64Array[], rule: FillRule): Float64Arra
     if (Math.sign(o1) * Math.sign(o2) < 0 && Math.sign(o3) * Math.sign(o4) < 0) {
       // o3 + t (o4 − o3) is the side of c→d that a + t (b − a) is on; it is zero at the crossing.
       const t = o3 / (o3 - o4);
-      const v = vertex(ax + t * (bx - ax), ay + t * (by - ay));
+      // Snap within a hair of the longer edge's length (never below the coordinates' rounding),
+      // so a feature far from this one cannot widen the tolerance.
+      const scale = Math.max(Math.abs(bx - ax), Math.abs(by - ay), Math.abs(dx - cx), Math.abs(dy - cy));
+      const tol = Math.min(snapCell, Math.max(1e-10 * scale, 16 * ulp));
+      const v = vertex(ax + t * (bx - ax), ay + t * (by - ay), tol);
       splits[k]!.push({ t, v });
       splits[m]!.push({ t: o1 / (o1 - o2), v });
       return;
@@ -463,17 +492,17 @@ function fillRegion(rings: readonly Float64Array[], rule: FillRule): Float64Arra
   // then across pieces (left = right + multiplicity).
   const wind = new Float64Array(faceFirst.length).fill(Number.NaN);
   const queue: number[] = [];
+  const leftmost = new Map<number, number>();
+  for (let h = 0; h < nH; h++) {
+    const v = hFrom[h]!;
+    const c = find(v);
+    const p = leftmost.get(c);
+    if (p === undefined || vx[v]! < vx[p]! || (vx[v]! === vx[p]! && vy[v]! < vy[p]!)) leftmost.set(c, v);
+  }
+  const bands = outerOf.size > 1 ? pieceBands(nH, hFrom, hTo, vy, bbox) : undefined;
   for (const [c, f] of outerOf) {
-    let w = 0;
-    if (outerOf.size > 1) {
-      let p = -1;
-      for (let h = 0; h < nH; h++) {
-        const v = hFrom[h]!;
-        if (find(v) === c && (p < 0 || vx[v]! < vx[p]! || (vx[v]! === vx[p]! && vy[v]! < vy[p]!))) p = v;
-      }
-      w = windingAt(vx[p]!, vy[p]!, nH, (h) => find(hFrom[h]!) !== c, hFrom, hTo, hNet, vx, vy);
-    }
-    wind[f] = w;
+    const p = leftmost.get(c)!;
+    wind[f] = bands ? windingAt(vx[p]!, vy[p]!, bands, (h) => find(hFrom[h]!) !== c, hFrom, hTo, hNet, vx, vy) : 0;
     queue.push(f);
   }
   while (queue.length > 0) {
@@ -505,7 +534,21 @@ function fillRegion(rings: readonly Float64Array[], rule: FillRule): Float64Arra
       ids.push(hFrom[h]!);
       h = turn(h, isBoundary);
     } while (h !== h0);
-    ringIds.push(ids);
+    // A walk that passes a vertex twice (a hole touching its shell) is cut there into loops, each
+    // keeping its direction, so every output ring is simple.
+    const stack: number[] = [];
+    const at = new Map<number, number>();
+    for (const v of ids) {
+      const p = at.get(v);
+      if (p !== undefined) {
+        const loop = stack.splice(p);
+        for (const u of loop) at.delete(u);
+        ringIds.push(loop);
+      }
+      at.set(v, stack.length);
+      stack.push(v);
+    }
+    ringIds.push(stack);
   }
 
   return ringIds.map((ids) => {
@@ -519,12 +562,33 @@ function fillRegion(rings: readonly Float64Array[], rule: FillRule): Float64Arra
   });
 }
 
-/** Winding number at `(x, y)` of the half-edges `h` (even ones, with multiplicity) that `include`
- *  allows, by Sunday's crossing rule. `(x, y)` must not lie on any of them. */
+/** The even half-edges (one per piece) bucketed by the horizontal bands their y-spans touch. */
+interface PieceBands {
+  readonly minY: number;
+  readonly band: number;
+  readonly lists: readonly number[][];
+}
+
+function pieceBands(nH: number, hFrom: readonly number[], hTo: readonly number[], vy: readonly number[], bbox: Box): PieceBands {
+  const nb = Math.max(1, Math.min(4096, Math.ceil(Math.sqrt(nH / 2))));
+  const band = Math.max((bbox[3] - bbox[1]) / nb, Number.MIN_VALUE);
+  const lists: number[][] = Array.from({ length: nb }, () => []);
+  const at = (y: number) => Math.min(nb - 1, Math.max(0, Math.floor((y - bbox[1]) / band)));
+  for (let h = 0; h < nH; h += 2) {
+    const ya = vy[hFrom[h]!]!;
+    const yb = vy[hTo[h]!]!;
+    for (let b = at(Math.min(ya, yb)); b <= at(Math.max(ya, yb)); b++) lists[b]!.push(h);
+  }
+  return { minY: bbox[1], band, lists };
+}
+
+/** Winding number at `(x, y)` of the pieces that `include` allows, with multiplicity, by Sunday's
+ *  crossing rule. `(x, y)` must not lie on any of them. Only pieces whose y-span reaches `y` can
+ *  count, so only `y`'s band is read. */
 function windingAt(
   x: number,
   y: number,
-  nH: number,
+  bands: PieceBands,
   include: (h: number) => boolean,
   hFrom: readonly number[],
   hTo: readonly number[],
@@ -533,7 +597,8 @@ function windingAt(
   vy: readonly number[],
 ): number {
   let w = 0;
-  for (let h = 0; h < nH; h += 2) {
+  const b = Math.min(bands.lists.length - 1, Math.max(0, Math.floor((y - bands.minY) / bands.band)));
+  for (const h of bands.lists[b]!) {
     if (!include(h)) continue;
     const ax = vx[hFrom[h]!]!;
     const ay = vy[hFrom[h]!]!;
@@ -547,12 +612,16 @@ function windingAt(
   return w;
 }
 
+/** Shoelace area, about the ring's first vertex so that a ring far from the origin keeps its
+ *  low-order bits (a unit square at 2²⁷ would otherwise read as zero). */
 function signedRingArea(f: Float64Array): number {
   let s = 0;
   const n = f.length;
+  const x0 = f[0]!;
+  const y0 = f[1]!;
   for (let i = 0; i < n; i += 2) {
     const j = (i + 2) % n;
-    s += f[i]! * f[j + 1]! - f[j]! * f[i + 1]!;
+    s += (f[i]! - x0) * (f[j + 1]! - y0) - (f[j]! - x0) * (f[i + 1]! - y0);
   }
   return s / 2;
 }
@@ -582,15 +651,34 @@ function onRing(f: Float64Array, x: number, y: number): boolean {
 }
 
 /** A point of ring `f` not on ring `o`, to test which side of `o` the ring lies: rings that do
- *  not cross lie wholly on one side, but a touching vertex answers either way. Tries the
- *  vertices, then the edge midpoints. */
+ *  not cross lie wholly on one side, but a touching point answers either way. Tries the
+ *  vertices; failing that, the middle of the first stretch of an edge between the points where
+ *  `o`'s vertices rest on it. Rings that pass the crossing check share no stretch of edge, so
+ *  that point is off `o`. */
 function probeOff(f: Float64Array, o: Float64Array): readonly [number, number] {
   const n = f.length;
   for (let i = 0; i < n; i += 2) if (!onRing(o, f[i]!, f[i + 1]!)) return [f[i]!, f[i + 1]!];
   for (let i = 0, j = n - 2; i < n; j = i, i += 2) {
-    const x = (f[i]! + f[j]!) / 2;
-    const y = (f[i + 1]! + f[j + 1]!) / 2;
-    if (!onRing(o, x, y)) return [x, y];
+    const ax = f[j]!;
+    const ay = f[j + 1]!;
+    const dx = f[i]! - ax;
+    const dy = f[i + 1]! - ay;
+    const ts = [0, 1];
+    for (let k = 0; k < o.length; k += 2) {
+      const px = o[k]! - ax;
+      const py = o[k + 1]! - ay;
+      if (dx * py - dy * px !== 0) continue;
+      const t = (px * dx + py * dy) / (dx * dx + dy * dy);
+      if (t > 0 && t < 1) ts.push(t);
+    }
+    ts.sort((p, q) => p - q);
+    for (let k = 1; k < ts.length; k++) {
+      if (ts[k]! === ts[k - 1]!) continue;
+      const t = (ts[k]! + ts[k - 1]!) / 2;
+      const x = ax + t * dx;
+      const y = ay + t * dy;
+      if (!onRing(o, x, y)) return [x, y];
+    }
   }
   return [f[0]!, f[1]!];
 }
@@ -679,6 +767,15 @@ function edgesOf(rings: readonly Float64Array[]): Float64Array {
   return e;
 }
 
+/** Grid cells `[i0, i1, j0, j1]` that edge `k`'s bounding box spans. */
+function edgeCells(e: Float64Array, k: number, minX: number, minY: number, cell: number): readonly [number, number, number, number] {
+  const i0 = Math.floor((Math.min(e[4 * k]!, e[4 * k + 2]!) - minX) / cell);
+  const i1 = Math.floor((Math.max(e[4 * k]!, e[4 * k + 2]!) - minX) / cell);
+  const j0 = Math.floor((Math.min(e[4 * k + 1]!, e[4 * k + 3]!) - minY) / cell);
+  const j1 = Math.floor((Math.max(e[4 * k + 1]!, e[4 * k + 3]!) - minY) / cell);
+  return [i0, i1, j0, j1];
+}
+
 /** Edges bucketed by the grid cells their bounding boxes touch. Rows and columns overlap so a
  *  query of radius ≤ cell visits at most 3×3 cells. */
 function buildEdgeIndex(e: Float64Array, bbox: Box, cellWanted: number): EdgeIndex {
@@ -687,13 +784,7 @@ function buildEdgeIndex(e: Float64Array, bbox: Box, cellWanted: number): EdgeInd
   const nx = Math.floor((maxX - minX) / cell) + 1;
   const ny = Math.floor((maxY - minY) / cell) + 1;
   const nE = e.length / 4;
-  const range = (k: number) => {
-    const i0 = Math.floor((Math.min(e[4 * k]!, e[4 * k + 2]!) - minX) / cell);
-    const i1 = Math.floor((Math.max(e[4 * k]!, e[4 * k + 2]!) - minX) / cell);
-    const j0 = Math.floor((Math.min(e[4 * k + 1]!, e[4 * k + 3]!) - minY) / cell);
-    const j1 = Math.floor((Math.max(e[4 * k + 1]!, e[4 * k + 3]!) - minY) / cell);
-    return [i0, i1, j0, j1] as const;
-  };
+  const range = (k: number) => edgeCells(e, k, minX, minY, cell);
   const count = new Uint32Array(nx * ny + 1);
   for (let k = 0; k < nE; k++) {
     const [i0, i1, j0, j1] = range(k);
