@@ -271,6 +271,9 @@ The 1 µm mask is 1.25 M pixels, and the 57 ms includes building its summed-area
 ## Open
 
 - **Where the shapes come from.** `polygonDomain` takes rings directly, so an MDV gate passes as is.
+  A gate that crosses itself needs `polygonDomain(rings, { fillRule })`, with the rule the gate's
+  own filter uses (`evenodd` for MDV's ray casting); `normaliseRings` does the same step on its
+  own. The stored shape stays as drawn.
   `src/datasource` still has no SpatialData `shapes` loader to feed it. Raster `labels` and tissue
   masks only need resampling to the world grid.
 - **The `COVID_SAMPLE_17_*` geometry is unknown.** The MDV project carries region images with W×H.

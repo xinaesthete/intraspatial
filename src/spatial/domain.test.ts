@@ -3,10 +3,12 @@ import {
   domainAnnulusAreasInto,
   domainArea,
   domainContains,
+  type FillRule,
   inverseAnnulusAreas,
   type MaskDomain,
   maskDomain,
   maskWhere,
+  normaliseRings,
   polygonDomain,
   rectDomain,
 } from "./domain";
@@ -418,6 +420,22 @@ describe("polygonDomain", () => {
     expect(() => polygonDomain([box(0, 0, 10, 10), box(20, 0, 30, 10)])).not.toThrow();
   });
 
+  it("reads a hole whose every vertex touches the outer ring as a hole", () => {
+    // Each of the triangle's vertices lies on the square, so none of them can say which side of
+    // the square the triangle is on; an edge midpoint can.
+    const hole: [number, number][] = [
+      [0, 5],
+      [5, 0],
+      [10, 5],
+    ];
+    for (const h of [hole, [...hole].reverse()]) {
+      const d = polygonDomain([box(0, 0, 10, 10), h]);
+      expect(domainArea(d)).toBeCloseTo(75, 9);
+      expect(domainContains(d, 5, 3)).toBe(false);
+      expect(domainContains(d, 5, 8)).toBe(true);
+    }
+  });
+
   it("reproduces the rectangle's annulus areas to rounding, at any anchor", () => {
     const poly = polygonDomain(box(0, 0, 100, 80));
     const rect = rectDomain([0, 0, 100, 80]);
@@ -561,5 +579,275 @@ describe("polygonDomain", () => {
     // The mask version needs 0.5% for its staircase; the polygon has none.
     expect(poly.outside).toBe(0);
     expect(Array.from(poly.g, (g, i) => Math.abs(g / exact.g[i]! - 1)).every((e) => e < 1e-9)).toBe(true);
+  });
+});
+
+describe("normaliseRings / polygonDomain with a fillRule", () => {
+  type Pt = [number, number];
+  const box = (x0: number, y0: number, x1: number, y1: number): Pt[] => [
+    [x0, y0],
+    [x1, y0],
+    [x1, y1],
+    [x0, y1],
+  ];
+  const figureEight: Pt[] = [
+    [0, 0],
+    [10, 10],
+    [10, 0],
+    [0, 10],
+  ];
+
+  /** Winding number of the raw input rings at a point, by Sunday's rule: the reference. */
+  const winding = (rings: readonly Pt[][], x: number, y: number) => {
+    let w = 0;
+    for (const ring of rings) {
+      for (let i = 0; i < ring.length; i++) {
+        const [ax, ay] = ring[i]!;
+        const [bx, by] = ring[(i + 1) % ring.length]!;
+        const side = (bx - ax) * (y - ay) - (by - ay) * (x - ax);
+        if (ay <= y) {
+          if (by > y && side > 0) w++;
+        } else if (by <= y && side < 0) w--;
+      }
+    }
+    return w;
+  };
+  const filled = (rule: FillRule, w: number) => (rule === "evenodd" ? Math.abs(w) % 2 === 1 : w !== 0);
+
+  it("leaves polygonDomain strict when no rule is given", () => {
+    expect(() => polygonDomain(figureEight)).toThrow(/edges cross/);
+  });
+
+  it("splits a figure-eight into two rings touching at the crossing, under either rule", () => {
+    for (const rule of ["evenodd", "nonzero"] as const) {
+      const rings = normaliseRings(figureEight, rule);
+      expect(rings).toHaveLength(2);
+      for (const r of rings) expect(r.some(([x, y]) => x === 5 && y === 5)).toBe(true);
+      const d = polygonDomain(figureEight, { fillRule: rule });
+      expect(domainArea(d)).toBeCloseTo(50, 9);
+      expect(domainArea(polygonDomain(rings))).toBeCloseTo(50, 9);
+      expect(domainContains(d, 2, 5)).toBe(true);
+      expect(domainContains(d, 5, 2)).toBe(false);
+    }
+  });
+
+  it("counts a loop drawn twice as outside under evenodd, and as one loop under nonzero", () => {
+    const twice = [...box(0, 0, 10, 10), ...box(0, 0, 10, 10)];
+    expect(() => normaliseRings(twice, "evenodd")).toThrow(/normaliseRings: the rings enclose no area under the evenodd fill rule/);
+    expect(() => polygonDomain(twice, { fillRule: "evenodd" })).toThrow(/polygonDomain: the rings enclose no area/);
+    expect(domainArea(polygonDomain(twice, { fillRule: "nonzero" }))).toBeCloseTo(100, 9);
+  });
+
+  it("merges overlaps under nonzero and cuts them out under evenodd, collinear edges included", () => {
+    const crossing = [box(0, 0, 10, 10), box(5, 5, 15, 15)];
+    expect(normaliseRings(crossing, "nonzero")).toHaveLength(1);
+    expect(domainArea(polygonDomain(crossing, { fillRule: "nonzero" }))).toBeCloseTo(175, 9);
+    expect(domainArea(polygonDomain(crossing, { fillRule: "evenodd" }))).toBeCloseTo(150, 9);
+    const sharingEdges = [box(0, 0, 10, 10), box(5, 0, 15, 10)];
+    expect(domainArea(polygonDomain(sharingEdges, { fillRule: "nonzero" }))).toBeCloseTo(150, 9);
+    const evenodd = polygonDomain(sharingEdges, { fillRule: "evenodd" });
+    expect(domainArea(evenodd)).toBeCloseTo(100, 9);
+    expect(domainContains(evenodd, 7, 5)).toBe(false);
+  });
+
+  it("reads holes by orientation under nonzero and by nesting under evenodd", () => {
+    const outer = box(0, 0, 100, 100);
+    const sameWay = box(30, 30, 70, 60);
+    const opposite = [...sameWay].reverse();
+    expect(domainArea(polygonDomain([outer, sameWay], { fillRule: "evenodd" }))).toBeCloseTo(8800, 9);
+    expect(domainArea(polygonDomain([outer, opposite], { fillRule: "evenodd" }))).toBeCloseTo(8800, 9);
+    expect(domainArea(polygonDomain([outer, opposite], { fillRule: "nonzero" }))).toBeCloseTo(8800, 9);
+    expect(domainArea(polygonDomain([outer, sameWay], { fillRule: "nonzero" }))).toBeCloseTo(10000, 9);
+  });
+
+  it("splits at a vertex resting on another ring's edge", () => {
+    // The triangle's apex sits on the square's top edge and its base pokes out below.
+    const rings = [
+      box(0, 0, 10, 10),
+      [
+        [5, 10],
+        [2, -5],
+        [8, -5],
+      ] as Pt[],
+    ];
+    for (const rule of ["evenodd", "nonzero"] as const) {
+      const d = polygonDomain(rings, { fillRule: rule });
+      for (const [x, y] of [
+        [5, 8],
+        [1, 8],
+        [5, -3],
+        [9, 1],
+      ] as const) {
+        expect(domainContains(d, x, y)).toBe(filled(rule, winding(rings, x, y)));
+      }
+    }
+  });
+
+  it("does not read two nearly collinear pieces of one line, end to end, as crossing", () => {
+    // Found by a stress run: ring 1's last edge is cut into pieces whose orientation tests round
+    // to opposite signs (about 1e-14) though the pieces lie end to end along the line.
+    const rings: Pt[][] = [
+      [
+        [47.13645833544433, 1.2458717450499535],
+        [31.42607077024877, 4.398097191005945],
+        [85.61779940500855, 35.1692825788632],
+        [34.559293603524566, 54.121679067611694],
+        [4.316083365119994, 8.6185562890023],
+      ],
+      [
+        [23.424670309759676, 55.76175753958523],
+        [77.87560825236142, 71.65884026326239],
+        [88.83472031448036, 40.65263450611383],
+        [43.11143602244556, 17.354330141097307],
+        [8.055235515348613, 60.02604081295431],
+        [99.32845791336149, 1.1558493366464972],
+        [20.16342217102647, 13.01232606638223],
+      ],
+      [
+        [47.12962748017162, 73.5728369327262],
+        [3.2537611667066813, 23.406186304055154],
+        [26.933959568850696, 70.11317301075906],
+        [86.21231366414577, 2.5026755640283227],
+      ],
+    ];
+    for (const rule of ["evenodd", "nonzero"] as const) expect(() => polygonDomain(normaliseRings(rings, rule))).not.toThrow();
+  });
+
+  it("still throws on bad input, with polygonDomain's messages", () => {
+    for (const rule of ["evenodd", "nonzero"] as const) {
+      expect(() => polygonDomain([], { fillRule: rule })).toThrow(/polygonDomain: no rings/);
+      expect(() =>
+        polygonDomain(
+          [
+            [0, 0],
+            [1, 0],
+            [0, 0],
+          ],
+          { fillRule: rule },
+        ),
+      ).toThrow(/polygonDomain: ring 0 has 2 distinct vertices, fewer than 3/);
+      expect(() =>
+        polygonDomain(
+          [
+            [0, 0],
+            [1, Number.NaN],
+            [0, 1],
+          ],
+          { fillRule: rule },
+        ),
+      ).toThrow(/polygonDomain: ring 0 vertex 1 is not finite/);
+      expect(() =>
+        polygonDomain(
+          [
+            [0, 0],
+            [1, 1],
+            [2, 2],
+          ],
+          { fillRule: rule },
+        ),
+      ).toThrow(/polygonDomain: a ring has zero area/);
+      // Zero signed area that is not a figure-eight: out along a path and back.
+      expect(() =>
+        polygonDomain(
+          [
+            [0, 0],
+            [4, 1],
+            [8, 0],
+            [4, 1],
+          ],
+          { fillRule: rule },
+        ),
+      ).toThrow(/a ring has zero area/);
+      // A degenerate ring alongside a good one is still an error, not silently dropped.
+      expect(() =>
+        normaliseRings(
+          [
+            box(0, 0, 10, 10),
+            [
+              [20, 20],
+              [21, 21],
+              [22, 22],
+            ],
+          ],
+          rule,
+        ),
+      ).toThrow(/normaliseRings: a ring has zero area/);
+    }
+  });
+
+  it("leaves the input untouched and returns fresh, open rings", () => {
+    const input = figureEight.map((p): Pt => [p[0], p[1]]);
+    const copy = JSON.stringify(input);
+    const rings = normaliseRings(input, "evenodd");
+    expect(JSON.stringify(input)).toBe(copy);
+    for (const r of rings) {
+      expect(r[0]).not.toEqual(r[r.length - 1]);
+      for (const p of r) expect(input).not.toContain(p);
+    }
+  });
+
+  it("covers exactly the region the raw rings cover under each rule (property)", () => {
+    const rnd = mulberry32(0xf111);
+    const randomRing = (): Pt[] => {
+      const n = 3 + Math.floor(rnd() * 8);
+      const cx = rnd() * 60 + 20;
+      const cy = rnd() * 60 + 20;
+      // Half the rings are free scribbles (crossing freely), half are star-shaped with jitter.
+      if (rnd() < 0.5) return Array.from({ length: n }, (): Pt => [cx + (rnd() - 0.5) * 60, cy + (rnd() - 0.5) * 60]);
+      const sgn = rnd() < 0.5 ? 1 : -1;
+      return Array.from({ length: n }, (_, i): Pt => {
+        const a = (sgn * 2 * Math.PI * (i + rnd() * 0.5)) / n;
+        const r = 5 + rnd() * 30;
+        return [cx + r * Math.cos(a), cy + r * Math.sin(a)];
+      });
+    };
+    let mismatches = 0;
+    let checked = 0;
+    for (let trial = 0; trial < 300; trial++) {
+      const rings = Array.from({ length: 1 + Math.floor(rnd() * 3) }, randomRing);
+      for (const rule of ["evenodd", "nonzero"] as const) {
+        const anyFilled = (() => {
+          for (let i = 0; i < 400; i++) if (filled(rule, winding(rings, rnd() * 100, rnd() * 100))) return true;
+          return false;
+        })();
+        let d: ReturnType<typeof polygonDomain>;
+        try {
+          d = polygonDomain(rings, { fillRule: rule });
+        } catch (err) {
+          // Only an empty region may throw, and then no sample is filled.
+          expect(String(err)).toMatch(/enclose no area/);
+          expect(anyFilled).toBe(false);
+          continue;
+        }
+        // The normalised rings also pass the strict constructor and give the same domain.
+        const strict = polygonDomain(normaliseRings(rings, rule));
+        expect(domainArea(strict)).toBeCloseTo(domainArea(d), 6);
+        let hits = 0;
+        for (let i = 0; i < 200; i++) {
+          const x = rnd() * 100;
+          const y = rnd() * 100;
+          const want = filled(rule, winding(rings, x, y));
+          if (want) hits++;
+          checked++;
+          if (domainContains(d, x, y) !== want || domainContains(strict, x, y) !== want) mismatches++;
+        }
+        // Area against a grid count of the raw rings. Only boundary cells can disagree, so the
+        // error is at most perimeter × cell size; orientation is pinned by the strict comparison.
+        let inGrid = 0;
+        const g = 100;
+        const h = 100 / g;
+        for (let j = 0; j < g; j++) {
+          for (let i = 0; i < g; i++) if (filled(rule, winding(rings, (i + 0.5) * h, (j + 0.5) * h))) inGrid++;
+        }
+        let perimeter = 0;
+        for (const r of rings)
+          r.forEach(([x, y], i) => (perimeter += Math.hypot(r[(i + 1) % r.length]![0] - x, r[(i + 1) % r.length]![1] - y)));
+        expect(Math.abs(domainArea(d) - inGrid * h * h)).toBeLessThan(perimeter * h);
+        expect(hits === 0 || domainArea(d) > 0).toBe(true);
+      }
+    }
+    // Random points fall on an edge with probability zero, so every sample must agree.
+    expect(checked).toBeGreaterThan(50000);
+    expect(mismatches).toBe(0);
   });
 });
