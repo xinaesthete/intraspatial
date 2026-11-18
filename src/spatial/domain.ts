@@ -73,9 +73,9 @@ type Ring = readonly (readonly [number, number])[];
 /** How a set of rings, possibly crossing, encloses a region. `evenodd`: a point is inside when a ray
  *  from it crosses the rings an odd number of times (SVG/canvas `evenodd`, and what a ray-casting
  *  point-in-polygon filter computes). `nonzero`: inside when the rings wind round it a non-zero
- *  number of times. Overlapping rings that run the same way merge; where rings running opposite
- *  ways overlap, their windings cancel and that part is outside, which is how a hole must be
- *  drawn under this rule. */
+ *  number of times: the windings of all rings round it, counter-clockwise +1 and clockwise −1,
+ *  must not sum to zero. Overlaps of rings running the same way merge; one ring each way over the
+ *  same area cancels to zero and is outside, which is how a hole must be drawn under this rule. */
 export type FillRule = "evenodd" | "nonzero";
 
 /**
@@ -124,7 +124,8 @@ export function polygonDomain(shape: Ring | readonly Ring[], opts: { readonly fi
  * Crossing or overlapping rings rewritten as simple rings that cover the same region under
  * `fillRule`, for `polygonDomain` (which `polygonDomain(shape, { fillRule })` does for you). A
  * figure-eight becomes two rings touching at its crossing; under `evenodd` a loop drawn twice round
- * the same area is outside, under `nonzero` overlapping parts merge into one ring.
+ * the same area is outside; under `nonzero` a part is outside only where the windings sum to zero,
+ * so same-way overlaps merge into one ring.
  *
  * Output rings meet only at shared vertices. Each runs with the region on its left (outer
  * boundaries counter-clockwise, holes clockwise) and open. The input is not modified: normalise when building a domain, and keep the

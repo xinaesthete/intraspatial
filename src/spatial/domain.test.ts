@@ -702,6 +702,9 @@ describe("normaliseRings / polygonDomain with a fillRule", () => {
     expect(domainArea(polygonDomain([outer, opposite], { fillRule: "evenodd" }))).toBeCloseTo(8800, 9);
     expect(domainArea(polygonDomain([outer, opposite], { fillRule: "nonzero" }))).toBeCloseTo(8800, 9);
     expect(domainArea(polygonDomain([outer, sameWay], { fillRule: "nonzero" }))).toBeCloseTo(10000, 9);
+    // Under nonzero only a zero total is outside: two rings one way and one the other sum to 1.
+    const sq = box(0, 0, 10, 10);
+    expect(domainArea(polygonDomain([sq, sq, [...sq].reverse()], { fillRule: "nonzero" }))).toBeCloseTo(100, 9);
   });
 
   it("splits at a vertex resting on another ring's edge", () => {
