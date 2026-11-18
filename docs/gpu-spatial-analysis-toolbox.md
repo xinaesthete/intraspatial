@@ -216,7 +216,9 @@ These run directly on `GpuPoints` + `GpuGridIndex`, no grid:
   over the edge list.
 - → **k-hop neighbourhood composition + k-means** — gather per-point neighbour
   label-count vectors (the "cellular neighbourhood" descriptor), then GPU k-means to
-  assign microenvironments. Both gather and Lloyd iteration are GPU-standard.
+  assign microenvironments. Both gather and Lloyd iteration are GPU-standard. Use
+  **e-means** rather than Lloyd: it escapes the small-k local minima Lloyd stays in
+  (CPU golden built; see [`emeans-clustering.md`](emeans-clustering.md)).
 
 ### The flagship: Monte-Carlo null models in one sweep
 
@@ -322,7 +324,7 @@ ring/crypt scale, short-range exclusion). That makes it an ideal golden.
 | distribution | KL-divergence | pointwise + reduction on grids | → |
 | distribution | Wasserstein distance | Sinkhorn OT (approx) / exact CPU | ~ |
 | networks | proximity / contact network, degree | uniform-grid index + edge reduction | → |
-| networks | k-hop neighbourhood + clustering | neighbour gather + GPU k-means | → |
+| networks | k-hop neighbourhood + clustering | neighbour gather + GPU k-means (e-means; CPU golden ✓) | → |
 | networks | Delaunay / Voronoi | (use proximity network instead) | cpu |
 | region based | hexgrid / quadrat lattice | bin transform + scatter (prefer windowed) | → |
 | region based | windowed local stats (overlapping taper) | splat → separable window → resample | → |
