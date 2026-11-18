@@ -132,7 +132,11 @@ compaction ~9–11 ms, readback-dominated). Companion helpers `dispatchGrid` / `
   [`gramEnvelope.ts`](../src/gpu/spatial/gramEnvelope.ts)); windowing is not yet validated
   against quadrats (type-I error, power). Follow-ups tracked in #45, #47, #48, #53.
 - **TopACT reproduction** — [ADR-0016](decisions/0016-topact-box-vs-kde-reproduce-then-improve.md).
-  **Nothing**: no box/square pool op, no summed-area-table fast path, no classifier.
+  **Not reproduced.** A CPU single-scale square box pool exists (`pooledBins` in
+  [`channelBins.ts`](../src/spatial/channelBins.ts), built for the niche map), and
+  `assignCentroids` is a nearest-centroid classifier against a frozen table. Still missing:
+  per-gene lattices, multiscale pooling with a summed-area table, their calibrated SVM, a
+  graph op, GPU. Mapping in ADR-0016 "Related since".
 - **Toolbox gaps** — [`gpu-spatial-analysis-toolbox.md`](gpu-spatial-analysis-toolbox.md):
   `GpuShapes` + polygon morphology, GPU contact network (only CPU
   [`contactNetwork.ts`](../src/spatial/contactNetwork.ts) exists), higher-order co-occurrence
