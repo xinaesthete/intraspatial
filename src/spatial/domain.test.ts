@@ -803,6 +803,31 @@ describe("normaliseRings / polygonDomain with a fillRule", () => {
     );
     const d = polygonDomain(squares, { fillRule: "nonzero" });
     expect(domainArea(d)).toBeCloseTo(12000, 6);
+    // A single row, where every square shares every other's height.
+    const row = Array.from({ length: 3000 }, (_, i) => box(3 * i, 0, 3 * i + 2, 2));
+    expect(domainArea(polygonDomain(row, { fillRule: "nonzero" }))).toBeCloseTo(12000, 6);
+  });
+
+  it("seeds nested components from the shells around them", () => {
+    // Concentric squares, alternating direction, none touching: under nonzero the windings run
+    // 1, 0, 1, 0, … inwards; under evenodd every other annulus is in, whatever the direction.
+    const nested = Array.from({ length: 6 }, (_, k) => {
+      const r = box(k, k, 20 - k, 20 - k);
+      return k % 2 === 0 ? r : [...r].reverse();
+    });
+    const side = (k: number) => 20 - 2 * k;
+    const annuli = side(0) ** 2 - side(1) ** 2 + side(2) ** 2 - side(3) ** 2 + side(4) ** 2 - side(5) ** 2;
+    for (const rule of ["evenodd", "nonzero"] as const) {
+      const d = polygonDomain(nested, { fillRule: rule });
+      expect(domainArea(d)).toBeCloseTo(annuli, 9);
+      expect(domainContains(d, 0.5, 10)).toBe(true);
+      expect(domainContains(d, 1.5, 10)).toBe(false);
+      expect(domainContains(d, 2.5, 10)).toBe(true);
+    }
+    // All one way, the windings climb 1, 2, 3, …: nonzero fills the lot.
+    const sameWay = Array.from({ length: 6 }, (_, k) => box(k, k, 20 - k, 20 - k));
+    expect(domainArea(polygonDomain(sameWay, { fillRule: "nonzero" }))).toBeCloseTo(400, 9);
+    expect(domainArea(polygonDomain(sameWay, { fillRule: "evenodd" }))).toBeCloseTo(annuli, 9);
   });
 
   it("still throws on bad input, with polygonDomain's messages", () => {

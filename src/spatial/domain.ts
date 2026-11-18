@@ -500,10 +500,15 @@ function fillRegion(rings: readonly Float64Array[], rule: FillRule): Float64Arra
     const p = leftmost.get(c);
     if (p === undefined || vx[v]! < vx[p]! || (vx[v]! === vx[p]! && vy[v]! < vy[p]!)) leftmost.set(c, v);
   }
-  const bands = outerOf.size > 1 ? pieceBands(nH, hFrom, hTo, vy, bbox) : undefined;
+  const shells = outerOf.size > 1 ? componentIndex(nH, hFrom, find, vx, vy, bbox) : undefined;
   for (const [c, f] of outerOf) {
     const p = leftmost.get(c)!;
-    wind[f] = bands ? windingAt(vx[p]!, vy[p]!, bands, (h) => find(hFrom[h]!) !== c, hFrom, hTo, hNet, vx, vy) : 0;
+    let w = 0;
+    // Only components whose bounding box holds the point can wind round it.
+    if (shells)
+      for (const o of shells.around(vx[p]!, vy[p]!))
+        if (o !== c) w += windingAt(vx[p]!, vy[p]!, shells.pieces.get(o)!, hFrom, hTo, hNet, vx, vy);
+    wind[f] = w;
     queue.push(f);
   }
   while (queue.length > 0) {
@@ -563,34 +568,64 @@ function fillRegion(rings: readonly Float64Array[], rule: FillRule): Float64Arra
   });
 }
 
-/** The even half-edges (one per piece) bucketed by the horizontal bands their y-spans touch. */
-interface PieceBands {
-  readonly minY: number;
-  readonly band: number;
-  readonly lists: readonly number[][];
+/** Connected components of the arrangement, each with its pieces (even half-edges) and bounding
+ *  box, the boxes bucketed on a grid so `around(x, y)` finds those holding a point. */
+interface ComponentIndex {
+  readonly pieces: ReadonlyMap<number, readonly number[]>;
+  around(x: number, y: number): number[];
 }
 
-function pieceBands(nH: number, hFrom: readonly number[], hTo: readonly number[], vy: readonly number[], bbox: Box): PieceBands {
-  const nb = Math.max(1, Math.min(4096, Math.ceil(Math.sqrt(nH / 2))));
-  const band = Math.max((bbox[3] - bbox[1]) / nb, Number.MIN_VALUE);
-  const lists: number[][] = Array.from({ length: nb }, () => []);
-  const at = (y: number) => Math.min(nb - 1, Math.max(0, Math.floor((y - bbox[1]) / band)));
-  for (let h = 0; h < nH; h += 2) {
-    const ya = vy[hFrom[h]!]!;
-    const yb = vy[hTo[h]!]!;
-    for (let b = at(Math.min(ya, yb)); b <= at(Math.max(ya, yb)); b++) lists[b]!.push(h);
+function componentIndex(
+  nH: number,
+  hFrom: readonly number[],
+  find: (v: number) => number,
+  vx: readonly number[],
+  vy: readonly number[],
+  bbox: Box,
+): ComponentIndex {
+  const pieces = new Map<number, number[]>();
+  const box = new Map<number, [number, number, number, number]>();
+  for (let h = 0; h < nH; h++) {
+    const v = hFrom[h]!;
+    const c = find(v);
+    const b = box.get(c);
+    if (b) {
+      b[0] = Math.min(b[0], vx[v]!);
+      b[1] = Math.min(b[1], vy[v]!);
+      b[2] = Math.max(b[2], vx[v]!);
+      b[3] = Math.max(b[3], vy[v]!);
+    } else box.set(c, [vx[v]!, vy[v]!, vx[v]!, vy[v]!]);
+    if (h % 2 === 0) {
+      const list = pieces.get(c);
+      if (list) list.push(h);
+      else pieces.set(c, [h]);
+    }
   }
-  return { minY: bbox[1], band, lists };
+  const n = Math.max(1, Math.ceil(Math.sqrt(box.size)));
+  const cw = Math.max((bbox[2] - bbox[0]) / n, Number.MIN_VALUE);
+  const ch = Math.max((bbox[3] - bbox[1]) / n, Number.MIN_VALUE);
+  const col = (x: number) => Math.min(n - 1, Math.max(0, Math.floor((x - bbox[0]) / cw)));
+  const row = (y: number) => Math.min(n - 1, Math.max(0, Math.floor((y - bbox[1]) / ch)));
+  const cells: number[][] = Array.from({ length: n * n }, () => []);
+  for (const [c, b] of box) {
+    for (let j = row(b[1]); j <= row(b[3]); j++) for (let i = col(b[0]); i <= col(b[2]); i++) cells[j * n + i]!.push(c);
+  }
+  return {
+    pieces,
+    around: (x, y) =>
+      cells[row(y) * n + col(x)]!.filter((c) => {
+        const b = box.get(c)!;
+        return x >= b[0] && x <= b[2] && y >= b[1] && y <= b[3];
+      }),
+  };
 }
 
-/** Winding number at `(x, y)` of the pieces that `include` allows, with multiplicity, by Sunday's
- *  crossing rule. `(x, y)` must not lie on any of them. Only pieces whose y-span reaches `y` can
- *  count, so only `y`'s band is read. */
+/** Winding number at `(x, y)` of `pieces` (even half-edges), with multiplicity, by Sunday's
+ *  crossing rule. `(x, y)` must not lie on any of them. */
 function windingAt(
   x: number,
   y: number,
-  bands: PieceBands,
-  include: (h: number) => boolean,
+  pieces: readonly number[],
   hFrom: readonly number[],
   hTo: readonly number[],
   hNet: readonly number[],
@@ -598,9 +633,7 @@ function windingAt(
   vy: readonly number[],
 ): number {
   let w = 0;
-  const b = Math.min(bands.lists.length - 1, Math.max(0, Math.floor((y - bands.minY) / bands.band)));
-  for (const h of bands.lists[b]!) {
-    if (!include(h)) continue;
+  for (const h of pieces) {
     const ax = vx[hFrom[h]!]!;
     const ay = vy[hFrom[h]!]!;
     const bx = vx[hTo[h]!]!;
