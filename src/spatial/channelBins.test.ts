@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vite-plus/test";
 import { mulberry32 } from "#src/evo/rng";
 import { bucketPoints, type PointsTile, pointsGridAtLevel, type Rect } from "../datasource/points";
-import { binComposition, type ChannelBins, channelBins } from "./channelBins";
+import { binComposition, type ChannelBins, channelBins, pooledBins } from "./channelBins";
 import type { WeightedChannel } from "./transcriptChannels";
 
 const bounds: Rect = { minX: 0, minY: 0, maxX: 100, maxY: 70 };
@@ -88,6 +88,61 @@ describe("channelBins", () => {
     expect(() => channelBins(tiles[0]!, pointsGridAtLevel(bounds, 4000, 2), channels)).toThrow(/not a bin edge|no whole bin/);
     const overlap = [...channels, { label: "again", weights: new Map([[0, 1]]) }];
     expect(() => channelBins(tiles[0]!, bins, overlap)).toThrow(/more than one channel/);
+  });
+});
+
+describe("pooledBins", () => {
+  const raw = points(4000);
+  const bins = pointsGridAtLevel(bounds, 4000, 3);
+  const [whole] = bucketPoints(pointsGridAtLevel(bounds, 4000, 0), raw).values();
+  const wholeBins = channelBins(whole!, bins, channels);
+  const tiles = [...bucketPoints(pointsGridAtLevel(bounds, 4000, 2), raw).values()].map((t) => channelBins(t, bins, channels));
+
+  it("pooled tile by tile, with the tiles around, equals pooling the whole element at once", () => {
+    const all = pooledBins(wholeBins, [], bins);
+    const want = new Map<number, { c: number[]; s: number }>();
+    all.bins.forEach((b, i) => want.set(b, { c: Array.from(all.counts.subarray(i * 2, i * 2 + 2)), s: all.sampled[i]! }));
+    let seen = 0;
+    for (const t of tiles) {
+      const p = pooledBins(t, tiles, bins);
+      expect(Array.from(p.bins)).toEqual(Array.from(t.bins));
+      p.bins.forEach((b, i) => {
+        const w = want.get(b)!;
+        expect(p.counts[i * 2]).toBeCloseTo(w.c[0]!, 9);
+        expect(p.counts[i * 2 + 1]).toBeCloseTo(w.c[1]!, 9);
+        expect(p.sampled[i]).toBe(w.s);
+        seen++;
+      });
+    }
+    expect(seen).toBe(all.bins.length);
+  });
+
+  it("sums the 3 × 3 block around a bin, and radius 0 is the bin alone", () => {
+    expect(pooledBins(wholeBins, [], bins, 0).counts).toEqual(wholeBins.counts);
+    const all = pooledBins(wholeBins, [], bins);
+    const at = (cb: ChannelBins, b: number) => {
+      const i = cb.bins.indexOf(b);
+      return i < 0 ? 0 : cb.sampled[i]!;
+    };
+    const b = 2 * bins.cols + 3;
+    let s = 0;
+    for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) s += at(wholeBins, b + dy * bins.cols + dx);
+    expect(at(all, b)).toBe(s);
+  });
+
+  it("leaves out bins with no molecules of their own, however full their neighbours", () => {
+    const cb: ChannelBins = {
+      x0: 0,
+      y0: 0,
+      width: 3,
+      height: 1,
+      bins: Int32Array.from([0, 2]),
+      channels: 1,
+      counts: Float64Array.from([5, 7]),
+      sampled: Int32Array.from([5, 7]),
+    };
+    const p = pooledBins(cb, [], pointsGridAtLevel({ minX: 0, minY: 0, maxX: 3, maxY: 1 }, 1, 0));
+    expect(Array.from(p.bins)).toEqual([0, 2]);
   });
 });
 

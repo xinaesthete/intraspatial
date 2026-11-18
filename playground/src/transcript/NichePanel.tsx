@@ -83,10 +83,10 @@ function NicheNote({ map, labels, minSampled }: { map: NicheMap; labels: readonl
           : sample.perGene
             ? `each gene a random sample of ${pct(sample.fraction)} or more, rare ones whole`
             : `a ${pct(sample.fraction)} random sample`}
-        ) in {sample.kept.toLocaleString()} bins of {+plan.bins.tileSize.toPrecision(3)} µm* with {minSampled}+ channel molecules (of{" "}
-        {sample.bins.toLocaleString()}), each weighted by the molecules it stands for. Best of 4 k-means++ starts, batch {s.batch},{" "}
-        {(s.ms / 1000).toFixed(1)} s. The view is labelled tile by tile against that table, from one fixed level, so a bin keeps its niche
-        wherever you pan or zoom.{" "}
+        ) in {sample.kept.toLocaleString()} bins of {+plan.bins.tileSize.toPrecision(3)} µm* (of {sample.bins.toLocaleString()} with any
+        channel molecule), each described by the mix in the 3 × 3 bins around it — kept when that holds {minSampled}+ molecules read — and
+        weighted by the molecules it stands for. Best of 4 k-means++ starts, batch {s.batch}, {(s.ms / 1000).toFixed(1)} s. The view is
+        labelled tile by tile against that table, from one fixed level, so a bin keeps its niche wherever you pan or zoom.{" "}
         {tiles.progress ? `Labelling tiles: ${tiles.progress.done} of ${tiles.progress.total}…` : `${tiles.tiles.length} tiles labelled.`}
       </p>
       <div className="legend">

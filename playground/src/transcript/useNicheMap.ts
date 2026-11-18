@@ -18,7 +18,7 @@ import { useEffect, useMemo, useReducer, useState } from "react";
 import { type PointsGrid, pointsGridAtLevel, type Rect, selectPointsTiles } from "../../../src/datasource/points";
 import { chunkKey } from "../../../src/datasource/tileCache";
 import type { ChunkId } from "../../../src/datasource/types";
-import { binComposition, type ChannelBins, channelBins } from "../../../src/spatial/channelBins";
+import { binComposition, type ChannelBins, channelBins, pooledBins } from "../../../src/spatial/channelBins";
 import { assignCentroids, type CentroidTable } from "../../../src/spatial/emeans";
 import type { WeightedChannel } from "../../../src/spatial/transcriptChannels";
 import type { PointsSource } from "../datasource/pointsTileLoader";
@@ -62,7 +62,7 @@ export interface NicheOptions {
 
 /** The grids a niche map works on: the sample's tiles, the fixed level views are labelled at, and the bins. */
 interface NichePlan {
-  readonly sampleLevel: number;
+  readonly sample: PointsGrid;
   readonly tiles: PointsGrid;
   readonly bins: PointsGrid;
 }
@@ -76,10 +76,22 @@ function nichePlan(source: PointsSource, binSide: number): NichePlan {
   const tileLevel = source.gridFor ? Math.min(source.grid.level, sampleLevel + 1) : source.grid.level;
   const binLevel = Math.max(tileLevel, Math.round(Math.log2(span / binSide)));
   return {
-    sampleLevel,
+    sample: pointsGridAtLevel(bounds, source.totalRows, sampleLevel),
     tiles: pointsGridAtLevel(bounds, source.totalRows, tileLevel),
     bins: pointsGridAtLevel(bounds, source.totalRows, binLevel),
   };
+}
+
+/** The tiles of `grid` around `id` (up to 8), whose bins a pooled neighbourhood can reach. */
+function neighbourIds(id: ChunkId, { cols, rows }: PointsGrid): ChunkId[] {
+  const out: ChunkId[] = [];
+  for (let dy = -1; dy <= 1; dy++)
+    for (let dx = -1; dx <= 1; dx++) {
+      const x = id.x + dx;
+      const y = id.y + dy;
+      if ((dx || dy) && x >= 0 && y >= 0 && x < cols && y < rows) out.push({ ...id, x, y });
+    }
+  return out;
 }
 
 export interface NicheFit extends CentroidTable {
@@ -134,8 +146,12 @@ function useNicheFit(source: PointsSource | undefined, channels: readonly Weight
       const weights: number[] = [];
       let bins = 0;
       let molecules = 0;
+      // Every sample tile is here, so each is pooled with the ones around it at once.
+      const binned = new Map(tiles.map((t) => [chunkKey(t.id), channelBins(t, plan.bins, channels)]));
       for (const t of tiles) {
-        const desc = binComposition(channelBins(t, plan.bins, channels), minSampled);
+        const own = binned.get(chunkKey(t.id))!;
+        const around = neighbourIds(t.id, plan.sample).flatMap((id) => binned.get(chunkKey(id)) ?? []);
+        const desc = binComposition(pooledBins(own, around, plan.bins), minSampled);
         bins += desc.n;
         for (let i = 0; i < desc.n; i++) {
           const w = desc.weights[i]!;
@@ -183,7 +199,8 @@ interface NicheTile {
 
 /**
  * The fixed-level tiles covering `window`, each binned once as it arrives (kept per channels and
- * plan, so a pan back costs nothing) and labelled against `fit`.
+ * plan, so a pan back costs nothing) and labelled against `fit` once the tiles around it are binned
+ * too — a bin's pooled neighbourhood reaches into them, so its label is final when it first shows.
  */
 function useNicheTiles(source: PointsSource | undefined, fit: NicheFit | undefined, window: Rect | undefined) {
   const plan = fit?.plan;
@@ -198,10 +215,17 @@ function useNicheTiles(source: PointsSource | undefined, fit: NicheFit | undefin
     () => (plan && window ? selectPointsTiles(plan.tiles, window, 0).chunks.map((c) => c.id) : []),
     [plan, window],
   );
+  // What to read: the tiles drawn, nearest the middle first, then the ring around them.
+  const reads = useMemo<ChunkId[]>(() => {
+    if (!plan) return [];
+    const seen = new Set(ids.map(chunkKey));
+    const ring = ids.flatMap((id) => neighbourIds(id, plan.tiles)).filter((id) => !seen.has(chunkKey(id)) && seen.add(chunkKey(id)));
+    return [...ids, ...ring];
+  }, [plan, ids]);
 
   useEffect(() => {
     if (!source || !plan || !channels) return;
-    const todo = ids.filter((id) => !binned.has(chunkKey(id)));
+    const todo = reads.filter((id) => !binned.has(chunkKey(id)));
     setError(undefined);
     if (!todo.length) {
       setProgress(undefined);
@@ -231,7 +255,7 @@ function useNicheTiles(source: PointsSource | undefined, fit: NicheFit | undefin
     return () => {
       live = false;
     };
-  }, [source, plan, channels, ids, binned]);
+  }, [source, plan, channels, reads, binned]);
 
   // Labels and images per fit: a refit relabels the binned tiles without reading any.
   const labelled = useMemo(() => new Map<string, NicheTile>(), [fit]);
@@ -241,8 +265,12 @@ function useNicheTiles(source: PointsSource | undefined, fit: NicheFit | undefin
     for (const id of ids) {
       const key = chunkKey(id);
       let t = labelled.get(key);
-      const bins = binned.get(key);
-      if (!t && bins) labelled.set(key, (t = labelTile(key, bins, fit)));
+      const own = binned.get(key);
+      if (!t && own) {
+        const ring = neighbourIds(id, fit.plan.tiles);
+        const around = ring.flatMap((n) => binned.get(chunkKey(n)) ?? []);
+        if (around.length === ring.length) labelled.set(key, (t = labelTile(key, pooledBins(own, around, fit.plan.bins), fit)));
+      }
       if (t) out.push(t);
     }
     return out;

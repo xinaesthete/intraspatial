@@ -90,6 +90,49 @@ export function channelBins(tile: PointsTile, bins: PointsGrid, channels: readon
   return { x0, y0, width, height, channels: C, ...out };
 }
 
+/**
+ * `own`'s bins with each one's counts summed over the `(2·radius + 1)²` bins centred on it: a
+ * neighbourhood mix, estimated from about 9× the molecules of one bin at radius 1. Bins near the
+ * block's edge reach into `neighbours` — the bins of the tiles around it (any others are ignored,
+ * and `own` among them is skipped) — so labelling them waits for those tiles; with them, the result
+ * equals pooling the whole element at once. Only bins `own` holds molecules in are returned: pooling
+ * estimates a bin's mix, it does not invent tissue where none was read (a vessel lumen stays empty).
+ */
+export function pooledBins(own: ChannelBins, neighbours: Iterable<ChannelBins>, bins: PointsGrid, radius = 1): ChannelBins {
+  const { x0, y0, width, height, channels: C } = own;
+  const r = radius;
+  const W = width + 2 * r;
+  const H = height + 2 * r;
+  const counts = new Float64Array(W * H * C);
+  const read = new Int32Array(W * H);
+  const add = (cb: ChannelBins) => {
+    if (cb.channels !== C) throw new Error(`pooledBins: a neighbour has ${cb.channels} channels, not ${C}`);
+    cb.bins.forEach((b, i) => {
+      const lx = (b % bins.cols) - x0 + r;
+      const ly = Math.floor(b / bins.cols) - y0 + r;
+      if (lx < 0 || lx >= W || ly < 0 || ly >= H) return;
+      const o = ly * W + lx;
+      for (let c = 0; c < C; c++) counts[o * C + c]! += cb.counts[i * C + c]!;
+      read[o]! += cb.sampled[i]!;
+    });
+  };
+  add(own);
+  for (const n of neighbours) if (n !== own) add(n);
+  const m = own.bins.length;
+  const out = { counts: new Float64Array(m * C), sampled: new Int32Array(m) };
+  own.bins.forEach((b, i) => {
+    const cx = (b % bins.cols) - x0 + r;
+    const cy = Math.floor(b / bins.cols) - y0 + r;
+    for (let y = cy - r; y <= cy + r; y++)
+      for (let x = cx - r; x <= cx + r; x++) {
+        const o = y * W + x;
+        for (let c = 0; c < C; c++) out.counts[i * C + c]! += counts[o * C + c]!;
+        out.sampled[i]! += read[o]!;
+      }
+  });
+  return { ...own, ...out };
+}
+
 /** Bins as rows to cluster: `data` is `n × d`, `weights` has one entry per row. */
 export interface BinDescriptors {
   readonly n: number;

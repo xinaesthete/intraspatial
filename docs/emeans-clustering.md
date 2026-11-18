@@ -275,27 +275,36 @@ assign reproduces the fit's labels, and a tile labelled alone agrees with the wh
 **The niche map** (transcript-modes page, "Niche map"; `playground/src/transcript/useNicheMap.ts`):
 
 1. **Bins** are a quadtree level over the element's extent (`channelBins.ts`), at or finer than
-   every tile level used, so each bin belongs to exactly one tile. A bin's descriptor is the
-   Hellinger mix `√(count_c / total)` of the current channels, each molecule weighted by
-   1/`pointFraction`. Its fit weight is the molecules it stands for. Bins with fewer than 20 channel
-   molecules read are weight 0.
-2. **Fit** on the whole-element tiles the gene modules use, in a worker: best of 4 k-means++ starts.
-3. **Assign** tiles from **one fixed level** (one finer than the sample's), whatever the zoom. Each
-   tile is binned once and labelled as it arrives, then drawn as one `BitmapLayer`. A bin's label
-   depends only on its own molecules from a fixed read, so it cannot change under pan or zoom.
+   every tile level used, so each bin belongs to exactly one tile. Each molecule is weighted by
+   1/`pointFraction`.
+2. **Pooled 3 × 3** (`pooledBins`). A bin's descriptor is the Hellinger mix `√(count_c / total)` of
+   the 9 bins centred on it, and its fit weight the molecules those stand for. Only bins with
+   molecules of their own are labelled (a lumen stays empty), and a pool with fewer than 20 molecules
+   read is weight 0. Without pooling, that cut-off blanked most sparse tissue (table below).
+3. **Fit** on the whole-element tiles the gene modules use, in a worker: best of 4 k-means++ starts.
+4. **Assign** tiles from **one fixed level** (one finer than the sample's), whatever the zoom. A
+   tile's pools reach into the 8 tiles around it, so those are read too, and the tile is labelled
+   once they are binned. Pooled tile by tile equals pooled whole (tested), and every read is fixed,
+   so a label cannot change under pan or zoom. Each tile is one `BitmapLayer`.
 
-Measured on Atera kidney, 47 µm bins, k = 8:
+Measured on Atera kidney, k = 8, whole slide (160 tiles). "Holes" are unlabelled bins with molecules,
+enclosed by labelled tissue:
 
-| Channels                   | Fit sample                                 | Bins kept / with data | Fit   |
-| -------------------------- | ------------------------------------------ | --------------------- | ----- |
-| 8 starter sets (62 genes)  | 4.27M molecules: every one (subset read)   | 25,465 / 29,628       | 0.2 s |
-| 12 gene modules            | 4.63M molecules: 0.39% random sample       | 14,549 / 26,823       | 0.1 s |
+| Channels, bin               | Fit sample                               | Fit bins kept, single → pooled | Holes, single → pooled |
+| --------------------------- | ---------------------------------------- | ------------------------------ | ---------------------- |
+| 8 starter sets, 47 µm       | 4.27M: every molecule (subset read)      | 25,465 → 27,487 of 29,628      | 782\* → 59             |
+| 12 gene modules, 47 µm      | 4.63M: 0.39% random sample               | 14,549 → 25,671 of 26,823      | 846 → 87               |
+| 12 gene modules, 23.5 µm    | same                                     | 1,011 → 89,243 of 95,710       | 5,398\* → 447          |
 
-A whole-slide view is 160 tiles. On modules the niches are anatomy: proximal tubule (PCK1 module),
-thick ascending limb (UMOD), vessels (TAGLN), and glomeruli (NPHS2 + MME) as isolated dots in the
-cortex. Checked in a real browser (WebGPU): labels moved with the tissue on a pan, unchanged.
-At 47 µm the map is speckled: bins are noisy samples of a mix, and nothing smooths them yet. That is
-slice 3's neighbourhood descriptor.
+\* Counted with a stricter test (at least 3 of the 4 adjacent bins labelled), so these understate
+the single-bin holes; the other counts need labelled tissue within 8 bins in all four directions.
+
+The fit takes 0.1–0.2 s. What stays dark is mostly vessel lumens and bins with no channel molecule
+read (2,337 enclosed at 23.5 µm, where a tile is a 1/64 read). On modules the niches are anatomy:
+proximal tubule (PCK1 module), thick ascending limb (UMOD), vessels (TAGLN), and glomeruli
+(NPHS2 + MME) as round patches in the cortex; pooling turned single-bin speckle into contiguous
+regions. **Stability, checked in a real browser (WebGPU):** after a pan, 47,787 of 47,787 bins in
+both views kept their label; after a zoom, 24,076 of 24,076.
 
 ## Slices
 
