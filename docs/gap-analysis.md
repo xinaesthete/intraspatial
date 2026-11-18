@@ -150,7 +150,8 @@ compaction ~9–11 ms, readback-dominated). Companion helpers `dispatchGrid` / `
   | Wand | **GPU** distance + host flood fill | ✓ | Host fill is deliberate (tolerance moves without a dispatch) |
   | Permutation envelope | GPU (`gramEnvelope`) | ✓ | Wired on the cell pages, **not** the transcript page |
   | Gene modules (bin, randomized sparse PCA, e-means on genes) | CPU worker, ~6 s | ✗ | `pcaGpu` is a dense `CᵀC`; ~18k genes needs a GPU sparse × dense product we don't have |
-  | Niche fit (bin, 3×3 pool, weighted e-means) | CPU worker, 0.1–0.2 s | ✗ | 25–90k bins; no need yet |
+  | Niche fit: bin, 3×3 pool, descriptors | CPU, **main thread** (`useNicheFit`), unmeasured | ✗ | Over every sample tile, before the worker is called |
+  | Niche fit: weighted e-means | CPU worker, 0.1–0.2 s (worker time only) | ✗ | 25–90k bins; no need yet |
   | Niche assign per tile (bin, pool, nearest centroid, `ImageData`) | **CPU, main thread** | ✗ | Only drawing is GPU (`BitmapLayer`); per-tile cost **unmeasured** — the one likely bottleneck now |
   | `emeans` / `lloyd` / `assignCentroids` | CPU (f64) | ✗ | Slice 4 maps them onto existing kernels |
 

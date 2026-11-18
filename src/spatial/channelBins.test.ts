@@ -83,6 +83,18 @@ describe("channelBins", () => {
     expect(total(b, 1)).toBeCloseTo(2 * n1 + 4 * 2 * n2, 9);
   });
 
+  it("keeps only molecules at or above a column minimum, and refuses a missing column", () => {
+    const [whole] = bucketPoints(pointsGridAtLevel(bounds, 4000, 0), raw).values();
+    const qv = Float32Array.from({ length: whole!.count }, (_, i) => (i % 3 === 0 ? 10 : 30));
+    const tile: PointsTile = { ...whole!, columns: { ...whole!.columns, qv } };
+    const read = (cb: ChannelBins) => cb.sampled.reduce((s, v) => s + v, 0);
+    let n = 0; // codes 0–2 are in a channel, 3 is not
+    for (let i = 0; i < whole!.count; i++) if (whole!.codes[i]! < 3 && qv[i]! >= 20) n++;
+    expect(read(channelBins(tile, bins, channels, { column: "qv", value: 20 }))).toBe(n);
+    expect(read(channelBins(tile, bins, channels, { column: "qv", value: 0 }))).toBe(read(channelBins(whole!, bins, channels)));
+    expect(() => channelBins(whole!, bins, channels, { column: "nope", value: 1 })).toThrow(/no "nope" column/);
+  });
+
   it("refuses bins coarser than the tile, and overlapping channels", () => {
     const tiles = [...bucketPoints(pointsGridAtLevel(bounds, 4000, 3), raw).values()];
     expect(() => channelBins(tiles[0]!, pointsGridAtLevel(bounds, 4000, 2), channels)).toThrow(/not a bin edge|no whole bin/);
@@ -131,6 +143,10 @@ describe("pooledBins", () => {
   });
 
   it("leaves out bins with no molecules of their own, however full their neighbours", () => {
+    // 4 × 1 bins of side 1, so a bin's index is its column. `cb` owns columns 0–2 and holds
+    // molecules in 0 and 2; column 3 is a neighbouring block's, and full.
+    const grid = pointsGridAtLevel({ minX: 0, minY: 0, maxX: 4, maxY: 1 }, 1, 2);
+    expect(grid.cols).toBe(4);
     const cb: ChannelBins = {
       x0: 0,
       y0: 0,
@@ -141,8 +157,21 @@ describe("pooledBins", () => {
       counts: Float64Array.from([5, 7]),
       sampled: Int32Array.from([5, 7]),
     };
-    const p = pooledBins(cb, [], pointsGridAtLevel({ minX: 0, minY: 0, maxX: 3, maxY: 1 }, 1, 0));
+    const full: ChannelBins = {
+      x0: 3,
+      y0: 0,
+      width: 1,
+      height: 1,
+      bins: Int32Array.from([3]),
+      channels: 1,
+      counts: Float64Array.from([100]),
+      sampled: Int32Array.from([100]),
+    };
+    const p = pooledBins(cb, [full], grid);
+    // Bin 1 sits between 0, 2 and nothing else — it would pool 12 — but holds none of its own.
     expect(Array.from(p.bins)).toEqual([0, 2]);
+    expect(Array.from(p.counts)).toEqual([5, 7 + 100]);
+    expect(Array.from(p.sampled)).toEqual([5, 7 + 100]);
   });
 });
 

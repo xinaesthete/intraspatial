@@ -174,7 +174,7 @@ export function TranscriptModes() {
 
   const tiles = usePointsTiles(readSource, window, rEff);
   // The niche map follows the view itself, pinned window or not.
-  const nicheMap = useNicheMap(readSource, built.channels, inView, niche);
+  const nicheMap = useNicheMap(readSource, built.channels, qvApplied, inView, niche);
   const nicheFit = nicheMap.fit.value;
   const nicheTiles = nicheMap.tiles.tiles;
   const nicheDrawn = useMemo(
@@ -405,7 +405,7 @@ export function TranscriptModes() {
             Half-precision maps (f16){halfRasters && gram.value ? ` — ${rasterMiB(gram.value)} MiB, was ${rasterMiB(gram.value, 2)}` : ""}
           </label>
           <label>
-            Minimum molecule quality (qv){hasQv ? "" : " — not available for this element"}
+            Minimum molecule quality (qv), for the modes and the niche map{hasQv ? "" : " — not available for this element"}
             <input
               type="number"
               min={0}

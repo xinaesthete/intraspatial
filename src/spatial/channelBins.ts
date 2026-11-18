@@ -12,7 +12,7 @@
 // tile describe a bin on one scale.
 
 import { type PointsGrid, type PointsTile, pointFraction } from "../datasource/points";
-import type { WeightedChannel } from "./transcriptChannels";
+import type { TranscriptChannelOptions, WeightedChannel } from "./transcriptChannels";
 
 /** One tile's bins that hold a channel molecule, with their per-channel counts. */
 export interface ChannelBins {
@@ -39,8 +39,16 @@ function binEdge(edge: number, origin: number, size: number): number {
   return i;
 }
 
-/** Count `tile`'s channel molecules into the bins of `bins` (a finer level over the same extent). */
-export function channelBins(tile: PointsTile, bins: PointsGrid, channels: readonly WeightedChannel[]): ChannelBins {
+/**
+ * Count `tile`'s channel molecules into the bins of `bins` (a finer level over the same extent).
+ * `minimum` keeps only molecules whose passthrough `column` is ≥ `value`, as `transcriptChannels` does.
+ */
+export function channelBins(
+  tile: PointsTile,
+  bins: PointsGrid,
+  channels: readonly WeightedChannel[],
+  minimum?: TranscriptChannelOptions["minimum"],
+): ChannelBins {
   const { bounds, tileSize: size, cols, rows } = bins;
   const r = tile.rect;
   // A tile on the extent's far edge is clipped there, and so is the bin grid's last bin.
@@ -63,12 +71,15 @@ export function channelBins(tile: PointsTile, bins: PointsGrid, channels: readon
       weightOf.set(code, w);
     }
   });
+  const floor = minimum ? tile.columns[minimum.column] : undefined;
+  if (minimum && !floor) throw new Error(`channelBins: tile has no "${minimum.column}" column to filter on`);
   const local = new Float64Array(width * height * C);
   const read = new Int32Array(width * height);
   for (let i = 0; i < tile.count; i++) {
     const code = tile.codes[i]!;
     const c = channelOf.get(code);
     if (c === undefined) continue;
+    if (floor && !((floor[i] ?? Number.NaN) >= minimum!.value)) continue;
     // Clamped to the tile's own block: a point the tile owns is binned inside it, whatever rounding says.
     const bx = Math.min(width - 1, Math.max(0, Math.floor((tile.xs[i]! - bounds.minX) / size) - x0));
     const by = Math.min(height - 1, Math.max(0, Math.floor((tile.ys[i]! - bounds.minY) / size) - y0));

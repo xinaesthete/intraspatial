@@ -100,6 +100,8 @@ export interface NicheFit extends CentroidTable {
   readonly channels: readonly WeightedChannel[];
   readonly plan: NichePlan;
   readonly minSampled: number;
+  /** Molecules below this qv were left out (0: none). Tiles are binned with the same floor. */
+  readonly qvMin: number;
   /** Bins and molecules read in the sample, and the bins kept for the fit. */
   readonly sample: {
     readonly bins: number;
@@ -132,8 +134,11 @@ function runWorker(req: NicheFitRequest, signal: AbortSignal): Promise<NicheFitS
   });
 }
 
-/** Fit the niche table to the whole element. Reruns only when channels, k, bins or the element change. */
-function useNicheFit(source: PointsSource | undefined, channels: readonly WeightedChannel[], opts: NicheOptions) {
+/** The qv floor as `channelBins` takes it: none at 0, as for an element with no qv column. */
+const qvFloor = (qvMin: number) => (qvMin > 0 ? { column: "qv", value: qvMin } : undefined);
+
+/** Fit the niche table to the whole element. Reruns only when channels, k, bins, the qv floor or the element change. */
+function useNicheFit(source: PointsSource | undefined, channels: readonly WeightedChannel[], qvMin: number, opts: NicheOptions) {
   const on = opts.enabled && channels.length >= 2;
   const plan = useMemo(() => (source ? nichePlan(source, opts.binSide) : undefined), [source, opts.binSide]);
   const sample = usePointsTiles(source, on ? source?.grid.bounds : undefined, 0);
@@ -147,7 +152,7 @@ function useNicheFit(source: PointsSource | undefined, channels: readonly Weight
       let bins = 0;
       let molecules = 0;
       // Every sample tile is here, so each is pooled with the ones around it at once.
-      const binned = new Map(tiles.map((t) => [chunkKey(t.id), channelBins(t, plan.bins, channels)]));
+      const binned = new Map(tiles.map((t) => [chunkKey(t.id), channelBins(t, plan.bins, channels, qvFloor(qvMin))]));
       for (const t of tiles) {
         const own = binned.get(chunkKey(t.id))!;
         const around = neighbourIds(t.id, plan.sample).flatMap((id) => binned.get(chunkKey(id)) ?? []);
@@ -178,14 +183,16 @@ function useNicheFit(source: PointsSource | undefined, channels: readonly Weight
         channels,
         plan,
         minSampled,
+        qvMin,
         sample: { bins, kept: n, molecules, fraction, perGene },
       }));
     },
-    [on, sample.value, plan, channels, k, minSampled],
+    [on, sample.value, plan, channels, k, minSampled, qvMin],
     source,
   );
   // A table for other channels or bins is no stand-in: its labels would mean something else.
-  const value = fit.value && fit.value.channels === channels && fit.value.plan === plan ? fit.value : undefined;
+  const value =
+    fit.value && fit.value.channels === channels && fit.value.plan === plan && fit.value.qvMin === qvMin ? fit.value : undefined;
   return { ...fit, value, plan: on ? plan : undefined, sampleProgress: sample.progress, sampleError: sample.error };
 }
 
@@ -205,9 +212,10 @@ interface NicheTile {
 function useNicheTiles(source: PointsSource | undefined, fit: NicheFit | undefined, window: Rect | undefined) {
   const plan = fit?.plan;
   const channels = fit?.channels;
-  // Binned tiles depend on the source, the bin grid and the channels, not on the fit: k can change
-  // without a single tile being read again.
-  const binned = useMemo(() => new Map<string, ChannelBins>(), [source, plan?.bins, channels]);
+  const qvMin = fit?.qvMin ?? 0;
+  // Binned tiles depend on the source, the bin grid, the channels and the qv floor, not on the fit:
+  // k can change without a single tile being read again.
+  const binned = useMemo(() => new Map<string, ChannelBins>(), [source, plan?.bins, channels, qvMin]);
   const [version, bump] = useReducer((n: number) => n + 1, 0);
   const [progress, setProgress] = useState<{ done: number; total: number }>();
   const [error, setError] = useState<Error>();
@@ -238,7 +246,7 @@ function useNicheTiles(source: PointsSource | undefined, fit: NicheFit | undefin
       for (let id = todo.shift(); id && live; id = todo.shift()) {
         const tile = await source.loader.getChunk(id);
         // Kept even if the view moved on: it is the same tile whichever view asked for it.
-        binned.set(chunkKey(id), channelBins(tile, plan.bins, channels));
+        binned.set(chunkKey(id), channelBins(tile, plan.bins, channels, qvFloor(qvMin)));
         if (!live) return;
         setProgress({ done: ++done, total: done + todo.length });
         bump();
@@ -255,7 +263,7 @@ function useNicheTiles(source: PointsSource | undefined, fit: NicheFit | undefin
     return () => {
       live = false;
     };
-  }, [source, plan, channels, reads, binned]);
+  }, [source, plan, channels, qvMin, reads, binned]);
 
   // Labels and images per fit: a refit relabels the binned tiles without reading any.
   const labelled = useMemo(() => new Map<string, NicheTile>(), [fit]);
@@ -295,13 +303,15 @@ function labelTile(key: string, bins: ChannelBins, fit: NicheFit): NicheTile {
   return { key, bins, labels, image: new ImageData(rgba, width, height) };
 }
 
+/** `qvMin` is the page's molecule-quality floor, applied as the Gram applies it (0: off). */
 export function useNicheMap(
   source: PointsSource | undefined,
   channels: readonly WeightedChannel[],
+  qvMin: number,
   window: Rect | undefined,
   opts: NicheOptions,
 ) {
-  const fit = useNicheFit(source, channels, opts);
+  const fit = useNicheFit(source, channels, qvMin, opts);
   const tiles = useNicheTiles(opts.enabled ? source : undefined, fit.value, window);
   return { fit, tiles };
 }
