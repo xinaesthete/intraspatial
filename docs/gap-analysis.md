@@ -137,6 +137,30 @@ compaction ~9–11 ms, readback-dominated). Companion helpers `dispatchGrid` / `
   `assignCentroids` is a nearest-centroid classifier against a frozen table. Still missing:
   per-gene lattices, multiscale pooling with a summed-area table, their calibrated SVM, a
   graph op, GPU. Mapping in ADR-0016 "Related since".
+- **GPU coverage of the transcript-modes methods** (reviewed 2026-11-18). The Gram path is
+  GPU-first; every clustering method is a CPU golden, with its GPU port
+  ([`emeans-clustering.md`](emeans-clustering.md) slice 4) not started.
+
+  | Method | Runs on | GPU code | Note |
+  |---|---|---|---|
+  | Channels from tiles (`transcriptChannels`) | CPU, main thread | — | Light bookkeeping |
+  | Gram matrix (splat + pairwise reduce) | **GPU** (`gramMatrixGpu`) | ✓ | f64 oracle `gram.ts`; cost independent of radius |
+  | Co-location modes (K×K eigen) | CPU | — | K ≤ a few dozen |
+  | Mode map paint | **GPU** (`gramModes`) | ✓ | One fragment pass, no readback |
+  | Wand | **GPU** distance + host flood fill | ✓ | Host fill is deliberate (tolerance moves without a dispatch) |
+  | Permutation envelope | GPU (`gramEnvelope`) | ✓ | Wired on the cell pages, **not** the transcript page |
+  | Gene modules (bin, randomized sparse PCA, e-means on genes) | CPU worker, ~6 s | ✗ | `pcaGpu` is a dense `CᵀC`; ~18k genes needs a GPU sparse × dense product we don't have |
+  | Niche fit (bin, 3×3 pool, weighted e-means) | CPU worker, 0.1–0.2 s | ✗ | 25–90k bins; no need yet |
+  | Niche assign per tile (bin, pool, nearest centroid, `ImageData`) | **CPU, main thread** | ✗ | Only drawing is GPU (`BitmapLayer`); per-tile cost **unmeasured** — the one likely bottleneck now |
+  | `emeans` / `lloyd` / `assignCentroids` | CPU (f64) | ✗ | Slice 4 maps them onto existing kernels |
+
+  GPU becomes necessary for per-cell neighbourhood clustering on whole slides (slice 3),
+  fine-bin whole-element labelling, and TopACT-style multiscale per-gene pooling. Existing pieces
+  for those ports: `knn` at k = 1 (assignment), `cellCounts` / `splatDensityAtomic` (binning,
+  deterministic), `convolveSeparable` `boxKernel` or `src/gpu/scan` for summed-area tables
+  (pooling), the fixed-point atomic accumulator (batch statistics). The Gram's rasters can't
+  double as niche descriptors as they stand: their resolution follows the view window, while
+  niche labels need one fixed bin level to stay put under pan and zoom.
 - **Toolbox gaps** — [`gpu-spatial-analysis-toolbox.md`](gpu-spatial-analysis-toolbox.md):
   `GpuShapes` + polygon morphology, GPU contact network (only CPU
   [`contactNetwork.ts`](../src/spatial/contactNetwork.ts) exists), higher-order co-occurrence
