@@ -270,6 +270,9 @@ async function runCounts(
 export async function crossPCFGpu(a: CellCloud, b: CellCloud, p: PcfParams): Promise<PcfResult> {
   // Refused rather than ignored: a bbox answer for a non-rectangular ROI reads 1–5% low.
   if (p.domain) throw new Error("crossPCFGpu: `domain` is not supported on the GPU path yet; use crossPCF");
+  // Likewise a row mask: this packs every row and normalises by the full population sizes, so a
+  // masked call would silently disagree with `crossPCF` on the selected cells.
+  if (p.includeA || p.includeB) throw new Error("crossPCFGpu: `includeA` / `includeB` are not supported on the GPU path yet; use crossPCF");
   if (!p.bbox) throw new Error("crossPCFGpu: `bbox` is required");
   const [minX, minY, maxX, maxY] = p.bbox;
   const roiArea = Math.max((maxX - minX) * (maxY - minY), 1e-12);
