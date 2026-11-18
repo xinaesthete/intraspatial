@@ -22,6 +22,19 @@
 //   - **Finalisation**: the last epoch covers every point once and accumulates the exact
 //     per-cluster sum and count of its assignments; each centroid ends on that mean.
 //
+// **Fit once, assign anywhere.** `emeansFit` returns a frozen centroid table; `assignCentroids`
+// labels any set of points against it — a viewport tile, another slide — so labels are stable
+// however the data arrives. `emeans` is the two together on one array. The fit is fed a sample
+// that fits in memory (a points-zarr coarse level is a uniform random one); only assignment needs
+// to run tile by tile. See "The operating model" in `docs/emeans-clustering.md`.
+//
+// **Weights and masks.** Every point may carry a weight (area on a lat/lon grid, 1/sample
+// fraction, slide balancing): the batch statistics sum `w·x` and `w` instead of `x` and 1, so a
+// weight of 2 is the point twice. Weight 0, or a point outside a `mask` domain, leaves the point
+// out of the fit altogether — it is never a seed — and `assignCentroids` labels it −1. Weights are
+// rescaled to mean 1 over the points kept, which makes the fit independent of their units, and the
+// scaling laws take n = the number of points kept (see `emeansFit`).
+//
 // **Why it is here.** Not mainly for speed at our usual sizes. The authors report ~10× fewer
 // epochs than Lloyd for the same loss at large k (thousands to 65k clusters), but the result
 // that matters for spatial biology is at *small* k: on toy mixtures with uneven blob sizes and
@@ -44,6 +57,7 @@
 // not a measured cut-off.
 
 import { type Rng, mulberry32 } from "#src/evo/rng";
+import { type Domain, domainContains } from "./domain";
 
 /** Which fitted law sets the batch size. `"quality"` is 1/8 of `"default"`: lower loss, more
  *  (smaller) steps. On CPU the cost of an epoch barely depends on B, so quality is the
@@ -59,7 +73,24 @@ export interface EmeansSchedule {
   stepsPerEpoch: number;
 }
 
-export interface EmeansOptions {
+/** Points kept by where they are: point i is in when `(xs[i], ys[i])` lies in `domain`. The
+ *  coordinates need not be the clustered ones — a descriptor is clustered, its position is masked. */
+export interface PointMask {
+  readonly domain: Domain;
+  readonly xs: ArrayLike<number>;
+  readonly ys: ArrayLike<number>;
+}
+
+/** Which points count, and how much. Shared by the fit, Lloyd and assignment. */
+export interface SampleWeighting {
+  /** Per-point weight, finite and ≥ 0 (length ≥ n). A weight of w counts the point w times;
+   *  0 leaves it out. Default: every point 1. */
+  readonly weights?: ArrayLike<number>;
+  /** Points outside the mask's domain are left out, exactly as with weight 0. */
+  readonly mask?: PointMask;
+}
+
+export interface EmeansOptions extends SampleWeighting {
   /** Epochs T (default 5, as in faiss). The last one is the finalisation pass. */
   epochs?: number;
   /** Seed for initialisation, shuffles and revival (default 0). */
@@ -86,15 +117,39 @@ export interface EmeansOptions {
 
 export type Seeding = "random" | "kmeans++";
 
-export interface KMeansResult {
+/** A frozen set of k centroids in d dimensions: what `assignCentroids` labels points against. */
+export interface CentroidTable {
+  readonly k: number;
+  readonly d: number;
   /** k × d, row-major. */
-  centroids: Float64Array;
-  /** Nearest-centroid index of every point against the final centroids. */
+  readonly centroids: Float64Array;
+}
+
+/** What `emeansFit` returns: the table, and how it was reached. */
+export interface EmeansFit extends CentroidTable {
+  /** Weight each cluster took in the finalisation epoch, in the caller's weight units (point
+   *  counts when unweighted). Under the final centroids `assignCentroids` gives the exact mass. */
+  readonly mass: Float64Array;
+  readonly schedule: EmeansSchedule;
+  /** Clusters re-seeded by splitting during training. */
+  readonly splits: number;
+}
+
+/** Labels for a set of points against a centroid table. */
+export interface Assignment {
+  /** Nearest-centroid index of every point; −1 for a point left out (weight 0 or outside the mask). */
   labels: Int32Array;
   /** Points per cluster under `labels`. */
   counts: Int32Array;
-  /** Mean squared distance of each point to its centroid (the k-means objective / n). */
+  /** Weight per cluster under `labels` (equal to `counts` when unweighted). */
+  mass: Float64Array;
+  /** Weighted mean squared distance of each kept point to its centroid (the k-means objective
+   *  over the total weight); 0 when no point is kept. */
   mse: number;
+}
+
+/** A fit and its assignment of the points it was fitted to; a table in its own right. */
+export interface KMeansResult extends Assignment, CentroidTable {
   /** Clusters re-seeded by splitting during training. */
   splits: number;
 }
@@ -182,6 +237,55 @@ export function assignNearest(
   return n > 0 ? total / n : 0;
 }
 
+/** Weight of point `i` under `opts`, or 0 when it is left out. Throws on a negative or non-finite weight. */
+function weightOf(opts: SampleWeighting, i: number): number {
+  const w = opts.weights ? opts.weights[i]! : 1;
+  if (!(w >= 0 && w < Number.POSITIVE_INFINITY)) throw new Error(`k-means weight ${i} is ${w}; weights must be finite and ≥ 0`);
+  if (w === 0) return 0;
+  const m = opts.mask;
+  return m && !domainContains(m.domain, m.xs[i]!, m.ys[i]!) ? 0 : w;
+}
+
+function checkWeighting(n: number, opts: SampleWeighting): void {
+  if (opts.weights && opts.weights.length < n) throw new Error(`k-means weights have ${opts.weights.length} values for ${n} points`);
+  const m = opts.mask;
+  if (m && (m.xs.length < n || m.ys.length < n))
+    throw new Error(`k-means mask has ${Math.min(m.xs.length, m.ys.length)} positions for ${n} points`);
+}
+
+/** The points a fit runs over: their indices, and their weights rescaled to mean 1 (absent when
+ *  every kept point weighs the same, so the unweighted arithmetic runs unchanged). */
+interface Sample {
+  readonly idx: Int32Array;
+  /** Indexed by point, not by position in `idx`. */
+  readonly w?: Float64Array;
+  /** Mean of the caller's weights over the kept points: multiplies a rescaled mass back. */
+  readonly scale: number;
+}
+
+function sampleOf(n: number, opts: SampleWeighting): Sample {
+  checkWeighting(n, opts);
+  if (!opts.weights && !opts.mask) return { idx: Int32Array.from({ length: n }, (_, i) => i), scale: 1 };
+  const keep: number[] = [];
+  let total = 0;
+  let uniform = true;
+  for (let i = 0; i < n; i++) {
+    const w = weightOf(opts, i);
+    if (w === 0) continue;
+    if (keep.length > 0 && w !== opts.weights?.[keep[0]!]) uniform = false;
+    keep.push(i);
+    total += w;
+  }
+  const idx = Int32Array.from(keep);
+  // Equal weights are no weights: the same arithmetic, draws and all, as leaving them out.
+  if (!opts.weights || idx.length === 0) return { idx, scale: 1 };
+  if (uniform) return { idx, scale: opts.weights[idx[0]!]! };
+  const scale = total / idx.length;
+  const w = new Float64Array(n);
+  for (const i of idx) w[i] = opts.weights[i]! / scale;
+  return { idx, w, scale };
+}
+
 function shuffled(rng: Rng, n: number): Int32Array {
   const p = new Int32Array(n);
   for (let i = 0; i < n; i++) p[i] = i;
@@ -194,13 +298,24 @@ function shuffled(rng: Rng, n: number): Int32Array {
   return p;
 }
 
-/** Starting centroids: the given `init`, k-means++, or k distinct random points (partial Fisher–Yates). */
+/** First position whose running total of `mass` passes `u`; the last one if none does (all
+ *  remaining mass zero, or rounding). */
+function drawPosition(mass: (a: number) => number, m: number, u: number): number {
+  for (let a = 0; a < m; a++) {
+    u -= mass(a);
+    if (u < 0) return a;
+  }
+  return m - 1;
+}
+
+/** Starting centroids: the given `init`, k-means++, or k distinct random points (partial
+ *  Fisher–Yates) — always drawn from the sample's points, so never a point of weight 0. */
 function seedCentroids(
   data: ArrayLike<number>,
-  n: number,
   d: number,
   k: number,
   rng: Rng,
+  s: Sample,
   init?: ArrayLike<number>,
   seeding: Seeding = "random",
 ): Float64Array {
@@ -210,35 +325,35 @@ function seedCentroids(
     for (let i = 0; i < k * d; i++) C[i] = init[i]!;
     return C;
   }
+  const { idx, w } = s;
+  const m = idx.length;
+  const put = (j: number, a: number) => {
+    for (let t = 0; t < d; t++) C[j * d + t] = data[idx[a]! * d + t]!;
+  };
   if (seeding === "kmeans++") {
-    // Each next seed is drawn with probability ∝ its squared distance to the nearest seed so far.
-    const dist = new Float64Array(n).fill(Number.POSITIVE_INFINITY);
-    let pick = Math.floor(rng() * n);
+    // Weighted k-means++: the first seed is drawn ∝ w, each next one ∝ w·(squared distance to the
+    // nearest seed so far). Unweighted, the first is uniform — one draw either way.
+    const wAt = (a: number) => (w ? w[idx[a]!]! : 1);
+    const dist = new Float64Array(m).fill(Number.POSITIVE_INFINITY);
+    let pick = w ? drawPosition(wAt, m, rng() * m) : Math.floor(rng() * m);
     for (let j = 0; j < k; j++) {
-      for (let t = 0; t < d; t++) C[j * d + t] = data[pick * d + t]!;
+      put(j, pick);
       if (j === k - 1) break;
       let total = 0;
-      for (let i = 0; i < n; i++) {
-        let s = 0;
-        for (let t = 0; t < d; t++) s += (data[i * d + t]! - C[j * d + t]!) ** 2;
-        if (s < dist[i]!) dist[i] = s;
-        total += dist[i]!;
+      for (let a = 0; a < m; a++) {
+        const xOff = idx[a]! * d;
+        let sq = 0;
+        for (let t = 0; t < d; t++) sq += (data[xOff + t]! - C[j * d + t]!) ** 2;
+        if (sq < dist[a]!) dist[a] = sq;
+        total += dist[a]! * wAt(a);
       }
-      // All remaining points coincide with a seed: fall back to any point not yet drawn.
-      let u = rng() * total;
-      pick = n - 1;
-      for (let i = 0; i < n; i++) {
-        u -= dist[i]!;
-        if (u < 0) {
-          pick = i;
-          break;
-        }
-      }
+      // All remaining points coincide with a seed: fall back to the last point.
+      pick = drawPosition((a) => dist[a]! * wAt(a), m, rng() * total);
     }
     return C;
   }
-  const idx = shuffled(rng, n);
-  for (let j = 0; j < k; j++) for (let t = 0; t < d; t++) C[j * d + t] = data[idx[j]! * d + t]!;
+  const order = shuffled(rng, m);
+  for (let j = 0; j < k; j++) put(j, order[j]!);
   return C;
 }
 
@@ -247,6 +362,14 @@ function validate(n: number, d: number, k: number, dataLength: number): void {
   if (n < k) throw new Error(`k-means needs at least k = ${k} points (got ${n})`);
   if (!Number.isInteger(d) || d < 1) throw new Error(`k-means needs dimension d ≥ 1 (got ${d})`);
   if (dataLength < n * d) throw new Error(`k-means data has ${dataLength} values; expected n·d = ${n * d}`);
+}
+
+/** Validate, then the sample, which must still hold k points once weight 0 and the mask are applied. */
+function prepare(data: ArrayLike<number>, n: number, d: number, k: number, opts: SampleWeighting): Sample {
+  validate(n, d, k, data.length);
+  const s = sampleOf(n, opts);
+  if (s.idx.length < k) throw new Error(`k-means needs at least k = ${k} points of weight > 0 inside the mask (got ${s.idx.length})`);
+  return s;
 }
 
 /** Re-seed the clusters with `N[j] < thr` by splitting live clusters drawn ∝ N (Gumbel
@@ -280,21 +403,32 @@ function splitInto(C: Float64Array, N: Float64Array, k: number, d: number, thr: 
 }
 
 /**
- * e-means k-means on `n` points of dimension `d` (row-major `data`, length ≥ n·d).
+ * Fit an e-means centroid table to `n` points of dimension `d` (row-major `data`, length ≥ n·d),
+ * to label points with later through `assignCentroids`.
  *
- * Cost: T epochs of n·k·d for assignment (T = 5 by default) plus one final full assignment,
- * plus O(k·d) per step for the EMA blend. Deterministic for a given seed.
+ * With `weights`, the batch statistics are weighted sums, so a centroid is the weighted mean of
+ * its points and revival reads weighted EMA counts. **The scaling laws take n = the number of
+ * points kept** (weight > 0, inside the mask), not an effective sample size such as
+ * (Σw)²/Σw²: B and α₀ set how many point visits a step averages and how many steps an epoch takes,
+ * and weights change neither. Weights are rescaled to mean 1 first, so multiplying them all by a
+ * constant changes nothing. With strongly uneven weights a batch is noisier than its size
+ * suggests; the laws were not fit for that case.
+ *
+ * Cost: T epochs of n·k·d for assignment (T = 5 by default), plus O(k·d) per step for the EMA
+ * blend. Deterministic for a given seed. A point of weight 0 behaves exactly as if absent.
  */
-export function emeans(data: ArrayLike<number>, n: number, d: number, k: number, opts: EmeansOptions = {}): EmeansResult {
-  validate(n, d, k, data.length);
+export function emeansFit(data: ArrayLike<number>, n: number, d: number, k: number, opts: EmeansOptions = {}): EmeansFit {
+  const s = prepare(data, n, d, k, opts);
+  const { idx, w } = s;
+  const m = idx.length;
   const epochs = Math.max(1, Math.floor(opts.epochs ?? 5));
-  const schedule = emeansSchedule(n, k, epochs, opts);
+  const schedule = emeansSchedule(m, k, epochs, opts);
   const { batch, alpha0, stepsPerEpoch } = schedule;
   const reviveRatio = opts.revive ?? (d <= 3 ? 0 : 0.1);
   const cosine = (opts.schedule ?? "cosine") === "cosine";
   const rng = mulberry32(opts.seed ?? 0);
 
-  const C = seedCentroids(data, n, d, k, rng, opts.init, opts.seeding);
+  const C = seedCentroids(data, d, k, rng, s, opts.init, opts.seeding);
   const N = new Float64Array(k).fill(INIT_USAGE);
   const cnt = new Float64Array(k);
   const sum = new Float64Array(k * d);
@@ -307,20 +441,21 @@ export function emeans(data: ArrayLike<number>, n: number, d: number, k: number,
 
   for (let epoch = 0; epoch < epochs; epoch++) {
     const finalEpoch = epoch === epochs - 1;
-    const perm = shuffled(rng, n);
-    // The final epoch also visits the tail that floor(n / B) full batches leave out.
-    const steps = finalEpoch ? Math.ceil(n / batch) : stepsPerEpoch;
-    for (let s = 0; s < steps; s++) {
-      const off = s * batch;
-      const len = Math.min(batch, n - off);
+    const perm = shuffled(rng, m);
+    // The final epoch also visits the tail that floor(m / B) full batches leave out.
+    const steps = finalEpoch ? Math.ceil(m / batch) : stepsPerEpoch;
+    for (let st = 0; st < steps; st++) {
+      const off = st * batch;
+      const len = Math.min(batch, m - off);
       cnt.fill(0);
       sum.fill(0);
       for (let b = 0; b < len; b++) {
-        const xi = perm[off + b]!;
+        const xi = idx[perm[off + b]!]!;
+        const wi = w ? w[xi]! : 1;
         const [j] = nearest(data, xi, d, C, k);
-        cnt[j]! += 1;
+        cnt[j]! += wi;
         const xOff = xi * d;
-        for (let t = 0; t < d; t++) sum[j * d + t]! += data[xOff + t]!;
+        for (let t = 0; t < d; t++) sum[j * d + t]! += wi * data[xOff + t]!;
       }
       if (finalEpoch) {
         for (let j = 0; j < k; j++) capCnt[j]! += cnt[j]!;
@@ -353,15 +488,56 @@ export function emeans(data: ArrayLike<number>, n: number, d: number, k: number,
       step++;
     }
   }
-  // Finalise: every cluster seen in the last epoch ends on the exact mean of its assignments.
+  // Finalise: every cluster seen in the last epoch ends on the exact (weighted) mean of its assignments.
   for (let j = 0; j < k; j++) {
     const cj = capCnt[j]!;
     if (cj > 0) for (let t = 0; t < d; t++) C[j * d + t] = capSum[j * d + t]! / cj;
   }
-  return { ...finish(data, n, d, k, C, splits), schedule };
+  const mass = capCnt.map((c) => c * s.scale);
+  return { k, d, centroids: C, mass, schedule, splits };
 }
 
-export interface LloydOptions {
+/**
+ * Label `n` points (row-major `data`, length ≥ n·d) against a frozen centroid table. A point of
+ * weight 0 or outside the mask gets label −1 and no part in the counts or the MSE. Deterministic
+ * and per point, so a tile labelled alone gets the labels it would get as part of the whole.
+ */
+export function assignCentroids(table: CentroidTable, data: ArrayLike<number>, n: number, opts: SampleWeighting = {}): Assignment {
+  const { k, d, centroids } = table;
+  if (centroids.length !== k * d) throw new Error(`centroid table has ${centroids.length} values; expected k·d = ${k * d}`);
+  if (data.length < n * d) throw new Error(`k-means data has ${data.length} values; expected n·d = ${n * d}`);
+  checkWeighting(n, opts);
+  const labels = new Int32Array(n);
+  const counts = new Int32Array(k);
+  const mass = new Float64Array(k);
+  let total = 0;
+  let weight = 0;
+  for (let i = 0; i < n; i++) {
+    const wi = weightOf(opts, i);
+    if (wi === 0) {
+      labels[i] = -1;
+      continue;
+    }
+    const [j, dist] = nearest(data, i, d, centroids, k);
+    labels[i] = j;
+    counts[j]! += 1;
+    mass[j]! += wi;
+    total += wi * dist;
+    weight += wi;
+  }
+  return { labels, counts, mass, mse: weight > 0 ? total / weight : 0 };
+}
+
+/**
+ * e-means k-means on `n` points: `emeansFit`, then `assignCentroids` on the same points, so the
+ * labels, counts and MSE are those of the final centroids.
+ */
+export function emeans(data: ArrayLike<number>, n: number, d: number, k: number, opts: EmeansOptions = {}): EmeansResult {
+  const fit = emeansFit(data, n, d, k, opts);
+  return { ...assignCentroids(fit, data, n, opts), k, d, centroids: fit.centroids, splits: fit.splits, schedule: fit.schedule };
+}
+
+export interface LloydOptions extends SampleWeighting {
   /** Full-batch iterations (default 25, the authors' Lloyd baseline). */
   iters?: number;
   seed?: number;
@@ -371,39 +547,34 @@ export interface LloydOptions {
 
 /**
  * Lloyd's algorithm — the baseline e-means is measured against, and the classic golden. Empty
- * clusters are re-seeded by splitting a cluster drawn ∝ its size, as faiss does.
+ * clusters are re-seeded by splitting a cluster drawn ∝ its weight, as faiss does. Takes the same
+ * weights and mask as `emeansFit`.
  */
 export function lloyd(data: ArrayLike<number>, n: number, d: number, k: number, opts: LloydOptions = {}): KMeansResult {
-  validate(n, d, k, data.length);
+  const s = prepare(data, n, d, k, opts);
+  const { idx, w } = s;
   const iters = Math.max(1, Math.floor(opts.iters ?? 25));
   const rng = mulberry32(opts.seed ?? 0);
-  const C = seedCentroids(data, n, d, k, rng, opts.init, opts.seeding);
-  const labels = new Int32Array(n);
+  const C = seedCentroids(data, d, k, rng, s, opts.init, opts.seeding);
   const N = new Float64Array(k);
   const sum = new Float64Array(k * d);
   let splits = 0;
   for (let it = 0; it < iters; it++) {
-    assignNearest(data, n, d, C, k, labels);
     N.fill(0);
     sum.fill(0);
-    for (let i = 0; i < n; i++) {
-      const j = labels[i]!;
-      N[j]! += 1;
-      for (let t = 0; t < d; t++) sum[j * d + t]! += data[i * d + t]!;
+    for (const i of idx) {
+      const [j] = nearest(data, i, d, C, k);
+      const wi = w ? w[i]! : 1;
+      N[j]! += wi;
+      for (let t = 0; t < d; t++) sum[j * d + t]! += wi * data[i * d + t]!;
     }
     for (let j = 0; j < k; j++) {
       const Nj = N[j]!;
       if (Nj > 0) for (let t = 0; t < d; t++) C[j * d + t] = sum[j * d + t]! / Nj;
     }
-    splits += splitInto(C, N, k, d, 0.5, rng);
+    // Only an empty cluster is dead: a light one is still a cluster.
+    splits += splitInto(C, N, k, d, Number.MIN_VALUE, rng);
   }
-  return finish(data, n, d, k, C, splits);
-}
-
-function finish(data: ArrayLike<number>, n: number, d: number, k: number, C: Float64Array, splits: number): KMeansResult {
-  const labels = new Int32Array(n);
-  const mse = assignNearest(data, n, d, C, k, labels);
-  const counts = new Int32Array(k);
-  for (let i = 0; i < n; i++) counts[labels[i]!]! += 1;
-  return { centroids: C, labels, counts, mse, splits };
+  const table = { k, d, centroids: C };
+  return { ...assignCentroids(table, data, n, opts), ...table, splits };
 }
