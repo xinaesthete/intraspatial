@@ -1,5 +1,7 @@
 # Evaluation — GPU DWT payoff & high-bit-depth (uint32) support
 
+**Status (2026-11): historical.** The codec DWT moved to the `tgpu-htj2k` repo; kept for reference, candidate to move or delete.
+
 Status: **findings** (2026-06-27)
 
 Captures the inverse-DWT benchmark results and two forward-looking questions the

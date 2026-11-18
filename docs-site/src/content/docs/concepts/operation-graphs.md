@@ -34,7 +34,7 @@ validate-or-fall-back-to-CPU.
 - **Tier 1** wraps an existing `*Gpu` primitive as-is: it downloads its inputs, runs
   the legacy call, and uploads the result. Every primitive becomes a node immediately
   — correct, but it still round-trips on interior edges.
-- **Tier 2** *(planned)* will keep the buffers resident on the GPU across a hot edge, so
+- **Tier 2** *(stages 1–3 landed, 12 resident ops; render op not yet)* keeps the buffers resident on the GPU across a hot edge, so
   only the sources upload and only the pulled sink downloads. To be promoted per pipeline,
   with the Tier-1 path kept as the bit-exact golden reference.
 

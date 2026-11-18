@@ -428,7 +428,7 @@ weighting lives; the map shows the whitened geometry, and `w` is the dial betwee
 
 `crossPcf.ts` and `tcm.ts` still run **Mode 1**: a fixed ROI, a *global* `ρ_B`, and full-disk /
 full-annulus areas. This is exact for anchors at least `r` inside the ROI and biased near the
-boundary. Permutation envelopes remain unbuilt on every path.
+boundary. Permutation envelopes exist (`src/spatial/pcfEnvelope.ts` for `g`, `src/gpu/spatial/gramEnvelope.ts` for the Gram spectrum); Mode 2 windowing for `crossPcf`/`tcm` does not.
 
 **The Gram path has the viewport apron** (`src/spatial/gram.ts`), and the shape of the fix is worth
 recording because it is smaller than it was designed to be. Two rectangles had been conflated: the
@@ -703,8 +703,7 @@ playground/src/datasource/cellCsv.ts     CSV → CellTable
   Nothing in the pipeline can tell the two apart for you.
 - **`byDimension` and non-linear transforms are unimplemented** — reported, not approximated.
 - **Mode 2 is only half built.** The Gram path has window-local mass, the viewport apron and a
-  permutation envelope on its spectrum (§4); `crossPcf.ts` and `tcm.ts` still have none of the
-  three, and no envelope exists for `g` or for the cross-PCF curves.
+  permutation envelope on its spectrum (§4); `crossPcf.ts` and `tcm.ts` still have no window-local mass or apron; a `g` envelope exists (`pcfEnvelope.ts`) but is not wired into the cross-PCF curves.
 - **The envelope's remaining cost is per-INSTANCE, and the obvious optimisations are not the ones
   that pay.** 39 permutations of a 162k-cell, 8-channel selection take 3.2 s. Getting there was two
   steps, and a third that was measured and abandoned:
@@ -808,9 +807,8 @@ marks among cells and keep the positions — which is the same machinery Mode 2 
 feature, not an all-genes one: ~50 genes at 512² is fine, 2000 is not. That matches ADR-0005's
 existing position (sparse gene columns are a selection mechanism; never densify the full matrix).
 
-**What is missing is only the loading.** Nothing in the repo reads `X`, `var` or `layers` today —
-`playground/src/datasource/cellTable.ts` reads `obsm/spatial` and one `obs` column, and that is
-all. The cheapest route needs no new dependency: the `zarrextra` tree the table reader already
+**What is missing is only the loading.** `datasource/annDataIo.ts` and `playground/src/datasource/varMatrix.ts` now read `X`/`var`;
+`playground/src/datasource/cellTable.ts` reads `obsm/spatial` and one `obs` column. The cheapest route needs no new dependency: the `zarrextra` tree the table reader already
 holds contains `tables/<name>/X`, either as a dense array or as the `X/{data,indices,indptr}` CSR
 triple (with `encoding-type` and `shape` in the group attrs, reachable via the existing
 `symbolAttrs` helper), and `var/_index` gives the gene names through the existing `readStrings1D`.

@@ -56,7 +56,7 @@ round-tripping to the CPU between stages* — today's **Tier-1** nodes round-tri
 interior edges (correct, and kept as the bit-exact golden reference). The sequencing
 rules are the five invariants in the `docs/gpu-resource-sync.md` design note (every sync
 bug we have hit is one mutable resource read by a consumer not ordered after its writer).
-Status: ✅ runtime + Tier-1 ops + feedback/sim · 📋 Tier-2 resident buffers.
+Status: ✅ runtime + Tier-1 ops + feedback/sim · ✅ Tier-2 resident buffers (stages 1–3, 12 ops) · 📋 resident render op (stages 4–5).
 
 ## Datasource & volume rendering
 

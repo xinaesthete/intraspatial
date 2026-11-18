@@ -1,6 +1,6 @@
 # ADR-0004 — Field type model (element algebra ⊥ tensor axes ⊥ domain) and volumetric splat
 
-Status: **proposed** (2026-06-29)
+Status: **partial** (proposed 2026-06-29; element algebra and the `axes` facet landed, see below)
 
 ## Decision
 
@@ -186,6 +186,7 @@ general-correctness path and slice-stack is the Gaussian fast path.
   even pure-JS module-graph growth on the *eager* registry path can tip the render fork.
   Consequence/TODO: the playground composer must call `registerElementOps()` to surface the
   new ops; wiring `complexMulGpu` back into `mulFields` waits on understanding this interaction.
-- **Still proposed:** the tensor `axes` facet, the 3D `Domain`, volumetric splat, and
+- **Landed since:** the tensor `axes` facet, via ADR-0015 (`handle.ts`).
+- **Still proposed:** the 3D `Domain` (`Shape` has no `dim`), volumetric splat, and
   dense-vs-lazy. The element work was scoped first deliberately (smallest blast radius,
   everything builds on it).

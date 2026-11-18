@@ -1,5 +1,7 @@
 # HT block decoder — port plan (Phase 2)
 
+**Status (2026-11): historical.** The codec moved to the `tgpu-htj2k` repo and this repo has no Rust; kept for reference, candidate to move or delete.
+
 Faithful Rust port of OpenJPH's HT **cleanup-pass** decoder
 (`src/core/coding/ojph_block_decoder32.cpp` + table generation in
 `ojph_block_common.cpp` / `table0.h` / `table1.h`), BSD-2-Clause.
