@@ -15,8 +15,8 @@ clustering; large, even distances mean dispersion.
 
 Brute-force O(N²): one thread per point loops over all points, tracking the minimum.
 Authored in TypeScript with the `"use gpu"` directive (transpiled to WGSL). No
-atomics or shared memory, so it fits the directive directly. The
-index-accelerated O(N·k) version (a uniform-grid spatial index) is planned for large
+atomics or shared memory, so it fits the directive directly. An
+index-accelerated O(N·k) version (uniform-grid spatial index, `gridIndexQuery.ts`) also exists for large
 N; correctness is identical.
 
 ## Usage
@@ -31,7 +31,7 @@ const d = await nearestNeighborDistancesGpu(xs, ys); // Float32Array, length N
 
 - [ANNI](/primitives/anni/) — summarises these distances into a clustered / random /
   dispersed verdict.
-- The empty-space function (planned) — the same kernel, queried from random sample
+- The [empty-space function](/primitives/empty-space/) — the same kernel, queried from random sample
   locations instead of the points themselves.
 
 **Status:** ✅ implemented and CPU-golden validated · `src/gpu/spatial/nnDistance.ts`

@@ -60,6 +60,37 @@ describe("transcriptChannels", () => {
     expect(Array.from(out.clouds[0]?.weights ?? [])).toEqual([1, 0.5, 1, 1]);
   });
 
+  it("weights a sampled molecule by the inverse of its share, per tile and per gene", () => {
+    const set: WeightedChannel = {
+      label: "AB",
+      weights: new Map([
+        [0, 1],
+        [1, 1],
+      ]),
+    };
+    const whole = tile(0, [
+      [1, 1, 0, 30],
+      [2, 2, 1, 30],
+    ]);
+    // A tile read from a 1/4 sample: every molecule stands for 4.
+    const sampled: PointsTile = { ...tile(1, [[3, 3, 0, 30]]), sampleFraction: 0.25 };
+    // A subset read: gene 1 sampled at 1/16, gene 0 read whole despite the tile's own fraction.
+    const subset: PointsTile = {
+      ...tile(2, [
+        [4, 4, 0, 30],
+        [5, 5, 1, 30],
+      ]),
+      sampleFraction: 0.5,
+      featureFractions: new Map([
+        [0, 1],
+        [1, 1 / 16],
+      ]),
+    };
+    const out = transcriptChannels([whole, sampled, subset], [set], { window, apron: 0 });
+    expect(Array.from(out.clouds[0]?.weights ?? [])).toEqual([1, 1, 4, 1, 16]);
+    expect(out.stats.perChannel).toEqual([5]); // molecules read, not molecules represented
+  });
+
   it("refuses overlapping channels rather than letting gram.ts treat them as disjoint", () => {
     const overlap = [
       gene("A", 0),

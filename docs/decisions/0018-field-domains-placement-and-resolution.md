@@ -1,6 +1,6 @@
 # ADR-0018 — Field domains: extent, placement, and resolution as carried facets
 
-Status: **draft / proposed** (2026-07-21) — written for reaction. **Decision 2 (resolution is
+Status: **partial** (2026-07-21; placement and `ParamSpec.units` landed, `boundsOf` remains) — written for reaction. **Decision 2 (resolution is
 derived, never stored) is agreed** (2026-07-21). **The build-time-vs-run-time placement question
 is resolved** (2026-07-23): placement lives on *both* — primary home `GpuField` (build time),
 propagated onto `FieldValue` by the executor exactly as `basis` is, via an `inferPlacement` hook

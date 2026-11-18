@@ -206,9 +206,11 @@ similarityField(gram, whiteningMatrix(...), m, zRef): Float64Array   // d at eve
   for each anchor within rMax of the boundary.
   - Rings are oriented by nesting depth, so the region is even–odd: holes and multipolygons need no
     flag.
-  - Rings must not cross. Repairing a self-crossing gate, or taking booleans between gates, belongs
-    upstream (Clipper2 would fit there). It is not for the area kernel, where circles would have to
-    become n-gons.
+  - The area kernel needs rings that do not cross. By default `polygonDomain` throws on a
+    crossing. With `polygonDomain(rings, { fillRule })` it first rewrites crossing rings as simple
+    ones under that rule, so a self-crossing gate can be passed as drawn. Booleans between gates
+    still belong upstream (Clipper2 would fit there), not in the area kernel, where circles would
+    have to become n-gons.
 - **The mask uses the `ScalarField` raster convention:** row-major, row 0 at the top (maxY), and
   pixels need not be square. Non-zero means inside.
 - **The interior fast path uses a summed-area table of outside pixels**, not a distance transform.
@@ -271,6 +273,9 @@ The 1 µm mask is 1.25 M pixels, and the 57 ms includes building its summed-area
 ## Open
 
 - **Where the shapes come from.** `polygonDomain` takes rings directly, so an MDV gate passes as is.
+  A gate that crosses itself needs `polygonDomain(rings, { fillRule })`, with the rule the gate's
+  own filter uses (`evenodd` for MDV's ray casting); `normaliseRings` does the same step on its
+  own. The stored shape stays as drawn.
   `src/datasource` still has no SpatialData `shapes` loader to feed it. Raster `labels` and tissue
   masks only need resampling to the world grid.
 - **The `COVID_SAMPLE_17_*` geometry is unknown.** The MDV project carries region images with W×H.

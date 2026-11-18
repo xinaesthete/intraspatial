@@ -204,8 +204,8 @@ user pick — pairwise A/B to start, an N×N matrix / cell-type network (edges =
 and the two reductions above once they exist. r is a slider; a selected pair drills down to its g(r) curve / Γ map.
 
 **Status:** the global K×K case is **built and tested**; the per-location open-axis field is not. The metric
-family (dot/distance/projection/matmul over an open axis) is *specified* in ADR-0015 and still unbuilt, and no op
-implements `inferAxes` yet, so a windowed Gram op would be the first.
+family (dot/distance/projection/matmul over an open axis) is *specified* in ADR-0015 and still unbuilt, and `inferAxes` is
+implemented only by `channelOps.ts` and `regionOps.ts` (no metric op yet), so a windowed Gram op would be the first metric one.
 
 The spectral specifics that "await the user's external notes" are now settled by construction rather than by
 guessing, and the reasons are in `docs/cell-stats.md` §4 — **which covariance**: the centred, standardised

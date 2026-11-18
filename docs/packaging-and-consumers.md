@@ -146,9 +146,9 @@ does it stop?" is worth more in that room than a finished package.
 ## Open questions
 
 - **Release mechanics.** Changesets vs manual versioning; whether the packages version in lockstep.
-  Unresolved and deliberately deferred until there are two packages to co-ordinate.
+  **Resolved:** Changesets (#31).
 - **Build tooling.** The repo currently ships no built artefacts at all. TS 7 native emit vs a
-  bundler (tsdown/unbuild) is an open call; the deciding factor is likely the `"use gpu"` TGSL
+  bundler (tsdown/unbuild) was an open call (resolved in ADR-0019); the deciding factor is likely the `"use gpu"` TGSL
   transform, which today runs through `unplugin-typegpu` in the *consumer's* Vite config — so either
   the package ships pre-transformed kernels or it documents the plugin as a requirement. **This is
   the least understood part of publishing and should be resolved early**, because it constrains

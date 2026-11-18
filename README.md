@@ -188,7 +188,8 @@ One-time setup, outside the repo:
 Start with the toolbox overviews in [`docs/`](docs/) (e.g.
 [`gpu-primitives-toolbox.md`](docs/gpu-primitives-toolbox.md),
 [`gpu-resource-sync.md`](docs/gpu-resource-sync.md)), the
-[gap analysis](docs/gap-analysis.md) for what is planned, and the ADRs in
+[gap analysis](docs/gap-analysis.md) for what is planned (the open backlog is triaged in
+[#54](https://github.com/xinaesthete/intraspatial/issues/54)), and the ADRs in
 [`docs/decisions/`](docs/decisions/) — notably the Node-not-Bun runtime decision (0002),
 the `"use gpu"`/TGSL kernel approach (0003), and the field-type / wavelet-domain model
 (0004, 0006) that the operation graph is built on. ADRs are written only for work in

@@ -4,7 +4,7 @@ Status: **design note** (2026-08-22) — promote to an ADR when implementation s
 
 Three items in [`gap-analysis.md`](gap-analysis.md) share one substrate: the scan /
 stream-compaction kernel (built, `src/gpu/scan/`), the uniform-grid spatial index (specced
-for 3D in [`gpu-spatial-index-3d.md`](gpu-spatial-index-3d.md), built nowhere), and
+for 3D in [`gpu-spatial-index-3d.md`](gpu-spatial-index-3d.md), since built: `src/gpu/spatial/gridIndex.ts`, ADR-0022), and
 ADR-0005's `support` facet, which terrain has rediscovered as "nodata/validity". This note
 documents the first, designs the second on it for **2D and 3D in one op**, and pins the third
 to one facet. It extends the 3D note with the 2D case, the scan, the ADR-0017 handle, the
@@ -163,7 +163,7 @@ nowhere to carry a weight.
    `"scan"`), so a fused build-plus-occupied-cells pass can give each scan its own pool.
 3. **No segmented scan, no counting-sort helper.** Not needed for the index; a segmented scan
    matters only for per-cell reductions over the sorted list.
-4. **Resident bridge is f32-only.** `executor.ts` throws on non-f32 resident values
+4. **Resident bridge was f32-only.** (Updated 2026-11: buffers now read back by dtype, ADR-0023; textures are still f32-only.) Originally `executor.ts` threw on non-f32 resident values
    (`residentF32Count`), so a u32 index buffer reaches the host only through its own
    builder's readback. Goldens below are written accordingly.
 
