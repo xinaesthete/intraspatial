@@ -1,8 +1,18 @@
 # Bond primitive
 
-Status: **design note** (2026-11-20). Nothing is built. This is the "mechanistic forces" front of
+Status: **built** (2026-11-20) in `src/gpu/sim/springs/`; see [`spring-model.md`](spring-model.md)
+for the whole model. This is the "mechanistic forces" front of
 [`gpu-simulation-toolbox.md`](gpu-simulation-toolbox.md), starting from a port of the CSynth spring
 table in `organic/TS/springs.ts` and `springsfs.ts`.
+
+Three things changed between this note and the code:
+
+- **One buffer, not two.** A slot is four words: partner and kind packed in word 0, then rest
+  length, strength and a distance power. The power is CSynth's and was kept after all.
+- **Rods are in.** One per particle, in their own array, applied after the step as in CSynth.
+- **`bondForm` is brute force on the GPU.** The grid index is used on the CPU only, so far.
+
+The table is not yet a graph bundle; the ops are plain functions and a `SpringsGpu` object.
 
 ## Decision
 
