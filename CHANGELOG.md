@@ -1,5 +1,36 @@
 # intraspatial
 
+## 0.4.0
+
+### Minor Changes
+
+- 129f106: Gene modules for whole-transcriptome points, and sampled points weighted to stand for what was left out.
+  
+  - `geneEmbedding(xs, ys, codes, nFeatures, { binSize, … })` in `intraspatial/spatial` is a PCA gene embedding of a points sample. It bins the sample, normalises and logs each bin, standardises each gene, and runs a sparse randomized PCA. It keeps only the components above the Marchenko–Pastur noise edge.
+  - `geneModules(embedding, k)` partitions the spatially structured genes into `k` disjoint modules with e-means. `binSizeFor` sizes bins for ~750 molecules each.
+  - `emeans` and `lloyd` take `seeding: "kmeans++"`. The default is still random seeding, as in the reference implementation.
+  - `PointsTile.featureFractions` records per-gene sample fractions from a subset read. `pointFraction(tile, code)` reads a molecule's fraction.
+  - **Behaviour change:** `transcriptChannels` now weights each molecule by 1 / its sample fraction (`sampleFraction`, or `featureFractions` for its gene). Channel densities from sampled tiles used to read low by that fraction. They are now in molecules per unit area at any level. `g` and the correlation modes of uniformly sampled tiles are unchanged, because a per-channel scale cancels in both.
+- 129f106: k-means by e-means (Bessa et al. 2026, arXiv:2611.09501) in `intraspatial/spatial`. This is the CPU golden for a later GPU port.
+  
+  - `emeans(data, n, d, k, opts)` runs mini-batch k-means with exponential-moving-average centroid updates. The batch size and step come from the published scaling laws, so the only inputs are Lloyd's. It also has a cosine step schedule, dead-cluster revival by splitting, and a finalisation epoch. It is deterministic per `seed`. It returns centroids, labels, per-cluster counts, the MSE and the `schedule` it ran.
+  - `lloyd(data, n, d, k, opts)` is the baseline. `emeansSchedule`, `emeansBatch` and `emeansAlpha0` expose the scaling laws. `assignNearest` is the nearest-centroid pass.
+  - Revival is off by default for d ≤ 3, where the authors found that it degrades results.
+- f3154a8: e-means can now fit a centroid table once and assign points to it later, with per-point weights and masks (`intraspatial/spatial`).
+  
+  - `emeansFit(data, n, d, k, opts)` returns a frozen `CentroidTable` (`k`, `d`, `centroids`) with the weighted cluster `mass`, the `schedule` and `splits`. `assignCentroids(table, data, n, opts)` labels any set of points against it, such as one viewport tile at a time. `emeans` is now the two together, and its result is itself a table.
+  - `weights` (finite, ≥ 0) and `mask` (a `Domain` plus each point's position) are accepted by `emeansFit`, `emeans`, `lloyd` and `assignCentroids`. A point of weight 0 or outside the mask is left out of the fit exactly as if removed. It is never a seed, and assignment labels it −1 and leaves it out of the MSE. Weights are rescaled to mean 1, and the scaling laws take n = the number of points kept.
+  - Results gain `mass` (weight per cluster) and the MSE is weight-averaged. Both are unchanged for unweighted input. `lloyd` now re-seeds only clusters of weight exactly 0.
+  - `channelBins(tile, bins, channels)` counts a points tile's channel molecules into a finer quadtree level of bins, weighting each molecule by 1/`pointFraction`. `binComposition` turns those counts into Hellinger descriptors and molecule weights, for clustering bins into niches.
+  - `pooledBins(own, neighbours, bins, radius)` sums each bin's counts over the `(2·radius + 1)²` bins around it, reaching into the neighbouring tiles' bins. Pooling tile by tile equals pooling the whole element at once.
+- 3731ac1: Add `normaliseRings(shape, fillRule)` and a `fillRule` option on `polygonDomain` (#58). Crossing or overlapping rings, such as a self-intersecting lasso, are rewritten as simple rings covering the same region under `"evenodd"` (a figure-eight becomes two rings touching at the crossing; a loop drawn twice is outside) or `"nonzero"` (a point is inside unless the rings' windings round it sum to zero, so same-way overlaps merge, while one ring each way over the same area cancels to outside). Without `fillRule`, `polygonDomain` stays strict. Bad rings throw the same errors as before; a region that is empty under the rule throws too.
+  
+  Also fixes the strict path: a hole whose every vertex touches its outer ring was sometimes read as an island; two nearly collinear edges lying end to end could be reported as crossing through rounding; and ring areas far from the origin lost precision (a unit square at 2²⁷ read as zero area).
+
+### Patch Changes
+
+- 1d3cf02: `polygonDomain` now throws on rings that cross themselves or each other (including collinear overlaps), naming the ring and edge indices. Previously `domainArea` (winding number) and `domainContains` (even–odd) disagreed on such rings, silently biasing ρ_B, edge correction and g. Touching at a vertex is still accepted. Callers passing hand-drawn lassos should repair self-crossing rings upstream before constructing the domain.
+
 ## 0.3.0
 
 ### Minor Changes
