@@ -33,7 +33,9 @@ import { BoundaryPanel } from "../wand/WandPanel";
 import { ChannelPicker } from "./ChannelPicker";
 import { buildChannels, channelCodes, defaultSelection, type Selection } from "./channelModel";
 import { TranscriptExplainers } from "./TranscriptExplainers";
+import { NichePanel } from "./NichePanel";
 import { useGeneModules } from "./useGeneModules";
+import { type NicheOptions, nicheLayers, useNicheMap } from "./useNicheMap";
 import { useTranscriptGram } from "./useTranscriptGram";
 
 /** The raster stack's size on the device, in MiB. `bytesPerWordRatio` of 2 reports what the same
@@ -98,6 +100,8 @@ export function TranscriptModes() {
   const style = useMapStyle({ chromaWeight: 0.5, opacity: 0.75 });
   const { saturate, chromaWeight, opacity } = style;
   const [lock, setLock] = useState<ModeLock>();
+  const [niche, setNiche] = useState<NicheOptions>({ enabled: false, k: 8, binSide: 40, minSampled: 20 });
+  const [nicheOpacity, setNicheOpacity] = useState(0.25);
 
   const device = useSharedDevice();
 
@@ -169,6 +173,14 @@ export function TranscriptModes() {
   const subset = readSource?.featureSubset?.length;
 
   const tiles = usePointsTiles(readSource, window, rEff);
+  // The niche map follows the view itself, pinned window or not.
+  const nicheMap = useNicheMap(readSource, built.channels, qvApplied, inView, niche);
+  const nicheFit = nicheMap.fit.value;
+  const nicheTiles = nicheMap.tiles.tiles;
+  const nicheDrawn = useMemo(
+    () => (niche.enabled && nicheFit && modelMatrix ? nicheLayers(nicheFit, nicheTiles, modelMatrix, nicheOpacity) : []),
+    [niche.enabled, nicheFit, nicheTiles, modelMatrix, nicheOpacity],
+  );
   const sampled = sampleNote(tiles.value?.tiles);
   // No compute until deck's device is ours: resources made on another device could not be drawn.
   // Memoised by hand (no React Compiler here): a fresh `[]` each render is a new dep for the Gram,
@@ -251,6 +263,7 @@ export function TranscriptModes() {
               modelMatrix,
               pickable: false,
             }),
+            ...nicheDrawn,
             ...tools.layers,
             new PathLayer<{ path: [number, number][] }>({
               id: "gram-window",
@@ -278,8 +291,8 @@ export function TranscriptModes() {
                 ]
               : []),
           ]
-        : [],
-    [g, locked, modelMatrix, saturate, chromaWeight, opacity, wand, tools.layers],
+        : nicheDrawn,
+    [g, locked, modelMatrix, saturate, chromaWeight, opacity, wand, tools.layers, nicheDrawn],
   );
 
   const error = sd.error ?? source.error ?? tiles.error ?? gram.error;
@@ -392,7 +405,7 @@ export function TranscriptModes() {
             Half-precision maps (f16){halfRasters && gram.value ? ` — ${rasterMiB(gram.value)} MiB, was ${rasterMiB(gram.value, 2)}` : ""}
           </label>
           <label>
-            Minimum molecule quality (qv){hasQv ? "" : " — not available for this element"}
+            Minimum molecule quality (qv), for the modes and the niche map{hasQv ? "" : " — not available for this element"}
             <input
               type="number"
               min={0}
@@ -455,6 +468,14 @@ export function TranscriptModes() {
               <ModulesNote modules={modules} />
             </div>
           )}
+          <NichePanel
+            opts={niche}
+            onChange={setNiche}
+            opacity={nicheOpacity}
+            onOpacity={setNicheOpacity}
+            map={nicheMap}
+            labels={built.channels.map((c) => c.label)}
+          />
           <p className="hint">µm*: the store does not declare a unit; Xenium writes transcript coordinates in micrometres.</p>
         </aside>
 

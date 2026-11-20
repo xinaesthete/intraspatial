@@ -86,6 +86,32 @@ first.**
   needs new ground truth; and whether "improvement" is measured as classification accuracy, spatial
   smoothness/robustness, or downstream persistence stability.
 
+## Related since (2026-11-18)
+
+Nothing here reproduces TopACT. Two pieces built for the niche map
+([emeans-clustering.md](../emeans-clustering.md), slice 2) sit close to it:
+
+| TopACT | Here | Still missing for step 1 |
+|---|---|---|
+| L∞ square box sum at integer radius, clipped at the extent (`square_nbhd`) | `pooledBins(own, neighbours, bins, radius)` in [channelBins.ts](../../src/spatial/channelBins.ts): the same box, same clipping; tile-by-tile equals whole-element (tested) | One scale only; direct gather, no SAT; radius ≤ one tile ring; CPU, not a graph op |
+| Per-gene counts on a ~µm spot lattice | Per-*channel* counts on quadtree bins, molecules weighted 1/`pointFraction` | One channel per gene, exact counts, their spot size |
+| Scales `min…max`, first non-empty scale onward (confidence tensor) | Fixed rule: keep a bin if its 3×3 box holds ≥ 20 molecules read | The multiscale search |
+| Calibrated `LinearSVC` on rows scaled to 10⁵ then `log1p` | `assignCentroids` against a frozen `CentroidTable`, Hellinger rows | Their scaler, SVM and calibration; probabilities |
+| — | Lazy per-tile labelling: fixed level, neighbour apron, frozen model, labels stable under pan/zoom | (TopACT has no equivalent; this is what the engine adds) |
+
+**A step-2 candidate this ADR did not list:** multiscale box pooling + a *reference* centroid table
+(per-type means from a labelled reference) assigned with `assignCentroids`. Measured on Atera's
+segmented cells (`scripts/emeans-cell-typing.ts`, branch `claude-pjt/pensive-curran-9305a1`): 74%
+agreement with Azimuth coarse labels over 17 types, and the only method tried that recovered every
+rare type. It is deterministic given the reference, but has no confidence; a nearest-vs-second
+centroid margin would stand in for TopACT's calibrated probabilities. Not yet tried without
+segmentation on pooled spots.
+
+**Collaboration context:** a PhD student is developing methods that extend TopACT, and the aim is
+for this library and MDV to make that easier. Python is her usual stack; this one is not, so the
+reproduction and any prototypes need to be usable from her side (see
+[[topact-collaboration-target]]).
+
 ## References
 
 - ADR-0004 (scale-equivariance; gene axis; Epanechnikov non-separable ⇒ gather), ADR-0015
