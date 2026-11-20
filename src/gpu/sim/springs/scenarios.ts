@@ -19,6 +19,12 @@ export interface SpringEvent {
   readonly z: number;
 }
 
+/** The settings of `o` that are present: a key given as `undefined` means "leave the default",
+ *  not "set it to undefined", which a plain spread would do. */
+function defined<T extends object>(o: T): Partial<T> {
+  return Object.fromEntries(Object.entries(o).filter(([, v]) => v !== undefined)) as Partial<T>;
+}
+
 /** Events a scenario holds before the oldest are dropped. */
 const MAX_PENDING_EVENTS = 4000;
 
@@ -181,6 +187,19 @@ export interface SpheroidConfig {
   readonly seed?: number;
 }
 
+/** Settings that fix the particles a spheroid is built from. Changing one needs a new scenario. */
+export type SpheroidStructure = "cellRadius" | "matrixRadius" | "maxCells" | "seed";
+/** Settings that can change while a spheroid runs. */
+export type SpheroidLiveConfig = Omit<SpheroidConfig, SpheroidStructure>;
+
+export interface SpheroidScenario extends Scenario {
+  /** The settings in force now. */
+  readonly config: Required<SpheroidConfig>;
+  /** Change settings on the running tissue. Takes effect from the next step: existing bonds get
+   *  the new stiffness, and the new yield, healing and division rules apply to what is there. */
+  configure(change: SpheroidLiveConfig): void;
+}
+
 /** Defaults sit in the regime where the outline breaks symmetry: a stiff matrix that yields at
  *  a high strain and heals slowly, and motile cells. */
 export const DEFAULT_SPHEROID: Required<SpheroidConfig> = {
@@ -209,8 +228,8 @@ export const DEFAULT_SPHEROID: Required<SpheroidConfig> = {
  * nearby. With breaking off the matrix is elastic and confines the cells; with it on the matrix
  * creeps, and the cells can push into it.
  */
-export function spheroidScenario(cfg: SpheroidConfig = {}): Scenario {
-  const c = { ...DEFAULT_SPHEROID, ...cfg };
+export function spheroidScenario(cfg: SpheroidConfig = {}): SpheroidScenario {
+  let c = { ...DEFAULT_SPHEROID, ...defined(cfg) };
   const sites: [number, number][] = [];
   const rows = Math.ceil(c.matrixRadius / (Math.sqrt(3) / 2));
   for (let j = -rows; j <= rows; j++) {
@@ -237,15 +256,11 @@ export function spheroidScenario(cfg: SpheroidConfig = {}): Scenario {
   for (let a = 0; a < matrix.length; a++) {
     for (let b = a + 1; b < matrix.length; b++) {
       const d = Math.hypot(matrix[a]![0] - matrix[b]![0], matrix[a]![1] - matrix[b]![1]);
-      if (d < 1.01) addSpring(topology, cellCap + a, cellCap + b, d, c.stiffness, 0, KIND_MATRIX);
+      if (d < 1.01) addSpring(topology, cellCap + a, cellCap + b, d, 1, 0, KIND_MATRIX);
     }
   }
 
-  const mobility = Array.from({ length: MAX_SPECIES }, () => 1);
-  mobility[MATRIX] = c.matrixMobility;
-  const motility = Array.from({ length: MAX_SPECIES }, () => 0);
-  motility[CELL] = c.motility;
-  const params = springParams({
+  const base = springParams({
     seed: c.seed,
     dims: 2,
     // No inertia: velocity is force times mobility, the overdamped limit the paper models.
@@ -257,6 +272,49 @@ export function spheroidScenario(cfg: SpheroidConfig = {}): Scenario {
     pushapartlocalforce: 0,
     pairRange: 1.5,
     adhesionRange: 0.5,
+  });
+
+  const totals = { broken: 0, formed: 0, divisions: 0 };
+  const events = eventLog(state);
+  let rules = spheroidRules(c);
+  const scenario: SpheroidScenario = {
+    kind: "spheroid",
+    state,
+    topology,
+    params: { ...base, ...spheroidParams(c) },
+    totals,
+    takeEvents: events.take,
+    get config() {
+      return c;
+    },
+    configure(change) {
+      c = { ...c, ...defined(change) };
+      rules = spheroidRules(c);
+      scenario.params = { ...scenario.params, ...spheroidParams(c) };
+    },
+    advance(steps) {
+      for (let k = 0; k < steps; k++) {
+        stepSprings(state, topology, scenario.params);
+        if (rules.turnover) totals.broken += breakBonds(state, topology, scenario.params, rules.breakRule, events.onBreak);
+        if (rules.turnover || c.ligand > 0) totals.formed += formBonds(state, topology, scenario.params, rules.formRule);
+        if (rules.division) totals.divisions += divideCells(state, scenario.params, rules.division, events.onDivide);
+      }
+    },
+  };
+  return scenario;
+}
+
+/** The part of `SpringParams` the spheroid's settings decide. Bond strengths live here, as
+ *  per-kind multipliers, so that stiffness can change without touching a single bond. */
+function spheroidParams(c: Required<SpheroidConfig>): Partial<SpringParams> {
+  const mobility = Array.from({ length: MAX_SPECIES }, () => 1);
+  mobility[MATRIX] = c.matrixMobility;
+  const motility = Array.from({ length: MAX_SPECIES }, () => 0);
+  motility[CELL] = c.motility;
+  const roleforces = Array.from({ length: 8 }, () => 1);
+  roleforces[KIND_MATRIX] = c.stiffness;
+  roleforces[KIND_LIGAND] = c.ligand;
+  return {
     repulsion: speciesTable([
       [CELL, CELL, 0.3],
       [CELL, MATRIX, 0.3],
@@ -265,48 +323,39 @@ export function spheroidScenario(cfg: SpheroidConfig = {}): Scenario {
     adhesion: speciesTable([[CELL, CELL, c.cellAdhesion]]),
     mobility,
     motility,
-  });
+    roleforces,
+  };
+}
 
+/** The turnover and growth rules the spheroid's settings decide. */
+function spheroidRules(c: Required<SpheroidConfig>) {
   const breakRule: BreakRule = {
     kinds: (1 << KIND_MATRIX) | (1 << KIND_LIGAND),
     maxStrain: Number.isFinite(c.yieldStrain) ? c.yieldStrain : undefined,
     tau: Number.isFinite(c.bondLifetime) ? c.bondLifetime : undefined,
   };
-  const turnover = breakRule.maxStrain !== undefined || breakRule.tau !== undefined;
   const kindOf = Array.from({ length: MAX_SPECIES * MAX_SPECIES }, () => -1);
   kindOf[MATRIX * MAX_SPECIES + MATRIX] = KIND_MATRIX;
   if (c.ligand > 0) {
     kindOf[CELL * MAX_SPECIES + MATRIX] = KIND_LIGAND;
     kindOf[MATRIX * MAX_SPECIES + CELL] = KIND_LIGAND;
   }
-  const strength = Array.from({ length: 8 }, () => 0);
-  strength[KIND_MATRIX] = c.stiffness;
-  strength[KIND_LIGAND] = c.ligand;
-  const formRule: FormRule = { range: c.reformRange, kindOf, strength, rest: "current", prob: c.reformProb, speciesCount: MAX_SPECIES };
+  // Every bond has strength 1; its kind's multiplier in `roleforces` is the real strength.
+  const formRule: FormRule = {
+    range: c.reformRange,
+    kindOf,
+    strength: UNIT_STRENGTHS,
+    rest: "current",
+    prob: c.reformProb,
+    speciesCount: MAX_SPECIES,
+  };
   const division: DivisionRule | undefined = Number.isFinite(c.divisionTime)
     ? { species: CELL, tau: c.divisionTime, maxDensity: c.maxDensity, offset: 0.5 }
     : undefined;
-
-  const totals = { broken: 0, formed: 0, divisions: 0 };
-  const events = eventLog(state);
-  const scenario: Scenario = {
-    kind: "spheroid",
-    state,
-    topology,
-    params,
-    totals,
-    takeEvents: events.take,
-    advance(steps) {
-      for (let k = 0; k < steps; k++) {
-        stepSprings(state, topology, scenario.params);
-        if (turnover) totals.broken += breakBonds(state, topology, scenario.params, breakRule, events.onBreak);
-        if (turnover || c.ligand > 0) totals.formed += formBonds(state, topology, scenario.params, formRule);
-        if (division) totals.divisions += divideCells(state, scenario.params, division, events.onDivide);
-      }
-    },
-  };
-  return scenario;
+  return { breakRule, formRule, division, turnover: breakRule.maxStrain !== undefined || breakRule.tau !== undefined };
 }
+
+const UNIT_STRENGTHS: readonly number[] = Array.from({ length: 8 }, () => 1);
 
 // ── Stress relaxation: the rheometer test ─────────────────────────────────────────────────────
 
@@ -323,19 +372,30 @@ export interface RelaxationConfig {
   readonly seed?: number;
 }
 
+/** The relaxation test's settings that can change while it runs. */
+export type RelaxationLiveConfig = Pick<RelaxationConfig, "stiffness" | "bondLifetime" | "yieldStrain">;
+
+export interface RelaxationScenario extends Scenario {
+  readonly config: Required<RelaxationLiveConfig>;
+  /** Change settings on the running strip, from the next step. */
+  configure(change: RelaxationLiveConfig): void;
+}
+
 /**
  * A strip of bonded matrix, stretched and held by clamps at both ends: the test the paper runs
  * on its gels to measure how fast they relax. The stress the strip carries is
  * `bondReadout(...).virial[0]`. With no turnover it stays put; with bonds of lifetime `tau` it
  * halves every `tau · ln 2` steps.
  */
-export function relaxationScenario(cfg: RelaxationConfig = {}): Scenario {
+export function relaxationScenario(cfg: RelaxationConfig = {}): RelaxationScenario {
   const cols = cfg.cols ?? 28;
   const rows = cfg.rows ?? 14;
   const strain = cfg.strain ?? 0.12;
-  const stiffness = cfg.stiffness ?? 0.1;
-  const lifetime = cfg.bondLifetime ?? Number.POSITIVE_INFINITY;
-  const yieldStrain = cfg.yieldStrain ?? Number.POSITIVE_INFINITY;
+  let live: Required<RelaxationLiveConfig> = {
+    stiffness: cfg.stiffness ?? 0.1,
+    bondLifetime: cfg.bondLifetime ?? Number.POSITIVE_INFINITY,
+    yieldStrain: cfg.yieldStrain ?? Number.POSITIVE_INFINITY,
+  };
   const n = cols * rows;
   const state = createState(n);
   const topology = createTopology(n, 8);
@@ -344,7 +404,7 @@ export function relaxationScenario(cfg: RelaxationConfig = {}): Scenario {
   for (let a = 0; a < n; a++) {
     for (let b = a + 1; b < n; b++) {
       const d = Math.hypot(state.pos[a * 4]! - state.pos[b * 4]!, state.pos[a * 4 + 1]! - state.pos[b * 4 + 1]!);
-      if (d < 1.01) addSpring(topology, a, b, d, stiffness, 0, KIND_MATRIX);
+      if (d < 1.01) addSpring(topology, a, b, d, 1, 0, KIND_MATRIX);
     }
   }
   for (let j = 0; j < rows; j++) {
@@ -356,42 +416,53 @@ export function relaxationScenario(cfg: RelaxationConfig = {}): Scenario {
       if (i < 2 || i >= cols - 2) setFix(topology, k, x, state.pos[k * 4 + 1]!, 0);
     }
   }
-  const params = springParams({
-    seed: cfg.seed ?? 1,
-    dims: 2,
-    damp: 0,
-    damptype: 1,
-    springmaxvel: 0.2,
-    springforce: 1,
-    backboneStrength: 1,
-    pushapartlocalforce: 0,
-    pairRange: 1.5,
-    repulsion: speciesTable([[MATRIX, MATRIX, 0.05]]),
-  });
-  const breakRule: BreakRule = {
-    kinds: 1 << KIND_MATRIX,
-    maxStrain: Number.isFinite(yieldStrain) ? yieldStrain : undefined,
-    tau: Number.isFinite(lifetime) ? lifetime : undefined,
+  const stiffnessParams = (stiffness: number): Partial<SpringParams> => {
+    const roleforces = Array.from({ length: 8 }, () => 1);
+    roleforces[KIND_MATRIX] = stiffness;
+    return { roleforces };
   };
-  const turnover = breakRule.maxStrain !== undefined || breakRule.tau !== undefined;
   const kindOf = Array.from({ length: MAX_SPECIES * MAX_SPECIES }, () => -1);
   kindOf[MATRIX * MAX_SPECIES + MATRIX] = KIND_MATRIX;
-  const strength = Array.from({ length: 8 }, () => 0);
-  strength[KIND_MATRIX] = stiffness;
-  const formRule: FormRule = { range: 1.25, kindOf, strength, rest: "current", speciesCount: MAX_SPECIES };
+  const formRule: FormRule = { range: 1.25, kindOf, strength: UNIT_STRENGTHS, rest: "current", speciesCount: MAX_SPECIES };
+  const breakRuleFor = (c: Required<RelaxationLiveConfig>): BreakRule => ({
+    kinds: 1 << KIND_MATRIX,
+    maxStrain: Number.isFinite(c.yieldStrain) ? c.yieldStrain : undefined,
+    tau: Number.isFinite(c.bondLifetime) ? c.bondLifetime : undefined,
+  });
+  let breakRule = breakRuleFor(live);
   const totals = { broken: 0, formed: 0, divisions: 0 };
   const events = eventLog(state);
-  const scenario: Scenario = {
+  const scenario: RelaxationScenario = {
     kind: "relaxation",
     state,
     topology,
-    params,
+    params: springParams({
+      seed: cfg.seed ?? 1,
+      dims: 2,
+      damp: 0,
+      damptype: 1,
+      springmaxvel: 0.2,
+      springforce: 1,
+      backboneStrength: 1,
+      pushapartlocalforce: 0,
+      pairRange: 1.5,
+      repulsion: speciesTable([[MATRIX, MATRIX, 0.05]]),
+      ...stiffnessParams(live.stiffness),
+    }),
     totals,
     takeEvents: events.take,
+    get config() {
+      return live;
+    },
+    configure(change) {
+      live = { ...live, ...defined(change) };
+      breakRule = breakRuleFor(live);
+      scenario.params = { ...scenario.params, ...stiffnessParams(live.stiffness) };
+    },
     advance(steps) {
       for (let k = 0; k < steps; k++) {
         stepSprings(state, topology, scenario.params);
-        if (!turnover) continue;
+        if (breakRule.maxStrain === undefined && breakRule.tau === undefined) continue;
         totals.broken += breakBonds(state, topology, scenario.params, breakRule, events.onBreak);
         totals.formed += formBonds(state, topology, scenario.params, formRule);
       }

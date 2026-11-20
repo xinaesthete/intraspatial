@@ -31,6 +31,7 @@ import {
   relaxationScenario,
   removeSpring,
   runSprings,
+  type Scenario,
   setFix,
   setTorsion,
   sheetLines,
@@ -523,7 +524,7 @@ describe("phase diagram", () => {
 
 describe("scenarios", () => {
   it("relaxation: a clamped strip holds stress when elastic and sheds it with turnover", () => {
-    const stress = (sc: ReturnType<typeof relaxationScenario>) => bondReadout(sc.state, sc.topology, sc.params).virial[0];
+    const stress = (sc: Scenario) => bondReadout(sc.state, sc.topology, sc.params).virial[0];
     const elastic = relaxationScenario({ cols: 16, rows: 8 });
     const viscous = relaxationScenario({ cols: 16, rows: 8, bondLifetime: 30 });
     elastic.advance(60);
@@ -547,6 +548,44 @@ describe("scenarios", () => {
     const sc = chromatinScenario({ n: 60, mode: "contacts" });
     sc.advance(1500);
     expect(distanceCorrelation(distanceMatrix(sc.state, 60), sc.matrices!.dist!, 60)).toBeGreaterThan(0.98);
+  });
+
+  it("spheroid: settings change on a running tissue without rebuilding it", () => {
+    const base = { cellRadius: 3, matrixRadius: 11, maxCells: 400, divisionTime: 150 };
+    const sc = spheroidScenario({ ...base, yieldStrain: Number.POSITIVE_INFINITY });
+    const state = sc.state;
+    sc.advance(600);
+    expect(sc.totals.broken).toBe(0);
+    const stalled = liveCount(state, CELL);
+    // Let the matrix yield: the same particles carry on, and now bonds break and cells divide on.
+    // A key present but undefined leaves the setting alone.
+    sc.configure({ yieldStrain: 0.1, stiffness: undefined });
+    expect(sc.config.stiffness).toBe(0.3);
+    expect(liveCount(spheroidScenario({ cellRadius: undefined, maxCells: 80 }).state, CELL)).toBe(61);
+    expect(sc.config.yieldStrain).toBe(0.1);
+    expect(sc.config.matrixRadius).toBe(11);
+    sc.advance(900);
+    expect(sc.state).toBe(state);
+    expect(sc.totals.broken).toBeGreaterThan(0);
+    expect(liveCount(state, CELL)).toBeGreaterThan(stalled);
+    // Stiffness is a multiplier, so it reaches every existing bond at once.
+    const before = bondReadout(state, sc.topology, sc.params, 1 << 1).virial[0];
+    sc.configure({ stiffness: sc.config.stiffness * 2 });
+    expect(bondReadout(state, sc.topology, sc.params, 1 << 1).virial[0]).toBeCloseTo(before * 2, 6);
+    // Stopping division stops it.
+    sc.configure({ divisionTime: Number.POSITIVE_INFINITY });
+    const divisions = sc.totals.divisions;
+    sc.advance(200);
+    expect(sc.totals.divisions).toBe(divisions);
+  });
+
+  it("relaxation: turning bond turnover on mid-run starts the stress falling", () => {
+    const sc = relaxationScenario({ cols: 16, rows: 8 });
+    sc.advance(80);
+    const held = bondReadout(sc.state, sc.topology, sc.params).virial[0];
+    sc.configure({ bondLifetime: 30 });
+    sc.advance(120);
+    expect(bondReadout(sc.state, sc.topology, sc.params).virial[0]).toBeLessThan(held * 0.1);
   });
 
   it("spheroid: a yielding matrix lets the tissue outgrow an elastic one", () => {

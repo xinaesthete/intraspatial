@@ -99,6 +99,20 @@ double-click to remove.
 Break and form decisions compare integer hashes of the unordered pair, so both ends of a bond
 agree, and the CPU and GPU make identical choices.
 
+## Changing settings on a running scenario
+
+`spheroidScenario` and `relaxationScenario` return a scenario with `config` and
+`configure(change)`. A change applies from the next step, to the particles and bonds already there.
+
+| setting                                              | how it stays live                                   |
+| ---------------------------------------------------- | --------------------------------------------------- |
+| stiffness, cell–matrix bond strength                 | every bond has strength 1; `roleforces[kind]` scales it |
+| repulsion, adhesion, mobility, motility              | fields of `scenario.params`                         |
+| yield strain, bond lifetime, healing, division       | rules rebuilt from `config` on each `configure`     |
+| cell radius, matrix radius, cell capacity, seed      | not live: they decide which particles exist         |
+
+`scenario.params` can also be replaced directly for anything `SpringParams` holds.
+
 ## Checked
 
 - **GPU against CPU.** Positions agree to 2×10⁻⁴ after six steps with every CSynth term on.

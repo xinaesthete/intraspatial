@@ -16,9 +16,11 @@ import {
   DEFAULT_SPHEROID,
   distanceMatrix,
   type PhasePoint,
+  type RelaxationScenario,
   relaxationScenario,
   type Scenario,
   type SpheroidConfig,
+  type SpheroidScenario,
   type SpringParams,
   spheroidScenario,
 } from "../../../src/gpu/sim/springs/index";
@@ -244,14 +246,20 @@ export function SpringsDemo() {
   const [drawN, setDrawN] = useState(64);
   const chain = kind === "distances" || kind === "contacts";
   const useGpu = gpu && chain;
-  // `nonce` seeds the run, so Restart gives a fresh one.
-  const scenario = useMemo((): Scenario => {
+  // `nonce` seeds the run, so Restart gives a fresh one. Only the settings that decide which
+  // particles exist are dependencies here; the rest are applied to the running scenario below.
+  const { cellRadius, matrixRadius, maxCells } = spheroid;
+  const scenario = useMemo((): Scenario | SpheroidScenario | RelaxationScenario => {
     const seed = 1 + nonce;
-    if (kind === "spheroid") return spheroidScenario({ ...spheroid, seed });
-    if (kind === "relaxation") return relaxationScenario({ ...relax, seed });
+    if (kind === "spheroid") return spheroidScenario({ cellRadius, matrixRadius, maxCells, seed });
+    if (kind === "relaxation") return relaxationScenario({ seed });
     if (kind === "draw") return chainScenario({ n: drawN, seed });
     return chromatinScenario({ n: chainN, mode: kind, seed });
-  }, [kind, spheroid, relax, chainN, drawN, nonce]);
+  }, [kind, cellRadius, matrixRadius, maxCells, chainN, drawN, nonce]);
+  // Declared before the simulation hook, so a new scenario has its settings before its first step.
+  useEffect(() => {
+    if ("configure" in scenario) scenario.configure(scenario.kind === "spheroid" ? { ...DEFAULT_SPHEROID, ...spheroid } : relax);
+  }, [scenario, spheroid, relax]);
 
   // Lines drawn on the pair matrix, kept across restarts and re-applied to each new chain.
   const [lines, setLines] = useState<MatrixLine[]>(() => [helixLine(6, 30, 4)]);
@@ -420,7 +428,7 @@ export function SpringsDemo() {
                   onChange={(v) => setSpheroid({ ...spheroid, [c.key]: v })}
                 />
               ))}
-              <p className="hint">Changing a setting restarts the run.</p>
+              <p className="hint">Settings act on the running tissue. Press Restart for a fresh one.</p>
             </>
           )}
           {kind === "relaxation" && (

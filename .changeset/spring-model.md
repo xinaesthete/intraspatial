@@ -12,3 +12,4 @@ A spring model in `intraspatial/gpu/sim` (the `springs` namespace): a port of CS
 - `createSpringsGpu` runs the step, break and form as compute kernels that match the CPU.
 - `projectedShape`, `bondReadout` and `phaseDiagram` measure outline circularity, bond stress, and behaviour over a grid of two parameters.
 - `chromatinScenario`, `chainScenario`, `spheroidScenario` and `relaxationScenario` are ready-made setups.
+- Spheroid and relaxation scenarios have `config` and `configure(change)`: stiffness, yield, healing, adhesion, motility and division all change on a running scenario without rebuilding it.
