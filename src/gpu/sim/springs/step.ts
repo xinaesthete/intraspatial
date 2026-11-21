@@ -20,7 +20,8 @@
 // Torsion springs come from FoldSynth's Java instead (`torsion.ts`), because CSynth's shader for
 // them is not in the organic repo.
 //
-// New terms, all off by default: per-species repulsion and adhesion, mobility and motility.
+// New terms, all off by default: per-species repulsion, adhesion, mobility, motility and
+// protrusion.
 import type { BucketGrid } from "#src/spatial/bucketGrid";
 import { MAX_SPECIES, type SpringParams } from "./params";
 import { rand01, SALT } from "./rng";
@@ -67,7 +68,13 @@ export function pairTermsActive(p: SpringParams): boolean {
     p.contactforcesc !== 0 ||
     p.m_force !== 0 ||
     p.boidalignment !== 0;
-  return csynth || p.repulsion.some((v) => v !== 0) || p.adhesion.some((v) => v !== 0);
+  return (
+    csynth ||
+    p.repulsion.some((v) => v !== 0) ||
+    p.adhesion.some((v) => v !== 0) ||
+    p.protrusion.some((v) => v !== 0) ||
+    p.thrust.some((v) => v !== 0)
+  );
 }
 
 /** Advance the state by one step, in place. */
@@ -170,6 +177,13 @@ export function stepSprings(s: SpringState, t: SpringTopology, p: SpringParams, 
       let bvy = 0;
       let bvz = 0;
       let boidn = 0;
+      const protrude = p.protrusion[si]!;
+      const thrust = p.thrust[si]!;
+      const outward = protrude !== 0 || thrust !== 0;
+      let awayWeight = 0;
+      let awayX = 0;
+      let awayY = 0;
+      let awayZ = 0;
       const count = grid && cand ? gatherNeighbours(grid, ox, oy, oz, cand) : n;
       const csynthI = ((p.pairSpeciesMask >> si) & 1) === 1;
       for (let c = 0; c < count; c++) {
@@ -185,8 +199,10 @@ export function stepSprings(s: SpringState, t: SpringTopology, p: SpringParams, 
         if (len === 0) continue;
         if (p.pairRange !== undefined && len > p.pairRange) continue;
 
-        density += 1 / (len * len * len);
-        dirdensity += Math.max(0, (dx * vx + dy * vy + dz * vz) / len) / (len * len);
+        if (len < p.densityRange) {
+          density += 1 / (len * len * len);
+          dirdensity += Math.max(0, (dx * vx + dy * vy + dz * vz) / len) / (len * len);
+        }
 
         let lforce = 0;
         let gforce = 0;
@@ -270,6 +286,14 @@ export function stepSprings(s: SpringState, t: SpringTopology, p: SpringParams, 
           gforce *= (len / p.powBaseDist) ** p.springpow;
         }
 
+        if (outward && (sj === si || ((p.tissueMask >> sj) & 1) === 1) && len < p.protrusionRange) {
+          const w = 1 - len / p.protrusionRange;
+          awayWeight += w;
+          awayX -= (dx * w) / len;
+          awayY -= (dy * w) / len;
+          awayZ -= (dz * w) / len;
+        }
+
         const st = si * MAX_SPECIES + sj;
         lforce += adhesionForce(len, radius[i]! + radius[j]!, p.repulsion[st]!, p.adhesion[st]!, p.adhesionRange);
 
@@ -278,6 +302,12 @@ export function stepSprings(s: SpringState, t: SpringTopology, p: SpringParams, 
         fy += dy * sc;
         fz += dz * sc;
       }
+      const awayLen = Math.hypot(awayX, awayY, awayZ);
+      const exposure = Math.max(0, 1 - awayWeight / p.protrusionFull);
+      const outwardScale = awayLen > 1e-6 ? (protrude * exposure + thrust) / awayLen : 0;
+      fx += outwardScale * awayX;
+      fy += outwardScale * awayY;
+      fz += outwardScale * awayZ;
       if (boidn > 0) {
         fx += (bpx / boidn - ox) * p.boidcohesion + (bvx / boidn - vx) * p.boidalignment;
         fy += (bpy / boidn - oy) * p.boidcohesion + (bvy / boidn - vy) * p.boidalignment;

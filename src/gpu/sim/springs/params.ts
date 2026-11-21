@@ -125,6 +125,29 @@ export interface SpringParams {
   mobility: readonly number[];
   /** Per-species random kick applied every step. */
   motility: readonly number[];
+  /**
+   * Per-species protrusion: a force on each particle directed away from its neighbours of its
+   * own tissue, scaled by how exposed it is. With `w = 1 - len / protrusionRange` summed over
+   * those neighbours, the direction is `-Σ w · (towards neighbour)` and the size is
+   * `strength · max(0, 1 - Σw / protrusionFull)`. A buried particle has `Σw ≈ protrusionFull`
+   * and feels nothing; one on a flat surface has about half that; one on a bump has less still
+   * and is pushed hardest. The force acts against the background, like `motility`; nothing takes
+   * the reaction.
+   */
+  protrusion: readonly number[];
+  protrusionRange: number;
+  /** `Σw` for a particle surrounded by its own tissue: about 3.8 in a 2D close packing and 11
+   *  in 3D, with `protrusionRange` 2. */
+  protrusionFull: number;
+  /** Per-species thrust: a force of this fixed size in the same outward direction as
+   *  `protrusion`, whatever the shape of the surface. What a leader cell pulls with. */
+  thrust: readonly number[];
+  /** Bitmask of the species that count as a particle's own tissue when finding which way is
+   *  outward. A particle's own species always counts. */
+  tissueMask: number;
+  /** Only neighbours closer than this count towards a particle's density (`pos.w`). CSynth
+   *  counts every pair; a finite value keeps density from depending on `pairRange`. */
+  densityRange: number;
   /** Seed for every random stream. */
   seed: number;
   /** 2 keeps noise, motility and division in the xy plane. */
@@ -208,6 +231,12 @@ export const DEFAULT_SPRING_PARAMS: SpringParams = {
   adhesionRange: 0.5,
   mobility: fill(MAX_SPECIES, 1),
   motility: fill(MAX_SPECIES, 0),
+  protrusion: fill(MAX_SPECIES, 0),
+  protrusionRange: 1.5,
+  protrusionFull: 3.8,
+  thrust: fill(MAX_SPECIES, 0),
+  tissueMask: 0,
+  densityRange: Number.POSITIVE_INFINITY,
   seed: 1,
   dims: 3,
 };

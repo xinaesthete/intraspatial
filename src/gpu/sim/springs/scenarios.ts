@@ -1,10 +1,10 @@
 // Ready-made setups of the spring model. Each returns the state, topology and parameters plus
 // an `advance` that runs the step and whatever turnover and growth the setup uses, so a caller
 // (a test, a sweep, the playground) drives every scenario the same way.
-import { divideCells, type DivisionRule } from "./growth";
+import { divideCells, type DivisionRule, type LeaderRule, selectLeaders } from "./growth";
 import { MAX_SPECIES, type SpringParams, speciesTable, springParams } from "./params";
 import { rand01 } from "./rng";
-import { createState, type SpringMatrices, type SpringState, spawn } from "./state";
+import { createState, gatherNeighbours, neighbourGrid, type SpringMatrices, type SpringState, spawn } from "./state";
 import { stepSprings } from "./step";
 import { addSpring, createTopology, setFix, type SpringTopology } from "./topology";
 import { type BreakRule, breakBonds, type FormRule, formBonds } from "./turnover";
@@ -147,6 +147,8 @@ export function chromatinScenario(cfg: ChromatinConfig = {}): Scenario {
 /** Species in the spheroid scenario. */
 export const CELL = 0;
 export const MATRIX = 1;
+/** A cell that has become a tip cell. */
+export const LEADER = 2;
 /** Bond kinds in the spheroid scenario. */
 export const KIND_MATRIX = 1;
 export const KIND_LIGAND = 2;
@@ -172,15 +174,47 @@ export interface SpheroidConfig {
   readonly matrixRepulsion?: number;
   /** Mobility of matrix particles relative to cells: the inverse of the viscosity ratio. */
   readonly matrixMobility?: number;
+  /** Stiffness of the contact repulsion between cells. It has to outweigh adhesion, or the
+   *  tissue crushes itself. */
+  readonly cellRepulsion?: number;
   /** Cell–cell adhesion strength. */
   readonly cellAdhesion?: number;
+  /** How far past touching adhesion reaches, as a fraction of a cell diameter. With a long
+   *  reach, second neighbours pull too, and strong adhesion crushes the tissue. */
+  readonly adhesionRange?: number;
   /** Strength of cell–matrix ligand bonds (the paper's RGD); 0 is a matrix cells cannot grip. */
   readonly ligand?: number;
   /** Random force on cells: the paper's motility. */
   readonly motility?: number;
+  /** Outward push of every cell at the tissue surface, stronger the more exposed the cell is,
+   *  so a bump pushes harder than the flat around it; see `SpringParams.protrusion`. */
+  readonly protrusion?: number;
+  /** How far a cell looks for its own kind when working out which way is outward, in cell
+   *  diameters. Larger values make broader branches. */
+  readonly protrusionRange?: number;
+  /** Force a leader cell pulls outward with; 0 is no leaders. Exposed surface cells become
+   *  leaders, as tip cells do in a sprouting vessel. */
+  readonly leaderThrust?: number;
+  /** How much more strongly a leader holds on to its followers than cells hold each other.
+   *  Too little and a leader tears free and leaves alone. */
+  readonly leaderGrip?: number;
+  /** Mean steps before an exposed cell becomes a leader. */
+  readonly leaderTime?: number;
+  /** No new leader forms within this distance of another: how far apart branches start. */
+  readonly leaderSpacing?: number;
+  /** Whether a matrix bond also breaks when squeezed past the yield strain. Off, the matrix
+   *  only fails where it is pulled apart, which makes it crack rather than crumble. */
+  readonly yieldInCompression?: boolean;
+  /** How far matrix particles are scattered from their lattice sites, in diameters. Bonds take
+   *  their scattered lengths as rest lengths, so the matrix starts stress-free. A perfect lattice
+   *  yields along its crystal planes and the tissue grows faceted; disorder removes that. */
+  readonly matrixDisorder?: number;
+  /** 2 for a sheet, 3 for a ball in a block of matrix. */
+  readonly dims?: 2 | 3;
   /** Mean steps between divisions of an uncrowded cell; `Infinity` is no growth. */
   readonly divisionTime?: number;
-  /** Density above which a cell does not divide. */
+  /** Density above which a cell does not divide. Default 9.5 in 2D and 22 in 3D: both are a
+   *  close-packed cell squeezed about 14% closer to its neighbours. */
   readonly maxDensity?: number;
   /** Most cells the run can hold. */
   readonly maxCells?: number;
@@ -188,13 +222,15 @@ export interface SpheroidConfig {
 }
 
 /** Settings that fix the particles a spheroid is built from. Changing one needs a new scenario. */
-export type SpheroidStructure = "cellRadius" | "matrixRadius" | "maxCells" | "seed";
+export type SpheroidStructure = "cellRadius" | "matrixRadius" | "maxCells" | "seed" | "dims" | "matrixDisorder";
 /** Settings that can change while a spheroid runs. */
 export type SpheroidLiveConfig = Omit<SpheroidConfig, SpheroidStructure>;
 
 export interface SpheroidScenario extends Scenario {
   /** The settings in force now. */
   readonly config: Required<SpheroidConfig>;
+  /** The turnover and growth rules those settings give, for a driver that runs the steps itself. */
+  readonly rules: SpheroidRules;
   /** Change settings on the running tissue. Takes effect from the next step: existing bonds get
    *  the new stiffness, and the new yield, healing and division rules apply to what is there. */
   configure(change: SpheroidLiveConfig): void;
@@ -212,9 +248,20 @@ export const DEFAULT_SPHEROID: Required<SpheroidConfig> = {
   reformProb: 0.0005,
   matrixRepulsion: 0.05,
   matrixMobility: 1,
+  cellRepulsion: 0.3,
   cellAdhesion: 0.02,
+  adhesionRange: 0.5,
   ligand: 0.02,
   motility: 0.08,
+  protrusion: 0,
+  protrusionRange: 1.5,
+  leaderThrust: 0,
+  leaderGrip: 3,
+  leaderTime: 200,
+  leaderSpacing: 5,
+  yieldInCompression: true,
+  matrixDisorder: 0,
+  dims: 2,
   divisionTime: 400,
   maxDensity: 9.5,
   maxCells: 600,
@@ -230,39 +277,67 @@ export const DEFAULT_SPHEROID: Required<SpheroidConfig> = {
  */
 export function spheroidScenario(cfg: SpheroidConfig = {}): SpheroidScenario {
   let c = { ...DEFAULT_SPHEROID, ...defined(cfg) };
-  const sites: [number, number][] = [];
-  const rows = Math.ceil(c.matrixRadius / (Math.sqrt(3) / 2));
-  for (let j = -rows; j <= rows; j++) {
-    for (let i = -Math.ceil(c.matrixRadius) - 1; i <= Math.ceil(c.matrixRadius) + 1; i++) {
-      const x = i + (j & 1) * 0.5;
-      const y = (j * Math.sqrt(3)) / 2;
-      if (Math.hypot(x, y) <= c.matrixRadius) sites.push([x, y]);
+  // A close-packed cell has 6 touching neighbours in 2D and 12 in 3D, so the same squeeze reads
+  // as a higher density in 3D.
+  if (cfg.maxDensity === undefined && c.dims === 3) c = { ...c, maxDensity: 22 };
+  // Close-packed sites one diameter apart: a triangular lattice in 2D, face-centred cubic in 3D.
+  const sites: [number, number, number][] = [];
+  const reach = Math.ceil(c.matrixRadius) + 1;
+  if (c.dims === 2) {
+    const rows = Math.ceil(c.matrixRadius / (Math.sqrt(3) / 2));
+    for (let j = -rows; j <= rows; j++) {
+      for (let i = -reach; i <= reach; i++) sites.push([i + (j & 1) * 0.5, (j * Math.sqrt(3)) / 2, 0]);
+    }
+  } else {
+    const a = Math.SQRT1_2;
+    const span = Math.ceil(reach / a);
+    for (let k = -span; k <= span; k++) {
+      for (let j = -span; j <= span; j++) {
+        for (let i = -span; i <= span; i++) if ((i + j + k) % 2 === 0) sites.push([i * a, j * a, k * a]);
+      }
     }
   }
-  const isCell = (x: number, y: number) => Math.hypot(x, y) <= c.cellRadius;
-  const cells = sites.filter(([x, y]) => isCell(x, y));
-  const matrix = sites.filter(([x, y]) => !isCell(x, y));
+  const inside = sites.filter(([x, y, z]) => Math.hypot(x, y, z) <= c.matrixRadius);
+  const isCell = ([x, y, z]: [number, number, number]) => Math.hypot(x, y, z) <= c.cellRadius;
+  const cells = inside.filter(isCell);
+  const matrix = inside.filter((p) => !isCell(p));
   const cellCap = Math.max(c.maxCells, cells.length);
   const n = cellCap + matrix.length;
 
   const state = createState(n);
-  const topology = createTopology(n, 8);
-  cells.forEach(([x, y], k) => spawn(state, k, x, y, 0, CELL));
-  matrix.forEach(([x, y], k) => {
+  // Room for a full shell of lattice neighbours (6 or 12) plus re-formed and ligand bonds.
+  const topology = createTopology(n, c.dims === 2 ? 8 : 16);
+  cells.forEach(([x, y, z], k) => spawn(state, k, x, y, z, CELL));
+  matrix.forEach(([x, y, z], k) => {
     const i = cellCap + k;
-    spawn(state, i, x, y, 0, MATRIX);
-    if (Math.hypot(x, y) > c.matrixRadius - 1) setFix(topology, i, x, y, 0);
+    const jitter = (salt: number) => (rand01(i, c.seed, salt) - 0.5) * 2 * c.matrixDisorder;
+    const px = x + jitter(11);
+    const py = y + jitter(12);
+    const pz = c.dims === 3 ? z + jitter(13) : 0;
+    spawn(state, i, px, py, pz, MATRIX);
+    if (Math.hypot(x, y, z) > c.matrixRadius - 1) setFix(topology, i, px, py, pz);
   });
-  for (let a = 0; a < matrix.length; a++) {
-    for (let b = a + 1; b < matrix.length; b++) {
-      const d = Math.hypot(matrix[a]![0] - matrix[b]![0], matrix[a]![1] - matrix[b]![1]);
-      if (d < 1.01) addSpring(topology, cellCap + a, cellCap + b, d, 1, 0, KIND_MATRIX);
+  // Bond each matrix particle to those within reach: lattice neighbours, however scattered.
+  const bondReach = 1.01 + 2 * c.matrixDisorder;
+  const grid = neighbourGrid(state, bondReach, c.dims);
+  const near = new Int32Array(n);
+  for (let a = cellCap; a < n; a++) {
+    const count = gatherNeighbours(grid, state.pos[a * 4]!, state.pos[a * 4 + 1]!, state.pos[a * 4 + 2]!, near);
+    for (let q = 0; q < count; q++) {
+      const b = near[q]!;
+      if (b <= a || state.species[b] !== MATRIX) continue;
+      const d = Math.hypot(
+        state.pos[a * 4]! - state.pos[b * 4]!,
+        state.pos[a * 4 + 1]! - state.pos[b * 4 + 1]!,
+        state.pos[a * 4 + 2]! - state.pos[b * 4 + 2]!,
+      );
+      if (d < bondReach) addSpring(topology, a, b, d, 1, 0, KIND_MATRIX);
     }
   }
 
   const base = springParams({
     seed: c.seed,
-    dims: 2,
+    dims: c.dims,
     // No inertia: velocity is force times mobility, the overdamped limit the paper models.
     damp: 0,
     damptype: 1,
@@ -270,8 +345,11 @@ export function spheroidScenario(cfg: SpheroidConfig = {}): SpheroidScenario {
     springforce: 1,
     backboneStrength: 1,
     pushapartlocalforce: 0,
-    pairRange: 1.5,
-    adhesionRange: 0.5,
+    // A soft wall at the edge of the matrix: past it there is nothing for a cell to push on.
+    modelSphereForce: 0.5,
+    modelSphereRadius: c.matrixRadius - 0.5,
+    // Density is the crowding signal for division, so it must not change with `pairRange`.
+    densityRange: 1.5,
   });
 
   const totals = { broken: 0, formed: 0, divisions: 0 };
@@ -287,6 +365,9 @@ export function spheroidScenario(cfg: SpheroidConfig = {}): SpheroidScenario {
     get config() {
       return c;
     },
+    get rules() {
+      return rules;
+    },
     configure(change) {
       c = { ...c, ...defined(change) };
       rules = spheroidRules(c);
@@ -298,6 +379,9 @@ export function spheroidScenario(cfg: SpheroidConfig = {}): SpheroidScenario {
         if (rules.turnover) totals.broken += breakBonds(state, topology, scenario.params, rules.breakRule, events.onBreak);
         if (rules.turnover || c.ligand > 0) totals.formed += formBonds(state, topology, scenario.params, rules.formRule);
         if (rules.division) totals.divisions += divideCells(state, scenario.params, rules.division, events.onDivide);
+        // Selection needs a neighbour search, so it runs every few steps at a rate to match.
+        if (rules.leaders && state.step % LEADER_EVERY === 0)
+          selectLeaders(state, scenario.params, { ...rules.leaders, tau: Math.max(1, rules.leaders.tau / LEADER_EVERY) });
       }
     },
   };
@@ -314,31 +398,64 @@ function spheroidParams(c: Required<SpheroidConfig>): Partial<SpringParams> {
   const roleforces = Array.from({ length: 8 }, () => 1);
   roleforces[KIND_MATRIX] = c.stiffness;
   roleforces[KIND_LIGAND] = c.ligand;
+  const protrusion = Array.from({ length: MAX_SPECIES }, () => 0);
+  protrusion[CELL] = c.protrusion;
+  const thrust = Array.from({ length: MAX_SPECIES }, () => 0);
+  thrust[LEADER] = c.leaderThrust;
+  motility[LEADER] = c.motility;
   return {
+    pairRange: Math.max(1.5, c.protrusion !== 0 || c.leaderThrust !== 0 ? c.protrusionRange : 0),
+    adhesionRange: c.adhesionRange,
+    protrusion,
+    // Summed weight of a full shell of neighbours out to two diameters, in each packing.
+    protrusionFull: c.dims === 2 ? 3.8 : 11,
+    thrust,
+    tissueMask: (1 << CELL) | (1 << LEADER),
+    protrusionRange: c.protrusionRange,
+    // A leader is a cell: it repels and adheres as one.
     repulsion: speciesTable([
-      [CELL, CELL, 0.3],
+      [CELL, CELL, c.cellRepulsion],
+      [CELL, LEADER, c.cellRepulsion],
+      [LEADER, LEADER, c.cellRepulsion],
       [CELL, MATRIX, 0.3],
+      [LEADER, MATRIX, 0.3],
       [MATRIX, MATRIX, c.matrixRepulsion],
     ]),
-    adhesion: speciesTable([[CELL, CELL, c.cellAdhesion]]),
+    adhesion: speciesTable([
+      [CELL, CELL, c.cellAdhesion],
+      [CELL, LEADER, c.cellAdhesion * c.leaderGrip],
+      [LEADER, LEADER, c.cellAdhesion * c.leaderGrip],
+    ]),
     mobility,
     motility,
     roleforces,
   };
 }
 
+export interface SpheroidRules {
+  readonly breakRule: BreakRule;
+  readonly formRule: FormRule;
+  readonly division: DivisionRule | undefined;
+  readonly leaders: LeaderRule | undefined;
+  /** Whether any bond can break. */
+  readonly turnover: boolean;
+}
+
 /** The turnover and growth rules the spheroid's settings decide. */
-function spheroidRules(c: Required<SpheroidConfig>) {
+function spheroidRules(c: Required<SpheroidConfig>): SpheroidRules {
   const breakRule: BreakRule = {
     kinds: (1 << KIND_MATRIX) | (1 << KIND_LIGAND),
     maxStrain: Number.isFinite(c.yieldStrain) ? c.yieldStrain : undefined,
+    tensionOnly: !c.yieldInCompression,
     tau: Number.isFinite(c.bondLifetime) ? c.bondLifetime : undefined,
   };
   const kindOf = Array.from({ length: MAX_SPECIES * MAX_SPECIES }, () => -1);
   kindOf[MATRIX * MAX_SPECIES + MATRIX] = KIND_MATRIX;
   if (c.ligand > 0) {
-    kindOf[CELL * MAX_SPECIES + MATRIX] = KIND_LIGAND;
-    kindOf[MATRIX * MAX_SPECIES + CELL] = KIND_LIGAND;
+    for (const cell of [CELL, LEADER]) {
+      kindOf[cell * MAX_SPECIES + MATRIX] = KIND_LIGAND;
+      kindOf[MATRIX * MAX_SPECIES + cell] = KIND_LIGAND;
+    }
   }
   // Every bond has strength 1; its kind's multiplier in `roleforces` is the real strength.
   const formRule: FormRule = {
@@ -352,8 +469,19 @@ function spheroidRules(c: Required<SpheroidConfig>) {
   const division: DivisionRule | undefined = Number.isFinite(c.divisionTime)
     ? { species: CELL, tau: c.divisionTime, maxDensity: c.maxDensity, offset: 0.5 }
     : undefined;
-  return { breakRule, formRule, division, turnover: breakRule.maxStrain !== undefined || breakRule.tau !== undefined };
+  // A full shell is 6 neighbours in 2D and 12 in 3D. A surface cell of a packed tissue has about
+  // two thirds of that, so that is the limit for becoming a leader; only a leader with a full
+  // shell, buried in the tissue, goes back.
+  const shell = c.dims === 2 ? 6 : 12;
+  const leaders: LeaderRule | undefined =
+    c.leaderThrust !== 0
+      ? { from: CELL, to: LEADER, tau: c.leaderTime, maxNeighbours: (shell * 2) / 3, spacing: c.leaderSpacing, revertNeighbours: shell }
+      : undefined;
+  return { breakRule, formRule, division, leaders, turnover: breakRule.maxStrain !== undefined || breakRule.tau !== undefined };
 }
+
+/** Steps between rounds of leader selection on the CPU path. */
+const LEADER_EVERY = 10;
 
 const UNIT_STRENGTHS: readonly number[] = Array.from({ length: 8 }, () => 1);
 

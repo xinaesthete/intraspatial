@@ -13,7 +13,9 @@
 // Growth (`growth.ts`) stays on the host: `download`, divide, `upload`.
 import { compileShader, deviceScoped, readBackBytes, writeView } from "../../device";
 import { MAX_KINDS, MAX_SPECIES, type SpringParams } from "./params";
+import { divideCells, selectLeaders } from "./growth";
 import { probThreshold, SALT } from "./rng";
+import type { SpheroidScenario } from "./scenarios";
 import { DEAD, type SpringMatrices, type SpringState } from "./state";
 import { SLOT_WORDS, type SpringTopology } from "./topology";
 import { TORSION_SCALE } from "./torsion";
@@ -82,12 +84,28 @@ const SCALARS = [
   "boidseparationpow",
   "boidrad",
   "adhesionRange",
+  "protrusionRange",
+  "protrusionFull",
 ] as const satisfies readonly (keyof SpringParams)[];
 
 /** The u32 fields that follow the vector tables in the uniform block. */
-const UINTS = ["n", "K", "step", "seed", "damptype", "dims", "msize", "mask", "pairs", "hasContact", "hasDist", "torsion"] as const;
-const VEC_BYTES = 240;
-const UNI_BYTES = Math.ceil((VEC_BYTES + UINTS.length * 4 + (SCALARS.length + 1) * 4) / 16) * 16;
+const UINTS = [
+  "n",
+  "K",
+  "step",
+  "seed",
+  "damptype",
+  "dims",
+  "msize",
+  "mask",
+  "pairs",
+  "hasContact",
+  "hasDist",
+  "torsion",
+  "tissueMask",
+] as const;
+const VEC_BYTES = 272;
+const UNI_BYTES = Math.ceil((VEC_BYTES + UINTS.length * 4 + (SCALARS.length + 2) * 4) / 16) * 16;
 
 const COMMON = /* wgsl */ `
 const NO_BOND = 0xffffffffu;
@@ -113,10 +131,13 @@ struct P {
   roleforcesFix: array<vec4f, 2>,
   mobility: vec4f,
   motility: vec4f,
+  protrusion: vec4f,
+  thrust: vec4f,
   centre: vec4f,
 ${UINTS.map((u) => `  ${u}: u32,`).join("\n")}
 ${SCALARS.map((s) => `  ${s}: f32,`).join("\n")}
   pairRange: f32,
+  densityRange: f32,
 }
 @group(0) @binding(0) var<uniform> p: P;
 // [pos n | prev n], each [x, y, z, density].
@@ -260,6 +281,11 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     var boidvel = vec3f(0.0);
     var boidn = 0.0;
     let csynthI = ((p.mask >> si) & 1u) == 1u;
+    let protrude = p.protrusion[si];
+    let thrust = p.thrust[si];
+    let outward = protrude != 0.0 || thrust != 0.0;
+    var away = vec3f(0.0);
+    var awayWeight = 0.0;
     for (var j = 0u; j < n; j++) {
       if (j == i) { continue; }
       let metaJ = attrs[j * 4u + 3u];
@@ -270,8 +296,15 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       let len = length(dir);
       if (len == 0.0 || len > p.pairRange) { continue; }
 
-      density += 1.0 / (len * len * len);
-      dirdensity += max(0.0, dot(dir, vel) / len) / (len * len);
+      if (len < p.densityRange) {
+        density += 1.0 / (len * len * len);
+        dirdensity += max(0.0, dot(dir, vel) / len) / (len * len);
+      }
+      if (outward && (sj == si || ((p.tissueMask >> sj) & 1u) == 1u) && len < p.protrusionRange) {
+        let w = 1.0 - len / p.protrusionRange;
+        awayWeight += w;
+        away -= dir * (w / len);
+      }
 
       var lforce = 0.0;
       var gforce = 0.0;
@@ -354,6 +387,10 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       lforce += adhesionForce(len, mine.y + metaJ.y, p.repulsion[si][sj], p.adhesion[si][sj], p.adhesionRange);
       force += dir * ((gforce + lforce + bforce) / len);
     }
+    let awayLen = length(away);
+    var outwardScale = 0.0;
+    if (awayLen > 1e-6) { outwardScale = (protrude * max(0.0, 1.0 - awayWeight / p.protrusionFull) + thrust) / awayLen; }
+    force += outwardScale * away;
     if (boidn > 0.0) {
       force += (boidpos / boidn - old) * p.boidcohesion + (boidvel / boidn - vel) * p.boidalignment;
     }
@@ -449,6 +486,7 @@ struct T {
   breakThreshold: u32,
   formThreshold: u32,
   restCurrent: u32,
+  tensionOnly: u32,
   maxStrain: f32,
   springlen: f32,
   springlenfix: f32,
@@ -479,7 +517,9 @@ fn breakMain(@builtin(global_invocation_id) gid: vec3u) {
       if (t.useStrain == 1u) {
         let len = length(state[j].xyz - state[i].xyz);
         let rest = bitcast<f32>(spr.y) * t.springlen + t.springlenfix;
-        if (abs(len / rest - 1.0) > t.maxStrain) { doomed = true; }
+        var strain = len / rest - 1.0;
+        if (t.tensionOnly == 0u) { strain = abs(strain); }
+        if (strain > t.maxStrain) { doomed = true; }
       }
       if (pairHash(i, j, t.step, t.seed ^ ${SALT.bondBreak}u) < t.breakThreshold) { doomed = true; }
     }
@@ -611,7 +651,9 @@ function packStepUniform(
   f32s(160, p.roleforcesFix, MAX_KINDS);
   f32s(192, p.mobility, MAX_SPECIES);
   f32s(208, p.motility, MAX_SPECIES);
-  f32s(224, p.springCentre, 3);
+  f32s(224, p.protrusion, MAX_SPECIES);
+  f32s(240, p.thrust, MAX_SPECIES);
+  f32s(256, p.springCentre, 3);
   const uints: Record<(typeof UINTS)[number], number> = {
     n,
     K,
@@ -625,11 +667,13 @@ function packStepUniform(
     hasContact: m?.contact ? 1 : 0,
     hasDist: m?.dist ? 1 : 0,
     torsion: torsion ? 1 : 0,
+    tissueMask: p.tissueMask,
   };
   UINTS.forEach((u, k) => dv.setUint32(VEC_BYTES + k * 4, uints[u], true));
   const base = VEC_BYTES + UINTS.length * 4;
   SCALARS.forEach((s, k) => dv.setFloat32(base + k * 4, p[s], true));
   dv.setFloat32(base + SCALARS.length * 4, p.pairRange ?? 3.0e38, true);
+  dv.setFloat32(base + SCALARS.length * 4 + 4, Number.isFinite(p.densityRange) ? p.densityRange : 3.0e38, true);
   return buf;
 }
 
@@ -715,10 +759,11 @@ export async function createSpringsGpu(n: number, K: number, opts: { device?: GP
       br?.tau !== undefined ? probThreshold(1 / br.tau) : 0,
       probThreshold(fr?.prob ?? 1),
       fr?.rest === "current" ? 1 : 0,
+      br?.tensionOnly ? 1 : 0,
     ];
     u.forEach((v, k) => dv.setUint32(96 + k * 4, v, true));
     const f = [br?.maxStrain ?? 0, p.springlen, p.springlenfix, fr?.range ?? 0, typeof fr?.rest === "number" ? fr.rest : 0];
-    f.forEach((v, k) => dv.setFloat32(132 + k * 4, v, true));
+    f.forEach((v, k) => dv.setFloat32(136 + k * 4, v, true));
     device.queue.writeBuffer(turnUni, 0, buf);
   };
 
@@ -800,6 +845,50 @@ export async function createSpringsGpu(n: number, K: number, opts: { device?: GP
     },
     positions() {
       return cur;
+    },
+  };
+}
+
+/**
+ * Run a spheroid on the device. The step and bond turnover are kernels; division needs a free
+ * slot per daughter, so every `syncEvery` steps the state comes back to the host, cells divide
+ * there (with the division rate scaled to cover the steps in between), and it goes back up.
+ * After each `advance` the scenario's `state` and `topology` are current.
+ *
+ * Not tracked on this path: `totals.broken`, `totals.formed` and `takeEvents()`.
+ */
+export async function createSpheroidGpuRunner(
+  sc: SpheroidScenario,
+  opts: { device?: GPUDevice; syncEvery?: number } = {},
+): Promise<{ advance(steps: number): Promise<void> }> {
+  const syncEvery = opts.syncEvery ?? 10;
+  const gpu = await createSpringsGpu(sc.state.n, sc.topology.K, opts);
+  gpu.upload(sc.state, sc.topology);
+  let sinceSync = 0;
+  const sync = async () => {
+    await gpu.download(sc.state, sc.topology);
+    let changed = 0;
+    const division = sc.rules.division;
+    if (division && sinceSync > 0) {
+      const born = divideCells(sc.state, sc.params, { ...division, tau: Math.max(1, division.tau / sinceSync) });
+      sc.totals.divisions += born;
+      changed += born;
+    }
+    const leaders = sc.rules.leaders;
+    if (leaders && sinceSync > 0) changed += selectLeaders(sc.state, sc.params, { ...leaders, tau: Math.max(1, leaders.tau / sinceSync) });
+    if (changed > 0) gpu.upload(sc.state, sc.topology);
+    sinceSync = 0;
+  };
+  return {
+    async advance(steps) {
+      for (let k = 0; k < steps; k++) {
+        const rules = sc.rules;
+        gpu.step(sc.params);
+        if (rules.turnover) gpu.breakBonds(sc.params, rules.breakRule);
+        if (rules.turnover || sc.config.ligand > 0) gpu.formBonds(sc.params, rules.formRule);
+        if (++sinceSync >= syncEvery) await sync();
+      }
+      await sync();
     },
   };
 }

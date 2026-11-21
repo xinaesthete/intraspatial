@@ -6,6 +6,7 @@ import {
   CELL,
   DEAD,
   KIND_LIGAND,
+  LEADER,
   MATRIX,
   NO_BOND,
   type Scenario,
@@ -282,6 +283,54 @@ export function drawEvents(ctx: CanvasRenderingContext2D, events: readonly Sprin
       ctx.beginPath();
       ctx.arc(q.x, q.y, scale * 0.9, 0, 2 * Math.PI);
       ctx.stroke();
+    }
+  }
+  ctx.globalCompositeOperation = "source-over";
+}
+
+/**
+ * A 3D tissue as depth-sorted spheres, turning about the vertical axis. Only the cells are
+ * drawn: the matrix would hide them. Analytic: each cell is shaded by depth and coloured by how
+ * far it is from the centre, so arms read as a change of colour. Aesthetic: additive glow with
+ * trails.
+ */
+export function drawBall(ctx: CanvasRenderingContext2D, sc: Scenario, view: View, aesthetic: boolean): void {
+  const { state } = sc;
+  const proj = projector(view);
+  const scale = Math.min(view.width, view.height) / 2 / view.extent;
+  if (aesthetic) fade(ctx, view, 0.18);
+  else {
+    ctx.globalCompositeOperation = "source-over";
+    ctx.fillStyle = "#0b1020";
+    ctx.fillRect(0, 0, view.width, view.height);
+  }
+  const cells: { x: number; y: number; z: number; r: number; far: number; leader: boolean }[] = [];
+  for (let i = 0; i < state.n; i++) {
+    const leader = state.species[i] === LEADER;
+    if (state.species[i] !== CELL && !leader) continue;
+    const q = proj(state.pos[i * 4]!, state.pos[i * 4 + 1]!, state.pos[i * 4 + 2]!);
+    const far = Math.hypot(state.pos[i * 4]!, state.pos[i * 4 + 1]!, state.pos[i * 4 + 2]!) / view.extent;
+    cells.push({ x: q.x, y: q.y, z: q.z, r: state.radius[i]! * scale, far, leader });
+  }
+  // Painter's algorithm: furthest first.
+  cells.sort((a, b) => a.z - b.z);
+  for (const c of cells) {
+    const near = Math.max(0, Math.min(1, 0.5 + c.z / (2 * view.extent)));
+    const hue = c.leader ? 8 : 170 + 110 * Math.min(1, c.far);
+    if (aesthetic) {
+      const glow = ctx.createRadialGradient(c.x, c.y, 0, c.x, c.y, c.r * 1.5);
+      glow.addColorStop(0, `hsla(${hue}, 90%, ${50 + 20 * near}%, ${0.05 + 0.12 * near})`);
+      glow.addColorStop(1, `hsla(${hue}, 90%, 50%, 0)`);
+      ctx.fillStyle = glow;
+      ctx.fillRect(c.x - c.r * 1.5, c.y - c.r * 1.5, c.r * 3, c.r * 3);
+    } else {
+      const ball = ctx.createRadialGradient(c.x - c.r * 0.3, c.y - c.r * 0.3, c.r * 0.1, c.x, c.y, c.r);
+      ball.addColorStop(0, `hsl(${hue}, 70%, ${35 + 40 * near}%)`);
+      ball.addColorStop(1, `hsl(${hue}, 70%, ${8 + 22 * near}%)`);
+      ctx.fillStyle = ball;
+      ctx.beginPath();
+      ctx.arc(c.x, c.y, c.r, 0, 2 * Math.PI);
+      ctx.fill();
     }
   }
   ctx.globalCompositeOperation = "source-over";

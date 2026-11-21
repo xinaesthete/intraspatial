@@ -145,11 +145,65 @@ Not shown: long branching fingers, or agreement with the paper's numbers. The fo
 are this project's, not the authors' (their code is `anupamdata/ABM_VE_Matrix_Viscous_Tissue`
 on GitHub and has not been read). The model is 2D.
 
+## 3D and branching
+
+`spheroidScenario({ dims: 3 })` is a ball of cells in a block of bonded matrix (face-centred
+cubic, 12 bonds a particle). It runs on the GPU through `createSpheroidGpuRunner`: about 6 ms a
+step for 6,700 particles and 12 ms for 13,000, against 27 to 45 ms on the CPU for the smaller one.
+
+Growth pressure alone does not branch. Every part of the surface pushes equally, the matrix
+yields evenly, and the ball stays a ball. Branching needs something that favours a tip. What
+worked is tip-cell selection, as in a sprouting blood vessel:
+
+| piece                     | what it does                                                        |
+| ------------------------- | ------------------------------------------------------------------- |
+| leaders (`selectLeaders`) | exposed surface cells turn into leaders at random                   |
+| lateral inhibition        | never within `leaderSpacing` of another leader: sets branch spacing |
+| thrust                    | a leader pulls outward with a fixed force                           |
+| grip                      | leaders adhere to followers `leaderGrip` times harder than cells do |
+| stalk growth              | cells behind a leader are less crowded, so they divide              |
+
+A leader's force is concentrated on one cell, so it cuts a matrix that holds back the tissue as
+a whole. The paper reports leader cells with nuclear YAP at the tips of its fingers; the selection
+rule here is this project's, not the paper's.
+
+Regimes found (one seed each unless said; matrix stiffness 0.3, yield 0.3, disorder 0.2):
+
+| setting                                            | outcome                                             |
+| -------------------------------------------------- | --------------------------------------------------- |
+| no leaders                                         | ball; stalls near 275 cells                         |
+| leaders, adhesion 0.06, cell stiffness 0.3         | thin arms that pinch off into travelling clusters   |
+| leaders (thrust 0.6), adhesion 0.1, cell stiffness 0.5 | thick arms that stay attached; 9 branches at 7,000 steps, 13 at 10,500 |
+| the same with thrust 0.8                           | more arms (11 at 7,000 steps); a few leaders tear free |
+| adhesion 0.1 with cell stiffness 0.3               | the tissue crushes itself                           |
+| leader thrust 0.2 with grip 1                      | leaders tear free and leave alone                   |
+
+Three things had to be fixed on the way, and each is now a setting:
+
+- **A perfect lattice yields along its crystal planes**, and the tissue grew as a cube.
+  `matrixDisorder` scatters the matrix and takes the scattered bond lengths as rest lengths.
+- **Adhesion that reaches second neighbours crushes the tissue.** `adhesionRange` 0.25 keeps it
+  to touching cells; `cellRepulsion` has to outweigh it.
+- **Density depended on `pairRange`**, so widening the range switched division off.
+  `densityRange` pins it.
+
+`protrusion` (an outward push on every surface cell, scaled by exposure) is implemented and
+tested but is not what makes the branches. Its first version summed pushes without the exposure
+factor, which favours flat surface over bumps, and only inflated the ball.
+
+Branches are counted with `shollProfile`: concentric shells about the centre, and the number of
+separate pieces of tissue in each. `shape3d` gives reach, compactness and anisotropy.
+
+Not done: a sweep over seeds, a phase diagram in 3D, any comparison with real branching data,
+and keeping every arm attached (some clusters still break away in the cohesive regime).
+
 ## GPU limits
 
 - **Pairs are brute force.** O(n²) per step, with `pairRange` as a cutoff. Walking the grid
   index instead would change no result.
-- **Growth is on the host.** Download, divide, upload.
+- **Growth and leader selection are on the host.** `createSpheroidGpuRunner` downloads every ten
+  steps, divides and selects there, and uploads if anything changed. Bond-break events and the
+  broken-bond total are not reported on that path.
 - **WGSL helpers must not return from inside a loop.** Doing so gave wrong answers on
   Dawn/Metal with no error; the helpers accumulate instead.
 - **Slots are bound as `vec4u`.** An empty slot's bit pattern is a NaN, which `f32` need not
@@ -161,7 +215,7 @@ on GitHub and has not been read). The model is 2D.
 2. Division on the GPU: match the k-th dividing cell to the k-th free slot with two prefix sums.
 3. Graph ops, so the model composes with fields (chemotaxis: splat, gradient, force).
 4. Read the authors' code and compare force laws.
-5. 3D spheroid.
+5. Seeds and a phase diagram for the 3D branching regimes.
 
 Explainer candidates: the propose and accept handshake, and a strained lattice relaxing as its
 bonds turn over. The playground's stress relaxation setup is most of the second.

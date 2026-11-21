@@ -3,11 +3,14 @@ import {
   addRod,
   addSpring,
   breakBonds,
+  CELL,
   chromatinScenario,
+  createSpheroidGpuRunner,
   createSpringsGpu,
   createState,
   createTopology,
   formBonds,
+  liveCount,
   MAX_SPECIES,
   rand01,
   runSprings,
@@ -144,6 +147,10 @@ describe("springs on the GPU", () => {
       noiseforce: 0.01,
       noiseprob: 0.5,
       motility: [0.005, 0, 0, 0],
+      protrusion: [0.004, 0, 0, 0],
+      thrust: [0.01, 0, 0, 0],
+      protrusionRange: 2.5,
+      densityRange: 3,
       repulsion: speciesTable([[0, 0, 0.1]]),
       adhesion: speciesTable([[0, 0, 0.02]]),
     });
@@ -172,6 +179,22 @@ describe("springs on the GPU", () => {
     await check("chromatin contacts", chromatinScenario({ n: 50, mode: "contacts" }), 8);
     // Motility off: a random kick of ±0.02 that lands differently in f32 would swamp the check.
     await check("spheroid", spheroidScenario({ cellRadius: 2, matrixRadius: 6, maxCells: 40, motility: 0 }), 8);
+    await check(
+      "spheroid 3D with protrusion",
+      spheroidScenario({ dims: 3, cellRadius: 2, matrixRadius: 4.5, maxCells: 60, motility: 0, protrusion: 0.02, protrusionRange: 2 }),
+      6,
+    );
+  });
+
+  it("runs a spheroid on the device, dividing on the host", async () => {
+    const sc = spheroidScenario({ cellRadius: 2, matrixRadius: 7, maxCells: 200, divisionTime: 60, yieldStrain: 0.1 });
+    const start = liveCount(sc.state, CELL);
+    const runner = await createSpheroidGpuRunner(sc);
+    await runner.advance(400);
+    expect(sc.state.step).toBe(400);
+    expect(liveCount(sc.state, CELL)).toBeGreaterThan(start * 1.5);
+    expect(sc.totals.divisions).toBe(liveCount(sc.state, CELL) - start);
+    expect(topologyDefect(sc.topology)).toBeUndefined();
   });
 
   it("breaks exactly the bonds the CPU breaks", async () => {
@@ -190,7 +213,7 @@ describe("springs on the GPU", () => {
     s.step = 17;
     const gt = cloneTopology(t);
     const p = springParams({ seed: 5 });
-    const rule = { kinds: 0b10, maxStrain: 0.2, tau: 6 };
+    const rule = { kinds: 0b10, maxStrain: 0.2, tau: 6, tensionOnly: true };
     const gpu = await createSpringsGpu(n, 6);
     gpu.upload(s, gt);
     gpu.breakBonds(p, rule);

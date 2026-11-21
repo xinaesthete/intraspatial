@@ -13,3 +13,5 @@ A spring model in `intraspatial/gpu/sim` (the `springs` namespace): a port of CS
 - `projectedShape`, `bondReadout` and `phaseDiagram` measure outline circularity, bond stress, and behaviour over a grid of two parameters.
 - `chromatinScenario`, `chainScenario`, `spheroidScenario` and `relaxationScenario` are ready-made setups.
 - Spheroid and relaxation scenarios have `config` and `configure(change)`: stiffness, yield, healing, adhesion, motility and division all change on a running scenario without rebuilding it.
+- The spheroid runs in 3D (`dims: 3`) with `createSpheroidGpuRunner` driving it on the GPU. Leader cells (`leaderThrust`, `leaderSpacing`, `leaderGrip`, `selectLeaders`) make it branch; `matrixDisorder`, `adhesionRange`, `cellRepulsion`, `protrusion` and `yieldInCompression` are new settings.
+- `shollProfile` counts branches and `shape3d` measures reach, compactness and anisotropy.

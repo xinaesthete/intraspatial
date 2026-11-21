@@ -69,6 +69,40 @@ export function LineChart(props: {
   );
 }
 
+/** A bar per bin: here, how many separate pieces of tissue cross each shell about the centre. */
+export function BarChart(props: { title: string; values: readonly number[]; xLabel: string }) {
+  const W = 320;
+  const H = 110;
+  const pad = { l: 24, r: 8, t: 18, b: 18 };
+  const hi = Math.max(2, ...props.values);
+  const bw = (W - pad.l - pad.r) / Math.max(1, props.values.length);
+  return (
+    <svg className="chart" viewBox={`0 0 ${W} ${H}`} role="img" aria-label={props.title}>
+      <text x={pad.l} y={12} className="chart-title">
+        {props.title}
+      </text>
+      <line x1={pad.l} y1={H - pad.b} x2={W - pad.r} y2={H - pad.b} className="chart-axis" />
+      <text x={pad.l - 4} y={pad.t + 4} className="chart-tick" textAnchor="end">
+        {hi}
+      </text>
+      <text x={W - pad.r} y={H - 4} className="chart-tick" textAnchor="end">
+        {props.xLabel}
+      </text>
+      {props.values.map((v, k) => (
+        // biome-ignore lint/suspicious/noArrayIndexKey: bins are positional
+        <rect
+          key={k}
+          x={pad.l + k * bw + 1}
+          y={H - pad.b - (v / hi) * (H - pad.t - pad.b)}
+          width={Math.max(1, bw - 2)}
+          height={(v / hi) * (H - pad.t - pad.b)}
+          fill={v > 1 ? "#e879f9" : "#2dd4bf"}
+        />
+      ))}
+    </svg>
+  );
+}
+
 /** Teal for a round outline through to magenta for a fingered one. */
 function circularityColour(c: number): string {
   const t = Math.max(0, Math.min(1, (c - 0.55) / 0.4));

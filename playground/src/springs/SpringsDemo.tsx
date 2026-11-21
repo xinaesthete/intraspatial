@@ -25,13 +25,13 @@ import {
   spheroidScenario,
 } from "../../../src/gpu/sim/springs/index";
 import { MathTex } from "../Math";
-import { LineChart, PhaseGrid } from "./Charts";
+import { BarChart, LineChart, PhaseGrid } from "./Charts";
 import { MapEditor } from "./MapEditor";
-import { drawChainAesthetic, drawChainAnalytic, drawEvents, drawMatrix, drawSheetAesthetic, drawSheetAnalytic } from "./draw";
+import { drawBall, drawChainAesthetic, drawChainAnalytic, drawEvents, drawMatrix, drawSheetAesthetic, drawSheetAnalytic } from "./draw";
 import type { PhaseMessage } from "./phaseWorker";
 import { useSimulation } from "./useSimulation";
 
-type Kind = "spheroid" | "relaxation" | "distances" | "contacts" | "draw";
+type Kind = "spheroid" | "ball" | "relaxation" | "distances" | "contacts" | "draw";
 type Look = "analytic" | "aesthetic";
 
 const KINDS: readonly { id: Kind; label: string; blurb: string }[] = [
@@ -40,6 +40,12 @@ const KINDS: readonly { id: Kind; label: string; blurb: string }[] = [
     label: "Spheroid in a matrix",
     blurb:
       "A ball of dividing, moving cells grows inside a gel. The gel is a network of bonds. If the bonds never break the gel is elastic and holds the cells in; if they break under load and re-form, the gel creeps and the cells push out into it.",
+  },
+  {
+    id: "ball",
+    label: "Branching in 3D",
+    blurb:
+      "A ball of cells in a block of gel, on the GPU. A few cells on the surface become leaders (red): each pulls outward, holds on to the cells behind it, and stops new leaders forming nearby. A leader can cut into a gel that would hold back the tissue as a whole, and cells divide into the space behind it. That makes a strand, and new leaders on its flanks make branches.",
   },
   {
     id: "relaxation",
@@ -67,9 +73,12 @@ const KINDS: readonly { id: Kind; label: string; blurb: string }[] = [
   },
 ];
 
+/** The spheroid settings that are numbers, which is what a slider or a phase axis can vary. */
+type NumericSetting = { [K in keyof SpheroidConfig]-?: Required<SpheroidConfig>[K] extends number ? K : never }[keyof SpheroidConfig];
+
 /** Spheroid settings the page exposes. `infinite` adds an off switch that sets the value to ∞. */
 const SPHEROID_CONTROLS: readonly {
-  key: keyof SpheroidConfig;
+  key: NumericSetting;
   label: string;
   hint: string;
   min: number;
@@ -173,6 +182,116 @@ const SPHEROID_CONTROLS: readonly {
   },
 ];
 
+/** Structure of the 3D run, and the two regimes found by searching. */
+const BALL_STRUCTURE: SpheroidConfig = { dims: 3, cellRadius: 2.5, matrixRadius: 11, maxCells: 3000, matrixDisorder: 0.2 };
+const BALL_BASE: SpheroidConfig = {
+  stiffness: 0.3,
+  yieldStrain: 0.3,
+  reformProb: 0.0005,
+  matrixRepulsion: 0.05,
+  motility: 0.02,
+  adhesionRange: 0.25,
+  protrusionRange: 2,
+  leaderGrip: 10,
+  leaderSpacing: 4,
+  leaderTime: 60,
+  divisionTime: 120,
+  ligand: 0.02,
+};
+const COHESIVE: SpheroidConfig = { cellAdhesion: 0.1, cellRepulsion: 0.5 };
+const BALL_PRESETS: readonly { label: string; hint: string; config: SpheroidConfig }[] = [
+  {
+    label: "Branching",
+    hint: "cells hold together: thick arms that stay attached, each led by a tip cell",
+    config: { ...BALL_BASE, ...COHESIVE, leaderThrust: 0.6 },
+  },
+  {
+    label: "Dense branching",
+    hint: "stronger leaders: more arms, and a few leaders tear free",
+    config: { ...BALL_BASE, ...COHESIVE, leaderThrust: 0.8 },
+  },
+  {
+    label: "Breaking away",
+    hint: "weaker cohesion: thin arms that pinch off and travel as clusters",
+    config: { ...BALL_BASE, leaderThrust: 0.6, cellAdhesion: 0.06, cellRepulsion: 0.3, leaderTime: 200, divisionTime: 200 },
+  },
+  {
+    label: "No leaders",
+    hint: "the same gel with nothing to cut it: the ball stays a ball",
+    config: { ...BALL_BASE, ...COHESIVE, leaderThrust: 0 },
+  },
+  {
+    label: "Elastic gel",
+    hint: "leaders, but a gel that never yields",
+    config: { ...BALL_BASE, ...COHESIVE, leaderThrust: 0.6, yieldStrain: Number.POSITIVE_INFINITY },
+  },
+];
+const BALL_CONTROLS: readonly {
+  key: NumericSetting;
+  label: string;
+  hint: string;
+  min: number;
+  max: number;
+  step: number;
+  infinite?: string;
+}[] = [
+  {
+    key: "leaderThrust",
+    label: "Leader pull",
+    hint: "force a leader cell pulls outward with; 0 is no leaders",
+    min: 0,
+    max: 1.2,
+    step: 0.05,
+  },
+  {
+    key: "leaderSpacing",
+    label: "Leader spacing",
+    hint: "no new leader forms this close to another: how far apart branches start",
+    min: 2,
+    max: 10,
+    step: 0.5,
+  },
+  { key: "leaderTime", label: "Leader delay", hint: "steps before an exposed cell becomes a leader", min: 20, max: 600, step: 10 },
+  {
+    key: "leaderGrip",
+    label: "Leader grip",
+    hint: "how much harder a leader holds its followers than cells hold each other",
+    min: 1,
+    max: 15,
+    step: 0.5,
+  },
+  { key: "cellAdhesion", label: "Cell–cell adhesion", hint: "how strongly touching cells hold together", min: 0, max: 0.14, step: 0.005 },
+  {
+    key: "cellRepulsion",
+    label: "Cell stiffness",
+    hint: "how hard cells resist being squeezed; must outweigh adhesion",
+    min: 0.2,
+    max: 0.7,
+    step: 0.02,
+  },
+  { key: "stiffness", label: "Gel stiffness", hint: "strength of a gel bond", min: 0.02, max: 0.6, step: 0.01 },
+  {
+    key: "yieldStrain",
+    label: "Gel yield strain",
+    hint: "how far a gel bond stretches before it breaks",
+    min: 0.05,
+    max: 0.6,
+    step: 0.01,
+    infinite: "never breaks (elastic)",
+  },
+  { key: "reformProb", label: "Gel healing rate", hint: "chance per step that broken gel re-bonds", min: 0, max: 0.02, step: 0.0001 },
+  {
+    key: "divisionTime",
+    label: "Division time",
+    hint: "steps between divisions of an uncrowded cell",
+    min: 40,
+    max: 800,
+    step: 10,
+    infinite: "no division",
+  },
+  { key: "motility", label: "Cell motility", hint: "random force on each cell", min: 0, max: 0.1, step: 0.005 },
+];
+
 const PHASE_BASE: SpheroidConfig = { cellRadius: 3, matrixRadius: 13, maxCells: 400 };
 
 function Slider(props: {
@@ -245,21 +364,26 @@ export function SpringsDemo() {
 
   const [drawN, setDrawN] = useState(64);
   const chain = kind === "distances" || kind === "contacts";
-  const useGpu = gpu && chain;
+  const [ball, setBall] = useState<SpheroidConfig>(BALL_PRESETS[0]?.config ?? BALL_BASE);
+  const useGpu = kind === "ball" || (gpu && chain);
   // `nonce` seeds the run, so Restart gives a fresh one. Only the settings that decide which
   // particles exist are dependencies here; the rest are applied to the running scenario below.
   const { cellRadius, matrixRadius, maxCells } = spheroid;
   const scenario = useMemo((): Scenario | SpheroidScenario | RelaxationScenario => {
     const seed = 1 + nonce;
     if (kind === "spheroid") return spheroidScenario({ cellRadius, matrixRadius, maxCells, seed });
+    if (kind === "ball") return spheroidScenario({ ...BALL_STRUCTURE, seed });
     if (kind === "relaxation") return relaxationScenario({ seed });
     if (kind === "draw") return chainScenario({ n: drawN, seed });
     return chromatinScenario({ n: chainN, mode: kind, seed });
   }, [kind, cellRadius, matrixRadius, maxCells, chainN, drawN, nonce]);
   // Declared before the simulation hook, so a new scenario has its settings before its first step.
   useEffect(() => {
-    if ("configure" in scenario) scenario.configure(scenario.kind === "spheroid" ? { ...DEFAULT_SPHEROID, ...spheroid } : relax);
-  }, [scenario, spheroid, relax]);
+    if (!("configure" in scenario)) return;
+    if (scenario.kind === "relaxation") scenario.configure(relax);
+    else if (scenario.params.dims === 3) scenario.configure(ball);
+    else scenario.configure({ ...DEFAULT_SPHEROID, ...spheroid });
+  }, [scenario, spheroid, relax, ball]);
 
   // Lines drawn on the pair matrix, kept across restarts and re-applied to each new chain.
   const [lines, setLines] = useState<MatrixLine[]>(() => [helixLine(6, 30, 4)]);
@@ -277,11 +401,13 @@ export function SpringsDemo() {
   const extent =
     kind === "spheroid"
       ? (spheroid.matrixRadius ?? DEFAULT_SPHEROID.matrixRadius) + 1
-      : kind === "relaxation"
-        ? 18
-        : kind === "draw"
-          ? chainRadius(drawN) * 1.6
-          : (chainN / 14) * 1.7;
+      : kind === "ball"
+        ? (BALL_STRUCTURE.matrixRadius ?? 10) * 0.95
+        : kind === "relaxation"
+          ? 18
+          : kind === "draw"
+            ? chainRadius(drawN) * 1.6
+            : (chainN / 14) * 1.7;
   const onFrame = useCallback(
     (sc: Scenario, time: number) => {
       const canvas = canvasRef.current;
@@ -289,6 +415,7 @@ export function SpringsDemo() {
       if (!canvas || !ctx) return;
       const view = { width: canvas.width, height: canvas.height, extent, yaw: time * 0.0003 };
       if (sc.kind === "chromatin" || sc.kind === "chain") (look === "analytic" ? drawChainAnalytic : drawChainAesthetic)(ctx, sc, view);
+      else if (sc.params.dims === 3) drawBall(ctx, sc, view, look === "aesthetic");
       else {
         (look === "analytic" ? drawSheetAnalytic : drawSheetAesthetic)(ctx, sc, view);
         drawEvents(ctx, sc.takeEvents(), view);
@@ -319,8 +446,8 @@ export function SpringsDemo() {
   }, [scenario, target, size, latestStep]);
 
   // Phase diagram, run in a worker.
-  const [xKey, setXKey] = useState<keyof SpheroidConfig>("yieldStrain");
-  const [yKey, setYKey] = useState<keyof SpheroidConfig>("motility");
+  const [xKey, setXKey] = useState<NumericSetting>("yieldStrain");
+  const [yKey, setYKey] = useState<NumericSetting>("motility");
   const [phaseSteps, setPhaseSteps] = useState(3000);
   const [points, setPoints] = useState<PhasePoint[]>([]);
   const [running, setRunning] = useState(false);
@@ -400,7 +527,7 @@ export function SpringsDemo() {
             hint="simulation speed"
             value={stepsPerFrame}
             min={1}
-            max={20}
+            max={kind === "ball" ? 100 : 20}
             step={1}
             onChange={setStepsPerFrame}
           />
@@ -429,6 +556,41 @@ export function SpringsDemo() {
                 />
               ))}
               <p className="hint">Settings act on the running tissue. Press Restart for a fresh one.</p>
+            </>
+          )}
+          {kind === "ball" && (
+            <>
+              <div className="row presets">
+                {BALL_PRESETS.map((preset) => (
+                  <button type="button" key={preset.label} title={preset.hint} onClick={() => setBall(preset.config)}>
+                    {preset.label}
+                  </button>
+                ))}
+              </div>
+              {BALL_CONTROLS.map((c) => (
+                <Slider
+                  key={c.key}
+                  label={c.label}
+                  hint={c.hint}
+                  min={c.min}
+                  max={c.max}
+                  step={c.step}
+                  infinite={c.infinite}
+                  value={ball[c.key] ?? DEFAULT_SPHEROID[c.key]}
+                  onChange={(v) => setBall({ ...ball, [c.key]: v })}
+                />
+              ))}
+              <label className="check">
+                <input
+                  type="checkbox"
+                  checked={ball.yieldInCompression === false}
+                  onChange={(e) => setBall({ ...ball, yieldInCompression: !e.target.checked })}
+                />
+                Gel only fails where it is pulled apart
+              </label>
+              <p className="hint">
+                Settings act on the running tissue. Arms take a few thousand steps to appear; raise steps per frame to get there sooner.
+              </p>
             </>
           )}
           {kind === "relaxation" && (
@@ -574,6 +736,38 @@ export function SpringsDemo() {
                   />
                 </>
               )}
+              {kind === "ball" && (
+                <>
+                  <BarChart
+                    title="Pieces of tissue crossing each shell (Sholl profile)"
+                    values={samples.at(-1)?.sholl ?? []}
+                    xLabel="distance from centre →"
+                  />
+                  <LineChart
+                    title="Branches: most pieces in any outer shell"
+                    xs={xs}
+                    yMin={0}
+                    series={[{ label: "branches", colour: "#e879f9", values: samples.map((q) => q.branches) }]}
+                  />
+                  <LineChart
+                    title="Reach of the tissue from its centre"
+                    xs={xs}
+                    yMin={0}
+                    series={[{ label: "radius", colour: "#2dd4bf", values: samples.map((q) => q.maxRadius) }]}
+                  />
+                  <LineChart
+                    title="Cells"
+                    xs={xs}
+                    yMin={0}
+                    series={[{ label: "cells", colour: "#fbbf24", values: samples.map((q) => q.cells) }]}
+                  />
+                  <p className="hint">
+                    The bars cut space into shells around the tissue's centre and count the separate pieces of tissue in each. A ball gives
+                    one piece per shell. Arms give several pieces in the shells they pass through, shown in pink. Leaders are red in the
+                    picture; colour otherwise shows distance from the centre.
+                  </p>
+                </>
+              )}
               {kind === "relaxation" && (
                 <>
                   <LineChart
@@ -658,7 +852,7 @@ export function SpringsDemo() {
           <div className="row phase-controls">
             <label>
               across
-              <select value={xKey} onChange={(e) => setXKey(e.target.value as keyof SpheroidConfig)}>
+              <select value={xKey} onChange={(e) => setXKey(e.target.value as NumericSetting)}>
                 {SPHEROID_CONTROLS.map((c) => (
                   <option key={c.key} value={c.key}>
                     {c.label}
@@ -668,7 +862,7 @@ export function SpringsDemo() {
             </label>
             <label>
               up
-              <select value={yKey} onChange={(e) => setYKey(e.target.value as keyof SpheroidConfig)}>
+              <select value={yKey} onChange={(e) => setYKey(e.target.value as NumericSetting)}>
                 {SPHEROID_CONTROLS.map((c) => (
                   <option key={c.key} value={c.key}>
                     {c.label}

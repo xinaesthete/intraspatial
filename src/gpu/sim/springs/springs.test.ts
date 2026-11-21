@@ -6,6 +6,7 @@ import {
   applyLines,
   bondCount,
   bondReadout,
+  bondsOf,
   breakBonds,
   CELL,
   chainScenario,
@@ -21,6 +22,7 @@ import {
   getSpring,
   helixLine,
   killParticle,
+  LEADER,
   lineCells,
   liveCount,
   MAX_SPECIES,
@@ -31,10 +33,13 @@ import {
   relaxationScenario,
   removeSpring,
   runSprings,
+  selectLeaders,
   type Scenario,
   setFix,
   setTorsion,
+  shape3d,
   sheetLines,
+  shollProfile,
   snapEnd,
   type SpringParams,
   type SpringState,
@@ -270,6 +275,149 @@ describe("matrix lines", () => {
     let worstGap = 0;
     for (let i = 5; i + 4 <= 35; i++) worstGap = Math.max(worstGap, Math.abs(dist(sc.state, i, i + 4) - 1.5));
     expect(worstGap).toBeLessThan(0.25);
+  });
+});
+
+describe("protrusion and thrust", () => {
+  /** A flat sheet of one species with a bump of three extra particles on top. */
+  function sheetWithBump(): SpringState {
+    const s = createState(80);
+    let k = 0;
+    for (let j = 0; j < 5; j++) for (let i = 0; i < 12; i++) spawn(s, k++, i + (j & 1) * 0.5, (j * Math.sqrt(3)) / 2, 0);
+    for (const [x, y] of [
+      [5.5, 4.33],
+      [6.5, 4.33],
+      [6, 5.2],
+    ] as const)
+      spawn(s, k++, x, y, 0);
+    return s;
+  }
+  const moved = (s: SpringState, i: number, p: SpringParams) => {
+    const y0 = s.pos[i * 4 + 1]!;
+    stepSprings(s, createTopology(s.n), p);
+    return s.pos[i * 4 + 1]! - y0;
+  };
+
+  it("cancel inside a tissue and point outward at its surface", () => {
+    const p = plain({ protrusion: [0.01, 0, 0, 0], protrusionRange: 2, dims: 2 });
+    // Particle 30 is in the middle row; 54 is in the top row away from the bump.
+    expect(Math.abs(moved(sheetWithBump(), 30, p))).toBeLessThan(1e-6);
+    expect(moved(sheetWithBump(), 50, p)).toBeGreaterThan(0.002);
+  });
+
+  it("protrusion pushes a bump harder than the flat surface beside it; thrust pushes both alike", () => {
+    const tip = 62;
+    const flat = 50;
+    const p = plain({ protrusion: [0.01, 0, 0, 0], protrusionRange: 2, dims: 2 });
+    const pushed = (i: number) => {
+      const s = sheetWithBump();
+      const before = [s.pos[i * 4]!, s.pos[i * 4 + 1]!];
+      stepSprings(s, createTopology(s.n), p);
+      return Math.hypot(s.pos[i * 4]! - before[0]!, s.pos[i * 4 + 1]! - before[1]!);
+    };
+    expect(pushed(tip)).toBeGreaterThan(pushed(flat) * 1.3);
+    expect(pushed(tip)).toBeLessThanOrEqual(0.01);
+    const q = plain({ thrust: [0.01, 0, 0, 0], protrusionRange: 2, dims: 2 });
+    const a = sheetWithBump();
+    const b = sheetWithBump();
+    const t = createTopology(a.n);
+    const before = [a.pos[tip * 4]!, a.pos[tip * 4 + 1]!, b.pos[flat * 4]!, b.pos[flat * 4 + 1]!];
+    stepSprings(a, t, q);
+    stepSprings(b, t, q);
+    expect(Math.hypot(a.pos[tip * 4]! - before[0]!, a.pos[tip * 4 + 1]! - before[1]!)).toBeCloseTo(0.01, 5);
+    expect(Math.hypot(b.pos[flat * 4]! - before[2]!, b.pos[flat * 4 + 1]! - before[3]!)).toBeCloseTo(0.01, 5);
+  });
+
+  it("counts other species as own tissue only through tissueMask", () => {
+    const s = createState(2);
+    spawn(s, 0, 0, 0, 0, 0);
+    spawn(s, 1, 1, 0, 0, 2);
+    const off = plain({ thrust: [0.01, 0, 0, 0], protrusionRange: 2 });
+    stepSprings(s, createTopology(2), off);
+    expect(s.pos[0]).toBe(0);
+    stepSprings(s, createTopology(2), { ...off, tissueMask: 1 << 2 });
+    expect(s.pos[0]).toBeCloseTo(-0.01, 6);
+  });
+});
+
+describe("leader selection", () => {
+  const rule = { from: CELL, to: LEADER, tau: 1, maxNeighbours: 3, spacing: 4, revertNeighbours: 6 };
+
+  it("picks exposed cells only, never two within the spacing, and turns a buried leader back", () => {
+    const s = createState(64);
+    lattice(s, 8, 8, CELL);
+    const p = plain({ dims: 2 });
+    expect(selectLeaders(s, p, rule)).toBeGreaterThan(0);
+    const leaders: number[] = [];
+    for (let i = 0; i < 64; i++) if (s.species[i] === LEADER) leaders.push(i);
+    // Only the lattice's corners and edges have three or fewer neighbours.
+    for (const i of leaders) {
+      const col = i % 8;
+      const row = Math.floor(i / 8);
+      expect(col === 0 || col === 7 || row === 0 || row === 7).toBe(true);
+    }
+    for (const a of leaders) for (const b of leaders) if (a < b) expect(dist(s, a, b)).toBeGreaterThanOrEqual(4);
+    // A leader put in the middle of the sheet has a full shell and reverts.
+    s.species[27] = LEADER;
+    s.step++;
+    selectLeaders(s, p, rule);
+    expect(s.species[27]).toBe(CELL);
+  });
+});
+
+describe("3D readouts", () => {
+  /** A ball of radius `r` with `arms` straight arms of length `len` along the axes. */
+  function star(r: number, arms: number, len: number): SpringState {
+    const s = createState(4000);
+    let k = 0;
+    for (let x = -r; x <= r; x++)
+      for (let y = -r; y <= r; y++) for (let z = -r; z <= r; z++) if (Math.hypot(x, y, z) <= r) spawn(s, k++, x, y, z, CELL);
+    const axes = [
+      [1, 0, 0],
+      [-1, 0, 0],
+      [0, 1, 0],
+      [0, -1, 0],
+      [0, 0, 1],
+      [0, 0, -1],
+    ] as const;
+    for (let a = 0; a < arms; a++) {
+      for (let d = r + 1; d <= r + len; d++) {
+        for (const [u, v] of [
+          [0, 0],
+          [1, 0],
+          [0, 1],
+        ] as const) {
+          const [ax, ay, az] = axes[a]!;
+          spawn(s, k++, ax * d + (ax === 0 ? u : 0), ay * d + (ay === 0 ? (ax === 0 ? v : u) : 0), az * d + (az === 0 ? v : 0), CELL);
+        }
+      }
+    }
+    return s;
+  }
+
+  it("counts one piece per shell for a ball and one per arm for a star", () => {
+    const ball = shollProfile(star(4, 0, 0), CELL, { coreRadius: 5 });
+    expect(Math.max(...ball.pieces)).toBe(1);
+    expect(ball.branches).toBe(0);
+    for (const arms of [3, 5]) {
+      const profile = shollProfile(star(4, arms, 8), CELL, { coreRadius: 5 });
+      expect(profile.branches).toBe(arms);
+      expect(profile.branchRadius).toBeGreaterThan(5);
+    }
+  });
+
+  it("measures a ball as compact and isotropic, and a star as reaching far for its volume", () => {
+    const ball = shape3d(star(4, 0, 0), CELL);
+    expect(ball.anisotropy).toBeLessThan(0.01);
+    expect(ball.maxRadius).toBeCloseTo(4.5, 1);
+    const arms = shape3d(star(4, 6, 8), CELL);
+    expect(arms.compactness).toBeLessThan(ball.compactness * 0.2);
+    expect(arms.anisotropy).toBeLessThan(0.05);
+    // One arm makes it lopsided; two species are measured together when asked.
+    expect(shape3d(star(2, 1, 12), CELL).anisotropy).toBeGreaterThan(0.3);
+    const mixed = star(4, 0, 0);
+    mixed.species[0] = LEADER;
+    expect(shape3d(mixed, [CELL, LEADER]).count).toBe(shape3d(mixed, CELL).count + 1);
   });
 });
 
@@ -586,6 +734,22 @@ describe("scenarios", () => {
     sc.configure({ bondLifetime: 30 });
     sc.advance(120);
     expect(bondReadout(sc.state, sc.topology, sc.params).virial[0]).toBeLessThan(held * 0.1);
+  });
+
+  it("spheroid in 3D: a close-packed ball in a bonded block, with disorder leaving it stress-free", () => {
+    const ordered = spheroidScenario({ dims: 3, cellRadius: 2, matrixRadius: 5, maxCells: 100 });
+    expect(ordered.params.dims).toBe(3);
+    expect(ordered.config.maxDensity).toBe(22);
+    // Face-centred cubic: an interior matrix particle has twelve bonds.
+    const counts = new Map<number, number>();
+    for (let i = 100; i < ordered.state.n; i++)
+      counts.set(bondsOf(ordered.topology, i).length, (counts.get(bondsOf(ordered.topology, i).length) ?? 0) + 1);
+    expect(Math.max(...counts.keys())).toBe(12);
+    const scattered = spheroidScenario({ dims: 3, cellRadius: 2, matrixRadius: 5, maxCells: 100, matrixDisorder: 0.2 });
+    expect(Math.abs(bondReadout(scattered.state, scattered.topology, scattered.params).meanStrain)).toBeLessThan(1e-6);
+    expect(topologyDefect(scattered.topology)).toBeUndefined();
+    scattered.advance(20);
+    expect(liveCount(scattered.state, CELL)).toBeGreaterThan(20);
   });
 
   it("spheroid: a yielding matrix lets the tissue outgrow an elastic one", () => {

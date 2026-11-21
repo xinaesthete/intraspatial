@@ -17,6 +17,9 @@ export interface BreakRule {
   /** Break when the strain `|len / rest - 1|` exceeds this, stretched or compressed. The
    *  Elosegui-Artola rule. */
   readonly maxStrain?: number;
+  /** With `maxStrain`: only a stretched bond breaks, so a compressed network keeps its bonds and
+   *  fails by cracking where it is pulled apart. */
+  readonly tensionOnly?: boolean;
   /** Break with probability `1 / tau` per step: a Maxwell element with relaxation time `tau`. */
   readonly tau?: number;
 }
@@ -30,7 +33,8 @@ function breaks(s: SpringState, t: SpringTopology, p: SpringParams, rule: BreakR
   if (rule.maxStrain !== undefined) {
     const len = Math.hypot(s.pos[j * 4]! - s.pos[i * 4]!, s.pos[j * 4 + 1]! - s.pos[i * 4 + 1]!, s.pos[j * 4 + 2]! - s.pos[i * 4 + 2]!);
     const rest = t.slots[o + 1]! * p.springlen + p.springlenfix;
-    if (Math.abs(len / rest - 1) > rule.maxStrain) return true;
+    const strain = len / rest - 1;
+    if ((rule.tensionOnly ? strain : Math.abs(strain)) > rule.maxStrain) return true;
   }
   if (rule.tau !== undefined && pairHash(i, j, s.step, p.seed ^ SALT.bondBreak) < probThreshold(1 / rule.tau)) return true;
   return false;

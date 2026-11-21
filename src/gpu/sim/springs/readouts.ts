@@ -282,3 +282,177 @@ export function populationReadout(s: SpringState, species: number): { count: num
   }
   return { count, meanDensity: count > 0 ? density / count : 0 };
 }
+
+export interface Shape3dReadout {
+  readonly count: number;
+  readonly centre: readonly [number, number, number];
+  /** Root-mean-square distance from the centre. */
+  readonly gyration: number;
+  /** Largest distance of a particle's edge from the centre. */
+  readonly maxRadius: number;
+  /** Fraction of the sphere of radius `maxRadius` that the particles fill: near 0.74 for a
+   *  close-packed ball, and small for a shape that is mostly arms. */
+  readonly compactness: number;
+  /** Relative shape anisotropy of the gyration tensor: 0 for a ball, 1 for a rod. It measures
+   *  elongation, not branching; a shape with many arms in all directions also scores near 0. */
+  readonly anisotropy: number;
+}
+
+/** Size and overall shape of one species in 3D. */
+/** Whether particle `i` is of the species, or one of the species, asked for. */
+function member(s: SpringState, i: number, species: number | readonly number[]): boolean {
+  const sp = s.species[i]!;
+  return typeof species === "number" ? sp === species : species.includes(sp);
+}
+
+export function shape3d(s: SpringState, species: number | readonly number[]): Shape3dReadout {
+  let count = 0;
+  let cx = 0;
+  let cy = 0;
+  let cz = 0;
+  let volume = 0;
+  for (let i = 0; i < s.n; i++) {
+    if (!member(s, i, species)) continue;
+    count++;
+    cx += s.pos[i * 4]!;
+    cy += s.pos[i * 4 + 1]!;
+    cz += s.pos[i * 4 + 2]!;
+    volume += (4 / 3) * Math.PI * s.radius[i]! ** 3;
+  }
+  if (count === 0) return { count: 0, centre: [0, 0, 0], gyration: 0, maxRadius: 0, compactness: 0, anisotropy: 0 };
+  cx /= count;
+  cy /= count;
+  cz /= count;
+  // Gyration tensor, upper triangle.
+  let xx = 0;
+  let yy = 0;
+  let zz = 0;
+  let xy = 0;
+  let xz = 0;
+  let yz = 0;
+  let maxRadius = 0;
+  for (let i = 0; i < s.n; i++) {
+    if (!member(s, i, species)) continue;
+    const x = s.pos[i * 4]! - cx;
+    const y = s.pos[i * 4 + 1]! - cy;
+    const z = s.pos[i * 4 + 2]! - cz;
+    xx += x * x;
+    yy += y * y;
+    zz += z * z;
+    xy += x * y;
+    xz += x * z;
+    yz += y * z;
+    maxRadius = Math.max(maxRadius, Math.hypot(x, y, z) + s.radius[i]!);
+  }
+  const trace = xx + yy + zz;
+  // Sum of products of eigenvalue pairs, from the tensor's invariants: no eigen-decomposition.
+  const pairSum = xx * yy + yy * zz + zz * xx - xy * xy - xz * xz - yz * yz;
+  return {
+    count,
+    centre: [cx, cy, cz],
+    gyration: Math.sqrt(trace / count),
+    maxRadius,
+    compactness: volume / ((4 / 3) * Math.PI * maxRadius ** 3),
+    anisotropy: trace > 0 ? Math.max(0, 1 - (3 * pairSum) / (trace * trace)) : 0,
+  };
+}
+
+export interface ShollProfile {
+  /** Outer radius of each shell. */
+  readonly radii: readonly number[];
+  /** Separate pieces of tissue crossing each shell. */
+  readonly pieces: readonly number[];
+  /** Particles in each shell. */
+  readonly counts: readonly number[];
+  /** The most pieces in any shell beyond `coreRadius`: the branch count. */
+  readonly branches: number;
+  /** Radius of the shell where that happens. */
+  readonly branchRadius: number;
+}
+
+/**
+ * Sholl analysis, the standard count of a neuron's branches, applied to a tissue. Space is cut
+ * into concentric shells about the tissue's centre. In each shell the particles are grouped into
+ * touching pieces. A ball has one piece per shell; a shape with five arms has five pieces in the
+ * shells the arms pass through. Works in 2D and 3D.
+ */
+export function shollProfile(
+  s: SpringState,
+  species: number | readonly number[],
+  opts: {
+    /** Shell thickness; default 1.5 particle diameters. */
+    thickness?: number;
+    /** Particles closer than this are in the same piece; default 1.4 diameters. */
+    link?: number;
+    /** Shells inside this radius do not count towards `branches`. */
+    coreRadius?: number;
+    /** Pieces with fewer particles than this are ignored: stray cells are not branches. */
+    minPiece?: number;
+  } = {},
+): ShollProfile {
+  const ids: number[] = [];
+  let cx = 0;
+  let cy = 0;
+  let cz = 0;
+  let diameter = 0;
+  for (let i = 0; i < s.n; i++) {
+    if (!member(s, i, species)) continue;
+    ids.push(i);
+    cx += s.pos[i * 4]!;
+    cy += s.pos[i * 4 + 1]!;
+    cz += s.pos[i * 4 + 2]!;
+    diameter += 2 * s.radius[i]!;
+  }
+  const count = ids.length;
+  if (count === 0) return { radii: [], pieces: [], counts: [], branches: 0, branchRadius: 0 };
+  cx /= count;
+  cy /= count;
+  cz /= count;
+  diameter /= count;
+  const thickness = (opts.thickness ?? 1.5) * diameter;
+  const link = (opts.link ?? 1.4) * diameter;
+  const minPiece = opts.minPiece ?? 3;
+  const shells = new Map<number, number[]>();
+  for (const i of ids) {
+    const shell = Math.floor(Math.hypot(s.pos[i * 4]! - cx, s.pos[i * 4 + 1]! - cy, s.pos[i * 4 + 2]! - cz) / thickness);
+    const list = shells.get(shell);
+    if (list) list.push(i);
+    else shells.set(shell, [i]);
+  }
+  const last = Math.max(...shells.keys());
+  const radii: number[] = [];
+  const pieces: number[] = [];
+  const counts: number[] = [];
+  let branches = 0;
+  let branchRadius = 0;
+  for (let k = 0; k <= last; k++) {
+    const members = shells.get(k) ?? [];
+    // Union-find over the shell's members, linking those within `link` of each other.
+    const parent = members.map((_, q) => q);
+    const find = (q: number): number => {
+      let root = q;
+      while (parent[root] !== root) root = parent[root]!;
+      parent[q] = root;
+      return root;
+    };
+    for (let a = 0; a < members.length; a++) {
+      for (let b = a + 1; b < members.length; b++) {
+        const i = members[a]!;
+        const j = members[b]!;
+        if (Math.hypot(s.pos[i * 4]! - s.pos[j * 4]!, s.pos[i * 4 + 1]! - s.pos[j * 4 + 1]!, s.pos[i * 4 + 2]! - s.pos[j * 4 + 2]!) < link)
+          parent[find(a)] = find(b);
+      }
+    }
+    const sizes = new Map<number, number>();
+    for (let q = 0; q < members.length; q++) sizes.set(find(q), (sizes.get(find(q)) ?? 0) + 1);
+    const here = [...sizes.values()].filter((size) => size >= minPiece).length;
+    radii.push((k + 1) * thickness);
+    pieces.push(here);
+    counts.push(members.length);
+    if (k * thickness >= (opts.coreRadius ?? 0) && here > branches) {
+      branches = here;
+      branchRadius = (k + 1) * thickness;
+    }
+  }
+  return { radii, pieces, counts, branches, branchRadius };
+}
