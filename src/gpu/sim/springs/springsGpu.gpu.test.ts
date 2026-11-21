@@ -218,6 +218,12 @@ describe("springs on the GPU", () => {
     expect(busy.sc.state.step).toBe(3);
     expect(busy.gpu.stepIndex).toBe(8);
     expect(worst(busy.sc.state, quiet.sc.state).err).toBe(0);
+
+    // Positions alone, the same way: taken at the call, whatever is stepped before it resolves.
+    const again = await make();
+    const positions = again.gpu.snapshotPositions();
+    again.gpu.step(again.sc.params, 5);
+    expect(Array.from(await positions)).toEqual(Array.from(quiet.sc.state.pos));
   });
 
   it("breaks exactly the bonds the CPU breaks", async () => {

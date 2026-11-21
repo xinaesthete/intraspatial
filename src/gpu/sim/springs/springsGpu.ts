@@ -694,6 +694,11 @@ export interface SpringsGpu {
    *  were when this was called: the state is snapshotted on the device at the call, so the
    *  model may go on stepping while the read completes. One download at a time. */
   download(s: SpringState, t: SpringTopology): Promise<void>;
+  /** The current positions only, `xyz` + density per particle, as they were when this was
+   *  called: snapshotted on the device at the call, like `download`. One read at a time, shared
+   *  with `download`. For a host that needs positions now and then (picking, a follow camera)
+   *  without bringing the bond table back. */
+  snapshotPositions(): Promise<Float32Array>;
   /** The buffer holding the current `[pos | prev]`, for a renderer to bind. */
   positions(): GPUBuffer;
 }
@@ -866,6 +871,18 @@ export async function createSpringsGpu(n: number, K: number, opts: { device?: GP
         s.prev.set(st.subarray(n * 4));
         s.step = step;
         t.slotBits.set(new Uint32Array(slBytes));
+      } finally {
+        downloading = false;
+      }
+    },
+    async snapshotPositions() {
+      if (downloading) throw new Error("springsGpu: snapshotPositions called while another download is pending");
+      downloading = true;
+      const enc = device.createCommandEncoder({ label: `springs${id}:snapshotPositions` });
+      enc.copyBufferToBuffer(cur, 0, snapState, 0, n * 16);
+      device.queue.submit([enc.finish()]);
+      try {
+        return new Float32Array(await readBackBytes(device, "springs:state", snapState, 0, n * 16));
       } finally {
         downloading = false;
       }

@@ -700,6 +700,22 @@ export interface AdvanceOptions extends PullOptions {
   reset?: boolean;
   /** Called after each tick with the sink value. */
   onFrame?: (frame: number, value: FieldValue) => void;
+  /** When the sink is downloaded to the host. `"every"` (the default) does it each tick, which is
+   *  what a host consumer drawing every frame wants. `"last"` downloads only the final tick's, so
+   *  a resident simulation runs its whole batch on the device. `"none"` never does: the value
+   *  returned carries `buffer`, for a view that binds it. With `"none"`, a sink that is fed back
+   *  is owned by the sim state and stays valid until the next tick; one that is not is the
+   *  caller's lease to release, as with `pullResident`. */
+  materialise?: "every" | "last" | "none";
+}
+
+/** Whether a sim state holds `v`'s device payload (it is some feedback node's stored value). */
+function stateHolds(store: SimState, v: FieldValue): boolean {
+  for (const held of store.values()) {
+    if (held instanceof FieldRing) continue;
+    if ((v.buffer && held.buffer === v.buffer) || (v.texture && held.texture === v.texture)) return true;
+  }
+  return false;
 }
 
 /** Advance a feedback graph `steps` ticks, returning the sink at the final tick. */
@@ -712,19 +728,29 @@ export async function advance(graph: Graph, field: GpuField, opts: AdvanceOption
   const steps = Math.max(1, opts.steps ?? 1);
   const mode = opts.mode ?? "gpu";
 
+  const materialise = opts.materialise ?? "every";
+
   let last: FieldValue | undefined;
   for (let t = 0; t < steps; t++) {
+    const final = t === steps - 1;
+    const materialiseSink = materialise === "every" || (materialise === "last" && final);
     const pulled = await runTick(graph, field, {
       ctx,
       mode,
       store,
       onValue: opts.onValue,
       onBridge: opts.onBridge,
-      materialiseSink: true,
+      materialiseSink,
     });
     last = pulled.get(key(field.producer, field.outPort));
     if (!last) throw new Error("advance: sink not produced");
     opts.onFrame?.(t, last);
+    // An unmaterialised sink of a tick that is not the last would otherwise be a lease nobody
+    // returns. One the sim state holds is the state's; it goes back at the next commit.
+    if (!materialiseSink && !final && !stateHolds(store, last)) {
+      if (last.buffer) ctx.backend.release(last.buffer);
+      if (last.texture) ctx.backend.releaseTexture(last.texture);
+    }
   }
   if (last === undefined) throw new Error(`executor (unexpected): no value output for field ${field.id}`);
   return last;

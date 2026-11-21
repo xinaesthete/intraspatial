@@ -13,6 +13,7 @@ const reg = (op: OpType): void => {
 };
 
 import { addGridsOp } from "./addGrids";
+import { combineOp, extractOp } from "./bundleOps";
 import { cellCountsOp } from "./cellCounts";
 import { convolveSeparableOp } from "./convolveSeparable";
 import { decimateOp } from "./decimate";
@@ -26,6 +27,9 @@ import { membershipToDistanceOp } from "./membershipToDistance";
 import { morphologyOp } from "./morphology";
 import { reactionDiffusionStepOp } from "./reactionDiffusion";
 import { splatDensityOp } from "./splatDensity";
+import { BOND_TABLE } from "./springs/bondTable";
+import { springForceOp } from "./springs/springForce";
+import { springIntegrateOp } from "./springs/springIntegrate";
 import { thresholdOp } from "./threshold";
 import { vietorisRipsOp } from "./vietorisRips";
 
@@ -47,6 +51,11 @@ export function registerBuiltinOps(): void {
   for (const op of gridIndexPartOps) reg(op);
   reg(gridIndexCombineOp);
   reg(cellCountsOp);
+  // spring model (docs/spring-model-as-ops.md)
+  reg(springForceOp);
+  reg(springIntegrateOp);
+  for (const part of BOND_TABLE.parts) reg(extractOp(BOND_TABLE, part.name));
+  reg(combineOp(BOND_TABLE));
   // fuzzy TDA front
   reg(kthNeighborDistanceOp);
   reg(fuzzyAdjacencyOp);
