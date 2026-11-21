@@ -6,15 +6,20 @@ import {
   type BreakRule,
   breakBonds,
   CELL,
+  chromatinScenario,
+  createSpringSim,
   createState,
   createTopology,
   DEAD,
+  distanceCorrelation,
+  distanceMatrix,
   divideCells,
   type FormRule,
   formBonds,
   LEADER,
   MAX_SPECIES,
   readSpringState,
+  relaxationScenario,
   selectLeaders,
   spheroidGraph,
   spheroidScenario,
@@ -324,5 +329,77 @@ describe("spring model rules as graph ops", () => {
     expect(Math.abs(tissue(run.state) - tissue(host.state))).toBeLessThanOrEqual(Math.ceil(tissue(host.state) * 0.1));
     expect(Math.abs(bondCount(run.topology) - bondCount(host.topology))).toBeLessThanOrEqual(Math.ceil(bondCount(host.topology) * 0.05));
     expect(tissue(run.state)).toBeGreaterThan(tissue(spheroidScenario(cfg).state) + 5);
+  });
+
+  it("a spring sim runs a scenario on the device: one upload of each input, no downloads, buffers for a view", async () => {
+    const sc = spheroidScenario({ ...SMALL, dims: 2 });
+    const bridges: string[] = [];
+    const sim = createSpringSim(sc, { onBridge: (k, dir) => bridges.push(`${dir} ${k}`) });
+    expect(sim.buffers()).toBeUndefined();
+    await sim.advance(1);
+    const firstTick = bridges.length;
+    expect(bridges.every((b) => b.startsWith("upload"))).toBe(true);
+    await sim.advance(40);
+    // Every input was uploaded for the first tick and has stayed on the device since.
+    expect(bridges.length).toBe(firstTick);
+    const buffers = sim.buffers();
+    expect(buffers?.positions.size).toBeGreaterThanOrEqual(sc.state.n * 16);
+    expect(buffers?.link.size).toBeGreaterThanOrEqual(sc.state.n * sc.topology.K * 4);
+    // The host state is stale until asked for.
+    expect(sc.state.step).toBe(0);
+    const cellsBefore = count(sc.state, CELL);
+    await sim.sync();
+    expect(sc.state.step).toBe(41);
+    expect(count(sc.state, CELL) + count(sc.state, LEADER)).toBeGreaterThan(cellsBefore);
+    expect(topologyDefect(sc.topology)).toBeUndefined();
+    expect(sim.builds).toBe(1);
+    sim.dispose();
+  });
+
+  it("a change of settings rebuilds the graph from the running state and carries on", async () => {
+    const sc = spheroidScenario({ ...SMALL, dims: 2, leaderTime: 10 });
+    const sim = createSpringSim(sc);
+    await sim.advance(60);
+    await sim.sync();
+    const leaders = count(sc.state, LEADER);
+    const tissue = count(sc.state, CELL) + leaders;
+    expect(leaders).toBeGreaterThan(0);
+    // Switch leaders off and division off: the leaders turn back, and the tissue stops growing.
+    sc.configure({ leaderThrust: 0, divisionTime: Number.POSITIVE_INFINITY });
+    await sim.advance(30);
+    await sim.sync();
+    expect(sim.builds).toBe(2);
+    expect(sc.state.step).toBe(90);
+    expect(count(sc.state, LEADER)).toBe(0);
+    expect(count(sc.state, CELL)).toBe(tissue);
+    // Nothing changed: no rebuild.
+    await sim.advance(5);
+    expect(sim.builds).toBe(2);
+    sim.dispose();
+  });
+
+  it("a spring sim runs the scenarios that have no rules, and the one with turnover only", async () => {
+    const chromatin = chromatinScenario({ n: 60, mode: "distances", seed: 2 });
+    const size = chromatin.matrices!.size;
+    const fit = () => distanceCorrelation(distanceMatrix(chromatin.state, size), chromatin.matrices!.dist!, size);
+    const before = fit();
+    const chromatinSim = createSpringSim(chromatin);
+    await chromatinSim.advance(300);
+    await chromatinSim.sync();
+    expect(chromatin.state.step).toBe(300);
+    expect(fit()).toBeGreaterThan(Math.max(0.9, before + 0.2));
+    chromatinSim.dispose();
+
+    const strip = relaxationScenario({ seed: 3, bondLifetime: 40 });
+    const host = relaxationScenario({ seed: 3, bondLifetime: 40 });
+    const stripSim = createSpringSim(strip);
+    await stripSim.advance(80);
+    await stripSim.sync();
+    host.advance(80);
+    expect(topologyDefect(strip.topology)).toBeUndefined();
+    expect(host.totals.broken).toBeGreaterThan(20);
+    // Bonds break at random with the same hash on both sides, so the tables should agree closely.
+    expect(Math.abs(bondCount(strip.topology) - bondCount(host.topology))).toBeLessThanOrEqual(Math.ceil(bondCount(host.topology) * 0.03));
+    stripSim.dispose();
   });
 });

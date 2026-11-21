@@ -5,14 +5,13 @@
 import type { GpuBackend } from "#src/gpu/graph/backend";
 import { bondTableOf, VEC4, writeBondTable } from "#src/gpu/graph/ops/springs/bondTable";
 import { VEC2 } from "#src/gpu/graph/ops/springs/common";
-import { downloadValue, Graph, type GpuField, type Params, type SimState, simStateValue } from "../../graph/index";
-import type { DivisionRule, LeaderRule } from "./growth";
+import { downloadValue, type FieldValue, Graph, type GpuField, type Params, type SimState, simStateValue } from "../../graph/index";
 import { MAX_SPECIES, type SpringParams } from "./params";
 import type { SpringMatrices, SpringState } from "./state";
 import { pairTermsActive } from "./step";
-import { SPHEROID_LEADER_EVERY, type SpheroidScenario } from "./scenarios";
+import type { SpringRules } from "./rules";
+import type { Scenario, SpheroidScenario } from "./scenarios";
 import type { SpringTopology } from "./topology";
-import type { BreakRule, FormRule } from "./turnover";
 
 /** `springForce`'s params for a `SpringParams`. The kind multipliers fold `springforce` and both
  *  of CSynth's per-kind terms into one number each. */
@@ -73,19 +72,6 @@ function torsionOn(p: SpringParams, t: SpringTopology): boolean {
   return p.backbonetorsionspringforce !== 0 || (p.torsionspringforce !== 0 && t.torsion.some((v, k) => k % 2 === 1 && v !== 0));
 }
 
-/** The rules that change who is bonded and which particles exist, as the spheroid scenario has
- *  them (`SpheroidScenario.rules`). Each that is given runs every tick, after the step, in this
- *  order; all of it on the device. */
-export interface SpringRules {
-  /** Break bonds by strain or lifetime. Bonds to dead particles always go. */
-  readonly breakRule?: BreakRule;
-  readonly formRule?: FormRule;
-  readonly division?: DivisionRule;
-  readonly leaders?: LeaderRule;
-  /** Leader selection runs once every this many steps, with its `tau` scaled to match. */
-  readonly leaderEvery?: number;
-}
-
 /** The keys of a spring graph's state, for `simStateValue`. */
 export const SPRING_STATE = {
   pos: "springs:pos",
@@ -95,6 +81,8 @@ export const SPRING_STATE = {
   bonds: "springs:bonds",
   step: "springs:step",
 } as const;
+
+export type { SpringRules } from "./rules";
 
 export interface SpringGraph {
   readonly graph: Graph;
@@ -126,26 +114,36 @@ export function springGraph(s: SpringState, t: SpringTopology, p: SpringParams, 
   const n = s.n;
   const points = { kind: "points", n } as const;
   const table = { kind: "matrix", rows: MAX_SPECIES, cols: MAX_SPECIES } as const;
-  const vec4Source = (data: Float32Array, label: string) =>
-    graph.source({ shape: points, dtype: "f32", element: VEC4, data: data.slice() }, label);
-  // Whatever a rule rewrites is state; the rest are plain inputs.
+  const vec4Value = (data: Float32Array): FieldValue => ({ shape: points, dtype: "f32", element: VEC4, data: data.slice() });
+  // Everything the model reads is state on a feedback edge. What a rule rewrites is fed its new
+  // value; the rest is fed itself. Feeding a value to itself is what keeps a fixed input on the
+  // device: it is uploaded for the first tick and the state then holds that buffer, where a
+  // plain source would be uploaded again every tick.
+  const held = (value: FieldValue, key: string): GpuField => {
+    const fb = graph.feedback(graph.source(value, key), `springs:${key}`);
+    fb.close(fb.state);
+    return fb.state;
+  };
   const changesWho = rules.division !== undefined || rules.leaders !== undefined;
   const changesBonds = rules.breakRule !== undefined || rules.formRule !== undefined;
-  const speciesSeed = graph.source({ shape: points, dtype: "u32", data: Uint32Array.from(s.species) }, "species");
-  const fbSpecies = changesWho ? graph.feedback(speciesSeed, SPRING_STATE.species) : undefined;
-  const species = fbSpecies?.state ?? speciesSeed;
-  const radiusSeed = graph.source({ shape: points, dtype: "f32", data: Float32Array.from(s.radius) }, "radius");
-  const fbRadius = rules.division ? graph.feedback(radiusSeed, SPRING_STATE.radius) : undefined;
-  const radius = fbRadius?.state ?? radiusSeed;
-  const bondsSeed = graph.source(bondTableOf(t), "bonds");
-  const fbBonds = changesBonds ? graph.feedback(bondsSeed, SPRING_STATE.bonds) : undefined;
-  const bonds = fbBonds?.state ?? bondsSeed;
-  const fbPos = graph.feedback(vec4Source(s.pos, "pos"), SPRING_STATE.pos);
-  const fbPrev = graph.feedback(vec4Source(s.prev, "prev"), SPRING_STATE.prev);
+  const fbSpecies = graph.feedback(
+    graph.source({ shape: points, dtype: "u32", data: Uint32Array.from(s.species) }, "species"),
+    SPRING_STATE.species,
+  );
+  const species = fbSpecies.state;
+  const fbRadius = graph.feedback(
+    graph.source({ shape: points, dtype: "f32", data: Float32Array.from(s.radius) }, "radius"),
+    SPRING_STATE.radius,
+  );
+  const radius = fbRadius.state;
+  const fbBonds = graph.feedback(graph.source(bondTableOf(t), "bonds"), SPRING_STATE.bonds);
+  const bonds = fbBonds.state;
+  const fbPos = graph.feedback(graph.source(vec4Value(s.pos), "pos"), SPRING_STATE.pos);
+  const fbPrev = graph.feedback(graph.source(vec4Value(s.prev), "prev"), SPRING_STATE.prev);
   const pos = fbPos.state;
   const prev = fbPrev.state;
   const hasPull = t.pull.some((v, k) => k % 4 === 3 && v !== 0);
-  const pull = hasPull ? vec4Source(t.pull, "pull") : undefined;
+  const pull = hasPull ? held(vec4Value(t.pull), "pull") : undefined;
   const rate = { springrate: p.springrate };
 
   // ── Forces that mobility scales ──
@@ -153,7 +151,7 @@ export function springGraph(s: SpringState, t: SpringTopology, p: SpringParams, 
     springForce: graph.op1("springForce", { pos, bonds }, springForceParams(p)),
   };
   if (torsionOn(p, t)) {
-    const torsion = graph.source({ shape: points, dtype: "f32", element: VEC2, data: t.torsion.slice() }, "torsion");
+    const torsion = held({ shape: points, dtype: "f32", element: VEC2, data: t.torsion.slice() }, "torsion");
     terms.torsionForce = graph.op1(
       "torsionForce",
       { pos, species, torsion },
@@ -174,8 +172,8 @@ export function springGraph(s: SpringState, t: SpringTopology, p: SpringParams, 
   }
   if (p.pushapartlocalforce !== 0) terms.pushApart = graph.op1("pushApart", { pos, species }, pushApartParams(p));
   if (any(p.repulsion) || any(p.adhesion)) {
-    const repulsion = graph.source({ shape: table, dtype: "f32", data: Float32Array.from(p.repulsion) }, "repulsion");
-    const adhesion = graph.source({ shape: table, dtype: "f32", data: Float32Array.from(p.adhesion) }, "adhesion");
+    const repulsion = held({ shape: table, dtype: "f32", data: Float32Array.from(p.repulsion) }, "repulsion");
+    const adhesion = held({ shape: table, dtype: "f32", data: Float32Array.from(p.adhesion) }, "adhesion");
     terms.adhesion = graph.op1(
       "adhesion",
       { pos, species, radius, repulsion, adhesion },
@@ -188,8 +186,8 @@ export function springGraph(s: SpringState, t: SpringTopology, p: SpringParams, 
   const size = m?.size ?? 0;
   const square = (data: Float32Array | undefined, label: string) =>
     data
-      ? graph.source({ shape: { kind: "matrix", rows: size, cols: size }, dtype: "f32", data: data.slice() }, label)
-      : graph.source({ shape: { kind: "matrix", rows: 1, cols: 1 }, dtype: "f32", data: new Float32Array(1) }, label);
+      ? held({ shape: { kind: "matrix", rows: size, cols: size }, dtype: "f32", data: data.slice() }, label)
+      : held({ shape: { kind: "matrix", rows: 1, cols: 1 }, dtype: "f32", data: new Float32Array(1) }, label);
   const csynthOn =
     p.pushapartforce !== 0 ||
     p.pushapartDensityFactor !== 0 ||
@@ -330,7 +328,7 @@ export function springGraph(s: SpringState, t: SpringTopology, p: SpringParams, 
 
   const density = pairs
     ? graph.op1("pairDensity", { pos, prev, species }, pairDensityParams(p))
-    : graph.source({ shape: points, dtype: "f32", element: VEC2, data: new Float32Array(n * 2) }, "density");
+    : held({ shape: points, dtype: "f32", element: VEC2, data: new Float32Array(n * 2) }, "density");
   const [moved, nextPrev] = graph.op("springIntegrate", { pos, prev, force, density, species }, springIntegrateParams(p));
   if (!moved || !nextPrev) throw new Error("springGraph: springIntegrate did not produce pos and prev");
 
@@ -339,7 +337,7 @@ export function springGraph(s: SpringState, t: SpringTopology, p: SpringParams, 
   if (t.rod.some((v, k) => k % 4 === 0 && v >= 0)) {
     next = graph.op1(
       "rodConstraint",
-      { pos: next, before: pos, species, rod: vec4Source(t.rod, "rod") },
+      { pos: next, before: pos, species, rod: held(vec4Value(t.rod), "rod") },
       { springlen: p.springlen, springlenfix: p.springlenfix },
     );
   }
@@ -348,7 +346,7 @@ export function springGraph(s: SpringState, t: SpringTopology, p: SpringParams, 
     next = graph.op1("centreConstraint", { pos: next, species }, { springCentreDamp: p.springCentreDamp, centreX, centreY, centreZ });
   }
   if (t.fix.some((v, k) => k % 4 === 0 && v === 1))
-    next = graph.op1("fixConstraint", { pos: next, species, fix: vec4Source(t.fix, "fix") });
+    next = graph.op1("fixConstraint", { pos: next, species, fix: held(vec4Value(t.fix), "fix") });
   if (pull && p.pullfixdamp !== 0) next = graph.op1("pullFix", { pos: next, species, pull }, { pullfixdamp: p.pullfixdamp });
 
   // ── Rules, after the step, as the host scenario orders them. They read the step's number as
@@ -376,7 +374,7 @@ export function springGraph(s: SpringState, t: SpringTopology, p: SpringParams, 
     }
     if (rules.formRule) {
       const r = rules.formRule;
-      const kindOf = graph.source(
+      const kindOf = held(
         { shape: { kind: "matrix", rows: r.speciesCount, cols: r.speciesCount }, dtype: "f32", data: Float32Array.from(r.kindOf) },
         "kindOf",
       );
@@ -430,23 +428,22 @@ export function springGraph(s: SpringState, t: SpringTopology, p: SpringParams, 
 
   fbPos.close(next);
   fbPrev.close(nextPrevOut);
-  fbSpecies?.close(speciesOut);
-  fbRadius?.close(radiusOut);
-  fbBonds?.close(bondsOut);
+  fbSpecies.close(speciesOut);
+  fbRadius.close(radiusOut);
+  fbBonds.close(bondsOut);
   return { graph, pos: next, prev: nextPrevOut, force, terms, density, species: speciesOut, radius: radiusOut, bonds: bondsOut };
 }
 
-/** The spheroid scenario as a graph: its forces, and its rules (bond turnover, division, leader
- *  selection) with the scenario's current settings. The whole tick runs on the device. */
+/** A scenario as a graph: its forces, and whatever rules it applies after each step, with its
+ *  settings as they are now. The whole tick runs on the device. Settings are read once, here: a
+ *  scenario that is reconfigured needs a new graph (`createSpringSim` does that). */
+export function scenarioGraph(sc: Scenario): SpringGraph {
+  return springGraph(sc.state, sc.topology, sc.params, sc.matrices, sc.graphRules?.() ?? {});
+}
+
+/** `scenarioGraph`, by its first name. */
 export function spheroidGraph(sc: SpheroidScenario): SpringGraph {
-  const r = sc.rules;
-  return springGraph(sc.state, sc.topology, sc.params, undefined, {
-    breakRule: r.turnover ? r.breakRule : undefined,
-    formRule: r.turnover || sc.config.ligand > 0 ? r.formRule : undefined,
-    division: r.division,
-    leaders: r.leaders,
-    leaderEvery: SPHEROID_LEADER_EVERY,
-  });
+  return scenarioGraph(sc);
 }
 
 /**

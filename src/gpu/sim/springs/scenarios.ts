@@ -8,6 +8,7 @@ import { createState, gatherNeighbours, neighbourGrid, type SpringMatrices, type
 import { stepSprings } from "./step";
 import { addSpring, createTopology, setFix, type SpringTopology } from "./topology";
 import { type BreakRule, breakBonds, type FormRule, formBonds } from "./turnover";
+import type { SpringRules } from "./rules";
 
 /** Something that happened at a place and a step: what a sound engine, or any other listener
  *  for discrete events, triggers on. */
@@ -65,6 +66,9 @@ export interface Scenario {
    *  two particles involved. Only the newest 4,000 are kept between calls, so use `totals` for
    *  counts. */
   takeEvents(): SpringEvent[];
+  /** The rules this scenario applies after each step, with its settings as they are now: what a
+   *  graph of it needs besides its forces (`scenarioGraph`). Absent when it has none. */
+  graphRules?(): SpringRules;
 }
 
 // ── Chromatin: CSynth's own problem ───────────────────────────────────────────────────────────
@@ -375,6 +379,15 @@ export function spheroidScenario(cfg: SpheroidConfig = {}): SpheroidScenario {
     get rules() {
       return rules;
     },
+    graphRules() {
+      return {
+        breakRule: rules.turnover ? rules.breakRule : undefined,
+        formRule: rules.turnover || c.ligand > 0 ? rules.formRule : undefined,
+        division: rules.division,
+        leaders: rules.leaders,
+        leaderEvery: LEADER_EVERY,
+      };
+    },
     configure(change) {
       // Only live settings: a structural one passed by spread would misreport what was built.
       const live: Record<string, unknown> = { ...defined(change) };
@@ -495,8 +508,6 @@ function spheroidRules(c: Required<SpheroidConfig>): SpheroidRules {
 
 /** Steps between rounds of leader selection. */
 const LEADER_EVERY = 10;
-/** The same, for the graph version of the spheroid. */
-export const SPHEROID_LEADER_EVERY = LEADER_EVERY;
 
 const UNIT_STRENGTHS: readonly number[] = Array.from({ length: 8 }, () => 1);
 
@@ -596,6 +607,10 @@ export function relaxationScenario(cfg: RelaxationConfig = {}): RelaxationScenar
     takeEvents: events.take,
     get config() {
       return live;
+    },
+    graphRules() {
+      const turnover = breakRule.maxStrain !== undefined || breakRule.tau !== undefined;
+      return turnover ? { breakRule, formRule } : {};
     },
     configure(change) {
       live = { ...live, ...defined(change) };

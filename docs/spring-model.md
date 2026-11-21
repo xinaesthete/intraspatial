@@ -3,6 +3,10 @@
 Status: **built** (2026-11-20), CPU reference and GPU kernels. Code: `src/gpu/sim/springs/`.
 Playground: `playground/springs.html`. Bond table design: [`bond-primitive.md`](bond-primitive.md).
 
+**How it runs is changing.** The model below is now also a graph of ops, one per term, that runs
+whole on the device: [`spring-model-as-ops.md`](spring-model-as-ops.md). The functions and the
+`SpringsGpu` object described here are the reference and the legacy fused path.
+
 A port of [CSynth](https://csynth.github.io/csynth/)'s spring dynamics (`organic/TS/springs.ts`,
 `springsfs.ts`; Todd et al., [CSynth: an interactive modelling and visualization tool for 3D chromatin structure](https://doi.org/10.1093/bioinformatics/btaa757),
 _Bioinformatics_ 37, 951–955, 2021), plus bond turnover, adhesion and growth. The additions are what a model of cells in a viscoelastic matrix needs

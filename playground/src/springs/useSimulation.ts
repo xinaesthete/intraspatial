@@ -1,17 +1,16 @@
 // Runs a spring-model scenario on the animation clock and keeps a history of its readouts.
 // The page supplies how to build the scenario and how to draw it; this hook owns the loop.
 import { useEffect, useRef, useState } from "react";
+import { browserBackend } from "../../../src/gpu/graph/backend.browser";
 import {
   bondReadout,
   CELL,
-  createSpheroidGpuRunner,
-  createSpringsGpu,
+  createSpringSim,
   distanceCorrelation,
   distanceMatrix,
   LEADER,
   projectedShape,
   type Scenario,
-  type SpheroidScenario,
   type SpringParams,
   shape3d,
   shollProfile,
@@ -83,14 +82,18 @@ interface GpuRunner {
   advance(steps: number): Promise<void>;
 }
 
-async function gpuRunner(sc: Scenario): Promise<GpuRunner> {
-  if ("rules" in sc) return createSpheroidGpuRunner(sc as SpheroidScenario);
-  const gpu = await createSpringsGpu(sc.state.n, sc.topology.K);
-  gpu.upload(sc.state, sc.topology, sc.matrices);
+/**
+ * The scenario as a graph of ops on the device (`createSpringSim`). The whole step runs there,
+ * including bond turnover, division and leader selection, and a change of settings is picked up
+ * without a restart. This page draws on a 2D canvas from the host's copy, so each batch is
+ * followed by a download; a view that binds the sim's buffers would leave that out.
+ */
+function gpuRunner(sc: Scenario): GpuRunner {
+  const sim = createSpringSim(sc, { backend: browserBackend });
   return {
     async advance(steps) {
-      gpu.step(sc.params, steps);
-      await gpu.download(sc.state, sc.topology);
+      await sim.advance(steps);
+      await sim.sync();
     },
   };
 }
@@ -157,11 +160,11 @@ export function useSimulation(o: SimulationOptions): { samples: readonly Sample[
       if (!stopped) setError({ scenario: sc, message: e instanceof Error ? e.message : String(e) });
     };
     if (wantGpu) {
-      gpuRunner(sc)
-        .then((g) => {
-          if (!stopped) gpu = g;
-        })
-        .catch(report);
+      try {
+        gpu = gpuRunner(sc);
+      } catch (e) {
+        report(e);
+      }
     }
     const record = () => {
       const sample = measure(sc);

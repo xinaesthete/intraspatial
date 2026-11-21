@@ -20,7 +20,7 @@ This follows the dance forces (`src/gpu/graph/ops/danceForces.ts`): a force op o
 per-particle field, the fields are summed, an integrator closes one feedback loop. Those ops run
 on the CPU; these have kernels.
 
-## Built (slices 1 to 4): the whole model
+## Built (slices 1 to 5): the whole model, and a runner for it
 
 All in `src/gpu/graph/ops/springs/`, each with a TGSL kernel and a CPU golden.
 
@@ -42,7 +42,17 @@ All in `src/gpu/graph/ops/springs/`, each with a TGSL kernel and a CPU golden.
 - **`springGraph(state, topology, params, matrices?)`** (`src/gpu/sim/springs/graph.ts`) builds the
   graph from the same arguments `stepSprings` takes, with only the terms that are on, in the
   fused step's order: forces, sum, mobility, random terms, integrate, constraints.
-- **`spheroidGraph(scenario)`** adds the scenario's rules. What they rewrite (the bond table, species,
+- **`createSpringSim(scenario, { backend })`** (`src/gpu/sim/springs/sim.ts`) is what a page or a view
+  drives. `advance(steps)` runs on the device and downloads nothing; `buffers()` hands a view the
+  positions, species, radius and bond table to bind; `sync()` is the explicit download. A change
+  of settings is noticed, and the graph is rebuilt from the running state. The playground's GPU
+  setups run on it.
+- **Every input is state.** What a rule rewrites is fed its new value; everything else (matrices,
+  rods, the species tables, and the bond table and species when nothing rewrites them) is fed
+  itself. A self-fed value is uploaded for the first tick and stays on the device, where a plain
+  source is uploaded every tick. After the first tick the loop makes no uploads and no downloads.
+- **`scenarioGraph(scenario)`** builds any scenario's whole tick: a scenario says which rules it
+  applies through `graphRules()`. It adds the scenario's rules. What they rewrite (the bond table, species,
   radius, the step) is then state on feedback edges, so the whole tick runs on the device and
   the host is not in the loop. `readSpringState` is the explicit download, for a readout.
 - **Division is a plan and then copies.** `divisionPlan` matches the k-th particle that wants to
@@ -174,8 +184,9 @@ parameters), not the legacy object. The graph version must offer:
 
 | issue | handling |
 | --- | --- |
-| **Static sources are uploaded every tick** (matrices, rods, the species tables; the bond table and species too when no rule rewrites them). | Small, but it is host work inside the loop. Wants a resident source that uploads once. |
-| **Leaders are not cleared when leader selection is switched off**, as the host scenario does. | A graph is built for one set of rules. Live settings are slice 5. |
+| **A change of settings is a round trip.** The graph reads settings when it is built, so `createSpringSim` downloads the state and rebuilds. | Fine for a slider; settings as graph inputs would avoid it. |
+| **The playground still downloads every batch**, because it draws on a 2D canvas from the host's copy. | The deck views bind `buffers()` and leave the download out. |
+| **The legacy `SpringsGpu` and `createSpheroidGpuRunner` are still there**, as the fused baseline and because the views branch uses them. | Remove once nothing calls them. |
 | **Totals and events** (bonds broken, divisions) are not counted on the device. | Reductions, with the readouts. |
 | **`addFields` is host-only.** | `addForces` stands in. Making `addFields` resident would replace it. |
 
@@ -188,7 +199,8 @@ parameters), not the legacy object. The graph version must offer:
    pull, torsion, and CSynth's other pair terms.~~ Built.
 4. ~~`bondBreak`, `bondForm`, `divide`, `selectLeaders` as ops, all on the device, with the
    bundle-feedback fix.~~ Built.
-5. Scenarios as graph builders; the page and the views read the sim state; the runner goes.
+5. ~~Scenarios as graph builders; a runner the page drives; every input held on the device.~~
+   Built. The page's views still read the host's copy.
 6. The fusion spike: one kernel per loop group, then across groups. Compare with per-op and with
    the hand-fused kernel.
 
