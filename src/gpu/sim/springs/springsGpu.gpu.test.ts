@@ -199,6 +199,19 @@ describe("springs on the GPU", () => {
     expect(topologyDefect(sc.topology)).toBeUndefined();
   });
 
+  it("refuses device work while a download is pending, so a download matches its step", async () => {
+    const sc = chromatinScenario({ n: 40, mode: "distances", seed: 2 });
+    const gpu = await createSpringsGpu(sc.state.n, sc.topology.K);
+    gpu.upload(sc.state, sc.topology, sc.matrices);
+    gpu.step(sc.params, 3);
+    const pending = gpu.download(sc.state, sc.topology);
+    expect(() => gpu.step(sc.params)).toThrow(/download is pending/);
+    await pending;
+    expect(sc.state.step).toBe(3);
+    gpu.step(sc.params);
+    expect(gpu.stepIndex).toBe(4);
+  });
+
   it("breaks exactly the bonds the CPU breaks", async () => {
     const n = 100;
     const s = createState(n);

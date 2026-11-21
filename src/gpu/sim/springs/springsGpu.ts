@@ -690,7 +690,10 @@ export interface SpringsGpu {
   breakBonds(p: SpringParams, rule: BreakRule): void;
   /** `formBonds` on the device. */
   formBonds(p: SpringParams, rule: FormRule): void;
-  /** Read positions, previous positions and the bond table back into host objects. */
+  /** Read positions, previous positions and the bond table back into host objects. Until it
+   *  resolves, `upload`, `step`, `breakBonds` and `formBonds` throw: the copy is queued
+   *  asynchronously, and work submitted in between would make it a later state than the step
+   *  it reports. */
   download(s: SpringState, t: SpringTopology): Promise<void>;
   /** The buffer holding the current `[pos | prev]`, for a renderer to bind. */
   positions(): GPUBuffer;
@@ -716,6 +719,12 @@ export async function createSpringsGpu(n: number, K: number, opts: { device?: GP
   let mats = make("mats", 16);
   let matrices: SpringMatrices | undefined;
   let stepIndex = 0;
+  // Downloads in flight. `readBackBytes` encodes its copy later, so anything submitted before it
+  // resolves could reach the device first.
+  let downloads = 0;
+  const settled = (what: string) => {
+    if (downloads > 0) throw new Error(`springsGpu: ${what} called while a download is pending; await the download first`);
+  };
   let explicitTorsion = false;
   const groups = Math.ceil(n / WG);
 
@@ -774,6 +783,7 @@ export async function createSpringsGpu(n: number, K: number, opts: { device?: GP
       return stepIndex;
     },
     upload(s, t, m) {
+      settled("upload");
       if (s.n !== n || t.n !== n || t.K !== K) throw new Error(`springsGpu: built for n=${n}, K=${K}; got n=${s.n}, K=${t.K}`);
       const st = new Float32Array(n * 8);
       st.set(s.pos, 0);
@@ -804,6 +814,7 @@ export async function createSpringsGpu(n: number, K: number, opts: { device?: GP
       stepIndex = s.step;
     },
     step(p, steps = 1) {
+      settled("step");
       const pairs = pairTermsActive(p);
       const torsion = p.backbonetorsionspringforce !== 0 || (explicitTorsion && p.torsionspringforce !== 0);
       for (let k = 0; k < steps; k++) {
@@ -826,10 +837,12 @@ export async function createSpringsGpu(n: number, K: number, opts: { device?: GP
       }
     },
     breakBonds(p, rule) {
+      settled("breakBonds");
       writeTurnUniform(p, rule, undefined);
       run(pipes.breakP, turnBind(), "springs:break");
     },
     formBonds(p, rule) {
+      settled("formBonds");
       writeTurnUniform(p, undefined, rule);
       const bind = turnBind();
       run(pipes.propose, bind, "springs:propose");
@@ -840,10 +853,17 @@ export async function createSpringsGpu(n: number, K: number, opts: { device?: GP
       // host objects change only once both have arrived. The keys carry no instance id: the
       // staging pool never frees a buffer, and reads that share a key simply take turns.
       const step = stepIndex;
-      const [stBytes, slBytes] = await Promise.all([
-        readBackBytes(device, "springs:state", cur, 0, n * 2 * 16),
-        readBackBytes(device, "springs:slots", slots, 0, n * K * SLOT_WORDS * 4),
-      ]);
+      downloads++;
+      let stBytes: ArrayBuffer;
+      let slBytes: ArrayBuffer;
+      try {
+        [stBytes, slBytes] = await Promise.all([
+          readBackBytes(device, "springs:state", cur, 0, n * 2 * 16),
+          readBackBytes(device, "springs:slots", slots, 0, n * K * SLOT_WORDS * 4),
+        ]);
+      } finally {
+        downloads--;
+      }
       const st = new Float32Array(stBytes);
       s.pos.set(st.subarray(0, n * 4));
       s.prev.set(st.subarray(n * 4));
