@@ -199,17 +199,25 @@ describe("springs on the GPU", () => {
     expect(topologyDefect(sc.topology)).toBeUndefined();
   });
 
-  it("refuses device work while a download is pending, so a download matches its step", async () => {
-    const sc = chromatinScenario({ n: 40, mode: "distances", seed: 2 });
-    const gpu = await createSpringsGpu(sc.state.n, sc.topology.K);
-    gpu.upload(sc.state, sc.topology, sc.matrices);
-    gpu.step(sc.params, 3);
-    const pending = gpu.download(sc.state, sc.topology);
-    expect(() => gpu.step(sc.params)).toThrow(/download is pending/);
+  it("downloads the state of the step it was called at, however far the model runs meanwhile", async () => {
+    const make = async () => {
+      const sc = chromatinScenario({ n: 40, mode: "distances", seed: 2 });
+      const gpu = await createSpringsGpu(sc.state.n, sc.topology.K);
+      gpu.upload(sc.state, sc.topology, sc.matrices);
+      gpu.step(sc.params, 3);
+      return { sc, gpu };
+    };
+    const quiet = await make();
+    await quiet.gpu.download(quiet.sc.state, quiet.sc.topology);
+
+    const busy = await make();
+    const pending = busy.gpu.download(busy.sc.state, busy.sc.topology);
+    await expect(busy.gpu.download(busy.sc.state, busy.sc.topology)).rejects.toThrow(/another download/);
+    busy.gpu.step(busy.sc.params, 5);
     await pending;
-    expect(sc.state.step).toBe(3);
-    gpu.step(sc.params);
-    expect(gpu.stepIndex).toBe(4);
+    expect(busy.sc.state.step).toBe(3);
+    expect(busy.gpu.stepIndex).toBe(8);
+    expect(worst(busy.sc.state, quiet.sc.state).err).toBe(0);
   });
 
   it("breaks exactly the bonds the CPU breaks", async () => {

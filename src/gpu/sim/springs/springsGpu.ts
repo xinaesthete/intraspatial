@@ -690,10 +690,9 @@ export interface SpringsGpu {
   breakBonds(p: SpringParams, rule: BreakRule): void;
   /** `formBonds` on the device. */
   formBonds(p: SpringParams, rule: FormRule): void;
-  /** Read positions, previous positions and the bond table back into host objects. Until it
-   *  resolves, `upload`, `step`, `breakBonds` and `formBonds` throw: the copy is queued
-   *  asynchronously, and work submitted in between would make it a later state than the step
-   *  it reports. */
+  /** Read positions, previous positions and the bond table back into host objects, as they
+   *  were when this was called: the state is snapshotted on the device at the call, so the
+   *  model may go on stepping while the read completes. One download at a time. */
   download(s: SpringState, t: SpringTopology): Promise<void>;
   /** The buffer holding the current `[pos | prev]`, for a renderer to bind. */
   positions(): GPUBuffer;
@@ -719,12 +718,12 @@ export async function createSpringsGpu(n: number, K: number, opts: { device?: GP
   let mats = make("mats", 16);
   let matrices: SpringMatrices | undefined;
   let stepIndex = 0;
-  // Downloads in flight. `readBackBytes` encodes its copy later, so anything submitted before it
-  // resolves could reach the device first.
-  let downloads = 0;
-  const settled = (what: string) => {
-    if (downloads > 0) throw new Error(`springsGpu: ${what} called while a download is pending; await the download first`);
-  };
+  // A download first copies the state into these, in a submit of its own made at the call. The
+  // slow part (mapping) then reads the copies, so the model is free to carry on stepping and the
+  // host still gets exactly the state of the step it asked at.
+  const snapState = make("snapState", n * 2 * 16, GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC);
+  const snapSlots = make("snapSlots", n * K * 16, GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC);
+  let downloading = false;
   let explicitTorsion = false;
   const groups = Math.ceil(n / WG);
 
@@ -783,7 +782,6 @@ export async function createSpringsGpu(n: number, K: number, opts: { device?: GP
       return stepIndex;
     },
     upload(s, t, m) {
-      settled("upload");
       if (s.n !== n || t.n !== n || t.K !== K) throw new Error(`springsGpu: built for n=${n}, K=${K}; got n=${s.n}, K=${t.K}`);
       const st = new Float32Array(n * 8);
       st.set(s.pos, 0);
@@ -814,7 +812,6 @@ export async function createSpringsGpu(n: number, K: number, opts: { device?: GP
       stepIndex = s.step;
     },
     step(p, steps = 1) {
-      settled("step");
       const pairs = pairTermsActive(p);
       const torsion = p.backbonetorsionspringforce !== 0 || (explicitTorsion && p.torsionspringforce !== 0);
       for (let k = 0; k < steps; k++) {
@@ -837,38 +834,41 @@ export async function createSpringsGpu(n: number, K: number, opts: { device?: GP
       }
     },
     breakBonds(p, rule) {
-      settled("breakBonds");
       writeTurnUniform(p, rule, undefined);
       run(pipes.breakP, turnBind(), "springs:break");
     },
     formBonds(p, rule) {
-      settled("formBonds");
       writeTurnUniform(p, undefined, rule);
       const bind = turnBind();
       run(pipes.propose, bind, "springs:propose");
       run(pipes.accept, bind, "springs:accept");
     },
     async download(s, t) {
-      // Both copies are queued before anything is awaited, so they are of the same step, and the
-      // host objects change only once both have arrived. The keys carry no instance id: the
-      // staging pool never frees a buffer, and reads that share a key simply take turns.
+      // One at a time: a second would overwrite the snapshot the first has yet to read.
+      if (downloading) throw new Error("springsGpu: download called while another download is pending");
+      downloading = true;
       const step = stepIndex;
-      downloads++;
-      let stBytes: ArrayBuffer;
-      let slBytes: ArrayBuffer;
+      const stateBytes = n * 2 * 16;
+      const slotBytes = n * K * SLOT_WORDS * 4;
+      const enc = device.createCommandEncoder({ label: `springs${id}:snapshot` });
+      enc.copyBufferToBuffer(cur, 0, snapState, 0, stateBytes);
+      enc.copyBufferToBuffer(slots, 0, snapSlots, 0, slotBytes);
+      device.queue.submit([enc.finish()]);
       try {
-        [stBytes, slBytes] = await Promise.all([
-          readBackBytes(device, "springs:state", cur, 0, n * 2 * 16),
-          readBackBytes(device, "springs:slots", slots, 0, n * K * SLOT_WORDS * 4),
+        // The staging keys carry no instance id: the pool never frees a buffer, and reads that
+        // share a key take turns. The host objects change only once both have arrived.
+        const [stBytes, slBytes] = await Promise.all([
+          readBackBytes(device, "springs:state", snapState, 0, stateBytes),
+          readBackBytes(device, "springs:slots", snapSlots, 0, slotBytes),
         ]);
+        const st = new Float32Array(stBytes);
+        s.pos.set(st.subarray(0, n * 4));
+        s.prev.set(st.subarray(n * 4));
+        s.step = step;
+        t.slotBits.set(new Uint32Array(slBytes));
       } finally {
-        downloads--;
+        downloading = false;
       }
-      const st = new Float32Array(stBytes);
-      s.pos.set(st.subarray(0, n * 4));
-      s.prev.set(st.subarray(n * 4));
-      s.step = step;
-      t.slotBits.set(new Uint32Array(slBytes));
     },
     positions() {
       return cur;
