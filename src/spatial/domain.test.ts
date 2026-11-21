@@ -273,6 +273,43 @@ describe("crossPCF / crossPCFMatrixBinned with a domain", () => {
     expect(boxed.g[2]!).toBeLessThan(0.95);
   });
 
+  it("defaults edgeCorrected on with a domain, off with a bare bbox, and honours an explicit value", () => {
+    const inside = (x: number, y: number) => Math.hypot(x, y) <= 100;
+    const cells = csrIn(inside, 100, 3000, 1, 0xedc0);
+    const mask = rasterise([-110.37, -110.37, 109.63, 109.63], 220, 220, inside);
+    const p = { rMax: 30, nBins: 3, nTypes: 1 } as const;
+    const implicit = crossPCFMatrixBinned(cells, { ...p, domain: mask });
+    const on = crossPCFMatrixBinned(cells, { ...p, domain: mask, edgeCorrected: true });
+    const off = crossPCFMatrixBinned(cells, { ...p, domain: mask, edgeCorrected: false });
+    expect(Array.from(implicit.g)).toEqual(Array.from(on.g));
+    expect(off.g[2]!).toBeLessThan(on.g[2]!);
+    // A bare bbox keeps the old default.
+    const box = [-100, -100, 100, 100] as const;
+    const bareDefault = crossPCFMatrixBinned(cells, { ...p, bbox: box });
+    const bareOff = crossPCFMatrixBinned(cells, { ...p, bbox: box, edgeCorrected: false });
+    expect(Array.from(bareDefault.g)).toEqual(Array.from(bareOff.g));
+    // Same default through crossPCF.
+    const a = { xs: cells.xs.slice(0, 1500), ys: cells.ys.slice(0, 1500) };
+    const b = { xs: cells.xs.slice(1500), ys: cells.ys.slice(1500) };
+    expect(crossPCF(a, b, { ...p, domain: mask }).g).toEqual(crossPCF(a, b, { ...p, domain: mask, edgeCorrected: true }).g);
+  });
+
+  it("needs no bbox when a domain is given, and reads typed columns in place", () => {
+    const inside = (x: number, y: number) => Math.hypot(x, y) <= 100;
+    const cells = csrIn(inside, 100, 2000, 2, 0x7ed1);
+    const mask = rasterise([-110.37, -110.37, 109.63, 109.63], 220, 220, inside);
+    const typed: LabelledCells = {
+      xs: Float32Array.from(cells.xs),
+      ys: Float64Array.from(cells.ys),
+      typeId: Uint8Array.from(cells.typeId),
+    };
+    const roundTrip: LabelledCells = { xs: Array.from(typed.xs), ys: Array.from(typed.ys), typeId: Array.from(typed.typeId) };
+    const p = { domain: mask, rMax: 30, nBins: 3, nTypes: 2 } as const;
+    const fromTyped = crossPCFMatrixBinned(typed, p);
+    expect(Array.from(fromTyped.g)).toEqual(Array.from(crossPCFMatrixBinned(roundTrip, p).g));
+    expect(() => crossPCFMatrixBinned(cells, { rMax: 30, nBins: 3 } as never)).toThrow(/bbox.*domain/);
+  });
+
   it("drops cells outside the domain from both populations, and counts them", () => {
     // Left half of [0,100]² is the domain. Every cell on the right is dropped.
     const mask = rasterise([0, 0, 100, 100], 100, 100, (x) => x < 50);
@@ -623,6 +660,58 @@ describe("polygonDomain", () => {
     // The mask version needs 0.5% for its staircase; the polygon has none.
     expect(poly.outside).toBe(0);
     expect(Array.from(poly.g, (g, i) => Math.abs(g / exact.g[i]! - 1)).every((e) => e < 1e-9)).toBe(true);
+  });
+});
+
+describe("row filter (include masks)", () => {
+  const inside = (x: number, y: number) => Math.hypot(x, y) <= 100;
+  const cells = csrIn(inside, 100, 2400, 2, 0xf117);
+  const mask = rasterise([-110.37, -110.37, 109.63, 109.63], 220, 220, inside);
+  const n = cells.xs.length;
+  const include = Uint8Array.from({ length: n }, (_, i) => (i % 3 === 0 ? 0 : 1));
+  const keep = Array.from({ length: n }, (_, i) => i).filter((i) => include[i]);
+  const subset: LabelledCells = {
+    xs: keep.map((i) => cells.xs[i]!),
+    ys: keep.map((i) => cells.ys[i]!),
+    typeId: keep.map((i) => cells.typeId[i]!),
+  };
+  const p = { domain: mask, rMax: 30, nBins: 3, nTypes: 2 } as const;
+
+  it("crossPCFMatrixBinned with `include` equals running on the pre-filtered copy", () => {
+    const masked = crossPCFMatrixBinned(cells, { ...p, include });
+    const copied = crossPCFMatrixBinned(subset, p);
+    expect(Array.from(masked.g)).toEqual(Array.from(copied.g));
+    expect(Array.from(masked.pairs)).toEqual(Array.from(copied.pairs));
+    expect(masked.counts).toEqual(copied.counts);
+    expect(masked.outside).toBe(copied.outside);
+  });
+
+  it("crossPCF with includeA / includeB equals pre-filtered clouds, and `outside` ignores excluded cells", () => {
+    const half = n / 2;
+    const a = { xs: cells.xs.slice(0, half), ys: cells.ys.slice(0, half) };
+    const b = { xs: cells.xs.slice(half), ys: cells.ys.slice(half) };
+    const incA = include.slice(0, half);
+    const incB = include.slice(half);
+    const pick = (c: { xs: ArrayLike<number>; ys: ArrayLike<number> }, m: Uint8Array) => {
+      const k = Array.from(m, (v, i) => (v ? i : -1)).filter((i) => i >= 0);
+      return { xs: k.map((i) => c.xs[i]!), ys: k.map((i) => c.ys[i]!) };
+    };
+    const masked = crossPCF(a, b, { ...p, includeA: incA, includeB: incB });
+    const copied = crossPCF(pick(a, incA), pick(b, incB), p);
+    expect(masked.g).toEqual(copied.g);
+    expect(masked.counts).toEqual(copied.counts);
+    expect(masked.outside).toBe(copied.outside);
+  });
+
+  it("crossPCFBinMembership leaves excluded cells unlit", () => {
+    const a = { xs: cells.xs, ys: cells.ys };
+    const mem = crossPCFBinMembership(a, a, { ...p, includeA: include, includeB: include });
+    for (let i = 0; i < n; i++) if (!include[i]) expect(mem.maskA[i]).toBe(0);
+    expect(mem.maskB.every((m, j) => include[j] || m === 0)).toBe(true);
+  });
+
+  it("rejects a mask whose length does not match the cells", () => {
+    expect(() => crossPCFMatrixBinned(cells, { ...p, include: include.slice(1) })).toThrow(/row mask/);
   });
 });
 
