@@ -20,34 +20,53 @@ This follows the dance forces (`src/gpu/graph/ops/danceForces.ts`): a force op o
 per-particle field, the fields are summed, an integrator closes one feedback loop. Those ops run
 on the CPU; these have kernels.
 
-## Built (slice 1)
+## Built (slices 1 and 2)
 
-| piece | where |
+| piece | where (`src/gpu/graph/ops/springs/` unless said) |
 | --- | --- |
-| `bondTable` bundle: `link` (u32) and `spring` (vec4f), `n × K` each | `src/gpu/graph/ops/springs/bondTable.ts` |
-| `springForce` op | `ops/springs/springForce.ts` |
-| `springIntegrate` op: damping types 1 to 4, speed cap, half-step fix | `ops/springs/springIntegrate.ts` |
-| `springGraph(state, topology, params)`: the graph, state on two feedback edges | `src/gpu/sim/springs/graph.ts` |
+| `bondTable` bundle: `link` (u32) and `spring` (vec4f), `n × K` each | `bondTable.ts` |
+| `springForce`: bonded springs | `springForce.ts` |
+| `pushApart`: CSynth's local push-apart | `pushApart.ts` |
+| `adhesion`: contact repulsion and adhesion by species pair | `adhesion.ts` |
+| `outward`: protrusion (fades when buried) and thrust | `outward.ts` |
+| `pairDensity`: density and directional density | `pairDensity.ts` |
+| `addForces`: resident sum of two forces (`addFields` runs on the host) | `addForces.ts` |
+| `springIntegrate`: damping types 1 to 4, speed cap, half-step fix; dead particles stay put | `springIntegrate.ts` |
+| `springGraph(state, topology, params)`: builds the graph from the terms that are on; refuses params that need a term with no op yet (`termsWithoutOps`) | `src/gpu/sim/springs/graph.ts` |
 | `advance(..., { materialise: "last" \| "none" })` | `src/gpu/graph/executor.ts` |
 
-Checked (`ops/springs/springOps.gpu.test.ts`): each kernel against its golden; the graph on the
-CPU against `stepSprings` for all four damping types (2×10⁻⁵ after 25 steps); the graph on the
-device against `stepSprings` (2×10⁻⁴); 25 ticks with one download, and 10 with none.
+Checked (`springOps.gpu.test.ts`): every kernel against its golden; the graph against
+`stepSprings` on the CPU (2×10⁻⁵) and on the device (5×10⁻⁴), bonded-only for all four damping
+types and with every pair term on over a three-species state with dead slots; a whole run with
+one download, and one with none.
 
 `advance` used to download its sink every tick. `materialise: "last"` downloads once at the end
 of a batch; `"none"` returns the buffer for a view to bind.
 
-Measured under Node on Dawn/Metal, bonded springs only, 400 ticks, one download at the end:
+Measured under Node on Dawn/Metal, one download at the end of the run.
 
-| particles | fused kernel | two ops in the graph |
+Bonded springs only (two ops):
+
+| particles | fused kernel | graph |
 | --- | --- | --- |
 | 64 | 0.04 ms a step | 0.14 ms a tick |
 | 1,024 | 0.04 | 0.12 |
 | 8,192 | 0.04 | 0.15 |
 
-The gap does not grow with size, so it is per-tick overhead, not kernel work: two submits, the
-executor's bookkeeping, and the bond table uploaded again each tick because it is a source, not
-yet state. The buffer pool did not grow over the run.
+All four pair terms on (five force ops, three sums, density, integrate):
+
+| particles | fused kernel | graph | ratio |
+| --- | --- | --- | --- |
+| 256 | 0.28 ms a step | 0.48 ms a tick | 1.7 |
+| 1,024 | 0.75 | 1.24 | 1.6 |
+| 4,096 | 2.4 | 4.5 | 1.9 |
+| 8,192 | 4.2 | 8.8 | 2.1 |
+
+- **Bonded only:** the gap does not grow with size, so it is per-tick overhead: submits, the
+  executor's bookkeeping, and sources uploaded again each tick.
+- **With pair terms:** four O(n²) passes against the fused kernel's one cost about twice as
+  much, not four times, because each pass does less per pair. The ratio rises slowly with size.
+  This is the number the fusion spike has to beat.
 
 ## For the fusion spike
 
@@ -58,7 +77,7 @@ Ops fall into four groups by the loop their kernel runs. Terms in one group coul
 | particle | nothing: one particle | gravity, container, viscosity, noise, motility, pull |
 | bond | the particle's own bond slots | spring (built) |
 | quad | the four-particle windows the particle is in | torsion |
-| pair | every other particle within `pairRange` | push-apart (local, global), density, fractal, backbone, distance target, contact, Lorentzian contact, boids, adhesion, outward (protrusion, thrust) |
+| pair | every other particle within `pairRange` | push-apart local (built), density (built), adhesion (built), outward (built), push-apart global, density push-apart, fractal, backbone, distance target, contact, Lorentzian contact, boids |
 
 The pair group is where fusion should pay: fifteen pair ops are fifteen O(n²) passes, one fused
 kernel is one.
@@ -68,8 +87,9 @@ kernel is one.
 | value | shape | notes |
 | --- | --- | --- |
 | `pos`, `prev` | points, vec4 | xyz and density; velocity is `pos − prev`, as in CSynth. vec4 because a `vec3` array is 16 bytes a sample on the device and 12 on the host |
-| `density` | `pos.w` | written by the density op, read next tick, as CSynth does |
-| `species`, `radius` | points, u32 / f32 | changed only by division and leader selection |
+| `species`, `radius` | points, u32 / f32 | changed only by division and leader selection. `species` 255 is a dead slot |
+| `density` | points, vec2 | density and directional density, from `pairDensity`; `springIntegrate` copies the first into `pos.w` |
+| `repulsion`, `adhesion` | matrix, species × species | inputs to `adhesion` |
 | `bondTable` | bundle: `link` (n·K, u32), `spring` (n·K, vec4f) | one writer per tick: break, then form. Two parts, so no kernel bitcasts and the empty marker is never an f32 |
 | `rod`, `fix`, `pull`, `torsion` | points | inputs; host-owned, sent down when edited |
 | `force` | points, vec4 | what every force op outputs (w unused) |
@@ -106,16 +126,18 @@ parameters), not the legacy object. The graph version must offer:
 | A resident **bundle on a feedback edge**. The executor's commit adopts and releases `value.buffer` only; a bundle's buffers are in `parts`. Read, not yet tested. | Fix in the executor when `bondBreak` first puts the table on a feedback edge (slice 4). Until then the table is a source and is uploaded each tick. |
 | **Coupling between pair terms.** A contact marked missing zeroes the global terms for that pair. | Model the gate as a pair weight both terms read, not as one term reaching into another. |
 | **Order inside the fused step.** Force cap per bond, mobility before noise, constraints after integration. | The op graph fixes the same order by its edges. Parity with `stepSprings` is the test. |
-| **Damping type 4** uses the directional density the pair loop computes. | `springIntegrate` takes it as zero until the density op exists (slice 2), then as an input. |
 | **Division needs free slots.** | k-th divider to k-th free slot by prefix sums (`src/gpu/scan`). The CPU rule changes to match if it must. |
-| **Per-tick overhead** of about 0.1 ms with two ops. | Acceptable for now; it is the first number for the fusion spike. |
+| **Sources are uploaded every tick** (bond table, species, radius, the two tables). | Small, but it is host work inside the loop. They become state on feedback edges as the ops that change them arrive (slice 4); static inputs want a resident source. |
+| **`addFields` is host-only.** | `addForces` stands in. Making `addFields` resident would replace it. |
 
 ## Slices
 
 1. ~~Bond table, `springForce`, `springIntegrate`, a chain as a graph on resident feedback
    edges, parity and timing.~~ Built.
-2. Pair ops: push-apart, adhesion, outward, density.
-3. The remaining CSynth terms, torsion, constraints, noise and motility.
+2. ~~Pair ops: push-apart (local), adhesion, outward, density.~~ Built.
+3. The remaining terms: mobility, noise, motility, viscosity, container, centring, rods, fix, pull,
+   torsion, and CSynth's other pair terms (global and density push-apart, fractal, backbone,
+   distance targets, contacts, boids). After this the spheroid's forces are all ops.
 4. `bondBreak`, `bondForm`, `divide`, `selectLeaders` as ops, all on the device. Includes the
    bundle-feedback fix.
 5. Scenarios as graph builders; the page and the views read the sim state; the runner goes.

@@ -5,12 +5,15 @@ import {
   chainScenario,
   createState,
   createTopology,
+  DEAD,
   runSprings,
   type SpringParams,
   type SpringState,
   spawn,
+  speciesTable,
   springGraph,
   springParams,
+  termsWithoutOps,
 } from "#src/gpu/sim/springs/index";
 import { advance, createSimState, pullData } from "../../index";
 
@@ -111,5 +114,127 @@ describe("spring model as graph ops", () => {
     const out = await advance(graph, pos, { steps: 200, state: createSimState() });
     const d = out.data!;
     expect(Math.hypot(d[4]! - d[0]!, d[5]! - d[1]!, d[6]! - d[2]!)).toBeCloseTo(1, 3);
+  });
+
+  /** A loose ball of three species with a few unused slots and some bonds: every pair term has work. */
+  function tissue(n: number) {
+    const s = createState(n);
+    let seed = 12345;
+    const rnd = () => {
+      seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+      return seed / 4294967296;
+    };
+    for (let i = 0; i < n; i++) {
+      if (i % 11 === 5) continue; // left dead
+      const species = i % 7 === 0 ? 2 : i % 3 === 0 ? 1 : 0;
+      spawn(s, i, (rnd() - 0.5) * 5, (rnd() - 0.5) * 5, (rnd() - 0.5) * 5, species);
+      s.radius[i] = 0.4 + 0.2 * rnd();
+    }
+    // A little initial velocity, so the directional density is not zero.
+    for (let k = 0; k < n * 4; k++) if (k % 4 !== 3) s.prev[k] = s.pos[k]! - (rnd() - 0.5) * 0.05;
+    const t = createTopology(n, 6);
+    for (let i = 0; i + 2 < n; i += 3) if (s.species[i] !== DEAD && s.species[i + 2] !== DEAD) addSpring(t, i, i + 2, 1.2, 0.5, 0, 1);
+    return { s, t };
+  }
+
+  function pairParams(over: Partial<SpringParams> = {}): SpringParams {
+    return bondedOnly({
+      damptype: 4,
+      damp: 0.7,
+      pairRange: 3,
+      densityRange: 1.5,
+      pushapartlocalforce: 0.05,
+      pairSpeciesMask: 0b011,
+      repulsion: speciesTable([
+        [0, 0, 0.3],
+        [0, 1, 0.2],
+        [1, 1, 0.1],
+        [0, 2, 0.3],
+        [2, 2, 0.3],
+      ]),
+      adhesion: speciesTable([
+        [0, 0, 0.04],
+        [0, 2, 0.2],
+      ]),
+      adhesionRange: 0.4,
+      protrusion: [0.05, 0, 0, 0],
+      thrust: [0, 0, 0.12, 0],
+      protrusionRange: 2,
+      protrusionFull: 6,
+      tissueMask: 0b101,
+      ...over,
+    });
+  }
+
+  it("each pair op's kernel matches its CPU golden", async () => {
+    const { s, t } = tissue(66);
+    const { graph, terms, density } = springGraph(s, t, pairParams());
+    const worstBy: Record<string, number> = {};
+    const largest: Record<string, number> = {};
+    for (const [name, field] of [...Object.entries(terms), ["pairDensity", density] as const]) {
+      const gpu = await pullData(graph, field);
+      const cpu = await pullData(graph, field, { mode: "cpu" });
+      worstBy[name] = worst(gpu, cpu);
+      largest[name] = Math.max(...Array.from(cpu, Math.abs));
+    }
+    expect(Object.keys(worstBy).sort()).toEqual(["adhesion", "outward", "pairDensity", "pushApart", "springForce"]);
+    // Every term does something on this state, and no kernel strays from its golden.
+    expect(Math.min(...Object.values(largest))).toBeGreaterThan(1e-3);
+    expect(Math.max(...Object.values(worstBy)), JSON.stringify(worstBy)).toBeLessThan(1e-4);
+  });
+
+  /** Positions compared lane by lane: the largest xyz difference, and the largest relative
+   *  difference in the density lane (densities run to hundreds, so absolute error says little). */
+  function againstFused(got: ArrayLike<number>, want: ArrayLike<number>): { xyz: number; density: number } {
+    let xyz = 0;
+    let density = 0;
+    for (let k = 0; k < want.length; k++) {
+      const e = Math.abs(got[k]! - want[k]!);
+      if (!Number.isFinite(e)) return { xyz: Number.POSITIVE_INFINITY, density: Number.POSITIVE_INFINITY };
+      if (k % 4 === 3) density = Math.max(density, e / Math.max(1, Math.abs(want[k]!)));
+      else xyz = Math.max(xyz, e);
+    }
+    return { xyz, density };
+  }
+
+  it("the graph with pair terms equals the fused step, on the CPU and on the device", async () => {
+    // Eight steps: this state is a crowded tangle, and rounding differences grow by about half
+    // again each step, so a long run would be testing chaos, not the ops.
+    const steps = 8;
+    const reference = tissue(66);
+    const p = pairParams();
+    const cpuRun = tissue(66);
+    const cpuGraph = springGraph(cpuRun.s, cpuRun.t, p);
+    const onCpu = await advance(cpuGraph.graph, cpuGraph.pos, { steps, state: createSimState(), mode: "cpu" });
+    const gpuRun = tissue(66);
+    const gpuGraph = springGraph(gpuRun.s, gpuRun.t, p);
+    const downloads: string[] = [];
+    const onGpu = await advance(gpuGraph.graph, gpuGraph.pos, {
+      steps,
+      state: createSimState(),
+      materialise: "last",
+      onBridge: (k, dir) => {
+        if (dir === "download") downloads.push(k);
+      },
+    });
+    runSprings(reference.s, reference.t, p, steps);
+    const cpu = againstFused(onCpu.data!, reference.s.pos);
+    const gpu = againstFused(onGpu.data!, reference.s.pos);
+    expect(cpu.xyz, JSON.stringify(cpu)).toBeLessThan(2e-5);
+    expect(cpu.density, JSON.stringify(cpu)).toBeLessThan(1e-3);
+    expect(gpu.xyz, JSON.stringify(gpu)).toBeLessThan(5e-4);
+    expect(gpu.density, JSON.stringify(gpu)).toBeLessThan(1e-2);
+    expect(downloads.length).toBe(1);
+    // Dead slots did not move, and the live ones did.
+    expect(onGpu.data![5 * 4]).toBe(reference.s.pos[5 * 4]);
+    expect(againstFused(onGpu.data!, tissue(66).s.pos).xyz).toBeGreaterThan(1e-2);
+    // The density lane holds real densities, not the zeros it started with.
+    expect(Math.max(...Array.from({ length: 66 }, (_, i) => onGpu.data![i * 4 + 3]!))).toBeGreaterThan(0.1);
+  });
+
+  it("refuses params that need a term with no op yet", () => {
+    const { s, t } = tissue(22);
+    expect(() => springGraph(s, t, pairParams({ noiseforce: 0.1, visc: 0.2 }))).toThrow(/noise.*|viscosity/);
+    expect(termsWithoutOps(pairParams({ pushapartforce: 1 }), t)).toEqual(["global push-apart (pushapartforce)"]);
   });
 });

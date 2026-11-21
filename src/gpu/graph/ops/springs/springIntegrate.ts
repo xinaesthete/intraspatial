@@ -8,6 +8,10 @@
 //   pos'   = pos + v' · rate                   halved when v'·F < 0 (CSynth's fix for bistable pairs)
 //   prev'  = pos
 //
+// `density` supplies the two numbers `pairDensity` computes: the first is stored in the spare lane
+// of the new positions (CSynth keeps it there for the next step), the second strengthens damping
+// type 4. A dead particle (`species` = 255) does not move.
+//
 // It closes the feedback loop: wire `pos` and `prev` back to the state they came from. The maths
 // is the tail of `stepSprings`, which stays the reference.
 import tgpu from "typegpu";
@@ -16,10 +20,11 @@ import * as std from "typegpu/std";
 import { submitDispatch } from "#src/gpu/device";
 import { typegpuComputePipeline } from "#src/gpu/typegpuPipeline";
 import type { Root } from "../../backend";
-import type { ElementType, Shape } from "../../handle";
+import type { Shape } from "../../handle";
 import type { OpType, ParamSpec, Params } from "../../op";
 import { rawBindGroup } from "../../residentBind";
 import { VEC4 } from "./bondTable";
+import { DEAD_SPECIES, hostF32, numbers, requireScalar, requireVec, residentBuffer, sameParticles } from "./common";
 
 const WG = 64;
 
@@ -38,6 +43,8 @@ const layout = tgpu
     pos: { storage: (n: number) => d.arrayOf(d.vec4f, n), access: "readonly" },
     prev: { storage: (n: number) => d.arrayOf(d.vec4f, n), access: "readonly" },
     force: { storage: (n: number) => d.arrayOf(d.vec4f, n), access: "readonly" },
+    density: { storage: (n: number) => d.arrayOf(d.vec2f, n), access: "readonly" },
+    species: { storage: (n: number) => d.arrayOf(d.u32, n), access: "readonly" },
     posOut: { storage: (n: number) => d.arrayOf(d.vec4f, n), access: "mutable" },
     prevOut: { storage: (n: number) => d.arrayOf(d.vec4f, n), access: "mutable" },
   })
@@ -49,78 +56,70 @@ const integrateFn = tgpu
     const i = input.gid.x;
     if (i < layout.$.params.n) {
       const here = layout.$.pos[i]!;
-      const f = layout.$.force[i]!.xyz;
-      const rate = layout.$.params.rate;
-      const damp = layout.$.params.damp;
-      let v = std.div(std.sub(here.xyz, layout.$.prev[i]!.xyz), rate);
-      const speed = std.length(v);
+      const crowd = layout.$.density[i]!;
+      // An unused slot stays where it is.
+      let next = d.vec3f(here.x, here.y, here.z);
+      let spare = here.w;
+      if (layout.$.species[i]! !== 255) {
+        const f = layout.$.force[i]!.xyz;
+        const rate = layout.$.params.rate;
+        const damp = layout.$.params.damp;
+        let v = std.div(std.sub(here.xyz, layout.$.prev[i]!.xyz), rate);
+        const speed = std.length(v);
 
-      // The proportion of the old velocity that is kept.
-      let use = damp;
-      if (layout.$.params.damptype === 2) {
-        const sq = speed * speed;
-        use = std.max(0, 1 - damp * sq * sq);
-      }
-      if (layout.$.params.damptype === 3) {
-        const s3 = std.max(1e-14, speed);
-        use = std.pow(std.pow(s3, -3) + damp, -1 / 3) / s3;
-      }
-      if (layout.$.params.damptype === 4) {
-        const s4 = std.max(1e-14, speed);
-        use = std.min(1, std.max(0, std.pow(std.pow(s4 * damp, -3) + 1, -1 / 3) / s4));
-      }
-      if (damp < 0) {
-        use = -damp;
-      }
+        // The proportion of the old velocity that is kept.
+        let use = damp;
+        if (layout.$.params.damptype === 2) {
+          const sq = speed * speed;
+          use = std.max(0, 1 - damp * sq * sq);
+        }
+        if (layout.$.params.damptype === 3) {
+          const s3 = std.max(1e-14, speed);
+          use = std.pow(std.pow(s3, -3) + damp, -1 / 3) / s3;
+        }
+        if (layout.$.params.damptype === 4) {
+          // Speed is exaggerated by the directional density, to damp collisions hard.
+          const s4 = std.max(1e-14, speed * (1 + crowd.y));
+          use = std.min(1, std.max(0, std.pow(std.pow(s4 * damp, -3) + 1, -1 / 3) / s4));
+        }
+        if (damp < 0) {
+          use = -damp;
+        }
 
-      v = std.add(std.mul(use, v), f);
-      v = d.vec3f(v.x, v.y - layout.$.params.gravity, v.z);
+        v = std.add(std.mul(use, v), f);
+        v = d.vec3f(v.x, v.y - layout.$.params.gravity, v.z);
 
-      // Soft speed cap: untouched below 0.7 of the limit, then bent towards it.
-      const rr = std.length(v) / layout.$.params.maxvel;
-      if (rr > 0.7) {
-        v = std.mul((1 - 0.09 / (rr - 0.4)) / rr, v);
-      }
-      const total = v.x + v.y + v.z;
-      if (!(std.abs(total) < 3e38)) {
-        v = d.vec3f(0, 0, 0);
-      }
+        // Soft speed cap: untouched below 0.7 of the limit, then bent towards it.
+        const rr = std.length(v) / layout.$.params.maxvel;
+        if (rr > 0.7) {
+          v = std.mul((1 - 0.09 / (rr - 0.4)) / rr, v);
+        }
+        const total = v.x + v.y + v.z;
+        if (!(std.abs(total) < 3e38)) {
+          v = d.vec3f(0, 0, 0);
+        }
 
-      let next = std.add(here.xyz, std.mul(rate, v));
-      // A particle moving against its force takes half the step.
-      if (std.dot(v, f) < 0) {
-        next = std.mul(0.5, std.add(here.xyz, next));
+        next = std.add(here.xyz, std.mul(rate, v));
+        // A particle moving against its force takes half the step.
+        if (std.dot(v, f) < 0) {
+          next = std.mul(0.5, std.add(here.xyz, next));
+        }
+        spare = crowd.x;
       }
-      layout.$.posOut[i] = d.vec4f(next, here.w);
+      layout.$.posOut[i] = d.vec4f(next, spare);
       layout.$.prevOut[i] = d.vec4f(here.xyz, here.w);
     }
   })
   .$name("springIntegrate");
 
-interface Pipe {
-  pipeline: GPUComputePipeline;
-  params: ReturnType<typeof makeParams>;
-}
+const makeParams = (root: Root) => root.createBuffer(IntegrateParams).$usage("uniform").$name("springIntegrate:params");
+const pipes = new WeakMap<object, { pipeline: GPUComputePipeline; params: ReturnType<typeof makeParams> }>();
 
-function makeParams(root: Root) {
-  return root.createBuffer(IntegrateParams).$usage("uniform").$name("springIntegrate:params");
-}
-
-const pipes = new WeakMap<object, Promise<Pipe>>();
-
-function getPipe(device: GPUDevice, root: Root): Promise<Pipe> {
+function getPipe(device: GPUDevice, root: Root) {
   let p = pipes.get(root as object);
   if (!p) {
-    p = (async () => ({
-      pipeline: typegpuComputePipeline(
-        device,
-        root,
-        tgpu.resolveWithContext([integrateFn], { names: "strict" }),
-        "springIntegrate",
-        "springIntegrate",
-      ),
-      params: makeParams(root),
-    }))();
+    const resolved = tgpu.resolveWithContext([integrateFn], { names: "strict" });
+    p = { pipeline: typegpuComputePipeline(device, root, resolved, "springIntegrate", "springIntegrate"), params: makeParams(root) };
     pipes.set(root as object, p);
   }
   return p;
@@ -156,28 +155,21 @@ const PARAMS: ParamSpec[] = [
   { name: "springmaxvel", type: "number", default: 0.25, min: 1e-6, max: 10, step: 0.01, describe: "Soft cap on speed." },
   { name: "gravity", type: "number", default: 0, min: -1, max: 1, step: 0.001, describe: "Constant pull along −y." },
 ];
-
-const num = (p: Params, name: string): number => {
-  const spec = PARAMS.find((s) => s.name === name);
-  const v = p[name] ?? spec?.default;
-  if (typeof v !== "number" || Number.isNaN(v)) throw new Error(`springIntegrate: param "${name}" must be a number`);
-  return v;
-};
-
-function pointsN(shape: Shape, who: string): number {
-  if (shape.kind !== "points") throw new Error(`${who}: expected a points field`);
-  return shape.n;
-}
-
-function requireVec4(el: ElementType | undefined, who: string): void {
-  if (!el || el.kind !== "vec" || el.n !== 4) throw new Error(`${who}: expected a vec4 points field`);
-}
+const num = numbers(PARAMS, "springIntegrate");
 
 function soft(rr: number): number {
   return rr <= 0.7 ? 1 : (1 - 0.09 / (rr - 0.4)) / rr;
 }
 
-function integrateCpu(pos: ArrayLike<number>, prev: ArrayLike<number>, force: ArrayLike<number>, n: number, p: Params) {
+function integrateCpu(
+  pos: ArrayLike<number>,
+  prev: ArrayLike<number>,
+  force: ArrayLike<number>,
+  density: ArrayLike<number>,
+  species: ArrayLike<number>,
+  n: number,
+  p: Params,
+) {
   const posOut = new Float32Array(n * 4);
   const prevOut = new Float32Array(n * 4);
   const damp = num(p, "damp");
@@ -187,6 +179,11 @@ function integrateCpu(pos: ArrayLike<number>, prev: ArrayLike<number>, force: Ar
   const gravity = num(p, "gravity");
   for (let i = 0; i < n; i++) {
     const o = i * 4;
+    for (let c = 0; c < 4; c++) prevOut[o + c] = pos[o + c]!;
+    if (species[i] === DEAD_SPECIES) {
+      for (let c = 0; c < 4; c++) posOut[o + c] = pos[o + c]!;
+      continue;
+    }
     const fx = force[o]!;
     const fy = force[o + 1]!;
     const fz = force[o + 2]!;
@@ -200,7 +197,7 @@ function integrateCpu(pos: ArrayLike<number>, prev: ArrayLike<number>, force: Ar
       const v = Math.max(1e-14, speed);
       use = (v ** -3 + damp) ** (-1 / 3) / v;
     } else if (damptype === 4) {
-      const v = Math.max(1e-14, speed);
+      const v = Math.max(1e-14, speed * (1 + density[i * 2 + 1]!));
       use = Math.min(1, Math.max(0, ((v * damp) ** -3 + 1) ** (-1 / 3) / v));
     }
     if (damp < 0) use = -damp;
@@ -227,8 +224,7 @@ function integrateCpu(pos: ArrayLike<number>, prev: ArrayLike<number>, force: Ar
     posOut[o] = nx;
     posOut[o + 1] = ny;
     posOut[o + 2] = nz;
-    posOut[o + 3] = pos[o + 3]!;
-    for (let c = 0; c < 4; c++) prevOut[o + c] = pos[o + c]!;
+    posOut[o + 3] = density[i * 2]!;
   }
   return { posOut, prevOut };
 }
@@ -249,6 +245,8 @@ export const springIntegrateOp: OpType = {
     { name: "pos", kind: "points", dtype: "f32" },
     { name: "prev", kind: "points", dtype: "f32" },
     { name: "force", kind: "points", dtype: "f32" },
+    { name: "density", kind: "points", dtype: "f32" },
+    { name: "species", kind: "points", dtype: "u32" },
   ],
   outputs: [
     { name: "pos", kind: "points", dtype: "f32" },
@@ -256,29 +254,29 @@ export const springIntegrateOp: OpType = {
   ],
   params: PARAMS,
   inferShapes(inputs) {
-    const n = pointsN(inputs[0]!, "springIntegrate.pos");
-    if (pointsN(inputs[1]!, "springIntegrate.prev") !== n || pointsN(inputs[2]!, "springIntegrate.force") !== n) {
-      throw new Error("springIntegrate: pos, prev and force must be for the same particles");
-    }
+    const n = sameParticles(inputs, "springIntegrate");
     return [
       { kind: "points", n },
       { kind: "points", n },
     ];
   },
   inferElements(inputs) {
-    requireVec4(inputs[0], "springIntegrate.pos");
-    requireVec4(inputs[1], "springIntegrate.prev");
-    requireVec4(inputs[2], "springIntegrate.force");
+    requireVec(inputs[0], 4, "springIntegrate.pos");
+    requireVec(inputs[1], 4, "springIntegrate.prev");
+    requireVec(inputs[2], 4, "springIntegrate.force");
+    requireVec(inputs[3], 2, "springIntegrate.density");
+    requireScalar(inputs[4], "springIntegrate.species");
     return [VEC4, VEC4];
   },
   resident: true,
   async execute(ctx, inputs, params) {
-    const [pos, prev, force] = inputs;
-    if (!pos?.buffer || !prev?.buffer || !force?.buffer) throw new Error("springIntegrate: resident op received a non-resident input");
-    const n = pointsN(pos.shape, "springIntegrate.pos");
+    const n = sameParticles(
+      inputs.map((v) => v.shape),
+      "springIntegrate",
+    );
     const device = await ctx.backend.getDevice();
     const root = await ctx.backend.getRoot();
-    const pipe = await getPipe(device, root);
+    const pipe = getPipe(device, root);
 
     // One lease per output port; both are written by the one dispatch.
     const posOut = await ctx.backend.lease(n * 16);
@@ -295,7 +293,16 @@ export const springIntegrateOp: OpType = {
       device,
       root,
       layout,
-      [pipe.params, pos.buffer.buffer, prev.buffer.buffer, force.buffer.buffer, posOut.buffer, prevOut.buffer],
+      [
+        pipe.params,
+        residentBuffer(inputs[0], "springIntegrate.pos"),
+        residentBuffer(inputs[1], "springIntegrate.prev"),
+        residentBuffer(inputs[2], "springIntegrate.force"),
+        residentBuffer(inputs[3], "springIntegrate.density"),
+        residentBuffer(inputs[4], "springIntegrate.species"),
+        posOut.buffer,
+        prevOut.buffer,
+      ],
       "springIntegrate",
     );
     submitDispatch(device, "springIntegrate", pipe.pipeline, bind, Math.ceil(n / WG));
@@ -306,10 +313,19 @@ export const springIntegrateOp: OpType = {
     ];
   },
   cpuGolden(inputs, params) {
-    const [pos, prev, force] = inputs;
-    if (!pos?.data || !prev?.data || !force?.data) throw new Error("springIntegrate: cpu golden needs host data");
-    const n = pointsN(pos.shape, "springIntegrate.pos");
-    const { posOut, prevOut } = integrateCpu(pos.data, prev.data, force.data, n, params);
+    const n = sameParticles(
+      inputs.map((v) => v.shape),
+      "springIntegrate",
+    );
+    const { posOut, prevOut } = integrateCpu(
+      hostF32(inputs[0], "springIntegrate.pos"),
+      hostF32(inputs[1], "springIntegrate.prev"),
+      hostF32(inputs[2], "springIntegrate.force"),
+      hostF32(inputs[3], "springIntegrate.density"),
+      hostF32(inputs[4], "springIntegrate.species"),
+      n,
+      params,
+    );
     const shape: Shape = { kind: "points", n };
     return [
       { shape, dtype: "f32", element: VEC4, data: posOut },

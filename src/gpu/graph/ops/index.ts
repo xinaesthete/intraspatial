@@ -27,7 +27,12 @@ import { membershipToDistanceOp } from "./membershipToDistance";
 import { morphologyOp } from "./morphology";
 import { reactionDiffusionStepOp } from "./reactionDiffusion";
 import { splatDensityOp } from "./splatDensity";
+import { addForcesOp } from "./springs/addForces";
+import { adhesionOp } from "./springs/adhesion";
 import { BOND_TABLE } from "./springs/bondTable";
+import { outwardOp } from "./springs/outward";
+import { pairDensityOp } from "./springs/pairDensity";
+import { pushApartOp } from "./springs/pushApart";
 import { springForceOp } from "./springs/springForce";
 import { springIntegrateOp } from "./springs/springIntegrate";
 import { thresholdOp } from "./threshold";
@@ -54,6 +59,11 @@ export function registerBuiltinOps(): void {
   // spring model (docs/spring-model-as-ops.md)
   reg(springForceOp);
   reg(springIntegrateOp);
+  reg(addForcesOp);
+  reg(pairDensityOp);
+  reg(pushApartOp);
+  reg(adhesionOp);
+  reg(outwardOp);
   for (const part of BOND_TABLE.parts) reg(extractOp(BOND_TABLE, part.name));
   reg(combineOp(BOND_TABLE));
   // fuzzy TDA front
