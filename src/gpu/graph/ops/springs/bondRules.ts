@@ -72,7 +72,13 @@ function hostTable(table: FieldValue, n: number, who: string): { K: number; link
 /** A new resident bond table over two fresh leases. */
 async function leaseTable(ctx: ExecCtx, slots: number) {
   const link = await ctx.backend.lease(slots * 4);
-  const spring = await ctx.backend.lease(slots * 16);
+  let spring: ResidentBuffer;
+  try {
+    spring = await ctx.backend.lease(slots * 16);
+  } catch (e) {
+    ctx.backend.release(link);
+    throw e;
+  }
   const shape: Shape = { kind: "points", n: slots };
   const value = bondTableValue(new Uint32Array(0), new Float32Array(0));
   return {
@@ -528,15 +534,12 @@ export const bondFormOp: OpType = {
   async execute(ctx, inputs, params) {
     const n = pointsN(inputs[0]!.shape, "bondForm.pos");
     const table = residentTable(inputs[2]!, n, "bondForm");
-    const dev = await ctx.backend.getDevice();
-    const root = await ctx.backend.getRoot();
-    let uniform = formUniforms.get(root as object);
-    if (!uniform) {
-      uniform = makeFormUniform(root);
-      formUniforms.set(root as object, uniform);
-    }
     const s = strengths(params);
-    uniform.write({
+    // Numbers and input buffers before any lease, so a bad call cannot keep a buffer. The uniform
+    // itself is written only after the leases, with nothing awaited before the submits: two
+    // formations on one device share the uniform, and a write before an await let the other
+    // call's rest length win.
+    const written = {
       n,
       K: table.K,
       speciesCount: speciesSide(inputs[3]!.shape),
@@ -549,31 +552,51 @@ export const bondFormOp: OpType = {
       springlenfix: formNum(params, "springlenfix"),
       strengthLo: d.vec4f(s[0]!, s[1]!, s[2]!, s[3]!),
       strengthHi: d.vec4f(s[4]!, s[5]!, s[6]!, s[7]!),
-    });
+    };
     const pos = device(inputs[0], "bondForm.pos");
     const species = device(inputs[1], "bondForm.species");
     const kindOf = device(inputs[3], "bondForm.kindOf");
+    const step = device(inputs[4], "bondForm.step");
+    const dev = await ctx.backend.getDevice();
+    const root = await ctx.backend.getRoot();
+    let uniform = formUniforms.get(root);
+    if (!uniform) {
+      uniform = makeFormUniform(root);
+      formUniforms.set(root, uniform);
+    }
     // The proposals live only between the two passes.
     const proposal = await ctx.backend.lease(n * 4);
-    const out = await leaseTable(ctx, n * table.K);
-    const propose = rawBindGroup(
-      dev,
-      root,
-      proposeLayout,
-      [uniform, pos, species, table.link, kindOf, device(inputs[4], "bondForm.step"), proposal.buffer],
-      "bondForm:propose",
-    );
-    submitDispatch(dev, "bondForm:propose", proposePipe(dev, root), propose, Math.ceil(n / WG));
-    const accept = rawBindGroup(
-      dev,
-      root,
-      acceptLayout,
-      [uniform, pos, species, table.link, table.spring, kindOf, proposal.buffer, out.link.buffer, out.spring.buffer],
-      "bondForm:accept",
-    );
-    submitDispatch(dev, "bondForm:accept", acceptPipe(dev, root), accept, Math.ceil(n / WG));
-    ctx.backend.release(proposal);
-    return [out.value];
+    try {
+      const out = await leaseTable(ctx, n * table.K);
+      try {
+        uniform.write(written);
+        const propose = rawBindGroup(
+          dev,
+          root,
+          proposeLayout,
+          [uniform, pos, species, table.link, kindOf, step, proposal.buffer],
+          "bondForm:propose",
+        );
+        submitDispatch(dev, "bondForm:propose", proposePipe(dev, root), propose, Math.ceil(n / WG));
+        const accept = rawBindGroup(
+          dev,
+          root,
+          acceptLayout,
+          [uniform, pos, species, table.link, table.spring, kindOf, proposal.buffer, out.link.buffer, out.spring.buffer],
+          "bondForm:accept",
+        );
+        submitDispatch(dev, "bondForm:accept", acceptPipe(dev, root), accept, Math.ceil(n / WG));
+        ctx.backend.release(proposal);
+        return [out.value];
+      } catch (e) {
+        ctx.backend.release(out.link);
+        ctx.backend.release(out.spring);
+        throw e;
+      }
+    } catch (e) {
+      ctx.backend.release(proposal);
+      throw e;
+    }
   },
   cpuGolden(inputs, params) {
     const n = pointsN(inputs[0]!.shape, "bondForm.pos");

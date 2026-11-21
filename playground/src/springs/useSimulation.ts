@@ -80,6 +80,8 @@ function measure(sc: Scenario): Sample {
 /** Something that advances a scenario on the device and leaves its host state current. */
 interface GpuRunner {
   advance(steps: number): Promise<void>;
+  /** Release the resident state once any in-flight advance has settled. */
+  dispose(): Promise<void>;
 }
 
 /**
@@ -90,10 +92,16 @@ interface GpuRunner {
  */
 function gpuRunner(sc: Scenario): GpuRunner {
   const sim = createSpringSim(sc, { backend: browserBackend });
+  let tail: Promise<void> = Promise.resolve();
   return {
     async advance(steps) {
-      await sim.advance(steps);
-      await sim.sync();
+      const run = sim.advance(steps).then(() => sim.sync());
+      tail = run.catch(() => {});
+      await run;
+    },
+    async dispose() {
+      await tail;
+      await sim.dispose();
     },
   };
 }
@@ -186,8 +194,10 @@ export function useSimulation(o: SimulationOptions): { samples: readonly Sample[
                 if (!stopped && ++advances % 4 === 0) record();
               })
               .catch((e: unknown) => {
-                // Stop submitting to a device that has just failed; the error stays on screen.
+                // Stop submitting to a device that has just failed, and give its buffers back.
+                const dying = gpu;
                 gpu = null;
+                void dying?.dispose();
                 report(e);
               })
               .finally(() => {
@@ -207,6 +217,7 @@ export function useSimulation(o: SimulationOptions): { samples: readonly Sample[
     return () => {
       stopped = true;
       cancelAnimationFrame(raf);
+      void gpu?.dispose();
     };
   }, [sc, wantGpu]);
 

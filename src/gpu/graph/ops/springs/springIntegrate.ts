@@ -74,13 +74,18 @@ const integrateFn = tgpu
           use = std.max(0, 1 - damp * sq * sq);
         }
         if (layout.$.params.damptype === 3) {
-          const s3 = std.max(1e-14, speed);
-          use = std.pow(std.pow(s3, -3) + damp, -1 / 3) / s3;
+          // (1 + damp·s³)^(-1/3), the same law as (s⁻³ + damp)^(-1/3) / s. A resting particle
+          // has s = 0, and s⁻³ overflows f32, which used to throw the force away.
+          const s3 = speed;
+          use = std.pow(1 + damp * s3 * s3 * s3, -1 / 3);
         }
         if (layout.$.params.damptype === 4) {
           // Speed is exaggerated by the directional density, to damp collisions hard.
-          const s4 = std.max(1e-14, speed * (1 + crowd.y));
-          use = std.min(1, std.max(0, std.pow(std.pow(s4 * damp, -3) + 1, -1 / 3) / s4));
+          // damp·(1 + (s·damp)³)^(-1/3), the same law as ((s·damp)⁻³ + 1)^(-1/3) / s.
+          // damp = 0, or a resting particle, used to divide by zero or overflow f32.
+          const s4 = speed * (1 + crowd.y);
+          const sd = s4 * damp;
+          use = std.min(1, std.max(0, damp * std.pow(1 + sd * sd * sd, -1 / 3)));
         }
         if (damp < 0) {
           use = -damp;
@@ -194,11 +199,12 @@ function integrateCpu(
     let use = damp;
     if (damptype === 2) use = Math.max(0, 1 - damp * speed ** 4);
     else if (damptype === 3) {
-      const v = Math.max(1e-14, speed);
-      use = (v ** -3 + damp) ** (-1 / 3) / v;
+      const v = speed;
+      use = (1 + damp * v ** 3) ** (-1 / 3);
     } else if (damptype === 4) {
-      const v = Math.max(1e-14, speed * (1 + density[i * 2 + 1]!));
-      use = Math.min(1, Math.max(0, ((v * damp) ** -3 + 1) ** (-1 / 3) / v));
+      const v = speed * (1 + density[i * 2 + 1]!);
+      const sd = v * damp;
+      use = Math.min(1, Math.max(0, damp * (1 + sd ** 3) ** (-1 / 3)));
     }
     if (damp < 0) use = -damp;
     vx = vx * use + fx;
@@ -275,43 +281,48 @@ export const springIntegrateOp: OpType = {
       inputs.map((v) => v.shape),
       "springIntegrate",
     );
-    const device = await ctx.backend.getDevice();
-    const root = await ctx.backend.getRoot();
-    const pipe = getPipe(device, root);
-
-    // One lease per output port; both are written by the one dispatch.
-    const posOut = await ctx.backend.lease(n * 16);
-    const prevOut = await ctx.backend.lease(n * 16);
-    pipe.params.write({
+    // Validate before either lease: a bad param or a host input used to keep the output
+    // buffers, and the pool never destroys them.
+    const uniform = {
       n,
       damptype: num(params, "damptype"),
       damp: num(params, "damp"),
       rate: num(params, "springrate"),
       maxvel: num(params, "springmaxvel"),
       gravity: num(params, "gravity"),
-    });
-    const bind = rawBindGroup(
-      device,
-      root,
-      layout,
-      [
-        pipe.params,
-        residentBuffer(inputs[0], "springIntegrate.pos"),
-        residentBuffer(inputs[1], "springIntegrate.prev"),
-        residentBuffer(inputs[2], "springIntegrate.force"),
-        residentBuffer(inputs[3], "springIntegrate.density"),
-        residentBuffer(inputs[4], "springIntegrate.species"),
-        posOut.buffer,
-        prevOut.buffer,
-      ],
-      "springIntegrate",
-    );
-    submitDispatch(device, "springIntegrate", pipe.pipeline, bind, Math.ceil(n / WG));
-    const shape: Shape = { kind: "points", n };
-    return [
-      { shape, dtype: "f32", element: VEC4, buffer: posOut },
-      { shape, dtype: "f32", element: VEC4, buffer: prevOut },
+    };
+    const buffers = [
+      residentBuffer(inputs[0], "springIntegrate.pos"),
+      residentBuffer(inputs[1], "springIntegrate.prev"),
+      residentBuffer(inputs[2], "springIntegrate.force"),
+      residentBuffer(inputs[3], "springIntegrate.density"),
+      residentBuffer(inputs[4], "springIntegrate.species"),
     ];
+    const device = await ctx.backend.getDevice();
+    const root = await ctx.backend.getRoot();
+    const pipe = getPipe(device, root);
+
+    // One lease per output port; both are written by the one dispatch.
+    const posOut = await ctx.backend.lease(n * 16);
+    try {
+      const prevOut = await ctx.backend.lease(n * 16);
+      try {
+        pipe.params.write(uniform);
+        const bind = rawBindGroup(device, root, layout, [pipe.params, ...buffers, posOut.buffer, prevOut.buffer], "springIntegrate");
+        submitDispatch(device, "springIntegrate", pipe.pipeline, bind, Math.ceil(n / WG));
+        const shape: Shape = { kind: "points", n };
+        return [
+          { shape, dtype: "f32", element: VEC4, buffer: posOut },
+          { shape, dtype: "f32", element: VEC4, buffer: prevOut },
+        ];
+      } catch (e) {
+        ctx.backend.release(prevOut);
+        throw e;
+      }
+    } catch (e) {
+      ctx.backend.release(posOut);
+      throw e;
+    }
   },
   cpuGolden(inputs, params) {
     const n = sameParticles(

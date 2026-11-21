@@ -24,7 +24,10 @@ import {
   springParams,
   topologyDefect,
 } from "#src/gpu/sim/springs/index";
+import { nodeBackend } from "../../backend.node";
 import { advance, createSimState, type GpuField, pullData } from "../../index";
+import { springIntegrateOp } from "./springIntegrate";
+import { tickOp } from "./tick";
 
 /** Bonded springs and the integrator only: every other term of the fused step switched off. */
 function bondedOnly(over: Partial<SpringParams> = {}): SpringParams {
@@ -111,6 +114,68 @@ describe("spring model as graph ops", () => {
     const after = await advance(graph, pos, { steps: 1, state, materialise: "last" });
     runSprings(s, t, p, 11);
     expect(worst(after.data!, s.pos)).toBeLessThan(4e-4);
+  });
+
+  it("keeps a stationary particle's force under damping types 3 and 4", async () => {
+    const s = createState(2);
+    spawn(s, 0, 0, 0, 0, 0);
+    spawn(s, 1, 2, 0, 0, 0);
+    s.prev.set(s.pos);
+    const t = createTopology(2, 4);
+    addSpring(t, 0, 1, 1, 1, 0, 0);
+    for (const spec of [
+      { damptype: 3 as const, damp: 0.6 },
+      { damptype: 4 as const, damp: 0 },
+    ]) {
+      const { graph, pos } = springGraph(s, t, bondedOnly({ ...spec, springforce: 0.5, backboneStrength: 1 }));
+      const gpu = await pullData(graph, pos);
+      const cpu = await pullData(graph, pos, { mode: "cpu" });
+      expect(worst(gpu, cpu), `damptype ${spec.damptype}`).toBeLessThan(2e-5);
+      expect(Math.abs(gpu[0]! - s.pos[0]!), `damptype ${spec.damptype} moved`).toBeGreaterThan(1e-3);
+    }
+  });
+
+  it("does not keep an output lease when a spring op rejects before dispatch", async () => {
+    const live = () => nodeBackend.poolStats().live;
+    const before = live();
+    const shape = { kind: "points" as const, n: 1 };
+    const ctx = { backend: nodeBackend };
+    const inputs = [
+      { shape, dtype: "f32" as const },
+      { shape, dtype: "f32" as const },
+      { shape, dtype: "f32" as const },
+      { shape, dtype: "f32" as const },
+      { shape, dtype: "u32" as const },
+    ];
+    await expect(springIntegrateOp.execute(ctx, inputs, { damp: Number.NaN })).rejects.toThrow(/damp/);
+    await expect(springIntegrateOp.execute(ctx, inputs, { damp: 0.9 })).rejects.toThrow(/non-resident/);
+    await expect(tickOp.execute(ctx, [{ shape: { kind: "scalar" }, dtype: "u32" }], {})).rejects.toThrow(/non-resident/);
+    expect(live()).toBe(before);
+  });
+
+  it("returns the first integrate lease when the second lease fails", async () => {
+    const before = nodeBackend.poolStats().live;
+    const buf = await nodeBackend.lease(64);
+    let calls = 0;
+    const backend = {
+      ...nodeBackend,
+      lease(byteLength: number, usage?: number) {
+        calls += 1;
+        if (calls === 2) return Promise.reject(new Error("second lease failed"));
+        return nodeBackend.lease(byteLength, usage);
+      },
+    };
+    const n = 1;
+    const input = (dtype: "f32" | "u32") => ({ shape: { kind: "points" as const, n }, dtype, buffer: buf });
+    try {
+      await expect(
+        springIntegrateOp.execute({ backend }, [input("f32"), input("f32"), input("f32"), input("f32"), input("u32")], { damp: 0.9 }),
+      ).rejects.toThrow(/second lease failed/);
+      expect(nodeBackend.poolStats().live).toBe(before + 1);
+    } finally {
+      nodeBackend.release(buf);
+    }
+    expect(nodeBackend.poolStats().live).toBe(before);
   });
 
   it("holds a two-particle bond at its rest length", async () => {

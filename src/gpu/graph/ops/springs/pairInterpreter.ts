@@ -424,17 +424,12 @@ export const pairInterpreterOp: OpType = {
     const n = count(part(state, "species", "the state").shape);
     const stateRoot = rootOf(state, "the state");
     const inputsRoot = rootOf(fixed, "the inputs");
-    const device = await ctx.backend.getDevice();
-    const root = await ctx.backend.getRoot();
-    let pipe = pipes.get(root as object);
-    if (!pipe) {
-      const resolved = tgpu.resolveWithContext([interpFn], { names: "strict" });
-      pipe = { pipeline: typegpuComputePipeline(device, root, resolved, "pairInterpreter", "pairInterpreter"), uniform: makeUniform(root) };
-      pipes.set(root as object, pipe);
-    }
     const tables = fixed.parts?.repulsion && fixed.parts.adhesion;
     const repulsionShape = fixed.parts?.repulsion?.shape;
-    pipe.uniform.write({
+    // Gather the uniform before either lease. Two graphs share it per device, so the write has
+    // to sit with the bind and the submit, after the awaits, or the other graph can overwrite
+    // `n` before this one submits.
+    const uniform = {
       n,
       instructions: count(part(fixed, "program", "the inputs").shape) / PAIR_INSTRUCTION_WORDS,
       speciesCount: repulsionShape?.kind === "matrix" ? repulsionShape.rows : 0,
@@ -447,16 +442,41 @@ export const pairInterpreterOp: OpType = {
       repulsion: tables ? wordOffset(fixed, "repulsion", "the inputs") : 0,
       adhesion: tables ? wordOffset(fixed, "adhesion", "the inputs") : 0,
       rate: num(params, "springrate"),
-    });
+    };
+    const device = await ctx.backend.getDevice();
+    const root = await ctx.backend.getRoot();
+    let pipe = pipes.get(root);
+    if (!pipe) {
+      const resolved = tgpu.resolveWithContext([interpFn], { names: "strict" });
+      pipe = { pipeline: typegpuComputePipeline(device, root, resolved, "pairInterpreter", "pairInterpreter"), uniform: makeUniform(root) };
+      pipes.set(root, pipe);
+    }
     const force = await ctx.backend.lease(n * 16);
-    const density = await ctx.backend.lease(n * 8);
-    const bind = rawBindGroup(device, root, layout, [pipe.uniform, stateRoot, inputsRoot, force.buffer, density.buffer], "pairInterpreter");
-    submitDispatch(device, "pairInterpreter", pipe.pipeline, bind, Math.ceil(n / WG));
-    const shape: Shape = { kind: "points", n };
-    return [
-      { shape, dtype: "f32", element: VEC4, buffer: force },
-      { shape, dtype: "f32", element: VEC2, buffer: density },
-    ];
+    try {
+      const density = await ctx.backend.lease(n * 8);
+      try {
+        pipe.uniform.write(uniform);
+        const bind = rawBindGroup(
+          device,
+          root,
+          layout,
+          [pipe.uniform, stateRoot, inputsRoot, force.buffer, density.buffer],
+          "pairInterpreter",
+        );
+        submitDispatch(device, "pairInterpreter", pipe.pipeline, bind, Math.ceil(n / WG));
+        const shape: Shape = { kind: "points", n };
+        return [
+          { shape, dtype: "f32", element: VEC4, buffer: force },
+          { shape, dtype: "f32", element: VEC2, buffer: density },
+        ];
+      } catch (e) {
+        ctx.backend.release(density);
+        throw e;
+      }
+    } catch (e) {
+      ctx.backend.release(force);
+      throw e;
+    }
   },
   cpuGolden(inputs, params) {
     const [state, fixed] = inputs as [FieldValue, FieldValue];

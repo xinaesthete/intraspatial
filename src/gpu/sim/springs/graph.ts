@@ -367,7 +367,7 @@ function buildSpringGraph(
           tissueMask: p.tissueMask,
           ...perSpecies("protrusion", p.protrusion),
           ...perSpecies("thrust", p.thrust),
-        } as Record<string, number>,
+        },
       });
     }
     steps.push({ op: "density", values: { pairRange: range, densityRange: p.densityRange } });
@@ -506,7 +506,10 @@ function buildSpringGraph(
   const motile = any(p.motility);
   const ruled = changesWho || changesBonds;
   let stepAfter: GpuField | undefined;
-  if (noise || motile || ruled) {
+  // A packed graph carries the step in the state bundle, so the counter has to move even when
+  // nothing reads it: otherwise each pack copies the seed and a later read reports it unchanged.
+  // Random terms read the step as it stands; rules read the value after this increment.
+  if (mode.packed || noise || motile || ruled) {
     const fbStep = { state: cells.step };
     stepAfter = graph.op1("tick", { step: cells.step });
     nextState.step = stepAfter;

@@ -6,6 +6,7 @@ import {
   type BreakRule,
   breakBonds,
   CELL,
+  chainScenario,
   chromatinScenario,
   createSpringSim,
   createState,
@@ -31,6 +32,7 @@ import {
   springParams,
   topologyDefect,
 } from "#src/gpu/sim/springs/index";
+import { nodeBackend } from "../../backend.node";
 import { advance, createSimState, type FieldValue, Graph, type GpuField, hasOp, pull, registerOp, simStateValue } from "../../index";
 import { extractOp, packOp } from "../bundleOps";
 import { bondTableOf, VEC4 } from "./bondTable";
@@ -356,7 +358,7 @@ describe("spring model rules as graph ops", () => {
     expect(count(sc.state, CELL) + count(sc.state, LEADER)).toBeGreaterThan(cellsBefore);
     expect(topologyDefect(sc.topology)).toBeUndefined();
     expect(sim.builds).toBe(1);
-    sim.dispose();
+    await sim.dispose();
   });
 
   it("a change of settings rebuilds the graph from the running state and carries on", async () => {
@@ -378,7 +380,7 @@ describe("spring model rules as graph ops", () => {
     // Nothing changed: no rebuild.
     await sim.advance(5);
     expect(sim.builds).toBe(2);
-    sim.dispose();
+    await sim.dispose();
   });
 
   it("a spring sim runs the scenarios that have no rules, and the one with turnover only", async () => {
@@ -391,7 +393,7 @@ describe("spring model rules as graph ops", () => {
     await chromatinSim.sync();
     expect(chromatin.state.step).toBe(300);
     expect(fit()).toBeGreaterThan(Math.max(0.9, before + 0.2));
-    chromatinSim.dispose();
+    await chromatinSim.dispose();
 
     const strip = relaxationScenario({ seed: 3, bondLifetime: 40 });
     const host = relaxationScenario({ seed: 3, bondLifetime: 40 });
@@ -403,7 +405,7 @@ describe("spring model rules as graph ops", () => {
     expect(host.totals.broken).toBeGreaterThan(20);
     // Bonds break at random with the same hash on both sides, so the tables should agree closely.
     expect(Math.abs(bondCount(strip.topology) - bondCount(host.topology))).toBeLessThanOrEqual(Math.ceil(bondCount(host.topology) * 0.03));
-    stripSim.dispose();
+    await stripSim.dispose();
   });
 
   it("a packed graph gives the same bits as an unpacked one, from one state buffer and one inputs buffer", async () => {
@@ -503,7 +505,94 @@ describe("spring model rules as graph ops", () => {
     await b.sync();
     expect(b.builds).toBe(2);
     expect(count(fusedScenario.state, LEADER)).toBe(0);
-    a.dispose();
-    b.dispose();
+    await a.dispose();
+    await b.dispose();
+  });
+
+  it("advances the step stored in a packed graph when nothing reads it", async () => {
+    const sc = chainScenario({ n: 8, seed: 1 });
+    sc.params = { ...sc.params, noiseforce: 0 };
+    sc.state.step = 12;
+    const g = springGraph(sc.state, sc.topology, sc.params, undefined, {}, { packed: true });
+    const state = createSimState();
+    await advance(g.graph, g.pos, { steps: 2, state, materialise: "none" });
+    await readSpringState(state, sc.state, sc.topology);
+    expect(sc.state.step).toBe(14);
+  });
+
+  it("clears leaders at build when selection is off and no other rule is active", async () => {
+    const sc = spheroidScenario({
+      ...SMALL,
+      dims: 2,
+      leaderThrust: 0,
+      divisionTime: Number.POSITIVE_INFINITY,
+      yieldStrain: Number.POSITIVE_INFINITY,
+      bondLifetime: Number.POSITIVE_INFINITY,
+      ligand: 0,
+    });
+    const i = sc.state.species.indexOf(CELL);
+    expect(i).toBeGreaterThanOrEqual(0);
+    sc.state.species[i] = LEADER;
+    const sim = createSpringSim(sc);
+    await sim.advance(1);
+    await sim.sync();
+    expect(sc.state.species[i]).toBe(CELL);
+    await sim.dispose();
+  });
+
+  it("refuses a sync that overlaps an advance", async () => {
+    const sc = chainScenario({ n: 8, seed: 1 });
+    const sim = createSpringSim(sc);
+    const running = sim.advance(3);
+    await expect(sim.sync()).rejects.toThrow(/still running/);
+    await running;
+    await sim.sync();
+    expect(sc.state.step).toBe(3);
+    await sim.dispose();
+  });
+
+  it("downloads state after a batch whose later tick fails", async () => {
+    const make = () => chainScenario({ n: 8, seed: 1 });
+    let leases = 0;
+    const counting = {
+      ...nodeBackend,
+      lease(byteLength: number, usage?: number) {
+        leases += 1;
+        return nodeBackend.lease(byteLength, usage);
+      },
+    };
+    const probe = createSpringSim(make(), { backend: counting });
+    await probe.advance(1);
+    const perTick = leases;
+    await probe.dispose();
+    expect(perTick).toBeGreaterThan(0);
+
+    let seen = 0;
+    const failing = {
+      ...nodeBackend,
+      lease(byteLength: number, usage?: number) {
+        if (seen >= perTick) return Promise.reject(new Error("lease failed"));
+        seen += 1;
+        return nodeBackend.lease(byteLength, usage);
+      },
+    };
+    const sc = make();
+    const sim = createSpringSim(sc, { backend: failing });
+    await expect(sim.advance(2)).rejects.toThrow(/lease failed/);
+    await sim.sync();
+    expect(sc.state.step).toBe(1);
+    await sim.dispose();
+  });
+
+  it("releases device state after in-flight work settles and then refuses calls", async () => {
+    const before = nodeBackend.poolStats().live;
+    const sim = createSpringSim(chainScenario({ n: 8, seed: 2 }));
+    const running = sim.advance(4);
+    const released = sim.dispose();
+    await expect(sim.sync()).rejects.toThrow(/disposed/);
+    await running;
+    await released;
+    expect(nodeBackend.poolStats().live).toBe(before);
+    await expect(sim.advance(1)).rejects.toThrow(/disposed/);
   });
 });

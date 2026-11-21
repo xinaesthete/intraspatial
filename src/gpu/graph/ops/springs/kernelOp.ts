@@ -126,17 +126,25 @@ export function kernelOp<U>(cfg: KernelOpConfig<U>): OpType {
     async execute(ctx, inputs, params) {
       const shapes = inputs.map((v) => v.shape);
       const n = checked(shapes);
-      const device = await ctx.backend.getDevice();
-      const root = await ctx.backend.getRoot();
-      const pipe = getPipe(device, root);
-      const out = await ctx.backend.lease(Math.max(n, 1) * outLanes * 4);
-      pipe.uniform.write(cfg.uniforms(n, params, shapes));
+      // Anything that can throw happens before the lease. A throw after it used to keep the
+      // output buffer, and the pool never destroys one.
+      const uniform = cfg.uniforms(n, params, shapes);
       const buffers = inputs.map((v, k) => {
         if (!v.buffer) throw new Error(`${cfg.name}.${cfg.inputs[k]!.name}: resident op received a non-resident input`);
         return v.buffer;
       });
-      const bind = rawBindGroup(device, root, cfg.layout, [pipe.uniform, ...buffers, out.buffer], cfg.name);
-      submitDispatch(device, cfg.name, pipe.pipeline, bind, Math.max(1, Math.ceil(n / WG)));
+      const device = await ctx.backend.getDevice();
+      const root = await ctx.backend.getRoot();
+      const pipe = getPipe(device, root);
+      const out = await ctx.backend.lease(Math.max(n, 1) * outLanes * 4);
+      try {
+        pipe.uniform.write(uniform);
+        const bind = rawBindGroup(device, root, cfg.layout, [pipe.uniform, ...buffers, out.buffer], cfg.name);
+        submitDispatch(device, cfg.name, pipe.pipeline, bind, Math.max(1, Math.ceil(n / WG)));
+      } catch (e) {
+        ctx.backend.release(out);
+        throw e;
+      }
       return [value(shapes, { buffer: out })];
     },
     cpuGolden(inputs, params) {

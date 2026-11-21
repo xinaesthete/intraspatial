@@ -42,10 +42,11 @@ export interface SpringSimBuffers {
 
 export interface SpringSim {
   /** Run `steps` steps on the device. Nothing is downloaded. If the scenario's settings have
-   *  changed since the graph was built, it is rebuilt first. One call at a time. */
+   *  changed since the graph was built, it is rebuilt first. One `advance` or `sync` at a time. */
   advance(steps: number): Promise<void>;
   /** Bring positions, species, radius, the bond table and the step back into the scenario's host
-   *  state: the explicit download, for a readout, a host-drawn view or a test. */
+   *  state: the explicit download, for a readout, a host-drawn view or a test. One `advance` or
+   *  `sync` at a time. */
   sync(): Promise<void>;
   /** Say that something the graph was built from has changed on the host in a way this cannot
    *  see for itself (an edit to the topology, say). Settings and rules are noticed without it. */
@@ -54,8 +55,9 @@ export interface SpringSim {
   buffers(): SpringSimBuffers | undefined;
   /** How many times the graph has been built: once, plus once per change of settings. */
   readonly builds: number;
-  /** Release the device state. */
-  dispose(): void;
+  /** Release the device state. Waits out an in-flight `advance` or `sync` first, and further
+   *  calls fail. Safe to call twice. */
+  dispose(): Promise<void>;
 }
 
 export interface SpringSimOptions {
@@ -86,23 +88,45 @@ export function createSpringSim(sc: Scenario, opts: SpringSimOptions = {}): Spri
   let hostCurrent = true;
   let builds = 0;
   let busy = false;
+  let disposed = false;
+  let idle = Promise.resolve();
+  let releaseIdle: (() => void) | undefined;
 
-  const sync = async () => {
+  const occupy = () => {
+    busy = true;
+    idle = new Promise((resolve) => {
+      releaseIdle = resolve;
+    });
+  };
+  const vacate = () => {
+    busy = false;
+    releaseIdle?.();
+    releaseIdle = undefined;
+  };
+  const begin = (what: string) => {
+    if (disposed) throw new Error("createSpringSim: disposed");
+    if (busy) throw new Error(`createSpringSim: ${what} called while another operation is still running`);
+    occupy();
+  };
+
+  /** The host copy of a built graph. Callers that already hold the lock use this; `sync` is the
+   *  public one and takes the lock itself. */
+  const writeBack = async () => {
     if (!built || hostCurrent) return;
     await readSpringState(built.state, sc.state, sc.topology, backend);
-    // The step is graph state only when a term or a rule reads it.
+    // The step is graph state only when a term or a rule reads it, or the graph is packed.
     if (!simStateValue(built.state, SPRING_STATE.step)) sc.state.step = built.stepAtBuild + built.ticks;
     hostCurrent = true;
   };
 
   const build = async () => {
     if (built) {
-      await sync();
+      await writeBack();
       disposeSimState(built.state, backend);
     }
     // With leader selection off nothing else would turn existing leaders back into cells.
     const rules = sc.graphRules?.();
-    if (rules && !rules.leaders && (rules.division || rules.breakRule || rules.formRule)) clearLeaders(sc.state, LEADER, CELL);
+    if (rules && !rules.leaders) clearLeaders(sc.state, LEADER, CELL);
     built = {
       graph: scenarioGraph(sc, { packed: opts.packed, fusePairs: opts.fusePairs }),
       state: createSimState(),
@@ -119,20 +143,36 @@ export function createSpringSim(sc: Scenario, opts: SpringSimOptions = {}): Spri
 
   return {
     async advance(steps) {
-      if (busy) throw new Error("createSpringSim: advance called while a previous advance is still running");
-      busy = true;
+      begin("advance");
       try {
         if (!built || stale || built.from !== fingerprint(sc)) await build();
         const run = built;
         if (!run || steps <= 0) return;
-        await advance(run.graph.graph, run.graph.pos, { steps, state: run.state, ctx, materialise: "none", onBridge: opts.onBridge });
-        run.ticks += steps;
-        hostCurrent = false;
+        await advance(run.graph.graph, run.graph.pos, {
+          steps,
+          state: run.state,
+          ctx,
+          materialise: "none",
+          onBridge: opts.onBridge,
+          // A later tick can throw. Ticks that already committed stay counted, and the host is
+          // stale from the first of them, so a following sync downloads instead of no-opping.
+          onFrame: () => {
+            run.ticks += 1;
+            hostCurrent = false;
+          },
+        });
       } finally {
-        busy = false;
+        vacate();
       }
     },
-    sync,
+    async sync() {
+      begin("sync");
+      try {
+        await writeBack();
+      } finally {
+        vacate();
+      }
+    },
     invalidate() {
       stale = true;
     },
@@ -156,8 +196,16 @@ export function createSpringSim(sc: Scenario, opts: SpringSimOptions = {}): Spri
       return builds;
     },
     dispose() {
-      if (built) disposeSimState(built.state, backend);
-      built = undefined;
+      disposed = true;
+      const finish = () => {
+        if (built) disposeSimState(built.state, backend);
+        built = undefined;
+      };
+      if (!busy) {
+        finish();
+        return Promise.resolve();
+      }
+      return idle.then(finish);
     },
   };
 }
