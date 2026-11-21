@@ -12,6 +12,7 @@ export {
   createSimState,
   disposeSimState,
   downloadValue,
+  payloadsNotHeld,
   pull,
   pullData,
   pullResident,

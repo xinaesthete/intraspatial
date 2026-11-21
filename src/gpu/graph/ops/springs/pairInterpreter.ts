@@ -412,6 +412,11 @@ export const pairInterpreterOp: OpType = {
     if (inputs.kind !== "bundle" || !inputs.parts.program || !inputs.parts.programParams) {
       throw new Error("pairInterpreter.inputs: expected a bundle with `program` and `programParams` parts");
     }
+    // Both paths count instructions from the word count, which only a points field states.
+    const program = inputs.parts.program;
+    if (program.kind !== "points" || program.n % PAIR_INSTRUCTION_WORDS !== 0) {
+      throw new Error("pairInterpreter.inputs.program: expected a points field of u32 with an even number of words");
+    }
     return [species, species];
   },
   inferElements() {

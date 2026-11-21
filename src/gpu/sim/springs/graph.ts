@@ -727,6 +727,10 @@ export function spheroidGraph(sc: SpheroidScenario): SpringGraph {
  * Bring a spring graph's state back into host objects: positions, species, radius, the step and
  * the bond table, whichever of them the graph holds as state. The one download a resident run
  * needs, for a readout or a test. `s` and `t` must be the size the graph was built for.
+ *
+ * The step is among them only when the graph counts it: packed, or with noise, motility or a
+ * rule. Otherwise `s.step` is left as it was and the caller, who knows how many ticks it ran,
+ * adds them; `createSpringSim` does.
  */
 export async function readSpringState(state: SimState, s: SpringState, t: SpringTopology, backend?: GpuBackend): Promise<void> {
   const fetch = async (key: string) => {

@@ -247,8 +247,8 @@ export const bondBreakOp: OpType = {
       uniform = makeBreakUniform(root);
       breakUniforms.set(root as object, uniform);
     }
-    const out = await leaseTable(ctx, n * table.K);
-    uniform.write({
+    // Read the settings and inputs before leasing: a bad one must not leave the outputs leased.
+    const values = {
       n,
       K: table.K,
       kinds: breakNum(params, "kinds"),
@@ -258,24 +258,26 @@ export const bondBreakOp: OpType = {
       maxStrain: cutoff(breakNum(params, "maxStrain")),
       springlen: breakNum(params, "springlen"),
       springlenfix: breakNum(params, "springlenfix"),
-    });
-    const bind = rawBindGroup(
-      dev,
-      root,
-      breakLayout,
-      [
-        uniform,
-        device(inputs[0], "bondBreak.pos"),
-        device(inputs[1], "bondBreak.species"),
-        table.link,
-        table.spring,
-        device(inputs[3], "bondBreak.step"),
-        out.link.buffer,
-        out.spring.buffer,
-      ],
-      "bondBreak",
-    );
-    submitDispatch(dev, "bondBreak", breakPipe(dev, root), bind, Math.ceil(n / WG));
+    };
+    const pos = device(inputs[0], "bondBreak.pos");
+    const species = device(inputs[1], "bondBreak.species");
+    const step = device(inputs[3], "bondBreak.step");
+    const out = await leaseTable(ctx, n * table.K);
+    try {
+      uniform.write(values);
+      const bind = rawBindGroup(
+        dev,
+        root,
+        breakLayout,
+        [uniform, pos, species, table.link, table.spring, step, out.link.buffer, out.spring.buffer],
+        "bondBreak",
+      );
+      submitDispatch(dev, "bondBreak", breakPipe(dev, root), bind, Math.ceil(n / WG));
+    } catch (e) {
+      ctx.backend.release(out.link);
+      ctx.backend.release(out.spring);
+      throw e;
+    }
     return [out.value];
   },
   cpuGolden(inputs, params) {

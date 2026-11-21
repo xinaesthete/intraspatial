@@ -6,7 +6,17 @@
 // boundary crossing, handled here: the state is brought back, the graph is rebuilt from it with
 // the new settings, and the run carries on. The host is never in the loop otherwise.
 import type { GpuBackend } from "../../graph/backend";
-import { advance, createSimState, disposeSimState, type FieldValue, nodeBackend, type SimState, simStateValue } from "../../graph/index";
+import type { ResidentBuffer } from "../../graph/handle";
+import {
+  advance,
+  createSimState,
+  disposeSimState,
+  type FieldValue,
+  nodeBackend,
+  payloadsNotHeld,
+  type SimState,
+  simStateValue,
+} from "../../graph/index";
 import { readSpringState, SPRING_STATE, type SpringGraph, type StatePart, scenarioGraph } from "./graph";
 import { clearLeaders } from "./growth";
 import { CELL, LEADER, type Scenario } from "./scenarios";
@@ -91,6 +101,13 @@ export function createSpringSim(sc: Scenario, opts: SpringSimOptions = {}): Spri
   let disposed = false;
   let idle = Promise.resolve();
   let releaseIdle: (() => void) | undefined;
+  // The radius is graph state only when a term reads it. When none does, this holds a copy for
+  // views, uploaded once per build: nothing on the device can change it in that case.
+  let ownRadius: ResidentBuffer | undefined;
+  const dropOwnRadius = () => {
+    if (ownRadius) backend.release(ownRadius);
+    ownRadius = undefined;
+  };
 
   const occupy = () => {
     busy = true;
@@ -120,15 +137,17 @@ export function createSpringSim(sc: Scenario, opts: SpringSimOptions = {}): Spri
   };
 
   const build = async () => {
-    if (built) {
-      await writeBack();
-      disposeSimState(built.state, backend);
-    }
+    if (built) await writeBack();
     // With leader selection off nothing else would turn existing leaders back into cells.
     const rules = sc.graphRules?.();
     if (rules && !rules.leaders) clearLeaders(sc.state, LEADER, CELL);
+    // Build the replacement first. If the new settings cannot make a graph this throws, and the
+    // run that was going is still there to carry on once they are put right.
+    const graph = scenarioGraph(sc, { packed: opts.packed, fusePairs: opts.fusePairs });
+    if (built) disposeSimState(built.state, backend);
+    dropOwnRadius();
     built = {
-      graph: scenarioGraph(sc, { packed: opts.packed, fusePairs: opts.fusePairs }),
+      graph,
       state: createSimState(),
       from: fingerprint(sc),
       stepAtBuild: sc.state.step,
@@ -143,12 +162,13 @@ export function createSpringSim(sc: Scenario, opts: SpringSimOptions = {}): Spri
 
   return {
     async advance(steps) {
+      if (!Number.isInteger(steps)) throw new Error(`createSpringSim: advance takes a whole number of steps, got ${steps}`);
       begin("advance");
       try {
         if (!built || stale || built.from !== fingerprint(sc)) await build();
         const run = built;
         if (!run || steps <= 0) return;
-        await advance(run.graph.graph, run.graph.pos, {
+        const sink = await advance(run.graph.graph, run.graph.pos, {
           steps,
           state: run.state,
           ctx,
@@ -161,6 +181,14 @@ export function createSpringSim(sc: Scenario, opts: SpringSimOptions = {}): Spri
             hostCurrent = false;
           },
         });
+        // Packed, the state holds its own copy of the positions, and the sink is a lease handed
+        // to us. Unpacked, the state holds the sink itself and there is nothing to return.
+        for (const p of payloadsNotHeld(run.state, sink)) {
+          if ("buffer" in p) backend.release(p);
+          else backend.releaseTexture(p);
+        }
+        const radius = simStateValue(run.state, SPRING_STATE.packed)?.parts?.radius ?? simStateValue(run.state, SPRING_STATE.radius);
+        if (!radius?.buffer && !ownRadius) ownRadius = await backend.upload(sc.state.radius);
       } finally {
         vacate();
       }
@@ -186,7 +214,8 @@ export function createSpringSim(sc: Scenario, opts: SpringSimOptions = {}): Spri
       const positions = part("pos", SPRING_STATE.pos);
       const previous = part("prev", SPRING_STATE.prev);
       const species = part("species", SPRING_STATE.species);
-      const radius = part("radius", SPRING_STATE.radius);
+      const radius =
+        part("radius", SPRING_STATE.radius) ?? (ownRadius && range({ shape: { kind: "scalar" }, dtype: "f32", buffer: ownRadius }));
       const link = range(packed ? packed.parts?.link : bonds?.parts?.link);
       const spring = range(packed ? packed.parts?.spring : bonds?.parts?.spring);
       if (!positions || !previous || !species || !radius || !link || !spring) return undefined;
@@ -199,6 +228,7 @@ export function createSpringSim(sc: Scenario, opts: SpringSimOptions = {}): Spri
       disposed = true;
       const finish = () => {
         if (built) disposeSimState(built.state, backend);
+        dropOwnRadius();
         built = undefined;
       };
       if (!busy) {

@@ -33,7 +33,19 @@ import {
   topologyDefect,
 } from "#src/gpu/sim/springs/index";
 import { nodeBackend } from "../../backend.node";
-import { advance, createSimState, type FieldValue, Graph, type GpuField, hasOp, pull, registerOp, simStateValue } from "../../index";
+import {
+  advance,
+  createSimState,
+  disposeSimState,
+  type FieldValue,
+  Graph,
+  type GpuField,
+  hasOp,
+  payloadsNotHeld,
+  pull,
+  registerOp,
+  simStateValue,
+} from "../../index";
 import { extractOp, packOp } from "../bundleOps";
 import { bondTableOf, VEC4 } from "./bondTable";
 
@@ -515,9 +527,57 @@ describe("spring model rules as graph ops", () => {
     sc.state.step = 12;
     const g = springGraph(sc.state, sc.topology, sc.params, undefined, {}, { packed: true });
     const state = createSimState();
-    await advance(g.graph, g.pos, { steps: 2, state, materialise: "none" });
-    await readSpringState(state, sc.state, sc.topology);
-    expect(sc.state.step).toBe(14);
+    const before = nodeBackend.poolStats().live;
+    try {
+      const sink = await advance(g.graph, g.pos, { steps: 2, state, materialise: "none" });
+      // Packed, the state holds a copy; the position sink is ours to return.
+      for (const p of payloadsNotHeld(state, sink)) if ("buffer" in p) nodeBackend.release(p);
+      await readSpringState(state, sc.state, sc.topology);
+      expect(sc.state.step).toBe(14);
+    } finally {
+      disposeSimState(state, nodeBackend);
+    }
+    expect(nodeBackend.poolStats().live).toBe(before);
+  });
+
+  it("a default chain hands out every range, keeps its run through a failed tick, and leaks nothing", async () => {
+    const before = nodeBackend.poolStats().live;
+    const sc = chainScenario({ n: 8, seed: 1 });
+    const sim = createSpringSim(sc, { packed: true });
+    await sim.advance(3);
+    await sim.advance(2);
+    const ranges = sim.buffers();
+    expect(ranges?.radius.size).toBe(sc.state.n * 4);
+    await expect(sim.advance(1.5)).rejects.toThrow(/whole number/);
+    await expect(sim.advance(Number.POSITIVE_INFINITY)).rejects.toThrow(/whole number/);
+    // A setting the tick rejects: the run so far survives, and carries on once it is restored.
+    const good = sc.params;
+    sc.params = { ...good, damp: Number.NaN };
+    const failed = await sim.advance(1).then(
+      () => false,
+      () => true,
+    );
+    sc.params = good;
+    await sim.advance(1);
+    await sim.sync();
+    expect([failed, sc.state.step, sim.builds]).toEqual([true, 6, 3]);
+    const plain = createSpringSim(chainScenario({ n: 8, seed: 1 }));
+    await plain.advance(1);
+    expect(plain.buffers()?.radius.size).toBe(8 * 4);
+    await plain.dispose();
+    await sim.dispose();
+    expect(nodeBackend.poolStats().live).toBe(before);
+  });
+
+  it("returns what a tick leased when one of its ops rejects", async () => {
+    const before = nodeBackend.poolStats().live;
+    const sc = chainScenario({ n: 8, seed: 1 });
+    const g = springGraph(sc.state, sc.topology, { ...sc.params, damp: Number.NaN });
+    const state = createSimState();
+    await expect(advance(g.graph, g.pos, { steps: 1, state, materialise: "none" })).rejects.toThrow();
+    await expect(advance(g.graph, g.pos, { steps: 1.5, state })).rejects.toThrow(/whole number/);
+    disposeSimState(state, nodeBackend);
+    expect(nodeBackend.poolStats().live).toBe(before);
   });
 
   it("clears leaders at build when selection is off and no other rule is active", async () => {

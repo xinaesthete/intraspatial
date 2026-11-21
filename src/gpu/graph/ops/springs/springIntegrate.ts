@@ -161,6 +161,12 @@ const PARAMS: ParamSpec[] = [
   { name: "gravity", type: "number", default: 0, min: -1, max: 1, step: 0.001, describe: "Constant pull along −y." },
 ];
 const num = numbers(PARAMS, "springIntegrate");
+/** The step length. Velocity is a difference divided by it, so zero gives 0/0, not "no step". */
+function stepLength(params: Record<string, unknown>): number {
+  const rate = num(params, "springrate");
+  if (!(rate > 0) || !Number.isFinite(rate)) throw new Error(`springIntegrate: springrate must be a positive number, got ${rate}`);
+  return rate;
+}
 
 function soft(rr: number): number {
   return rr <= 0.7 ? 1 : (1 - 0.09 / (rr - 0.4)) / rr;
@@ -287,7 +293,7 @@ export const springIntegrateOp: OpType = {
       n,
       damptype: num(params, "damptype"),
       damp: num(params, "damp"),
-      rate: num(params, "springrate"),
+      rate: stepLength(params),
       maxvel: num(params, "springmaxvel"),
       gravity: num(params, "gravity"),
     };
@@ -329,6 +335,7 @@ export const springIntegrateOp: OpType = {
       inputs.map((v) => v.shape),
       "springIntegrate",
     );
+    stepLength(params);
     const { posOut, prevOut } = integrateCpu(
       hostF32(inputs[0], "springIntegrate.pos"),
       hostF32(inputs[1], "springIntegrate.prev"),
