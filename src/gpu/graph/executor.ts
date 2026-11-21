@@ -106,6 +106,15 @@ function topoOrder(graph: Graph, roots: string[]): GraphNode[] {
     order.push(node);
   };
   for (const r of roots) visit(r);
+  // A feedback or delay node the sink reads must also have its `next` computed this tick, or its
+  // state never advances. Usually the sink depends on that producer anyway; a counter that only
+  // feeds itself does not. Visiting it now is safe: the node it loops back to is already done.
+  for (let k = 0; k < order.length; k++) {
+    const node = order[k]!;
+    if (node.op !== "feedback" && node.op !== "delay") continue;
+    const next = node.inputs.next;
+    if (next) visit(next.node);
+  }
   return order;
 }
 

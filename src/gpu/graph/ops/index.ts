@@ -28,6 +28,21 @@ import { morphologyOp } from "./morphology";
 import { reactionDiffusionStepOp } from "./reactionDiffusion";
 import { splatDensityOp } from "./splatDensity";
 import { addForcesOp } from "./springs/addForces";
+import { containerOp, mobilityOp, pullForceOp, viscosityOp } from "./springs/bodyForces";
+import {
+  backboneForceOp,
+  boidsOp,
+  contactForceOp,
+  distanceForceOp,
+  fractalForceOp,
+  lorentzianContactOp,
+  pushApartDensityOp,
+  pushApartGlobalOp,
+} from "./springs/csynthPairs";
+import { centreConstraintOp, fixConstraintOp, pullFixOp, rodConstraintOp } from "./springs/constraints";
+import { motilityForceOp, noiseForceOp } from "./springs/randomForces";
+import { tickOp } from "./springs/tick";
+import { torsionForceOp } from "./springs/torsionForce";
 import { adhesionOp } from "./springs/adhesion";
 import { BOND_TABLE } from "./springs/bondTable";
 import { outwardOp } from "./springs/outward";
@@ -64,6 +79,20 @@ export function registerBuiltinOps(): void {
   reg(pushApartOp);
   reg(adhesionOp);
   reg(outwardOp);
+  for (const op of [torsionForceOp, pullForceOp, viscosityOp, containerOp, mobilityOp, tickOp, noiseForceOp, motilityForceOp]) reg(op);
+  for (const op of [rodConstraintOp, centreConstraintOp, fixConstraintOp, pullFixOp]) reg(op);
+  for (const op of [
+    pushApartGlobalOp,
+    pushApartDensityOp,
+    fractalForceOp,
+    backboneForceOp,
+    distanceForceOp,
+    contactForceOp,
+    lorentzianContactOp,
+    boidsOp,
+  ]) {
+    reg(op);
+  }
   for (const part of BOND_TABLE.parts) reg(extractOp(BOND_TABLE, part.name));
   reg(combineOp(BOND_TABLE));
   // fuzzy TDA front

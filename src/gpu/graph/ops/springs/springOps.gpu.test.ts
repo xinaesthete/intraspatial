@@ -1,21 +1,28 @@
 import { beforeAll, describe, expect, it } from "vite-plus/test";
 import { getDevice } from "#src/gpu/device";
 import {
+  addRod,
   addSpring,
+  CELL,
   chainScenario,
+  chromatinScenario,
   createState,
   createTopology,
   DEAD,
+  LEADER,
   runSprings,
+  setFix,
+  setPull,
+  setTorsion,
   type SpringParams,
   type SpringState,
   spawn,
   speciesTable,
+  spheroidScenario,
   springGraph,
   springParams,
-  termsWithoutOps,
 } from "#src/gpu/sim/springs/index";
-import { advance, createSimState, pullData } from "../../index";
+import { advance, createSimState, type GpuField, pullData } from "../../index";
 
 /** Bonded springs and the integrator only: every other term of the fused step switched off. */
 function bondedOnly(over: Partial<SpringParams> = {}): SpringParams {
@@ -232,9 +239,244 @@ describe("spring model as graph ops", () => {
     expect(Math.max(...Array.from({ length: 66 }, (_, i) => onGpu.data![i * 4 + 3]!))).toBeGreaterThan(0.1);
   });
 
-  it("refuses params that need a term with no op yet", () => {
-    const { s, t } = tissue(22);
-    expect(() => springGraph(s, t, pairParams({ noiseforce: 0.1, visc: 0.2 }))).toThrow(/noise.*|viscosity/);
-    expect(termsWithoutOps(pairParams({ pushapartforce: 1 }), t)).toEqual(["global push-apart (pushapartforce)"]);
+  /** The tissue with every per-particle extra: rods, pinned and pulled particles, torsion springs. */
+  function rigged(n: number) {
+    const { s, t } = tissue(n);
+    const live = (i: number) => s.species[i] !== DEAD;
+    for (let i = 3; i + 9 < n; i += 9) if (live(i) && live(i + 4)) addRod(t, i, i + 4, 0.8, 1.6, 0.7);
+    for (let i = 8; i < n; i += 17) if (live(i)) setFix(t, i, s.pos[i * 4]! + 0.1, s.pos[i * 4 + 1]!, s.pos[i * 4 + 2]! - 0.1);
+    for (let i = 2; i < n; i += 13) if (live(i)) setPull(t, i, 0.5, -0.5, 0.25, 0.8);
+    for (let i = 0; i + 3 < n; i += 5) setTorsion(t, i, 0.9, 0.6);
+    return { s, t };
+  }
+
+  function everything(over: Partial<SpringParams> = {}): SpringParams {
+    return pairParams({
+      visc: 0.05,
+      viscpow: 1.5,
+      modelSphereForce: 0.3,
+      modelSphereRadius: 2,
+      mobility: [1, 0.4, 0.8, 1],
+      noiseforce: 0.02,
+      noiseprob: 0.6,
+      motility: [0.03, 0, 0.05, 0],
+      springCentreDamp: 0.98,
+      springCentre: [0.2, -0.1, 0.3],
+      pullspringforce: 0.05,
+      pullspringpow: 0.5,
+      pullfixdamp: 0.1,
+      torsionspringforce: 0.5,
+      backbonetorsionspringforce: 0.2,
+      seed: 7,
+      ...over,
+    });
+  }
+
+  it("every remaining term's kernel matches its CPU golden", async () => {
+    const { s, t } = rigged(66);
+    const { graph, terms, force, pos } = springGraph(s, t, everything());
+    const fields: Record<string, GpuField> = { ...terms, "force (after mobility and random terms)": force, "pos (after constraints)": pos };
+    const worstBy: Record<string, number> = {};
+    const largest: Record<string, number> = {};
+    for (const [name, field] of Object.entries(fields)) {
+      const gpu = await pullData(graph, field);
+      const cpu = await pullData(graph, field, { mode: "cpu" });
+      worstBy[name] = worst(gpu, cpu);
+      largest[name] = Math.max(...Array.from(cpu, Math.abs));
+    }
+    expect(Object.keys(terms).sort()).toEqual(
+      [
+        "adhesion",
+        "container",
+        "motilityForce",
+        "noiseForce",
+        "outward",
+        "pullForce",
+        "pushApart",
+        "springForce",
+        "torsionForce",
+        "viscosity",
+      ].sort(),
+    );
+    expect(Math.min(...Object.values(largest)), JSON.stringify(largest)).toBeGreaterThan(1e-4);
+    expect(Math.max(...Object.values(worstBy)), JSON.stringify(worstBy)).toBeLessThan(2e-4);
+  });
+
+  it("the random terms draw the same numbers on the device as on the CPU, and new ones each step", async () => {
+    const { s, t } = rigged(66);
+    const { graph, terms } = springGraph(s, t, everything());
+    const state = createSimState();
+    const first = await advance(graph, terms.noiseForce!, { steps: 1, state });
+    const second = await advance(graph, terms.noiseForce!, { steps: 1, state });
+    const cpuState = createSimState();
+    const firstCpu = await advance(graph, terms.noiseForce!, { steps: 1, state: cpuState, mode: "cpu" });
+    const secondCpu = await advance(graph, terms.noiseForce!, { steps: 1, state: cpuState, mode: "cpu" });
+    expect(worst(first.data!, firstCpu.data!)).toBeLessThan(1e-6);
+    expect(worst(second.data!, secondCpu.data!)).toBeLessThan(1e-6);
+    expect(worst(first.data!, second.data!)).toBeGreaterThan(1e-3);
+  });
+
+  it("the graph with every term but CSynth's own pair forces equals the fused step", async () => {
+    const steps = 6;
+    const p = everything();
+    const reference = rigged(66);
+    const cpuRun = rigged(66);
+    const cpuGraph = springGraph(cpuRun.s, cpuRun.t, p);
+    const onCpu = await advance(cpuGraph.graph, cpuGraph.pos, { steps, state: createSimState(), mode: "cpu" });
+    const gpuRun = rigged(66);
+    const gpuGraph = springGraph(gpuRun.s, gpuRun.t, p);
+    const downloads: string[] = [];
+    const onGpu = await advance(gpuGraph.graph, gpuGraph.pos, {
+      steps,
+      state: createSimState(),
+      materialise: "last",
+      onBridge: (k, dir) => {
+        if (dir === "download") downloads.push(k);
+      },
+    });
+    runSprings(reference.s, reference.t, p, steps);
+    const cpu = againstFused(onCpu.data!, reference.s.pos);
+    const gpu = againstFused(onGpu.data!, reference.s.pos);
+    expect(cpu.xyz, JSON.stringify(cpu)).toBeLessThan(2e-5);
+    expect(gpu.xyz, JSON.stringify(gpu)).toBeLessThan(5e-4);
+    expect(gpu.density, JSON.stringify(gpu)).toBeLessThan(1e-2);
+    expect(downloads.length).toBe(1);
+    // A pinned particle is exactly where it was pinned.
+    expect([onGpu.data![8 * 4], onGpu.data![8 * 4 + 1], onGpu.data![8 * 4 + 2]]).toEqual(Array.from(reference.s.pos.subarray(32, 35)));
+  });
+
+  /** A contact map and a distance map over the first `size` particles, with a few pairs marked
+   *  missing (−10) and excluded (−2000) so the gate has every case to handle. */
+  function maps(s: SpringState, size: number) {
+    const contact = new Float32Array(size * size);
+    const dist = new Float32Array(size * size);
+    for (let i = 0; i < size; i++) {
+      for (let j = 0; j < size; j++) {
+        const gap = Math.abs(i - j);
+        let c = gap === 0 ? 0 : 1 / (1 + gap * 0.5);
+        if ((i + j) % 9 === 4) c = -10;
+        if ((i + j) % 17 === 6) c = -2000;
+        contact[i * size + j] = c;
+        dist[i * size + j] = gap === 0 ? 0 : 0.6 + 0.25 * gap;
+      }
+    }
+    return { size, contact, dist };
+  }
+
+  function csynth(over: Partial<SpringParams> = {}): SpringParams {
+    return everything({
+      pairRange: undefined,
+      densityRange: Number.POSITIVE_INFINITY,
+      pairSpeciesMask: 0b111,
+      powBaseDist: 2,
+      springpow: 0.3,
+      maxBackboneDist: 0.8,
+      pushapartforce: 0.004,
+      pushapartpow: -1.5,
+      pushapartDensityFactor: 0.0002,
+      pushapartDensityPow: -1,
+      fractforce: 0.0005,
+      fractpow: -1,
+      backboneforce: 0.05,
+      backboneScale: 0.9,
+      xyzforce: 0.02,
+      xyzpow: 0.5,
+      xyzMaxDist: 4,
+      contactforcesc: 0.03,
+      contactthreshold: 0.05,
+      backboneContactStrength: 1.4,
+      wrongfade: 0.5,
+      boidalignment: 0.02,
+      boidcohesion: 0.01,
+      boidseparation: 0.003,
+      boidseparationpow: -1,
+      boidrad: 1.2,
+      m_force: 0.4,
+      m_k: 1.5,
+      m_alpha: 0.5,
+      m_c: 0.8,
+      representativeContact: 0.7,
+      maxv: 0.9,
+      patchval: 0.5,
+      patchwidth: 3,
+      ...over,
+    });
+  }
+
+  const CSYNTH_TERMS = [
+    "backboneForce",
+    "boids",
+    "contactForce",
+    "distanceForce",
+    "fractalForce",
+    "lorentzianContact",
+    "pushApartDensity",
+    "pushApartGlobal",
+  ];
+
+  it("each of CSynth's pair ops matches its CPU golden, with a contact map that gates pairs", async () => {
+    const { s, t } = rigged(66);
+    // One step first on the host, so the density lane the density term reads is not zero.
+    const warm = csynth();
+    const m = maps(s, 50);
+    runSprings(s, t, warm, 1, m);
+    const { graph, terms } = springGraph(s, t, warm, m);
+    const worstBy: Record<string, number> = {};
+    const largest: Record<string, number> = {};
+    for (const name of CSYNTH_TERMS) {
+      const gpu = await pullData(graph, terms[name]!);
+      const cpu = await pullData(graph, terms[name]!, { mode: "cpu" });
+      worstBy[name] = worst(gpu, cpu) / Math.max(1, ...Array.from(cpu, Math.abs));
+      largest[name] = Math.max(...Array.from(cpu, Math.abs));
+    }
+    expect(Math.min(...Object.values(largest)), JSON.stringify(largest)).toBeGreaterThan(1e-6);
+    expect(Math.max(...Object.values(worstBy)), JSON.stringify(worstBy)).toBeLessThan(2e-4);
+  });
+
+  it("the graph with every term of the model equals the fused step", async () => {
+    const steps = 5;
+    const p = csynth();
+    const reference = rigged(66);
+    const m = maps(reference.s, 50);
+    const cpuRun = rigged(66);
+    const cpuGraph = springGraph(cpuRun.s, cpuRun.t, p, m);
+    const onCpu = await advance(cpuGraph.graph, cpuGraph.pos, { steps, state: createSimState(), mode: "cpu" });
+    const gpuRun = rigged(66);
+    const gpuGraph = springGraph(gpuRun.s, gpuRun.t, p, m);
+    const onGpu = await advance(gpuGraph.graph, gpuGraph.pos, { steps, state: createSimState(), materialise: "last" });
+    runSprings(reference.s, reference.t, p, steps, m);
+    expect(Object.keys(gpuGraph.terms).length).toBe(18);
+    const cpu = againstFused(onCpu.data!, reference.s.pos);
+    const gpu = againstFused(onGpu.data!, reference.s.pos);
+    expect(cpu.xyz, JSON.stringify(cpu)).toBeLessThan(2e-5);
+    expect(gpu.xyz, JSON.stringify(gpu)).toBeLessThan(5e-4);
+  });
+
+  it("the chromatin scenarios run as graphs and match the fused step", async () => {
+    for (const mode of ["distances", "contacts"] as const) {
+      const reference = chromatinScenario({ n: 40, mode, seed: 3 });
+      const run = chromatinScenario({ n: 40, mode, seed: 3 });
+      const g = springGraph(run.state, run.topology, run.params, run.matrices);
+      const onGpu = await advance(g.graph, g.pos, { steps: 12, state: createSimState(), materialise: "last" });
+      runSprings(reference.state, reference.topology, reference.params, 12, reference.matrices);
+      const gpu = againstFused(onGpu.data!, reference.state.pos);
+      expect(gpu.xyz, `${mode} ${JSON.stringify(gpu)} ${Object.keys(g.terms).join(",")}`).toBeLessThan(5e-4);
+      expect(againstFused(onGpu.data!, chromatinScenario({ n: 40, mode, seed: 3 }).state.pos).xyz).toBeGreaterThan(1e-3);
+    }
+  });
+
+  it("the spheroid's forces are all ops: its graph matches the fused step in 2D and 3D", async () => {
+    for (const dims of [2, 3] as const) {
+      const cfg = { dims, cellRadius: 2, matrixRadius: 4, leaderThrust: 0.4, protrusion: 0.05, seed: 5 };
+      const reference = spheroidScenario(cfg);
+      const run = spheroidScenario(cfg);
+      // A leader, so thrust and leader adhesion have something to act on.
+      for (const sc of [reference, run]) sc.state.species[sc.state.species.indexOf(CELL)] = LEADER;
+      const g = springGraph(run.state, run.topology, run.params);
+      const onGpu = await advance(g.graph, g.pos, { steps: 10, state: createSimState(), materialise: "last" });
+      runSprings(reference.state, reference.topology, reference.params, 10);
+      const gpu = againstFused(onGpu.data!, reference.state.pos);
+      expect(gpu.xyz, `${dims}D ${JSON.stringify(gpu)} ${Object.keys(g.terms).join(",")}`).toBeLessThan(5e-4);
+    }
   });
 });
