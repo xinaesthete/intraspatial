@@ -173,26 +173,24 @@ Six seeds per regime, 7,000 steps, on the GPU (matrix radius 11, stiffness 0.3, 
 disorder 0.2; range over seeds, median in brackets). Detached is the share of cells not joined
 to the main body.
 
-| regime                                  | cells                   | branches       | detached  |
-| --------------------------------------- | ----------------------- | -------------- | --------- |
-| no leaders                              | 449 to 481 (455)        | 0 in all six   | 0%        |
-| leaders, thrust 0.6, adhesion 0.1, cell stiffness 0.5 | 748 to 1,502 (1,128) | 5 to 9 (8.5) | 0 to 24% |
-| the same with thrust 0.8                | 2,005 to 3,000 (2,734)  | 11 to 14 (13.5)| 2 to 6%   |
-| leaders, adhesion 0.06, cell stiffness 0.3 | 728 to 1,684 (951)   | 5 to 14 (10)   | 8 to 32%  |
-| leaders, matrix that never yields       | 479 to 938 (604)        | 5 to 10 (7)    | 1 to 9%   |
+| regime                                                | cells                  | branches        | detached |
+| ----------------------------------------------------- | ---------------------- | --------------- | -------- |
+| no leaders                                            | 427 to 495 (458)       | 0 in five, 2 in one | 0%   |
+| leaders, thrust 0.6, adhesion 0.1, cell stiffness 0.5 | 863 to 976 (886)       | 8 to 9 (8)      | 0 to 4%  |
+| the same with thrust 0.8                              | 1,459 to 2,819 (2,009) | 10 to 14 (11)   | 1 to 8%  |
+| leaders, adhesion 0.06, cell stiffness 0.3            | 689 to 1,165 (977)     | 4 to 12 (8.5)   | 2 to 21% |
+| leaders, matrix that never yields                     | 421 to 1,149 (581)     | 4 to 9 (6.5)    | 0 to 3%  |
 
-- **Leaders decide whether it branches.** None without them; at least 5 branches in every run
-  with them. More thrust gives more branches.
+- **Leaders decide whether it branches.** Without them five runs had no branches and one had
+  two; with them every run had at least 4. More thrust gives more branches.
 - **An elastic matrix slows branching but does not stop it.** Leaders get through without
   breaking bonds, probably between matrix particles (not confirmed). So the 3D model does not
   yet show matrix relaxation controlling branching, which is the paper's claim.
-- **Strong and weak cohesion overlap** in how much tissue detaches. They are a tendency, not
-  two phases.
-- **Read it before 7,000 steps.** By 10,500 most runs hit the 3,000-cell cap and fill the gel
+- **Weak cohesion sheds more tissue, but not in every run.** The ranges touch (0 to 4% against
+  2 to 21%), and an earlier sweep of the same settings gave 0 to 24% for strong cohesion, so six
+  seeds do not pin this down.
+- **Read it by 7,000 steps.** By 10,500 most runs hit the 3,000-cell cap and fill the gel
   to its wall, and the Sholl count then measures lumps on a mass.
-
-These runs predate a fix to the division axis in 3D, which had shared a random stream with the
-z motility kick; the numbers have not been re-measured since.
 
 Seen in single runs while tuning: adhesion 0.1 with cell stiffness 0.3 crushes the tissue;
 thrust 0.2 with grip 1 lets leaders tear free and leave alone.
