@@ -196,13 +196,19 @@ export function packOp(spec: BundleSpec): OpType {
         return v.buffer;
       });
       const { offsets, total } = packedLayout(sources.map((b) => b.byteLength));
-      const root = await ctx.backend.lease(total);
+      // The device first: nothing after the lease awaits, and a throw there returns the root.
       const device = await ctx.backend.getDevice();
-      const enc = device.createCommandEncoder({ label: who });
-      sources.forEach((src, i) =>
-        enc.copyBufferToBuffer(src.buffer, src.offset ?? 0, root.buffer, offsets[i]!, Math.ceil(src.byteLength / 4) * 4),
-      );
-      device.queue.submit([enc.finish()]);
+      const root = await ctx.backend.lease(total);
+      try {
+        const enc = device.createCommandEncoder({ label: who });
+        sources.forEach((src, i) =>
+          enc.copyBufferToBuffer(src.buffer, src.offset ?? 0, root.buffer, offsets[i]!, Math.ceil(src.byteLength / 4) * 4),
+        );
+        device.queue.submit([enc.finish()]);
+      } catch (e) {
+        ctx.backend.release(root);
+        throw e;
+      }
       const packed = bundleValue(
         spec,
         inputs.map((v, i) => ({ ...v, data: undefined, buffer: sliceBuffer(root, offsets[i]!, sources[i]!.byteLength) })),

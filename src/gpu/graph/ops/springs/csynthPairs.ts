@@ -26,6 +26,7 @@
 import tgpu from "typegpu";
 import * as d from "typegpu/data";
 import * as std from "typegpu/std";
+import type { Shape } from "../../handle";
 import type { ParamSpec, Params } from "../../op";
 import { cutoff, DEAD_SPECIES, numbers, PAIR_RANGE } from "./common";
 import { KERNEL_WORKGROUP, type KernelPort, kernelOp } from "./kernelOp";
@@ -272,6 +273,11 @@ const side = (count: number) => {
   if (s * s !== count) throw new Error(`contact map: ${count} cells are not a square`);
   return s;
 };
+/** Both paths index the contact map as square, so say so when the graph is built. */
+const squareContact = (shapes: readonly Shape[]) => {
+  const contact = shapes[2]!;
+  if (contact.kind !== "matrix" || contact.rows !== contact.cols) throw new Error("contact map: expected a square matrix");
+};
 const POS: KernelPort = { name: "pos", kind: "points", dtype: "f32", lanes: 4 };
 const SPECIES: KernelPort = { name: "species", kind: "points", dtype: "u32" };
 const CONTACT: KernelPort = { name: "contact", kind: "matrix", dtype: "f32" };
@@ -405,6 +411,7 @@ export const pushApartGlobalOp = kernelOp<d.Infer<typeof GlobalParams>>({
   layout: globalLayout,
   kernel: globalFn,
   uniform: (root) => root.createBuffer(GlobalParams).$usage("uniform").$name("pushApartGlobal:params"),
+  check: squareContact,
   uniforms: (n, p, shapes) => ({
     c: commonValues(n, p, globalNum, matrixSide(shapes[2]!)),
     force: globalNum(p, "pushapartforce"),
@@ -526,6 +533,7 @@ function simpleOp(cfg: {
     kernel: simpleFn,
     entryPoint: "csynthSimplePair",
     uniform: (root) => root.createBuffer(SimpleParams).$usage("uniform").$name(`${cfg.name}:params`),
+    check: squareContact,
     uniforms: (n, p, shapes) => ({
       c: commonValues(n, p, num, matrixSide(shapes[2]!)),
       term: cfg.term,
@@ -656,6 +664,7 @@ export const distanceForceOp = kernelOp<d.Infer<typeof DistanceParams>>({
   layout: distanceLayout,
   kernel: distanceFn,
   uniform: (root) => root.createBuffer(DistanceParams).$usage("uniform").$name("distanceForce:params"),
+  check: squareContact,
   uniforms: (n, p, shapes) => ({
     c: commonValues(n, p, distanceNum, matrixSide(shapes[2]!)),
     force: distanceNum(p, "xyzforce"),
@@ -1006,6 +1015,7 @@ export const boidsOp = kernelOp<d.Infer<typeof BoidParams>>({
   layout: boidLayout,
   kernel: boidFn,
   uniform: (root) => root.createBuffer(BoidParams).$usage("uniform").$name("boids:params"),
+  check: squareContact,
   uniforms: (n, p, shapes) => ({
     c: commonValues(n, p, boidNum, matrixSide(shapes[2]!)),
     alignment: boidNum(p, "boidalignment"),

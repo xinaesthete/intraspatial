@@ -131,13 +131,14 @@ function adhesionCpu(
   const pairRange = cutoff(num(p, "pairRange"));
   for (let i = 0; i < n; i++) {
     const si = species[i]!;
-    if (si === DEAD_SPECIES) continue;
+    // A species the tables do not cover takes no part, as in the kernel.
+    if (si === DEAD_SPECIES || si >= count) continue;
     let fx = 0;
     let fy = 0;
     let fz = 0;
     for (let j = 0; j < n; j++) {
       const sj = species[j]!;
-      if (j === i || sj === DEAD_SPECIES) continue;
+      if (j === i || sj === DEAD_SPECIES || sj >= count) continue;
       const dx = pos[j * 4]! - pos[i * 4]!;
       const dy = pos[j * 4 + 1]! - pos[i * 4 + 1]!;
       const dz = pos[j * 4 + 2]! - pos[i * 4 + 2]!;

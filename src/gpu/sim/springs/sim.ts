@@ -145,10 +145,18 @@ export function createSpringSim(sc: Scenario, opts: SpringSimOptions = {}): Spri
     if (built) await writeBack();
     // With leader selection off nothing else would turn existing leaders back into cells.
     const rules = sc.graphRules?.();
+    const speciesBefore = sc.state.species.slice();
     if (rules && !rules.leaders) clearLeaders(sc.state, LEADER, CELL);
     // Build the replacement first. If the new settings cannot make a graph this throws, and the
     // run that was going is still there to carry on once they are put right.
-    const graph = scenarioGraph(sc, { packed: opts.packed, fusePairs: opts.fusePairs });
+    let graph: SpringGraph;
+    try {
+      graph = scenarioGraph(sc, { packed: opts.packed, fusePairs: opts.fusePairs });
+    } catch (e) {
+      // The old run still has its leaders, so the host copy must too.
+      sc.state.species.set(speciesBefore);
+      throw e;
+    }
     if (built) disposeSimState(built.state, backend);
     dropOwnRadius();
     built = {
@@ -207,6 +215,7 @@ export function createSpringSim(sc: Scenario, opts: SpringSimOptions = {}): Spri
       }
     },
     invalidate() {
+      if (busy) throw new Error("createSpringSim: invalidate called while another operation is still running");
       if (!hostCurrent) throw new Error("createSpringSim: sync before editing the host state and calling invalidate");
       stale = true;
     },

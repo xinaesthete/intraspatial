@@ -617,6 +617,7 @@ export const bondFormOp: OpType = {
     }
   },
   cpuGolden(inputs, params) {
+    restCurrent(params); // refuse a zero scale here, as `execute` does, whether or not a bond forms
     const n = pointsN(inputs[0]!.shape, "bondForm.pos");
     const pos = host(inputs[0], "bondForm.pos");
     const species = host(inputs[1], "bondForm.species");
