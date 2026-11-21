@@ -8,4 +8,7 @@ export * from "./jet";
 export * from "./quat";
 export * from "./reactionDiffusion";
 export * from "./splines";
+// The CSynth-derived spring model. A namespace, because its names (`spawn`, `soft`, `CELL`) are
+// short and would collide in this barrel.
+export * as springs from "./springs/index";
 export * from "./vec3";

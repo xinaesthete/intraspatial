@@ -45,6 +45,12 @@ server to use them. A publicly-hosted sample dataset is still an open item.
   panel to a cell-type pair. Γ is rendered as two additive GPU passes rather than a neighbour search
   (the derivation lives in `docs/cell-stats.md` in the repo), with the
   exact CPU oracle one button away. Reads a SpatialData store, a CSV export, or a built-in fixture.
+- **[Springs](/playground/springs.html)** — a port of CSynth's spring dynamics with bonds that break and
+  re-form, adhesion and dividing cells. A spheroid of cells grows in an elastic or a viscoelastic
+  matrix; a stress relaxation test measures that matrix; a chain folds to match a distance or contact
+  map (optionally on the GPU); a free chain is folded by drawing lines on its pair matrix, after
+  FoldSynth. Each has an analytic and an aesthetic rendering, and a phase diagram
+  runs the spheroid over a grid of two settings.
 - **[Transcript co-location modes](/playground/transcriptmodes.html)** — the same Gram form over
   transcript density instead of cells: pan and zoom a Morton-tiled Xenium store over its H&E (sd.js's
   WebGPU view), and the co-location matrix and mode map recompute for the part in view, from tiles

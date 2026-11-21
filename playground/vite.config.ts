@@ -202,6 +202,7 @@ export default defineConfig({
         cellmodesLegacy: fileURLToPath(new URL("./cellmodes-legacy.html", import.meta.url)),
         transcriptmodes: fileURLToPath(new URL("./transcriptmodes.html", import.meta.url)),
         density: fileURLToPath(new URL("./density.html", import.meta.url)),
+        springs: fileURLToPath(new URL("./springs.html", import.meta.url)),
         r3fspike: fileURLToPath(new URL("./r3fspike.html", import.meta.url)),
         umap: fileURLToPath(new URL("./umap.html", import.meta.url)),
       },
