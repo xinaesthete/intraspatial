@@ -52,6 +52,8 @@ function worst(a: SpringState, b: SpringState): { err: number; at: number } {
   for (let k = 0; k < a.n * 4; k++) {
     if (k % 4 === 3) continue;
     const e = Math.abs(a.pos[k]! - b.pos[k]!);
+    // A NaN must fail every tolerance check, and must not be overwritten by a later finite one.
+    if (!Number.isFinite(e)) return { err: Infinity, at: k };
     if (!(e <= err)) {
       err = e;
       at = k;

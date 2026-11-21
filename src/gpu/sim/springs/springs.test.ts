@@ -14,6 +14,7 @@ import {
   createState,
   createTopology,
   DEAD,
+  DEFAULT_LINE_SPRINGS,
   dihedral,
   distanceCorrelation,
   distanceMatrix,
@@ -163,7 +164,8 @@ describe("stepSprings: bonded terms", () => {
 describe("torsion springs", () => {
   it("apply no net force and no net torque", () => {
     const pos = [0.1, 1, 0.2, 0, 0, 0, 0, 1, 0.1, 0.4, 0, 2.1, 0.3, -0.5, 0.2, 0];
-    const out = new Float64Array(13);
+    // Twelve elements, as documented: three per particle.
+    const out = new Float64Array(12);
     expect(torsionForces(pos, 0, 1, 2, 3, 1, 0.05, out)).toBe(true);
     const sum = [0, 0, 0];
     const torque = [0, 0, 0];
@@ -232,8 +234,10 @@ describe("matrix lines", () => {
       [6, 10],
     ]);
     const [rung] = sheetLines(0, 12, 2, 3);
-    expect(rung).toEqual({ a0: 0, b0: 13, a1: 4, b1: 9 });
-    expect(lineCells(rung!).every(([a, b]) => a + b === 13)).toBe(true);
+    // Strands 0..4 and 8..12 with a three-particle turn: antiparallel, so 0 pairs with 12.
+    expect(rung).toEqual({ a0: 0, b0: 12, a1: 4, b1: 8 });
+    expect(lineCells(rung!).every(([a, b]) => a + b === 12)).toBe(true);
+    expect(sheetLines(0, 7, 2, 0)).toEqual([{ a0: 0, b0: 7, a1: 3, b1: 4 }]);
     expect(lineCells(rung!).length).toBe(5);
   });
 
@@ -768,5 +772,52 @@ describe("scenarios", () => {
     expect(events.every((e) => Math.hypot(e.x, e.y) < 12 && e.step > 0)).toBe(true);
     expect(yielding.takeEvents()).toEqual([]);
     expect(projectedShape(yielding.state, CELL).area).toBeGreaterThan(projectedShape(elastic.state, CELL).area * 1.15);
+  });
+});
+
+describe("review fixes", () => {
+  it("rejects a phase diagram whose axes vary the same setting", () => {
+    const axis = { key: "motility", values: [0, 0.1] } as const;
+    expect(() => phaseDiagram({ x: axis, y: axis, steps: 1 })).toThrow(/both axes/);
+  });
+
+  it("rejects a Sholl shell thickness that would never terminate", () => {
+    const s = createState(3);
+    spawn(s, 0, 0, 0, 0, CELL);
+    spawn(s, 1, 2, 0, 0, CELL);
+    spawn(s, 2, -2, 0, 0, CELL);
+    expect(() => shollProfile(s, CELL, { thickness: 0 })).toThrow(RangeError);
+  });
+
+  it("turns leaders back into cells once leader selection is switched off", () => {
+    const sc = spheroidScenario({ cellRadius: 2, matrixRadius: 4, leaderThrust: 0.5, seed: 3 });
+    const cell = sc.state.species.indexOf(CELL);
+    sc.state.species[cell] = LEADER;
+    sc.configure({ leaderThrust: 0 });
+    sc.advance(10);
+    expect(liveCount(sc.state, LEADER)).toBe(0);
+    expect(sc.state.species[cell]).toBe(CELL);
+  });
+
+  it("keeps structural settings out of a live update", () => {
+    const sc = spheroidScenario({ cellRadius: 2, matrixRadius: 4, seed: 7 });
+    const everything: Record<string, unknown> = { seed: 1, dims: 3, stiffness: 0.9 };
+    sc.configure(everything);
+    expect(sc.config.seed).toBe(7);
+    expect(sc.config.dims).toBe(2);
+    expect(sc.config.stiffness).toBe(0.9);
+  });
+
+  it("reaches far enough for the configured adhesion", () => {
+    const sc = spheroidScenario({ cellRadius: 2, matrixRadius: 4, adhesionRange: 1 });
+    expect(sc.params.pairRange).toBeGreaterThanOrEqual(2);
+  });
+
+  it("removes line springs by the kind they were installed with", () => {
+    const t = createTopology(12, 8);
+    const first = applyLines(t, [{ a0: 0, b0: 6, a1: 2, b1: 8 }], { ...DEFAULT_LINE_SPRINGS, kind: 3 });
+    expect(first.pairs.length).toBe(3);
+    applyLines(t, [], { ...DEFAULT_LINE_SPRINGS, kind: 4 }, first);
+    expect(bondCount(t)).toBe(0);
   });
 });

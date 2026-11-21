@@ -36,13 +36,13 @@ export interface ShapeOptions {
  * row of particles without following each one. Holes are filled and only the largest connected
  * piece is kept. Area is a pixel count; perimeter is the marching-squares contour length.
  */
-export function projectedShape(s: SpringState, species: number, opts: ShapeOptions = {}): ShapeReadout {
+export function projectedShape(s: SpringState, species: number | readonly number[], opts: ShapeOptions = {}): ShapeReadout {
   const ids: number[] = [];
   let cx = 0;
   let cy = 0;
   let rsum = 0;
   for (let i = 0; i < s.n; i++) {
-    if (s.species[i] !== species) continue;
+    if (!member(s, i, species)) continue;
     ids.push(i);
     cx += s.pos[i * 4]!;
     cy += s.pos[i * 4 + 1]!;
@@ -207,7 +207,11 @@ export function bondReadout(s: SpringState, t: SpringTopology, p: SpringParams, 
       const dz = s.pos[j * 4 + 2]! - s.pos[i * 4 + 2]!;
       const len = Math.hypot(dx, dy, dz);
       const rest = t.slots[o + 1]! * p.springlen + p.springlenfix;
-      const f = (len - rest) * t.slots[o + 2]! * (p.springforce * p.roleforces[kind]! + p.roleforcesFix[kind]!);
+      // The force `stepSprings` applies, before its per-step overshoot cap (which is a limit on
+      // the integrator, not part of the material).
+      let f = (len - rest) * t.slots[o + 2]! * (p.springforce * p.roleforces[kind]! + p.roleforcesFix[kind]!);
+      f *= Math.min(1000, (len / p.powBaseDist) ** (t.slots[o + 3]! + p.springpow));
+      if (j - i === 1) f *= p.backboneStrength;
       count++;
       strain += len / rest - 1;
       if (len > 0) {
@@ -236,7 +240,8 @@ export function distanceMatrix(s: SpringState, size: number): Float32Array {
 
 /**
  * How well the model reproduces its target: Pearson correlation between model and reference
- * distances over all pairs more than `minSeparation` apart along the chain.
+ * distances over all pairs at least `minSeparation` apart along the chain (never a particle with
+ * itself).
  */
 export function distanceCorrelation(model: Float32Array, reference: Float32Array, size: number, minSeparation = 2): number {
   let nn = 0;
@@ -246,7 +251,7 @@ export function distanceCorrelation(model: Float32Array, reference: Float32Array
   let sbb = 0;
   let sab = 0;
   for (let i = 0; i < size; i++) {
-    for (let j = i + minSeparation; j < size; j++) {
+    for (let j = i + Math.max(1, minSeparation); j < size; j++) {
       const a = model[i * size + j]!;
       const b = reference[i * size + j]!;
       nn++;
@@ -298,13 +303,13 @@ export interface Shape3dReadout {
   readonly anisotropy: number;
 }
 
-/** Size and overall shape of one species in 3D. */
 /** Whether particle `i` is of the species, or one of the species, asked for. */
 function member(s: SpringState, i: number, species: number | readonly number[]): boolean {
   const sp = s.species[i]!;
   return typeof species === "number" ? sp === species : species.includes(sp);
 }
 
+/** Size and overall shape of one species, or several together, in 3D. */
 export function shape3d(s: SpringState, species: number | readonly number[]): Shape3dReadout {
   let count = 0;
   let cx = 0;
@@ -410,6 +415,9 @@ export function shollProfile(
   cz /= count;
   diameter /= count;
   const thickness = (opts.thickness ?? 1.5) * diameter;
+  // A zero or negative thickness puts particles in shell Infinity and the profile never ends.
+  if (!(thickness > 0 && Number.isFinite(thickness)))
+    throw new RangeError(`shollProfile: shell thickness must be positive, got ${thickness}`);
   const link = (opts.link ?? 1.4) * diameter;
   const minPiece = opts.minPiece ?? 3;
   const shells = new Map<number, number[]>();

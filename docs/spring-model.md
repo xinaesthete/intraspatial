@@ -191,6 +191,9 @@ to the main body.
 - **Read it before 7,000 steps.** By 10,500 most runs hit the 3,000-cell cap and fill the gel
   to its wall, and the Sholl count then measures lumps on a mass.
 
+These runs predate a fix to the division axis in 3D, which had shared a random stream with the
+z motility kick; the numbers have not been re-measured since.
+
 Seen in single runs while tuning: adhesion 0.1 with cell stiffness 0.3 crushes the tissue;
 thrust 0.2 with grip 1 lets leaders tear free and leave alone.
 

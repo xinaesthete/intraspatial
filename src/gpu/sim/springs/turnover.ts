@@ -74,7 +74,9 @@ export function breakBonds(
 export interface FormRule {
   /** Largest distance at which a bond forms. */
   readonly range: number;
-  /** Species × species (`MAX_SPECIES` square) bond kind to form, or -1 for none. */
+  /** Species × species (`MAX_SPECIES` square) bond kind to form, or -1 for none. Must be
+   *  symmetric, and every particle's species must be below `speciesCount`: the two ends of a
+   *  bond look their kind up separately, and the table invariant needs them to agree. */
   readonly kindOf: readonly number[];
   /** Strength of a new bond, per kind. */
   readonly strength: readonly number[];

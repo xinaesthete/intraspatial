@@ -52,5 +52,6 @@ export const SALT = {
   bondForm: 0x7feb352d,
   divide: 0xb55a4f09,
   divideDir: 0x2545f491,
+  divideZ: 0x9e3779b9,
   leader: 0x68e31da4,
 } as const;

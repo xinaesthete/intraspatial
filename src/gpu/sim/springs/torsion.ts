@@ -23,14 +23,13 @@ export const TORSION_SCALE = 10;
 
 /** Dihedral angle of a-b-c-d in (-π, π], or NaN when three of the points are in a line. */
 export function dihedral(pos: ArrayLike<number>, a: number, b: number, c: number, d: number, stride = 4): number {
-  const out = new Float64Array(13);
-  return quad(pos, a, b, c, d, stride, out) ? out[12]! : Number.NaN;
+  return quad(pos, a, b, c, d, stride, new Float64Array(12));
 }
 
 /**
  * Geometry shared by the angle and the forces. Fills `out[0..11]` with the unscaled forces on
- * a, b, c, d and `out[12]` with the angle. Returns false when the quad is degenerate or one of
- * its bonds is longer than `maxLenSq` (squared).
+ * a, b, c, d and returns the angle, or NaN when the quad is degenerate or one of its bonds is
+ * longer than `maxLenSq` (squared).
  */
 function quad(
   pos: ArrayLike<number>,
@@ -41,7 +40,7 @@ function quad(
   stride: number,
   out: Float64Array,
   maxLenSq = Infinity,
-): boolean {
+): number {
   const ax = pos[a * stride]! - pos[b * stride]!;
   const ay = pos[a * stride + 1]! - pos[b * stride + 1]!;
   const az = pos[a * stride + 2]! - pos[b * stride + 2]!;
@@ -59,7 +58,7 @@ function quad(
   const vcdy = dy - cy;
   const vcdz = dz - cz;
   const bcSq = cx * cx + cy * cy + cz * cz;
-  if (ax * ax + ay * ay + az * az > maxLenSq || bcSq > maxLenSq || vcdx * vcdx + vcdy * vcdy + vcdz * vcdz > maxLenSq) return false;
+  if (ax * ax + ay * ay + az * az > maxLenSq || bcSq > maxLenSq || vcdx * vcdx + vcdy * vcdy + vcdz * vcdz > maxLenSq) return Number.NaN;
   const lenBC = Math.sqrt(bcSq);
   // xabc = vbc × vab, xbcd = vcd × vbc, each normalised with its length kept.
   let ux = cy * vabz - cz * vaby;
@@ -70,7 +69,7 @@ function quad(
   let wz = vcdx * cy - vcdy * cx;
   const lenABC = Math.hypot(ux, uy, uz);
   const lenBCD = Math.hypot(wx, wy, wz);
-  if (!(lenBC > 1e-9 && lenABC > 1e-9 && lenBCD > 1e-9)) return false;
+  if (!(lenBC > 1e-9 && lenABC > 1e-9 && lenBCD > 1e-9)) return Number.NaN;
   ux /= lenABC;
   uy /= lenABC;
   uz /= lenABC;
@@ -78,7 +77,7 @@ function quad(
   wy /= lenBCD;
   wz /= lenBCD;
   const sin = ((uy * wz - uz * wy) * cx + (uz * wx - ux * wz) * cy + (ux * wy - uy * wx) * cz) / lenBC;
-  out[12] = Math.atan2(sin, ux * wx + uy * wy + uz * wz);
+  const angle = Math.atan2(sin, ux * wx + uy * wy + uz * wz);
 
   // Scale down near degenerate, never up.
   const ss = Math.min(1, lenBCD * lenABC);
@@ -99,7 +98,7 @@ function quad(
   const fby = (cz * k3x - cx * k3z) / bcSq;
   const fbz = (cx * k3y - cy * k3x) / bcSq;
   out.set([fax, fay, faz, fbx, fby, fbz, k1x - fbx, k1y - fby, k1z - fbz, fdx, fdy, fdz]);
-  return true;
+  return angle;
 }
 
 /**
@@ -119,8 +118,10 @@ export function torsionForces(
   maxLenSq = Infinity,
   stride = 4,
 ): boolean {
-  if (strength === 0 || !quad(pos, a, b, c, d, stride, out, maxLenSq)) return false;
-  let stress = targetAngle - out[12]!;
+  if (strength === 0) return false;
+  const angle = quad(pos, a, b, c, d, stride, out, maxLenSq);
+  if (Number.isNaN(angle)) return false;
+  let stress = targetAngle - angle;
   if (stress > Math.PI) stress -= 2 * Math.PI;
   if (stress < -Math.PI) stress += 2 * Math.PI;
   // Fade past a quarter turn, so the drive is zero at ±π instead of flipping sign there.

@@ -13,9 +13,9 @@
 // Growth (`growth.ts`) stays on the host: `download`, divide, `upload`.
 import { compileShader, deviceScoped, readBackBytes, writeView } from "../../device";
 import { MAX_KINDS, MAX_SPECIES, type SpringParams } from "./params";
-import { divideCells, selectLeaders } from "./growth";
+import { clearLeaders, divideCells, selectLeaders } from "./growth";
 import { probThreshold, SALT } from "./rng";
-import type { SpheroidScenario } from "./scenarios";
+import { CELL, LEADER, type SpheroidScenario } from "./scenarios";
 import { DEAD, type SpringMatrices, type SpringState } from "./state";
 import { SLOT_WORDS, type SpringTopology } from "./topology";
 import { TORSION_SCALE } from "./torsion";
@@ -836,12 +836,19 @@ export async function createSpringsGpu(n: number, K: number, opts: { device?: GP
       run(pipes.accept, bind, "springs:accept");
     },
     async download(s, t) {
-      const st = new Float32Array(await readBackBytes(device, `springs${id}:state`, cur, 0, n * 2 * 16));
+      // Both copies are queued before anything is awaited, so they are of the same step, and the
+      // host objects change only once both have arrived. The keys carry no instance id: the
+      // staging pool never frees a buffer, and reads that share a key simply take turns.
+      const step = stepIndex;
+      const [stBytes, slBytes] = await Promise.all([
+        readBackBytes(device, "springs:state", cur, 0, n * 2 * 16),
+        readBackBytes(device, "springs:slots", slots, 0, n * K * SLOT_WORDS * 4),
+      ]);
+      const st = new Float32Array(stBytes);
       s.pos.set(st.subarray(0, n * 4));
       s.prev.set(st.subarray(n * 4));
-      s.step = stepIndex;
-      const sl = new Uint32Array(await readBackBytes(device, `springs${id}:slots`, slots, 0, n * K * SLOT_WORDS * 4));
-      t.slotBits.set(sl);
+      s.step = step;
+      t.slotBits.set(new Uint32Array(slBytes));
     },
     positions() {
       return cur;
@@ -876,19 +883,31 @@ export async function createSpheroidGpuRunner(
     }
     const leaders = sc.rules.leaders;
     if (leaders && sinceSync > 0) changed += selectLeaders(sc.state, sc.params, { ...leaders, tau: Math.max(1, leaders.tau / sinceSync) });
+    // With leaders switched off nothing else would turn the existing ones back into cells.
+    if (!leaders) changed += clearLeaders(sc.state, LEADER, CELL);
     if (changed > 0) gpu.upload(sc.state, sc.topology);
     sinceSync = 0;
   };
+  let advancing = false;
   return {
     async advance(steps) {
-      for (let k = 0; k < steps; k++) {
-        const rules = sc.rules;
-        gpu.step(sc.params);
-        if (rules.turnover) gpu.breakBonds(sc.params, rules.breakRule);
-        if (rules.turnover || sc.config.ligand > 0) gpu.formBonds(sc.params, rules.formRule);
-        if (++sinceSync >= syncEvery) await sync();
+      // A second call while one is awaiting its sync would share `sinceSync` and upload growth
+      // computed from an older snapshot.
+      if (advancing) throw new Error("createSpheroidGpuRunner: advance called while a previous advance is still running");
+      advancing = true;
+      try {
+        for (let k = 0; k < steps; k++) {
+          const rules = sc.rules;
+          gpu.step(sc.params);
+          if (rules.turnover) gpu.breakBonds(sc.params, rules.breakRule);
+          if (rules.turnover || sc.config.ligand > 0) gpu.formBonds(sc.params, rules.formRule);
+          if (++sinceSync >= syncEvery) await sync();
+        }
+        // Already current when the batch ended exactly on a sync.
+        if (sinceSync > 0) await sync();
+      } finally {
+        advancing = false;
       }
-      await sync();
     },
   };
 }

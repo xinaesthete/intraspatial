@@ -1,7 +1,7 @@
 // Ready-made setups of the spring model. Each returns the state, topology and parameters plus
 // an `advance` that runs the step and whatever turnover and growth the setup uses, so a caller
 // (a test, a sweep, the playground) drives every scenario the same way.
-import { divideCells, type DivisionRule, type LeaderRule, selectLeaders } from "./growth";
+import { clearLeaders, divideCells, type DivisionRule, type LeaderRule, selectLeaders } from "./growth";
 import { MAX_SPECIES, type SpringParams, speciesTable, springParams } from "./params";
 import { rand01 } from "./rng";
 import { createState, gatherNeighbours, neighbourGrid, type SpringMatrices, type SpringState, spawn } from "./state";
@@ -62,7 +62,8 @@ export interface Scenario {
   /** Running totals since the scenario was made. */
   readonly totals: { broken: number; formed: number; divisions: number };
   /** Bond breaks and divisions since the last call, oldest first, each at the midpoint of the
-   *  two particles involved. */
+   *  two particles involved. Only the newest 4,000 are kept between calls, so use `totals` for
+   *  counts. */
   takeEvents(): SpringEvent[];
 }
 
@@ -223,6 +224,7 @@ export interface SpheroidConfig {
 
 /** Settings that fix the particles a spheroid is built from. Changing one needs a new scenario. */
 export type SpheroidStructure = "cellRadius" | "matrixRadius" | "maxCells" | "seed" | "dims" | "matrixDisorder";
+const STRUCTURE: readonly SpheroidStructure[] = ["cellRadius", "matrixRadius", "maxCells", "seed", "dims", "matrixDisorder"];
 /** Settings that can change while a spheroid runs. */
 export type SpheroidLiveConfig = Omit<SpheroidConfig, SpheroidStructure>;
 
@@ -238,6 +240,14 @@ export interface SpheroidScenario extends Scenario {
 
 /** Defaults sit in the regime where the outline breaks symmetry: a stiff matrix that yields at
  *  a high strain and heals slowly, and motile cells. */
+/** The defaults a spheroid of `dims` dimensions starts from: what a control should fall back
+ *  to, and what a preset that leaves a setting out means. */
+export function spheroidDefaults(dims: 2 | 3): Required<SpheroidConfig> {
+  // A close-packed cell has 6 touching neighbours in 2D and 12 in 3D, so the same squeeze reads
+  // as a higher density in 3D.
+  return dims === 3 ? { ...DEFAULT_SPHEROID, dims, maxDensity: 22 } : { ...DEFAULT_SPHEROID, dims };
+}
+
 export const DEFAULT_SPHEROID: Required<SpheroidConfig> = {
   cellRadius: 4,
   matrixRadius: 18,
@@ -276,10 +286,7 @@ export const DEFAULT_SPHEROID: Required<SpheroidConfig> = {
  * creeps, and the cells can push into it.
  */
 export function spheroidScenario(cfg: SpheroidConfig = {}): SpheroidScenario {
-  let c = { ...DEFAULT_SPHEROID, ...defined(cfg) };
-  // A close-packed cell has 6 touching neighbours in 2D and 12 in 3D, so the same squeeze reads
-  // as a higher density in 3D.
-  if (cfg.maxDensity === undefined && c.dims === 3) c = { ...c, maxDensity: 22 };
+  let c = { ...spheroidDefaults(cfg.dims ?? DEFAULT_SPHEROID.dims), ...defined(cfg) };
   // Close-packed sites one diameter apart: a triangular lattice in 2D, face-centred cubic in 3D.
   const sites: [number, number, number][] = [];
   const reach = Math.ceil(c.matrixRadius) + 1;
@@ -369,7 +376,10 @@ export function spheroidScenario(cfg: SpheroidConfig = {}): SpheroidScenario {
       return rules;
     },
     configure(change) {
-      c = { ...c, ...defined(change) };
+      // Only live settings: a structural one passed by spread would misreport what was built.
+      const live: Record<string, unknown> = { ...defined(change) };
+      for (const key of STRUCTURE) delete live[key];
+      c = { ...c, ...live };
       rules = spheroidRules(c);
       scenario.params = { ...scenario.params, ...spheroidParams(c) };
     },
@@ -382,6 +392,8 @@ export function spheroidScenario(cfg: SpheroidConfig = {}): SpheroidScenario {
         // Selection needs a neighbour search, so it runs every few steps at a rate to match.
         if (rules.leaders && state.step % LEADER_EVERY === 0)
           selectLeaders(state, scenario.params, { ...rules.leaders, tau: Math.max(1, rules.leaders.tau / LEADER_EVERY) });
+        // With leaders switched off nothing else would turn the existing ones back into cells.
+        if (!rules.leaders && state.step % LEADER_EVERY === 0) clearLeaders(state, LEADER, CELL);
       }
     },
   };
@@ -404,7 +416,8 @@ function spheroidParams(c: Required<SpheroidConfig>): Partial<SpringParams> {
   thrust[LEADER] = c.leaderThrust;
   motility[LEADER] = c.motility;
   return {
-    pairRange: Math.max(1.5, c.protrusion !== 0 || c.leaderThrust !== 0 ? c.protrusionRange : 0),
+    // Far enough for every pair term that is on: density, adhesion's reach, the outward terms.
+    pairRange: Math.max(1.5, 1 + c.adhesionRange, c.protrusion !== 0 || c.leaderThrust !== 0 ? c.protrusionRange : 0),
     adhesionRange: c.adhesionRange,
     protrusion,
     // Summed weight of a full shell of neighbours out to two diameters, in each packing.

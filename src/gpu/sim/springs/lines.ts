@@ -73,7 +73,8 @@ export function sheetLines(s: number, e: number, strands: number, loop: number):
   const lines: MatrixLine[] = [];
   let at = s;
   for (let k = 0; k < strands - 1; k++) {
-    const sum = 2 * at + 2 * strandLen + loop;
+    // Antiparallel neighbours: the first of this strand pairs with the last of the next.
+    const sum = 2 * at + 2 * strandLen + loop - 1;
     lines.push({ a0: at, b0: sum - at, a1: at + strandLen - 1, b1: sum - (at + strandLen - 1) });
     at += strandLen + loop;
   }
@@ -124,6 +125,8 @@ export interface LineSprings {
   readonly torsions: readonly number[];
   /** Pairs wanted but not made because a particle's bond slots were full. */
   readonly skipped: number;
+  /** The bond kind they were installed with; what the next call removes. */
+  readonly kind: number;
 }
 
 /**
@@ -139,7 +142,7 @@ export function applyLines(
 ): LineSprings {
   for (const [a, b] of previous?.pairs ?? []) {
     const slot = findSlot(t, a, b);
-    if (slot >= 0 && slotKind(t.slotBits[slot]!) === o.kind) removeSpring(t, a, b);
+    if (slot >= 0 && slotKind(t.slotBits[slot]!) === (previous?.kind ?? o.kind)) removeSpring(t, a, b);
   }
   for (const i of previous?.torsions ?? []) t.torsion[i * 2 + 1] = 0;
 
@@ -170,5 +173,5 @@ export function applyLines(
       }
     }
   }
-  return { pairs, torsions, skipped };
+  return { pairs, torsions, skipped, kind: o.kind };
 }

@@ -14,6 +14,12 @@ Three things changed between this note and the code:
 
 The table is not yet a graph bundle; the ops are plain functions and a `SpringsGpu` object.
 
+**Everything below is the original design, kept for its reasoning.** Where it disagrees with
+the three points above or with the code, the code is right. In particular: the table is one
+buffer of four-word slots, not `link` and `spring`; the per-spring power is applied; the strain
+rule breaks on `|strain|` unless the rule sets `tensionOnly`; and fix, pull, rods and torsion
+springs are all built.
+
 ## Decision
 
 - **A bond table is a fixed number of slots per particle.** Row `i` holds up to `K` bonds of

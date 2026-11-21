@@ -3,7 +3,7 @@
 // paper summarises its model (stable spheroid against fingering, over matrix relaxation,
 // proliferation and viscosity).
 import { projectedShape, type ShapeReadout } from "./readouts";
-import { CELL, type SpheroidConfig, spheroidScenario } from "./scenarios";
+import { CELL, LEADER, type SpheroidConfig, spheroidScenario } from "./scenarios";
 
 export interface PhaseAxis {
   /** The `SpheroidConfig` field this axis varies. */
@@ -18,7 +18,7 @@ export interface PhasePoint {
   readonly x: number;
   readonly y: number;
   readonly shape: ShapeReadout;
-  /** Area relative to the starting outline. */
+  /** Area relative to the starting outline; NaN when the starting outline has no area. */
   readonly growth: number;
   readonly brokenBonds: number;
   readonly divisions: number;
@@ -38,14 +38,18 @@ export interface PhaseOptions {
  * can draw each point as it arrives and stay responsive.
  */
 export function* phaseDiagramRuns(o: PhaseOptions): Generator<PhasePoint> {
+  // The y value would overwrite the x value, and every column would be labelled wrongly.
+  if (o.x.key === o.y.key) throw new RangeError(`phaseDiagram: both axes vary "${o.x.key}"`);
+  // A leader is still tissue: count it, or a run loses area when surface cells change species.
+  const tissue = [CELL, LEADER];
   for (let iy = 0; iy < o.y.values.length; iy++) {
     for (let ix = 0; ix < o.x.values.length; ix++) {
       const x = o.x.values[ix]!;
       const y = o.y.values[iy]!;
       const sc = spheroidScenario({ ...o.base, [o.x.key]: x, [o.y.key]: y });
-      const start = projectedShape(sc.state, CELL).area;
+      const start = projectedShape(sc.state, tissue).area;
       sc.advance(o.steps);
-      const shape = projectedShape(sc.state, CELL);
+      const shape = projectedShape(sc.state, tissue);
       yield { ix, iy, x, y, shape, growth: shape.area / start, brokenBonds: sc.totals.broken, divisions: sc.totals.divisions };
     }
   }

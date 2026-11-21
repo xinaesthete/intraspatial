@@ -109,14 +109,37 @@ export interface SimulationOptions {
   readonly onFrame: (sc: Scenario, time: number) => void;
 }
 
-interface History {
+/** The relaxation measurement, kept apart from the rolling chart history so that neither the
+ *  baseline nor a crossing already seen is lost when old samples drop off. */
+export interface Relaxation {
+  /** The first sample at or after step 40: where the measurement starts. */
+  readonly baseline?: { readonly step: number; readonly stress: number };
+  /** Step of the first sample whose stress was at or below half the baseline. */
+  readonly halfStep?: number;
+}
+
+interface History extends Relaxation {
   readonly scenario: Scenario;
   readonly samples: readonly Sample[];
 }
 
-export function useSimulation(o: SimulationOptions): { samples: readonly Sample[]; error: string | null } {
+/** Add a sample to a scenario's history, or start a new history for a new scenario. */
+function extend(prev: History | null, scenario: Scenario, sample: Sample): History {
+  const same = prev?.scenario === scenario ? prev : null;
+  const baseline = same?.baseline ?? (sample.step >= 40 ? { step: sample.step, stress: sample.stress } : undefined);
+  const crossed = baseline && sample.step > baseline.step && sample.stress <= baseline.stress / 2;
+  return {
+    scenario,
+    samples: same ? [...same.samples.slice(-399), sample] : [sample],
+    baseline,
+    halfStep: same?.halfStep ?? (crossed ? sample.step : undefined),
+  };
+}
+
+export function useSimulation(o: SimulationOptions): { samples: readonly Sample[]; error: string | null; relaxation: Relaxation } {
   const [history, setHistory] = useState<History | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  // Keyed by scenario, so an error from a run that has been replaced is not shown on the next.
+  const [error, setError] = useState<{ scenario: Scenario; message: string } | null>(null);
   // The loop reads the latest options without restarting when they change.
   const latest = useRef(o);
   useEffect(() => {
@@ -130,7 +153,9 @@ export function useSimulation(o: SimulationOptions): { samples: readonly Sample[
     let stopped = false;
     let frame = 0;
     let advances = 0;
-    const report = (e: unknown) => setError(e instanceof Error ? e.message : String(e));
+    const report = (e: unknown) => {
+      if (!stopped) setError({ scenario: sc, message: e instanceof Error ? e.message : String(e) });
+    };
     if (wantGpu) {
       gpuRunner(sc)
         .then((g) => {
@@ -140,7 +165,7 @@ export function useSimulation(o: SimulationOptions): { samples: readonly Sample[
     }
     const record = () => {
       const sample = measure(sc);
-      setHistory((prev) => ({ scenario: sc, samples: prev?.scenario === sc ? [...prev.samples.slice(-399), sample] : [sample] }));
+      setHistory((prev) => extend(prev, sc, sample));
     };
     const tick = (time: number) => {
       if (stopped) return;
@@ -157,7 +182,11 @@ export function useSimulation(o: SimulationOptions): { samples: readonly Sample[
                 // A device advance can span several frames, so samples are counted in advances.
                 if (!stopped && ++advances % 4 === 0) record();
               })
-              .catch(report)
+              .catch((e: unknown) => {
+                // Stop submitting to a device that has just failed; the error stays on screen.
+                gpu = null;
+                report(e);
+              })
               .finally(() => {
                 busy = false;
               });
@@ -178,5 +207,10 @@ export function useSimulation(o: SimulationOptions): { samples: readonly Sample[
     };
   }, [sc, wantGpu]);
 
-  return { samples: history?.scenario === sc ? history.samples : [], error };
+  const current = history?.scenario === sc ? history : null;
+  return {
+    samples: current?.samples ?? [],
+    error: error?.scenario === sc ? error.message : null,
+    relaxation: { baseline: current?.baseline, halfStep: current?.halfStep },
+  };
 }

@@ -9,6 +9,8 @@ type Part = "start" | "end" | "body";
 
 interface Drag {
   readonly index: number;
+  /** The pointer that began the drag; other pointers are ignored until it ends. */
+  readonly pointerId: number;
   readonly part: Part;
   /** Pointer position, in cells, when the drag began. */
   readonly origin: readonly [number, number];
@@ -49,12 +51,13 @@ export function MapEditor(props: {
 
   const begin = (e: React.PointerEvent, index: number, part: Part, line: MatrixLine) => {
     e.stopPropagation();
+    if (drag.current) return;
     svgRef.current?.setPointerCapture(e.pointerId);
-    drag.current = { index, part, origin: cellAt(e), line };
+    drag.current = { index, pointerId: e.pointerId, part, origin: cellAt(e), line };
   };
 
   const onDown = (e: React.PointerEvent) => {
-    if (e.button !== 0) return;
+    if (e.button !== 0 || drag.current) return;
     const [a, b] = cellAt(e);
     const line = { a0: a, b0: b, a1: a, b1: b };
     onChange([...lines, line]);
@@ -63,25 +66,32 @@ export function MapEditor(props: {
 
   const onMove = (e: React.PointerEvent) => {
     const d = drag.current;
-    if (!d) return;
+    if (!d || e.pointerId !== d.pointerId) return;
     const [a, b] = cellAt(e);
+    // A snap can land outside the map even when the pointer is inside; then the pointer wins.
+    const inside = ([p, q]: readonly [number, number]) => p >= 0 && q >= 0 && p < size && q < size;
+    const snapped = (fa: number, fb: number): readonly [number, number] => {
+      const s = snapEnd(fa, fb, a, b);
+      return e.ctrlKey || !inside(s) ? [a, b] : s;
+    };
     let next: MatrixLine;
     if (d.part === "body") {
       const da = a - d.origin[0];
       const db = b - d.origin[1];
       next = { a0: d.line.a0 + da, b0: d.line.b0 + db, a1: d.line.a1 + da, b1: d.line.b1 + db };
     } else if (d.part === "start") {
-      const [sa, sb] = e.ctrlKey ? [a, b] : snapEnd(d.line.a1, d.line.b1, a, b);
+      const [sa, sb] = snapped(d.line.a1, d.line.b1);
       next = { ...d.line, a0: sa, b0: sb };
     } else {
-      const [sa, sb] = e.ctrlKey ? [a, b] : snapEnd(d.line.a0, d.line.b0, a, b);
+      const [sa, sb] = snapped(d.line.a0, d.line.b0);
       next = { ...d.line, a1: sa, b1: sb };
     }
     onChange(lines.map((l, k) => (k === d.index ? next : l)));
   };
 
-  const onUp = () => {
-    drag.current = null;
+  // Also on cancel and on losing capture: neither is followed by a pointerup.
+  const onUp = (e: React.PointerEvent) => {
+    if (drag.current?.pointerId === e.pointerId) drag.current = null;
   };
 
   const remove = (e: React.SyntheticEvent, index: number) => {
@@ -102,6 +112,8 @@ export function MapEditor(props: {
         onPointerDown={onDown}
         onPointerMove={onMove}
         onPointerUp={onUp}
+        onPointerCancel={onUp}
+        onLostPointerCapture={onUp}
         onContextMenu={(e) => e.preventDefault()}
       >
         <line x1={0} y1={0} x2={size} y2={size} className="map-diagonal" />

@@ -39,7 +39,7 @@ export function divideCells(
     if (s.pos[i * 4 + 3]! > rule.maxDensity) continue;
     if (rand01(i, key, SALT.divide) >= 1 / rule.tau) continue;
     const a = rand01(i, key, SALT.divideDir) * 2 * Math.PI;
-    const cz = p.dims === 3 ? rand01(i, key, SALT.motileZ) * 2 - 1 : 0;
+    const cz = p.dims === 3 ? rand01(i, key, SALT.divideZ) * 2 - 1 : 0;
     const sxy = Math.sqrt(1 - cz * cz);
     const h = rule.offset / 2;
     const dx = Math.cos(a) * sxy * h;
@@ -130,6 +130,18 @@ export function selectLeaders(s: SpringState, p: SpringParams, rule: LeaderRule)
     if (leaders.some((j) => Math.hypot(s.pos[j * 4]! - x, s.pos[j * 4 + 1]! - y, s.pos[j * 4 + 2]! - z) < rule.spacing)) continue;
     s.species[i] = rule.to;
     leaders.push(i);
+    changed++;
+  }
+  return changed;
+}
+
+/** Turn every `from` particle back into `to`: for when leader selection is switched off, since
+ *  nothing else would revert the leaders already chosen. Returns how many changed. */
+export function clearLeaders(s: SpringState, from: number, to: number): number {
+  let changed = 0;
+  for (let i = 0; i < s.n; i++) {
+    if (s.species[i] !== from) continue;
+    s.species[i] = to;
     changed++;
   }
   return changed;

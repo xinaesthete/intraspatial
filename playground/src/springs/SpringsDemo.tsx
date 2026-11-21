@@ -22,6 +22,7 @@ import {
   type SpheroidConfig,
   type SpheroidScenario,
   type SpringParams,
+  spheroidDefaults,
   spheroidScenario,
 } from "../../../src/gpu/sim/springs/index";
 import { MathTex } from "../Math";
@@ -94,7 +95,7 @@ const SPHEROID_CONTROLS: readonly {
     min: 0.02,
     max: 0.6,
     step: 0.01,
-    infinite: "never breaks (elastic)",
+    infinite: "no strain-based breaking",
     values: [0.05, 0.1, 0.2, 0.3, 0.45, Number.POSITIVE_INFINITY],
   },
   {
@@ -306,30 +307,32 @@ function Slider(props: {
 }) {
   const finite = Number.isFinite(props.value);
   return (
-    <label title={props.hint}>
-      <span>
-        {props.label}: <b>{finite ? props.value : "∞"}</b>
-      </span>
-      <input
-        type="range"
-        min={props.min}
-        max={props.max}
-        step={props.step}
-        disabled={!finite}
-        value={finite ? props.value : props.max}
-        onChange={(e) => props.onChange(Number(e.target.value))}
-      />
+    <div className="slider" title={props.hint}>
+      <label>
+        <span>
+          {props.label}: <b>{finite ? props.value : "∞"}</b>
+        </span>
+        <input
+          type="range"
+          min={props.min}
+          max={props.max}
+          step={props.step}
+          disabled={!finite}
+          value={finite ? props.value : props.max}
+          onChange={(e) => props.onChange(Number(e.target.value))}
+        />
+      </label>
       {props.infinite && (
-        <span className="check">
+        <label className="check">
           <input
             type="checkbox"
             checked={!finite}
             onChange={(e) => props.onChange(e.target.checked ? Number.POSITIVE_INFINITY : (props.min + props.max) / 2)}
           />
           {props.infinite}
-        </span>
+        </label>
       )}
-    </label>
+    </div>
   );
 }
 
@@ -381,8 +384,10 @@ export function SpringsDemo() {
   useEffect(() => {
     if (!("configure" in scenario)) return;
     if (scenario.kind === "relaxation") scenario.configure(relax);
-    else if (scenario.params.dims === 3) scenario.configure(ball);
-    else scenario.configure({ ...DEFAULT_SPHEROID, ...spheroid });
+    // Defaults first, so a preset or a slider that leaves a setting out resets it, and the
+    // model never keeps a value the controls no longer show.
+    else if (scenario.params.dims === 3) scenario.configure({ ...spheroidDefaults(3), ...ball });
+    else scenario.configure({ ...spheroidDefaults(2), ...spheroid });
   }, [scenario, spheroid, relax, ball]);
 
   // Lines drawn on the pair matrix, kept across restarts and re-applied to each new chain.
@@ -424,7 +429,7 @@ export function SpringsDemo() {
     [look, extent],
   );
 
-  const { samples, error } = useSimulation({ scenario, playing, stepsPerFrame, gpu: useGpu, live: chain ? live : {}, onFrame });
+  const { samples, error, relaxation } = useSimulation({ scenario, playing, stepsPerFrame, gpu: useGpu, live: chain ? live : {}, onFrame });
 
   // Distance maps for the chain scenarios: the target once, the model whenever a sample lands.
   const size = scenario.matrices?.size ?? 0;
@@ -451,6 +456,17 @@ export function SpringsDemo() {
   const [phaseSteps, setPhaseSteps] = useState(3000);
   const [points, setPoints] = useState<PhasePoint[]>([]);
   const [running, setRunning] = useState(false);
+  const [phaseError, setPhaseError] = useState<string | null>(null);
+  // The axes and shared settings of the run on screen. The selectors only configure the next one.
+  const [phaseRun, setPhaseRun] = useState<{
+    xKey: NumericSetting;
+    yKey: NumericSetting;
+    xLabel: string;
+    yLabel: string;
+    xs: readonly number[];
+    ys: readonly number[];
+    base: SpheroidConfig;
+  } | null>(null);
   const worker = useRef<Worker | null>(null);
   const xAxis = SPHEROID_CONTROLS.find((c) => c.key === xKey) ?? SPHEROID_CONTROLS[0];
   const yAxis = SPHEROID_CONTROLS.find((c) => c.key === yKey) ?? SPHEROID_CONTROLS[0];
@@ -461,12 +477,27 @@ export function SpringsDemo() {
   }, []);
   useEffect(() => stopPhase, [stopPhase]);
   const runPhase = () => {
-    if (!xAxis || !yAxis) return;
+    if (!xAxis || !yAxis || xKey === yKey) return;
     stopPhase();
+    const base = { ...spheroid, ...PHASE_BASE };
+    const steps = Math.max(1, Math.round(phaseSteps) || 1);
     setPoints([]);
+    setPhaseError(null);
+    setPhaseRun({ xKey, yKey, xLabel: xAxis.label, yLabel: yAxis.label, xs: xAxis.values, ys: yAxis.values, base });
     setRunning(true);
-    const w = new Worker(new URL("./phaseWorker.ts", import.meta.url), { type: "module" });
+    let w: Worker;
+    try {
+      w = new Worker(new URL("./phaseWorker.ts", import.meta.url), { type: "module" });
+    } catch (e) {
+      setPhaseError(e instanceof Error ? e.message : String(e));
+      setRunning(false);
+      return;
+    }
     worker.current = w;
+    w.onerror = (e) => {
+      setPhaseError(e.message || "The phase diagram worker failed.");
+      stopPhase();
+    };
     w.onmessage = (e: MessageEvent<PhaseMessage>) => {
       if (e.data.type === "point") {
         const point = e.data.point;
@@ -476,20 +507,22 @@ export function SpringsDemo() {
     w.postMessage({
       x: { key: xKey, values: xAxis.values },
       y: { key: yKey, values: yAxis.values },
-      base: { ...spheroid, ...PHASE_BASE },
-      steps: phaseSteps,
+      base,
+      steps,
     });
   };
   const pick = (q: PhasePoint) => {
-    setSpheroid({ ...spheroid, ...PHASE_BASE, [xKey]: q.x, [yKey]: q.y });
+    if (!phaseRun) return;
+    // The settings the square was measured with, not whatever the sliders say now.
+    setSpheroid({ ...phaseRun.base, [phaseRun.xKey]: q.x, [phaseRun.yKey]: q.y });
     setKind("spheroid");
     setNonce((v) => v + 1);
   };
 
   const xs = useMemo(() => samples.map((s) => s.step), [samples]);
   const blurb = KINDS.find((k) => k.id === kind)?.blurb;
-  const stress0 = samples.find((s) => s.step >= 40)?.stress ?? samples[0]?.stress ?? 1;
-  const halfAt = kind === "relaxation" ? samples.find((s) => s.step > 40 && s.stress <= stress0 / 2)?.step : undefined;
+  const stress0 = relaxation.baseline?.stress ?? samples[0]?.stress ?? 1;
+  const halfAt = kind === "relaxation" ? relaxation.halfStep : undefined;
 
   return (
     <div>
@@ -514,7 +547,15 @@ export function SpringsDemo() {
         <div className="controls">
           <label>
             Setup
-            <select value={kind} onChange={(e) => setKind(e.target.value as Kind)}>
+            <select
+              value={kind}
+              onChange={(e) => {
+                const next = e.target.value as Kind;
+                // The 3D setup runs on the GPU and allows far more steps a frame than the CPU can keep up with.
+                if (next !== "ball") setStepsPerFrame((v) => Math.min(v, 20));
+                setKind(next);
+              }}
+            >
               {KINDS.map((k) => (
                 <option key={k.id} value={k.id}>
                   {k.label}
@@ -614,7 +655,7 @@ export function SpringsDemo() {
                 min={20}
                 max={1000}
                 step={10}
-                infinite="never (elastic)"
+                infinite="no random breaking"
                 onChange={(v) => setRelax({ ...relax, bondLifetime: v })}
               />
               <Slider
@@ -696,7 +737,17 @@ export function SpringsDemo() {
                 onChange={setChainN}
               />
               <label className="check">
-                <input type="checkbox" checked={gpu} onChange={(e) => setGpu(e.target.checked)} />
+                <input
+                  type="checkbox"
+                  checked={gpu}
+                  onChange={(e) => {
+                    // A fresh chain, within the limit of whichever side now runs it: nothing the
+                    // device was still doing can land in a model the CPU has taken over.
+                    if (!e.target.checked) setChainN((v) => Math.min(v, 500));
+                    setGpu(e.target.checked);
+                    setNonce((v) => v + 1);
+                  }}
+                />
                 Run the step on the GPU
               </label>
               <Slider
@@ -797,7 +848,7 @@ export function SpringsDemo() {
                   />
                   <p className="hint">
                     {Number.isFinite(relax.bondLifetime)
-                      ? `Predicted half-time ${(relax.bondLifetime * Math.LN2).toFixed(0)} steps (lifetime × ln 2). ${halfAt ? `Measured: stress halved by step ${halfAt}, counted from step 40.` : "Measured: not yet halved."}`
+                      ? `Predicted half-time ${(relax.bondLifetime * Math.LN2).toFixed(0)} steps (lifetime × ln 2). ${halfAt ? `Measured: stress halved by step ${halfAt}, counted from step ${relaxation.baseline?.step ?? 40}.` : "Measured: not yet halved."}`
                       : "No random breaking: any relaxation here comes from bonds passing their yield strain."}
                   </p>
                 </>
@@ -886,15 +937,24 @@ export function SpringsDemo() {
               steps per run
               <input type="number" value={phaseSteps} min={500} step={500} onChange={(e) => setPhaseSteps(Number(e.target.value))} />
             </label>
-            <button type="button" onClick={running ? stopPhase : runPhase}>
+            <button type="button" disabled={!running && xKey === yKey} onClick={running ? stopPhase : runPhase}>
               {running ? "Stop" : "Run"}
             </button>
           </div>
-          {xAxis && yAxis && (points.length > 0 || running) && (
+          {xKey === yKey && <p className="hint">Choose two different settings: one across and one up.</p>}
+          {phaseError && <div className="status error">{phaseError}</div>}
+          {phaseRun && (points.length > 0 || running) && (
             <>
-              <PhaseGrid xLabel={xAxis.label} yLabel={yAxis.label} xs={xAxis.values} ys={yAxis.values} points={points} onPick={pick} />
+              <PhaseGrid
+                xLabel={phaseRun.xLabel}
+                yLabel={phaseRun.yLabel}
+                xs={phaseRun.xs}
+                ys={phaseRun.ys}
+                points={points}
+                onPick={pick}
+              />
               <div className="status">
-                {points.length} of {xAxis.values.length * yAxis.values.length} runs done{running ? "…" : "."} Teal is round; magenta has
+                {points.length} of {phaseRun.xs.length * phaseRun.ys.length} runs done{running ? "…" : "."} Teal is round; magenta has
                 broken symmetry.
               </div>
             </>

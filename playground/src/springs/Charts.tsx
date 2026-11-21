@@ -136,6 +136,11 @@ export function PhaseGrid(props: {
                   key={`${ix},${iy}`}
                   className="phase-cell"
                   disabled={!q}
+                  aria-label={
+                    q
+                      ? `${props.xLabel} ${label(q.x)}, ${props.yLabel} ${label(q.y)}: grew ×${q.growth.toFixed(1)}, circularity ${q.shape.circularity.toFixed(2)}`
+                      : `${props.xLabel} ${label(props.xs[ix] ?? 0)}, ${props.yLabel} ${label(props.ys[iy] ?? 0)}: not run yet`
+                  }
                   style={{ background: q ? circularityColour(q.shape.circularity) : "#111827" }}
                   title={
                     q

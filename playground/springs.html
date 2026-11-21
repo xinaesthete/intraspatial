@@ -20,6 +20,7 @@
     @media (max-width: 900px) { .layout { grid-template-columns: 1fr; } }
     .controls { display: flex; flex-direction: column; gap: 10px; }
     .controls label { display: flex; flex-direction: column; gap: 3px; color: #cbd5e1; font-size: 12px; }
+    .controls .slider { display: flex; flex-direction: column; gap: 3px; }
     .controls .row { display: flex; gap: 6px; align-items: center; }
     .controls input:not([type=range]), .controls select { background: #111827; color: #e2e8f0; border: 1px solid #334155; border-radius: 4px; padding: 3px 6px; font: inherit; min-width: 0; flex: 1; }
     button { background: #1e293b; color: #e2e8f0; border: 1px solid #334155; border-radius: 4px; padding: 3px 8px; font: inherit; cursor: pointer; }
@@ -56,7 +57,7 @@
     .phase-controls { display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-end; margin: 6px 0; }
     .phase-controls label { display: flex; flex-direction: column; gap: 3px; color: #cbd5e1; font-size: 12px; }
     .phase-controls select, .phase-controls input { background: #111827; color: #e2e8f0; border: 1px solid #334155; border-radius: 4px; padding: 3px 6px; font: inherit; width: 170px; }
-    .phase { display: grid; grid-template-columns: auto auto; gap: 4px 8px; align-items: center; width: max-content; }
+    .phase { display: grid; grid-template-columns: auto auto; gap: 4px 8px; align-items: center; width: max-content; max-width: 100%; overflow-x: auto; }
     .phase-y { writing-mode: vertical-rl; transform: rotate(180deg); color: #cbd5e1; font-size: 12px; }
     .phase-x { grid-column: 2; text-align: center; color: #cbd5e1; font-size: 12px; }
     .phase-grid { display: grid; gap: 2px; align-items: center; }
