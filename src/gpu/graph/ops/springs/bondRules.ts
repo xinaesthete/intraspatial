@@ -232,7 +232,10 @@ export const bondBreakOp: OpType = {
   outputs: TABLE_OUTPUT,
   params: BREAK_PARAMS,
   inferShapes(inputs) {
-    slotsPerParticle(inputs[2]!, pointsN(inputs[0]!, "bondBreak.pos"), "bondBreak");
+    const n = pointsN(inputs[0]!, "bondBreak.pos");
+    if (pointsN(inputs[1]!, "bondBreak.species") !== n)
+      throw new Error("bondBreak: pos and species are for different numbers of particles");
+    slotsPerParticle(inputs[2]!, n, "bondBreak");
     return [inputs[2]!];
   },
   resident: true,
@@ -422,7 +425,10 @@ const acceptFn = tgpu
         const bond = acceptLayout.$.spring[o]!;
         if (mutual && !placed && link === 0xffffffff) {
           placed = true;
-          const kind = d.u32(acceptLayout.$.kindOf[acceptLayout.$.species[i]! * P.speciesCount + acceptLayout.$.species[j]!]!);
+          // Looked up lower species first, so both ends store the same kind whatever the matrix.
+          const sa = std.min(acceptLayout.$.species[i]!, acceptLayout.$.species[j]!);
+          const sb = std.max(acceptLayout.$.species[i]!, acceptLayout.$.species[j]!);
+          const kind = d.u32(acceptLayout.$.kindOf[sa * P.speciesCount + sb]!);
           let strength = P.strengthLo.x;
           if (kind === 1) {
             strength = P.strengthLo.y;
@@ -512,6 +518,14 @@ function speciesSide(shape: Shape): number {
   return shape.rows;
 }
 
+/** Whether a new bond takes its current length as rest. That divides by `springlen`, so a
+ *  scale of zero cannot be asked for together with it. */
+function restCurrent(params: Record<string, unknown>): boolean {
+  if (params.restCurrent === false) return false;
+  if (formNum(params, "springlen") === 0) throw new Error("bondForm: restCurrent needs a springlen that is not zero");
+  return true;
+}
+
 export const bondFormOp: OpType = {
   name: "bondForm",
   label: "Form bonds",
@@ -527,7 +541,9 @@ export const bondFormOp: OpType = {
   outputs: TABLE_OUTPUT,
   params: FORM_PARAMS,
   inferShapes(inputs) {
-    slotsPerParticle(inputs[2]!, pointsN(inputs[0]!, "bondForm.pos"), "bondForm");
+    const n = pointsN(inputs[0]!, "bondForm.pos");
+    if (pointsN(inputs[1]!, "bondForm.species") !== n) throw new Error("bondForm: pos and species are for different numbers of particles");
+    slotsPerParticle(inputs[2]!, n, "bondForm");
     speciesSide(inputs[3]!);
     return [inputs[2]!];
   },
@@ -547,7 +563,7 @@ export const bondFormOp: OpType = {
       speciesCount: speciesSide(inputs[3]!.shape),
       probThreshold: probThreshold(formNum(params, "prob")),
       salt: (formNum(params, "seed") ^ SALT.bondForm) >>> 0,
-      restCurrent: params.restCurrent === false ? 0 : 1,
+      restCurrent: restCurrent(params) ? 1 : 0,
       range: formNum(params, "range"),
       rest: formNum(params, "rest"),
       springlen: formNum(params, "springlen"),
@@ -644,12 +660,11 @@ export const bondFormOp: OpType = {
       const j = proposal[i]!;
       if (j < 0 || proposal[j] !== i) continue;
       const o = freeSlot(i);
-      const kind = kindOf[species[i]! * count + species[j]!]!;
+      const kind = kindOf[Math.min(species[i]!, species[j]!) * count + Math.max(species[i]!, species[j]!)]!;
       linkOut[o] = (j | (kind << 24)) >>> 0;
-      const rest =
-        params.restCurrent === false
-          ? formNum(params, "rest")
-          : (dist(i, j) - formNum(params, "springlenfix")) / formNum(params, "springlen");
+      const rest = !restCurrent(params)
+        ? formNum(params, "rest")
+        : (dist(i, j) - formNum(params, "springlenfix")) / formNum(params, "springlen");
       springOut.set([rest, s[kind]!, 0, 0], o * 4);
     }
     return [bondTableValue(linkOut, springOut)];

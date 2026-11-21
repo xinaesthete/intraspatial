@@ -262,6 +262,7 @@ describe("spring model as graph ops", () => {
   function againstFused(got: ArrayLike<number>, want: ArrayLike<number>): { xyz: number; density: number } {
     let xyz = 0;
     let density = 0;
+    if (got.length !== want.length) return { xyz: Number.POSITIVE_INFINITY, density: Number.POSITIVE_INFINITY };
     for (let k = 0; k < want.length; k++) {
       const e = Math.abs(got[k]! - want[k]!);
       if (!Number.isFinite(e)) return { xyz: Number.POSITIVE_INFINITY, density: Number.POSITIVE_INFINITY };

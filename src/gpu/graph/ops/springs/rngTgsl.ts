@@ -2,6 +2,7 @@
 // `src/gpu/sim/springs/rng.ts`, so a kernel and its CPU golden draw the same stream.
 import tgpu from "typegpu";
 import * as d from "typegpu/data";
+import * as std from "typegpu/std";
 
 /** PCG hash of a u32. */
 export const pcgGpu = tgpu.fn(
@@ -20,7 +21,8 @@ export const rand01Gpu = tgpu.fn(
   d.f32,
 )((a, b, c) => {
   "use gpu";
-  return d.f32(pcgGpu(a ^ pcgGpu(b ^ pcgGpu(c)))) / 4294967296;
+  // The largest hashes round up to 2³² as f32, which would give exactly 1: keep it below.
+  return std.min(d.f32(pcgGpu(a ^ pcgGpu(b ^ pcgGpu(c)))) / 4294967296, 0.99999994);
 });
 
 /** The per-step key every draw of one tick shares: `seed ^ step · φ`. */

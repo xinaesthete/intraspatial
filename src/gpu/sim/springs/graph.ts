@@ -228,13 +228,14 @@ function buildSpringGraph(
 
   // The state, part by part. Unpacked, each part is its own feedback edge. Packed, they are
   // ranges of one buffer on one edge: each is taken out here and they are packed again below.
+  const bondTable = bondTableOf(t);
   const seeds: Record<StatePart, FieldValue> = {
     pos: vec4Value(s.pos),
     prev: vec4Value(s.prev),
     species: { shape: points, dtype: "u32", data: Uint32Array.from(s.species) },
     radius: { shape: points, dtype: "f32", data: Float32Array.from(s.radius) },
-    link: bondTableOf(t).parts!.link!,
-    spring: bondTableOf(t).parts!.spring!,
+    link: bondTable.parts!.link!,
+    spring: bondTable.parts!.spring!,
     step: { shape: { kind: "scalar" }, dtype: "u32", data: Uint32Array.of(s.step) },
   };
   const nextState: Partial<Record<StatePart, GpuField>> = {};
@@ -271,7 +272,7 @@ function buildSpringGraph(
       prev: graph.feedback(graph.source(seeds.prev, "prev"), SPRING_STATE.prev),
       species: graph.feedback(graph.source(seeds.species, "species"), SPRING_STATE.species),
       radius: graph.feedback(graph.source(seeds.radius, "radius"), SPRING_STATE.radius),
-      bonds: graph.feedback(graph.source(bondTableOf(t), "bonds"), SPRING_STATE.bonds),
+      bonds: graph.feedback(graph.source(bondTable, "bonds"), SPRING_STATE.bonds),
       step: graph.feedback(graph.source(seeds.step, "step"), SPRING_STATE.step),
     };
     const bondsNow = fbs.bonds.state;

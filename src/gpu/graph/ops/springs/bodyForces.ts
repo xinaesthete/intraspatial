@@ -59,7 +59,7 @@ const MOBILITY_PARAMS: ParamSpec[] = Array.from({ length: 4 }, (_, s) => ({
   min: 0,
   max: 2,
   step: 0.01,
-  describe: `How easily species ${s} moves: 1 is free, 0 is fixed.`,
+  describe: `How much of the force on species ${s} is felt: 1 is all of it, 0 none. It does not stop motion already under way.`,
   tags: ["mobility"],
 }));
 const mobilityNum = numbers(MOBILITY_PARAMS, "mobility");

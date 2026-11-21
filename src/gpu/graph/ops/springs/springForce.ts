@@ -6,7 +6,8 @@
 //
 // `rest`, `strength` and `pow` come from the bond; `m[kind]` is a live multiplier per bond kind
 // (CSynth's `roleforces`), so one control scales all bonds of a kind without rewriting the table.
-// The cap stops a bond overshooting in one step: half, because the other end moves too.
+// The cap limits how far a bond pulls each end in one step to half the gap, because the other
+// end moves too. The ends can still meet; it bounds the move, not the rest length.
 //
 // One term, one kernel. The maths is the bonded loop of `stepSprings`, which stays the reference
 // the summed ops must equal.

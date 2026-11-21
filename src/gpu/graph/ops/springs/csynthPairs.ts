@@ -266,12 +266,21 @@ function wrongFade(
   return (cc * cc) / (f * f);
 }
 
-const side = (count: number) => Math.round(Math.sqrt(count));
+/** The side of a square contact map, from its cell count. Both paths index it as square. */
+const side = (count: number) => {
+  const s = Math.round(Math.sqrt(count));
+  if (s * s !== count) throw new Error(`contact map: ${count} cells are not a square`);
+  return s;
+};
 const POS: KernelPort = { name: "pos", kind: "points", dtype: "f32", lanes: 4 };
 const SPECIES: KernelPort = { name: "species", kind: "points", dtype: "u32" };
 const CONTACT: KernelPort = { name: "contact", kind: "matrix", dtype: "f32" };
 const FORCE = { name: "force", dtype: "f32", lanes: 4 } as const;
-const matrixSide = (shape: { kind: string; rows?: number }) => (shape.kind === "matrix" ? (shape.rows ?? 1) : 1);
+const matrixSide = (shape: { kind: string; rows?: number; cols?: number }) => {
+  if (shape.kind !== "matrix") return 1;
+  if (shape.rows !== shape.cols) throw new Error(`contact map: expected a square matrix, got ${shape.rows} × ${shape.cols}`);
+  return shape.rows ?? 1;
+};
 
 // ── pushApartGlobal ────────────────────────────────────────────────────────────────────────────
 
@@ -601,7 +610,8 @@ const distanceFn = tgpu
             const chainGap = std.abs(d.f32(i) - d.f32(j));
             if (len > 0 && len <= P.c.pairRange && chainGap / d.f32(P.c.n) < P.c.maxBackboneDist) {
               const target = distanceLayout.$.dist[i * P.c.msize + j]!;
-              if (target < P.maxDist) {
+              // A target of zero is a missing entry, not a wish to coincide: the law divides by it.
+              if (target > 0 && target < P.maxDist) {
                 let raw = d.f32(0);
                 if (i < P.c.csize && j < P.c.csize) {
                   raw = distanceLayout.$.contact[i * P.c.csize + j]!;
@@ -657,7 +667,7 @@ export const distanceForceOp = kernelOp<d.Infer<typeof DistanceParams>>({
     return alongCpu(n, pos!, species!, contact!, c, (q) => {
       if (!(q.inRange && q.inMatrix)) return 0;
       const target = dist![q.i * c.msize + q.j]!;
-      if (!(target < distanceNum(p, "xyzMaxDist"))) return 0;
+      if (!(target > 0 && target < distanceNum(p, "xyzMaxDist"))) return 0;
       return (((q.len - target) * distanceNum(p, "xyzforce")) / target ** distanceNum(p, "xyzpow")) * q.before * q.sp;
     });
   },
@@ -710,7 +720,11 @@ const contactFn = tgpu
             const len = std.length(dd);
             if (len > 0 && len <= P.c.pairRange) {
               const chainGap = std.abs(d.f32(i) - d.f32(j));
-              const raw = contactLayout.$.contact[i * P.c.csize + j]!;
+              // A pair outside the contact map has no contact, as on the host.
+              let raw = d.f32(0);
+              if (i < P.c.csize && j < P.c.csize) {
+                raw = contactLayout.$.contact[i * P.c.csize + j]!;
+              }
               const sp = std.pow(len / P.c.powBaseDist, P.c.springpow);
               let along = d.f32(0);
               if (P.model === 0 && chainGap / d.f32(P.c.n) < P.c.maxBackboneDist && raw > -9) {

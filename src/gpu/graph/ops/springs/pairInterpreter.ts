@@ -62,10 +62,15 @@ export interface PairProgram {
 export function pairProgram(terms: readonly { op: keyof typeof PAIR_OP; values: Readonly<Record<string, number>> }[]): PairProgram {
   const program: number[] = [];
   const params: number[] = [];
+  const seen = new Set<string>();
   for (const term of terms) {
+    // The kernel decodes each opcode into one set of registers, so a second would overwrite the first.
+    if (seen.has(term.op)) throw new Error(`pairProgram: "${term.op}" appears twice`);
+    seen.add(term.op);
     program.push(PAIR_OP[term.op], params.length);
     for (const name of PAIR_PARAMS[term.op]) {
-      const v = term.values[name];
+      // A species with no protrusion or thrust set has none, as in the separate outward op.
+      const v = term.values[name] ?? (/^(protrusion|thrust)\d$/.test(name) ? 0 : undefined);
       if (v === undefined) throw new Error(`pairProgram: ${term.op} needs "${name}"`);
       params.push(name === "pairRange" || name === "densityRange" ? cutoff(v) : v);
     }

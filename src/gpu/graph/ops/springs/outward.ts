@@ -198,8 +198,9 @@ export const outwardOp: OpType = {
   help: {
     detail:
       "Each particle looks at where its tissue neighbours are and is pushed the other way. On a tip, with " +
-      "tissue on one side only, the push is full. In the middle of the tissue the directions cancel and " +
-      "the protrusion part is switched off as well.",
+      "tissue on one side only, the directions add up. In the middle of the tissue they cancel. The " +
+      "protrusion part also fades with how much tissue is near, reaching zero at `protrusionFull`, so a " +
+      "tip with close neighbours pushes less than a bare one.",
     math: "F_i=\\bigl(p\\,\\max(0,1-\\tfrac{\\Sigma w}{w_{full}})+t\\bigr)\\,\\hat a_i,\\qquad a_i=-\\sum_j w_j\\hat d_{ij}",
   },
   inputs: [

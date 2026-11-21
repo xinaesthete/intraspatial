@@ -93,7 +93,9 @@ async function bothWays(g: Graph, field: GpuField) {
   const cpu = await pull(g, field, { mode: "cpu" });
   const a = links(gpu);
   const b = links(cpu);
-  return { gpu, cpu, firstDifference: a.findIndex((v, k) => v !== b[k]) };
+  // A table of the wrong length differs where the shorter one ends.
+  const firstDifference = a.length === b.length ? a.findIndex((v, k) => v !== b[k]) : Math.min(a.length, b.length);
+  return { gpu, cpu, firstDifference };
 }
 
 describe("spring model rules as graph ops", () => {
@@ -189,8 +191,10 @@ describe("spring model rules as graph ops", () => {
       seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
       return seed / 4294967296;
     };
+    const every = Math.max(2, Math.floor(n / free));
+    let left = free;
     for (let i = 0; i < n; i++) {
-      if (i % Math.max(2, Math.floor(n / free)) === 1 && free-- > 0) continue;
+      if (i % every === 1 && left-- > 0) continue;
       spawn(s, i, (rnd() - 0.5) * 6, (rnd() - 0.5) * 6, (rnd() - 0.5) * 6, i % 5 === 0 ? 1 : 0, 0.4 + 0.2 * rnd());
       s.pos[i * 4 + 3] = rnd() * 10;
       s.prev.set([s.pos[i * 4]! - 0.01, s.pos[i * 4 + 1]!, s.pos[i * 4 + 2]!, s.pos[i * 4 + 3]!], i * 4);

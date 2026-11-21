@@ -74,6 +74,7 @@ export function bondTableOf(t: SpringTopology): FieldValue {
 export function writeBondTable(t: SpringTopology, link: ArrayLike<number>, spring: ArrayLike<number>): void {
   const slots = t.n * t.K;
   if (link.length !== slots) throw new Error(`bondTable: ${link.length} links do not fit a topology of ${slots} slots`);
+  if (spring.length !== slots * 4) throw new Error(`bondTable: ${spring.length} spring words do not fit ${slots} slots of four`);
   for (let s = 0; s < slots; s++) {
     const o = s * SLOT_WORDS;
     t.slots[o + 1] = spring[s * 4]!;

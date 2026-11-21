@@ -212,8 +212,10 @@ describe("springs on the GPU", () => {
 
     const busy = await make();
     const pending = busy.gpu.download(busy.sc.state, busy.sc.topology);
-    await expect(busy.gpu.download(busy.sc.state, busy.sc.topology)).rejects.toThrow(/another download/);
+    // Step before anything is awaited, so the readback cannot have started its copies yet.
+    const second = busy.gpu.download(busy.sc.state, busy.sc.topology);
     busy.gpu.step(busy.sc.params, 5);
+    await expect(second).rejects.toThrow(/another download/);
     await pending;
     expect(busy.sc.state.step).toBe(3);
     expect(busy.gpu.stepIndex).toBe(8);

@@ -87,6 +87,7 @@ export async function downloadValue(v: FieldValue, backend: GpuBackend = nodeBac
     for (const [name, part] of Object.entries(v.parts)) parts[name] = await downloadValue(part, backend);
     return { ...v, parts };
   }
+  if (v.texture && !v.data && !v.buffer) throw new Error("downloadValue: a texture-only value cannot be read back here; pull it instead");
   if (v.data || !v.buffer) return v;
   return { ...v, data: await downloadBuffer({ backend }, v) };
 }
@@ -99,6 +100,10 @@ export function simStateBytes(state: SimState): number {
   for (const v of state.values()) {
     if (v instanceof FieldRing) {
       total += v.byteLength;
+    } else if (v.parts) {
+      // A bundle: each device payload once (packed parts share a root), plus host-only parts.
+      for (const p of payloadsOf(v)) total += isResidentTexture(p) ? p.width * p.height * 4 : p.byteLength;
+      for (const part of Object.values(v.parts)) if (!part.buffer && !part.texture) total += part.data?.byteLength ?? 0;
     } else {
       const tex = v.texture ? v.texture.width * v.texture.height * 4 : 0;
       total += v.data?.byteLength ?? v.buffer?.byteLength ?? tex;
@@ -792,17 +797,28 @@ export async function pullResident(graph: Graph, field: GpuField, opts: PullOpti
 }
 
 async function runOnce(graph: Graph, field: GpuField, opts: PullOptions, materialiseSink: boolean): Promise<FieldValue> {
+  const ctx = opts.ctx ?? { backend: nodeBackend };
+  const store = createSimState();
   const pulled = await runTick(graph, field, {
-    ctx: opts.ctx ?? { backend: nodeBackend },
+    ctx,
     mode: opts.mode ?? "gpu",
     memo: opts.cache,
-    store: createSimState(),
+    store,
     onValue: opts.onValue,
     onBridge: opts.onBridge,
     materialiseSink,
   });
   const out = pulled.get(key(field.producer, field.outPort));
   if (!out) throw new Error(`executor: requested field not produced`);
+  // A one-shot pull has no next tick, so whatever its feedback nodes adopted would be stranded.
+  // Return it, except a payload the caller is being handed.
+  const handed = new Set<ResidentPayload>(payloadsOf(out));
+  const held = new Set<ResidentPayload>();
+  for (const v of store.values()) {
+    if (v instanceof FieldRing) continue;
+    for (const p of payloadsOf(v)) if (!handed.has(p)) held.add(p);
+  }
+  returnPayloads(ctx.backend, [...held]);
   return out;
 }
 

@@ -43,7 +43,7 @@ const rodFn = tgpu
       const here = rodLayout.$.pos[i]!;
       let next = d.vec3f(here.x, here.y, here.z);
       const rod = rodLayout.$.rod[i]!;
-      if (rodLayout.$.species[i]! !== 255 && rod.x >= 0 && rod.w >= 0) {
+      if (rodLayout.$.species[i]! !== 255 && rod.x >= 0 && rod.x < d.f32(rodLayout.$.params.n) && rod.w >= 0) {
         const other = rodLayout.$.before[d.u32(rod.x)]!.xyz;
         const dd = std.sub(other, here.xyz);
         const len = std.length(dd);
@@ -87,7 +87,7 @@ export const rodConstraintOp = kernelOp<d.Infer<typeof RodParams>>({
       const o = i * 4;
       const j = rod![o]!;
       const damp = rod![o + 3]!;
-      if (species![i] === DEAD_SPECIES || !(j >= 0 && damp >= 0)) continue;
+      if (species![i] === DEAD_SPECIES || !(j >= 0 && j < n && damp >= 0)) continue;
       const dx = before![j * 4]! - pos![o]!;
       const dy = before![j * 4 + 1]! - pos![o + 1]!;
       const dz = before![j * 4 + 2]! - pos![o + 2]!;

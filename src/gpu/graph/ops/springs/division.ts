@@ -22,10 +22,10 @@ import { hash3, rand01, rateThreshold, SALT } from "#src/gpu/sim/springs/rng";
 import { encodeScan, getScanCtx } from "#src/gpu/scan/prefixSum";
 import { typegpuComputePipeline } from "#src/gpu/typegpuPipeline";
 import type { Root } from "../../backend";
-import type { FieldValue } from "../../handle";
+import type { FieldValue, ResidentBuffer } from "../../handle";
 import type { OpType, ParamSpec } from "../../op";
 import { rawBindGroup } from "../../residentBind";
-import { DEAD_SPECIES, NO_CUTOFF, numbers, pointsN } from "./common";
+import { DEAD_SPECIES, NO_CUTOFF, numbers, pointsN, requireScalar } from "./common";
 import { KERNEL_WORKGROUP, kernelOp } from "./kernelOp";
 import { pcgGpu, rand01Gpu, stepKeyGpu } from "./rngTgsl";
 
@@ -269,6 +269,11 @@ export const divisionPlanOp: OpType = {
       throw new Error("divisionPlan: wants and species are for different numbers of particles");
     return [{ kind: "points", n }];
   },
+  inferElements(inputs) {
+    requireScalar(inputs[0], "divisionPlan.wants");
+    requireScalar(inputs[1], "divisionPlan.species");
+    return [{ kind: "scalar" }];
+  },
   resident: true,
   slices: true,
   async execute(ctx, inputs) {
@@ -281,57 +286,71 @@ export const divisionPlanOp: OpType = {
     const pipes = getPlanPipes(device, root);
     const scan = await getScanCtx(device);
     const bytes = n * 4;
-    const divider = await ctx.backend.lease(bytes);
-    const free = await ctx.backend.lease(bytes);
-    const parentOf = await ctx.backend.lease(bytes);
-    const plan = await ctx.backend.lease(bytes);
-    pipes.uniform.write({ n });
-
-    // One command buffer: flags, two scans, scatter, match.
-    const enc = device.createCommandEncoder({ label: "divisionPlan" });
-    const run = (label: string, pipeline: GPUComputePipeline, bind: GPUBindGroup) => {
-      const pass = enc.beginComputePass({ label });
-      pass.setPipeline(pipeline);
-      pass.setBindGroup(0, bind);
-      pass.dispatchWorkgroups(Math.ceil(n / WG));
-      pass.end();
+    // Leased one by one; if one fails, or the encoding below throws, the ones in hand go back.
+    const leased: ResidentBuffer[] = [];
+    const lease = async () => {
+      const b = await ctx.backend.lease(bytes);
+      leased.push(b);
+      return b;
     };
-    run(
-      "divisionPlan:flags",
-      pipes.flags,
-      rawBindGroup(device, root, flagsLayout, [pipes.uniform, wants, species, divider.buffer, free.buffer], "divisionPlan:flags"),
-    );
-    const dividers = encodeScan(scan, "u32", divider.buffer, n, enc, undefined, "springs:dividers");
-    const frees = encodeScan(scan, "u32", free.buffer, n, enc, undefined, "springs:frees");
-    run(
-      "divisionPlan:scatter",
-      pipes.scatter,
-      rawBindGroup(device, root, scatterLayout, [pipes.uniform, divider.buffer, dividers.dst, parentOf.buffer], "divisionPlan:scatter"),
-    );
-    run(
-      "divisionPlan:match",
-      pipes.match,
-      rawBindGroup(
-        device,
-        root,
-        matchLayout,
-        [
-          pipes.uniform,
-          divider.buffer,
-          free.buffer,
-          dividers.dst,
-          frees.dst,
-          dividers.totalBuf,
-          frees.totalBuf,
-          parentOf.buffer,
-          plan.buffer,
-        ],
+    try {
+      const divider = await lease();
+      const free = await lease();
+      const parentOf = await lease();
+      const plan = await lease();
+      pipes.uniform.write({ n });
+
+      // One command buffer: flags, two scans, scatter, match.
+      const enc = device.createCommandEncoder({ label: "divisionPlan" });
+      const run = (label: string, pipeline: GPUComputePipeline, bind: GPUBindGroup) => {
+        const pass = enc.beginComputePass({ label });
+        pass.setPipeline(pipeline);
+        pass.setBindGroup(0, bind);
+        pass.dispatchWorkgroups(Math.ceil(n / WG));
+        pass.end();
+      };
+      run(
+        "divisionPlan:flags",
+        pipes.flags,
+        rawBindGroup(device, root, flagsLayout, [pipes.uniform, wants, species, divider.buffer, free.buffer], "divisionPlan:flags"),
+      );
+      const dividers = encodeScan(scan, "u32", divider.buffer, n, enc, undefined, "springs:dividers");
+      const frees = encodeScan(scan, "u32", free.buffer, n, enc, undefined, "springs:frees");
+      run(
+        "divisionPlan:scatter",
+        pipes.scatter,
+        rawBindGroup(device, root, scatterLayout, [pipes.uniform, divider.buffer, dividers.dst, parentOf.buffer], "divisionPlan:scatter"),
+      );
+      run(
         "divisionPlan:match",
-      ),
-    );
-    device.queue.submit([enc.finish()]);
-    for (const scratch of [divider, free, parentOf]) ctx.backend.release(scratch);
-    return [{ shape: { kind: "points", n }, dtype: "u32", buffer: plan }];
+        pipes.match,
+        rawBindGroup(
+          device,
+          root,
+          matchLayout,
+          [
+            pipes.uniform,
+            divider.buffer,
+            free.buffer,
+            dividers.dst,
+            frees.dst,
+            dividers.totalBuf,
+            frees.totalBuf,
+            parentOf.buffer,
+            plan.buffer,
+          ],
+          "divisionPlan:match",
+        ),
+      );
+      device.queue.submit([enc.finish()]);
+      for (const scratch of [divider, free, parentOf]) ctx.backend.release(scratch);
+      leased.length = 0;
+      const out: FieldValue[] = [{ shape: { kind: "points", n }, dtype: "u32", buffer: plan }];
+      return out;
+    } catch (e) {
+      for (const b of leased) ctx.backend.release(b);
+      throw e;
+    }
   },
   cpuGolden(inputs) {
     const n = pointsN(inputs[0]!.shape, "divisionPlan.wants");

@@ -59,7 +59,9 @@ export interface SpringSim {
    *  `sync` at a time. */
   sync(): Promise<void>;
   /** Say that something the graph was built from has changed on the host in a way this cannot
-   *  see for itself (an edit to the topology, say). Settings and rules are noticed without it. */
+   *  see for itself (an edit to the topology, say). Settings and rules are noticed without it.
+   *  Call `sync` before making the edit: the rebuild brings the device state back first, and
+   *  would overwrite an edit made to a stale host copy. It throws if the host copy is stale. */
   invalidate(): void;
   /** The state's device buffers, or undefined before the first `advance`. */
   buffers(): SpringSimBuffers | undefined;
@@ -89,7 +91,10 @@ function fingerprint(sc: Scenario): string {
 }
 
 /** Run `sc` on the device as a graph. The scenario's host state is the seed, and is what `sync`
- *  writes back to; in between it is stale. */
+ *  writes back to; in between it is stale.
+ *
+ *  Bonds break and form and cells divide on the device, and nothing counts them: the scenario's
+ *  `totals` and `takeEvents()` only see what its own host `advance` did. */
 export function createSpringSim(sc: Scenario, opts: SpringSimOptions = {}): SpringSim {
   const backend = opts.backend ?? nodeBackend;
   const ctx = { backend };
@@ -202,6 +207,7 @@ export function createSpringSim(sc: Scenario, opts: SpringSimOptions = {}): Spri
       }
     },
     invalidate() {
+      if (!hostCurrent) throw new Error("createSpringSim: sync before editing the host state and calling invalidate");
       stale = true;
     },
     buffers() {

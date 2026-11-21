@@ -46,7 +46,8 @@ const adhesionFn = tgpu
         const ri = layout.$.radius[i]!;
         for (let j = d.u32(0); j < layout.$.params.n; j++) {
           const sj = layout.$.species[j]!;
-          if (j !== i && sj !== 255) {
+          // A species the tables do not cover takes no part, rather than reading another pair's cell.
+          if (j !== i && si < layout.$.params.speciesCount && sj < layout.$.params.speciesCount) {
             const dd = std.sub(layout.$.pos[j]!.xyz, me);
             const len = std.length(dd);
             if (len > 0 && len <= layout.$.params.pairRange) {
@@ -183,6 +184,8 @@ export const adhesionOp: OpType = {
     requireVec(inputs[0], 4, "adhesion.pos");
     requireScalar(inputs[1], "adhesion.species");
     requireScalar(inputs[2], "adhesion.radius");
+    requireScalar(inputs[3], "adhesion.repulsion");
+    requireScalar(inputs[4], "adhesion.adhesion");
     return [VEC4];
   },
   resident: true,

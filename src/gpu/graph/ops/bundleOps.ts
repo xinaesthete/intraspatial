@@ -182,6 +182,10 @@ export function packOp(spec: BundleSpec): OpType {
     outputs: [{ name: "bundle", kind: "bundle", bundle: { name: spec.name, parts: partNames(spec) } }],
     params: [],
     inferShapes(inputs) {
+      // A part must be one buffer to copy into the pack; a bundle keeps its buffers in its own parts.
+      inputs.forEach((shape, i) => {
+        if (shape.kind === "bundle") throw new Error(`${who}: part "${spec.parts[i]!.name}" is a bundle, which cannot be packed`);
+      });
       return [shapeOf(inputs)];
     },
     resident: true,
