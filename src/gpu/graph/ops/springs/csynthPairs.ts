@@ -89,9 +89,14 @@ const wrongFadeGpu = tgpu.fn(
   "use gpu";
   let fade = d.f32(1);
   if (wrongfade !== 0 && pushapartforce !== 0) {
-    const balance = std.pow((contactforcesc * contact * powBaseDist) / pushapartforce, 1 / (pushapartpow - 1)) * powBaseDist;
+    // With no contact the balance distance is infinite. Say so, instead of leaving it to
+    // `pow(0, negative)`, which WGSL does not define and devices answer differently.
+    const strength = (contactforcesc * contact * powBaseDist) / pushapartforce;
+    let q = d.f32(1);
+    if (strength > 0) {
+      q = 1 - len / (std.pow(strength, 1 / (pushapartpow - 1)) * powBaseDist);
+    }
     const cc = 1 / (wrongfade * wrongfade);
-    const q = 1 - len / balance;
     const f = cc + q * q;
     fade = (cc * cc) / (f * f);
   }
@@ -253,9 +258,10 @@ function wrongFade(
   wrongfade: number,
 ): number {
   if (wrongfade === 0 || pushapartforce === 0) return 1;
-  const balance = ((contactforcesc * contact * powBaseDist) / pushapartforce) ** (1 / (pushapartpow - 1)) * powBaseDist;
+  // No contact: the balance distance is infinite, as in the kernel.
+  const strength = (contactforcesc * contact * powBaseDist) / pushapartforce;
+  const q = strength > 0 ? 1 - len / (strength ** (1 / (pushapartpow - 1)) * powBaseDist) : 1;
   const cc = 1 / (wrongfade * wrongfade);
-  const q = 1 - len / balance;
   const f = cc + q * q;
   return (cc * cc) / (f * f);
 }
