@@ -279,6 +279,15 @@ function part(bundle: FieldValue, name: string, who: string): FieldValue {
   return v;
 }
 
+/** The program part, checked: scalar u32 words, so both paths count the same instructions. */
+function programPart(fixed: FieldValue): FieldValue {
+  const v = part(fixed, "program", "the inputs");
+  if (v.dtype !== "u32" || (v.element && v.element.kind !== "scalar")) {
+    throw new Error("pairInterpreter.inputs.program: expected scalar u32 words");
+  }
+  return v;
+}
+
 /** The one buffer a packed bundle's parts are ranges of. */
 function rootOf(bundle: FieldValue, who: string): ResidentBuffer {
   const roots = new Set(Object.values(bundle.parts ?? {}).map((v) => v.buffer?.sliceOf));
@@ -306,6 +315,7 @@ function interpretCpu(state: FieldValue, inputs: FieldValue, rate: number): { fo
   const prev = data(state, "prev", "the state");
   const species = data(state, "species", "the state");
   const radius = data(state, "radius", "the state");
+  programPart(inputs);
   const program = data(inputs, "program", "the inputs");
   const params = data(inputs, "programParams", "the inputs");
   const n = species.length;
@@ -436,7 +446,7 @@ export const pairInterpreterOp: OpType = {
     // `n` before this one submits.
     const uniform = {
       n,
-      instructions: count(part(fixed, "program", "the inputs").shape) / PAIR_INSTRUCTION_WORDS,
+      instructions: count(programPart(fixed).shape) / PAIR_INSTRUCTION_WORDS,
       speciesCount: repulsionShape?.kind === "matrix" ? repulsionShape.rows : 0,
       pos: wordOffset(state, "pos", "the state"),
       prev: wordOffset(state, "prev", "the state"),
