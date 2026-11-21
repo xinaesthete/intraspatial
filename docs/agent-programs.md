@@ -54,17 +54,14 @@ The reason for writing this now. None of it is a commitment to build agent progr
 | --- | --- |
 | A force from outside the model enters the sum like any other | yes: any op that outputs a `force` field can be added with `addForces` |
 | Ops can be registered from another package | to check: `registerOp` is exported; nothing outside this repo has used it for a kernel op |
-| Per-agent values beyond `species` and `radius` travel with the particles | not yet: they are separate point fields, which helps, but division must copy every per-agent field to the daughter, including ones it does not know about |
-| Rule ops take their triggers as inputs | not yet: division and leader selection are still host functions with their own random draws |
+| Per-agent values beyond `species` and `radius` travel with the particles | yes: each per-particle field goes through its own `inheritField` op, which copies a parent's value to its daughter whatever the field holds |
+| Rule ops take their triggers as inputs | division: yes (`divisionPlan` takes a `wants` field; `divisionDraw` is one way to make it). Leader selection: not yet, its draw is inside `leaderStatus` |
 | Sensing: fields that agents read and write | partly: `splatDensity` and a gradient op exist; no op samples a field at particle positions |
-| State stays on the device between ticks, including buffers this repo did not define | yes for point fields on feedback edges; a resident bundle on a feedback edge is untested |
+| State stays on the device between ticks, including buffers this repo did not define | yes: point fields and bundles on feedback edges |
 | A CPU reference for every kernel | the convention here; an interpreter would need one that matches exactly |
 
-Two of these should shape the remaining spring-model slices:
-
-1. **Division as an op should copy a set of per-agent fields it is handed**, not a fixed list.
-2. **Rule ops should take "wants to" as an input field**, with the random draw as one op that
-   can produce it.
+Division was built this way (`src/gpu/graph/ops/springs/division.ts`): it copies the fields it is
+handed, and takes "wants to" as an input.
 
 ## Open
 

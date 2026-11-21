@@ -2,11 +2,11 @@
 // where the particle count changes. Capacity is fixed up front; a division brings a dead slot
 // to life, so no index is ever renumbered and bonds stay valid.
 //
-// Runs on the host. A device version needs the k-th dividing cell matched to the k-th free slot,
-// which is two prefix sums over `src/gpu/scan`.
+// These are the host versions, and the reference. The device versions are graph ops in
+// src/gpu/graph/ops/springs/ (`division.ts`, `leaders.ts`).
 import type { SpringParams } from "./params";
-import { rand01, SALT } from "./rng";
-import { DEAD, firstDead, gatherNeighbours, neighbourGrid, type SpringState } from "./state";
+import { hash3, rand01, rateThreshold, SALT } from "./rng";
+import { DEAD, firstDead, type SpringState } from "./state";
 import { removeAllSprings, type SpringTopology } from "./topology";
 
 export interface DivisionRule {
@@ -89,50 +89,87 @@ export interface LeaderRule {
   readonly revertNeighbours: number;
 }
 
+/** `leaderStatus` values. */
+export const LEADER_STATUS = { none: 0, candidate: 1, stays: 2, reverts: 3 } as const;
+/** How near a tissue neighbour is, in particle diameters. */
+export const LEADER_NEIGHBOUR_REACH = 1.3;
+
+/** The status of every particle, on the host. Shared with `selectLeaders`. */
+export function leaderStatuses(
+  pos: ArrayLike<number>,
+  species: ArrayLike<number>,
+  n: number,
+  rule: { from: number; to: number; tau: number; maxNeighbours: number; revertNeighbours: number; seed: number; step: number },
+): Uint32Array {
+  const out = new Uint32Array(n);
+  const key = (rule.seed ^ Math.imul(rule.step, 0x9e3779b1)) >>> 0;
+  const threshold = rateThreshold(rule.tau);
+  const neighbours = (i: number) => {
+    let c = 0;
+    for (let j = 0; j < n; j++) {
+      if (j === i || (species[j] !== rule.from && species[j] !== rule.to)) continue;
+      // In single precision, as the kernel measures it.
+      const len = Math.fround(Math.hypot(pos[j * 4]! - pos[i * 4]!, pos[j * 4 + 1]! - pos[i * 4 + 1]!, pos[j * 4 + 2]! - pos[i * 4 + 2]!));
+      if (len < Math.fround(LEADER_NEIGHBOUR_REACH)) c++;
+    }
+    return c;
+  };
+  for (let i = 0; i < n; i++) {
+    if (species[i] === rule.to) out[i] = neighbours(i) >= rule.revertNeighbours ? LEADER_STATUS.reverts : LEADER_STATUS.stays;
+    else if (species[i] === rule.from && hash3(i, key, SALT.leader) < threshold) {
+      const c = neighbours(i);
+      if (c >= 1 && c <= rule.maxNeighbours) out[i] = LEADER_STATUS.candidate;
+    }
+  }
+  return out;
+}
+
+/** The new species from the statuses, on the host. Shared with `selectLeaders`. Returns how many
+ *  particles changed. */
+export function applyLeaderStatuses(
+  pos: ArrayLike<number>,
+  species: { [k: number]: number },
+  status: ArrayLike<number>,
+  n: number,
+  rule: { from: number; to: number; spacing: number },
+): number {
+  const within = (i: number, j: number) =>
+    Math.fround(Math.hypot(pos[j * 4]! - pos[i * 4]!, pos[j * 4 + 1]! - pos[i * 4 + 1]!, pos[j * 4 + 2]! - pos[i * 4 + 2]!)) <
+    Math.fround(rule.spacing);
+  let changed = 0;
+  for (let i = 0; i < n; i++) {
+    if (status[i] === LEADER_STATUS.reverts) {
+      species[i] = rule.from;
+      changed++;
+    } else if (status[i] === LEADER_STATUS.candidate) {
+      let blocked = false;
+      for (let j = 0; j < n && !blocked; j++) {
+        if (j === i) continue;
+        if ((status[j] === LEADER_STATUS.stays || (status[j] === LEADER_STATUS.candidate && j < i)) && within(i, j)) blocked = true;
+      }
+      if (!blocked) {
+        species[i] = rule.to;
+        changed++;
+      }
+    }
+  }
+  return changed;
+}
+
 /**
  * Tip-cell selection, as in sprouting blood vessels: exposed surface cells turn into leaders at
  * random, but never close to an existing leader, and a leader that ends up buried turns back.
  * Returns how many particles changed species.
+ *
+ * The rule is the one the device runs (`leaderStatus` and `leaderApply`), so the two agree: a
+ * candidate becomes a leader unless a leader that is staying, or a candidate with a lower index,
+ * is within `spacing`. An earlier version walked the cells in order and let each new leader
+ * inhibit the later ones, which cannot be done in parallel. The difference is rare: it needs two
+ * candidates near each other in the same round.
  */
 export function selectLeaders(s: SpringState, p: SpringParams, rule: LeaderRule): number {
-  const key = (p.seed ^ Math.imul(s.step, 0x9e3779b1)) >>> 0;
-  const grid = neighbourGrid(s, 1.3, p.dims);
-  const near = new Int32Array(s.n);
-  const neighbours = (i: number): number => {
-    const x = s.pos[i * 4]!;
-    const y = s.pos[i * 4 + 1]!;
-    const z = s.pos[i * 4 + 2]!;
-    const count = gatherNeighbours(grid, x, y, z, near);
-    let c = 0;
-    for (let q = 0; q < count; q++) {
-      const j = near[q]!;
-      if (j === i || (s.species[j] !== rule.from && s.species[j] !== rule.to)) continue;
-      if (Math.hypot(s.pos[j * 4]! - x, s.pos[j * 4 + 1]! - y, s.pos[j * 4 + 2]! - z) < 1.3) c++;
-    }
-    return c;
-  };
-  const leaders: number[] = [];
-  let changed = 0;
-  for (let i = 0; i < s.n; i++) {
-    if (s.species[i] !== rule.to) continue;
-    if (neighbours(i) >= rule.revertNeighbours) {
-      s.species[i] = rule.from;
-      changed++;
-    } else leaders.push(i);
-  }
-  for (let i = 0; i < s.n; i++) {
-    if (s.species[i] !== rule.from || rand01(i, key, SALT.leader) >= 1 / rule.tau) continue;
-    const c = neighbours(i);
-    if (c < 1 || c > rule.maxNeighbours) continue;
-    const x = s.pos[i * 4]!;
-    const y = s.pos[i * 4 + 1]!;
-    const z = s.pos[i * 4 + 2]!;
-    if (leaders.some((j) => Math.hypot(s.pos[j * 4]! - x, s.pos[j * 4 + 1]! - y, s.pos[j * 4 + 2]! - z) < rule.spacing)) continue;
-    s.species[i] = rule.to;
-    leaders.push(i);
-    changed++;
-  }
-  return changed;
+  const status = leaderStatuses(s.pos, s.species, s.n, { ...rule, seed: p.seed, step: s.step });
+  return applyLeaderStatuses(s.pos, s.species, status, s.n, rule);
 }
 
 /** Turn every `from` particle back into `to`: for when leader selection is switched off, since

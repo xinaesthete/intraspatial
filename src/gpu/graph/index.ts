@@ -7,7 +7,17 @@
 export type { GpuBackend, Root } from "./backend";
 export { nodeBackend } from "./backend.node";
 export type { AdvanceOptions, PullOptions, SimState } from "./executor";
-export { advance, createSimState, disposeSimState, pull, pullData, pullResident, simStateBytes } from "./executor";
+export {
+  advance,
+  createSimState,
+  disposeSimState,
+  downloadValue,
+  pull,
+  pullData,
+  pullResident,
+  simStateBytes,
+  simStateValue,
+} from "./executor";
 export type { DelayHandle, EdgeRef, FeedbackHandle, GraphNode } from "./graph";
 export { Graph } from "./graph";
 export type { Basis, Dtype, ElementType, FieldValue, GpuField, LeaseToken, NodeId, ResidentBuffer, Shape, ShapeKind } from "./handle";

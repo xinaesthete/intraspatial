@@ -54,10 +54,38 @@ export const createSimState = (): SimState => new Map();
 export function disposeSimState(state: SimState, backend: GpuBackend): void {
   for (const v of state.values()) {
     if (v instanceof FieldRing) continue;
-    if (v.buffer) backend.release(v.buffer);
-    if (v.texture) backend.releaseTexture(v.texture);
+    returnPayloads(backend, payloadsOf(v));
   }
   state.clear();
+}
+
+/** Hand device payloads back to the pool they were leased from. */
+function returnPayloads(backend: GpuBackend, payloads: readonly ResidentPayload[]): void {
+  for (const p of payloads) {
+    if (isResidentTexture(p)) backend.releaseTexture(p);
+    else backend.release(p);
+  }
+}
+
+/** The value a feedback node currently holds, by the key it was made with (`Graph.feedback(init,
+ *  key)`): what the next tick will read. Resident values carry their device buffers, which is
+ *  what a view binds; they stay valid until the next tick replaces them. Undefined before the
+ *  first tick, and for a delay node. */
+export function simStateValue(state: SimState, key: string): FieldValue | undefined {
+  const v = state.get(key);
+  return v instanceof FieldRing ? undefined : v;
+}
+
+/** Bring a value to the host: the explicit download a resident simulation otherwise never does.
+ *  A bundle comes back with every part downloaded. The device copy is left as it is. */
+export async function downloadValue(v: FieldValue, backend: GpuBackend = nodeBackend): Promise<FieldValue> {
+  if (v.parts) {
+    const parts: Record<string, FieldValue> = {};
+    for (const [name, part] of Object.entries(v.parts)) parts[name] = await downloadValue(part, backend);
+    return { ...v, parts };
+  }
+  if (v.data || !v.buffer) return v;
+  return { ...v, data: await downloadBuffer({ backend }, v) };
 }
 
 /** Total resident bytes held in a sim state (feedback values + delay/history rings). Counts a
@@ -443,8 +471,9 @@ async function runTick(graph: Graph, field: GpuField, o: TickOptions): Promise<M
         if (!cur) throw new Error(`executor: feedback init of "${node.id}" not computed`);
         o.store.set(sk, cur);
         // The store keeps this value past the end of the tick, so its lease must not be
-        // recycled here — the store releases it at the next commit (the ping-pong swap).
-        if (cur.buffer) adopted.add(initKey);
+        // recycled here — the store releases it at the next commit (the ping-pong swap). A
+        // bundle's leases are in its parts.
+        if (payloadsOf(cur).length > 0) adopted.add(initKey);
       }
       // `init` is evaluated every tick but only *used* on the seeding one; recycle it on the
       // ticks where it goes unread, or a resident init leaks one buffer per tick.
@@ -601,15 +630,21 @@ async function runTick(graph: Graph, field: GpuField, o: TickOptions): Promise<M
     const sk = storeKey(node);
     const prev = o.store.get(sk);
     o.store.set(sk, v);
-    if (v.buffer || v.texture) {
-      adopted.add(k); // the store owns this lease now, not the tick
+    // A bundle (the spring model's bond table) holds its leases in its parts, so ask for every
+    // payload the value carries, not just its own.
+    const incoming = payloadsOf(v);
+    if (incoming.length > 0) {
+      adopted.add(k); // the store owns these leases now, not the tick
       owned.delete(k);
     }
     // Return the state we just superseded. Guarded against a self-loop, where the incoming and
     // outgoing values are backed by the same resource and releasing would be a double free.
     if (prev && !(prev instanceof FieldRing)) {
-      if (prev.buffer && prev.buffer !== v.buffer) o.ctx.backend.release(prev.buffer);
-      if (prev.texture && prev.texture !== v.texture) o.ctx.backend.releaseTexture(prev.texture);
+      const kept = new Set<ResidentPayload>(incoming);
+      returnPayloads(
+        o.ctx.backend,
+        payloadsOf(prev).filter((p) => !kept.has(p)),
+      );
     }
   }
   // Commit: push each delay node's fed value into its history ring. The ring is host-backed
@@ -722,7 +757,8 @@ export interface AdvanceOptions extends PullOptions {
 function stateHolds(store: SimState, v: FieldValue): boolean {
   for (const held of store.values()) {
     if (held instanceof FieldRing) continue;
-    if ((v.buffer && held.buffer === v.buffer) || (v.texture && held.texture === v.texture)) return true;
+    const mine = payloadsOf(held);
+    if (payloadsOf(v).some((p) => mine.includes(p))) return true;
   }
   return false;
 }

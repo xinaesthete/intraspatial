@@ -39,6 +39,13 @@ export function probThreshold(prob: number): number {
   return Math.min(0xffffffff, Math.max(0, Math.floor(prob * 4294967296)));
 }
 
+/** The u32 a hash must be below for an event that happens on average once in `tau` steps:
+ *  `hash < threshold` exactly when `hash / 2³² < 1 / tau`, so an integer compare on the device
+ *  gives the host's answer bit for bit. 0 (never) for an infinite `tau`. */
+export function rateThreshold(tau: number): number {
+  return !Number.isFinite(tau) || tau >= 3.0e38 ? 0 : Math.min(0xffffffff, Math.ceil(4294967296 / tau));
+}
+
 /** Salts that keep the model's independent random streams apart. */
 export const SALT = {
   noiseGate: 0x51ed270b,

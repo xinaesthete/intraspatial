@@ -44,6 +44,9 @@ import { motilityForceOp, noiseForceOp } from "./springs/randomForces";
 import { tickOp } from "./springs/tick";
 import { torsionForceOp } from "./springs/torsionForce";
 import { adhesionOp } from "./springs/adhesion";
+import { bondBreakOp, bondFormOp } from "./springs/bondRules";
+import { divideMoveOp, divisionDrawOp, divisionPlanOp, inheritFieldOp, restAfterDivisionOp } from "./springs/division";
+import { leaderApplyOp, leaderStatusOp } from "./springs/leaders";
 import { BOND_TABLE } from "./springs/bondTable";
 import { outwardOp } from "./springs/outward";
 import { pairDensityOp } from "./springs/pairDensity";
@@ -81,6 +84,9 @@ export function registerBuiltinOps(): void {
   reg(outwardOp);
   for (const op of [torsionForceOp, pullForceOp, viscosityOp, containerOp, mobilityOp, tickOp, noiseForceOp, motilityForceOp]) reg(op);
   for (const op of [rodConstraintOp, centreConstraintOp, fixConstraintOp, pullFixOp]) reg(op);
+  for (const op of [bondBreakOp, bondFormOp]) reg(op);
+  for (const op of [divisionDrawOp, divisionPlanOp, divideMoveOp, restAfterDivisionOp, inheritFieldOp, leaderStatusOp, leaderApplyOp])
+    reg(op);
   for (const op of [
     pushApartGlobalOp,
     pushApartDensityOp,

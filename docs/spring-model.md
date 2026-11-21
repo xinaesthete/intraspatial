@@ -192,6 +192,10 @@ to the main body.
 - **Read it by 7,000 steps.** By 10,500 most runs hit the 3,000-cell cap and fill the gel
   to its wall, and the Sholl count then measures lumps on a mass.
 
+These runs used an earlier leader rule, in which each new leader inhibited later candidates in
+the same round. The rule now blocks a candidate only by leaders that stay and by candidates with
+a lower index, so that it can run in parallel (`spring-model-as-ops.md`). Not re-measured.
+
 Seen in single runs while tuning: adhesion 0.1 with cell stiffness 0.3 crushes the tissue;
 thrust 0.2 with grip 1 lets leaders tear free and leave alone.
 

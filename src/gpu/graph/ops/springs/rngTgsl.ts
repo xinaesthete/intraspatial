@@ -31,3 +31,19 @@ export const stepKeyGpu = tgpu.fn(
   "use gpu";
   return seed ^ (step * d.u32(0x9e3779b1));
 });
+
+/** Hash of an unordered particle pair and a step: the same value whichever end asks, which is
+ *  what lets both ends of a bond reach the same random decision. `pairHash` in rng.ts. */
+export const pairHashGpu = tgpu.fn(
+  [d.u32, d.u32, d.u32, d.u32],
+  d.u32,
+)((i, j, step, salt) => {
+  "use gpu";
+  let lo = i;
+  let hi = j;
+  if (j < i) {
+    lo = j;
+    hi = i;
+  }
+  return pcgGpu(lo ^ pcgGpu((hi * d.u32(0x9e3779b1)) ^ salt ^ pcgGpu(step)));
+});

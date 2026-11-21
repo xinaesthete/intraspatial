@@ -69,3 +69,17 @@ export function bondTableOf(t: SpringTopology): FieldValue {
   }
   return bondTableValue(link, spring);
 }
+
+/** Write a bond table's two parts back into a `SpringTopology`'s four-word slots. */
+export function writeBondTable(t: SpringTopology, link: ArrayLike<number>, spring: ArrayLike<number>): void {
+  const slots = t.n * t.K;
+  if (link.length !== slots) throw new Error(`bondTable: ${link.length} links do not fit a topology of ${slots} slots`);
+  for (let s = 0; s < slots; s++) {
+    const o = s * SLOT_WORDS;
+    t.slots[o + 1] = spring[s * 4]!;
+    t.slots[o + 2] = spring[s * 4 + 1]!;
+    t.slots[o + 3] = spring[s * 4 + 2]!;
+    // Last: the integer word shares the buffer with the floats, and its bits must be kept.
+    t.slotBits[o] = link[s]!;
+  }
+}

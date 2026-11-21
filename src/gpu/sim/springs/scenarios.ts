@@ -493,8 +493,10 @@ function spheroidRules(c: Required<SpheroidConfig>): SpheroidRules {
   return { breakRule, formRule, division, leaders, turnover: breakRule.maxStrain !== undefined || breakRule.tau !== undefined };
 }
 
-/** Steps between rounds of leader selection on the CPU path. */
+/** Steps between rounds of leader selection. */
 const LEADER_EVERY = 10;
+/** The same, for the graph version of the spheroid. */
+export const SPHEROID_LEADER_EVERY = LEADER_EVERY;
 
 const UNIT_STRENGTHS: readonly number[] = Array.from({ length: 8 }, () => 1);
 

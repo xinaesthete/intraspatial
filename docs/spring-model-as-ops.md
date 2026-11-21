@@ -20,7 +20,7 @@ This follows the dance forces (`src/gpu/graph/ops/danceForces.ts`): a force op o
 per-particle field, the fields are summed, an integrator closes one feedback loop. Those ops run
 on the CPU; these have kernels.
 
-## Built (slices 1 to 3): every force and constraint of the model
+## Built (slices 1 to 4): the whole model
 
 All in `src/gpu/graph/ops/springs/`, each with a TGSL kernel and a CPU golden.
 
@@ -35,10 +35,21 @@ All in `src/gpu/graph/ops/springs/`, each with a TGSL kernel and a CPU golden.
 | sum | `addForces` (`addFields` runs on the host) | `addForces.ts` |
 | integrate | `springIntegrate` | `springIntegrate.ts` |
 | constraints | `rodConstraint`, `centreConstraint`, `fixConstraint`, `pullFix` | `constraints.ts` |
+| bonds | `bondBreak`, `bondForm` | `bondRules.ts` |
+| division | `divisionDraw`, `divisionPlan`, `divideMove`, `restAfterDivision`, `inheritField` | `division.ts` |
+| leaders | `leaderStatus`, `leaderApply` | `leaders.ts` |
 
 - **`springGraph(state, topology, params, matrices?)`** (`src/gpu/sim/springs/graph.ts`) builds the
   graph from the same arguments `stepSprings` takes, with only the terms that are on, in the
   fused step's order: forces, sum, mobility, random terms, integrate, constraints.
+- **`spheroidGraph(scenario)`** adds the scenario's rules. What they rewrite (the bond table, species,
+  radius, the step) is then state on feedback edges, so the whole tick runs on the device and
+  the host is not in the loop. `readSpringState` is the explicit download, for a readout.
+- **Division is a plan and then copies.** `divisionPlan` matches the k-th particle that wants to
+  divide with the k-th free slot by two prefix sums (`src/gpu/scan`). What "wants to" means is an
+  input (`divisionDraw` is the model's own answer), and each per-particle field goes through its
+  own `inheritField`, so division does not need to know what the particles carry
+  ([`agent-programs.md`](agent-programs.md)).
 - **`kernelOp`** (`kernelOp.ts`) is the part every op repeats: pipeline cache, leases, bind group,
   shape checks. An op file is its layout, its kernel, its uniforms and its CPU maths.
 - **Random terms** draw from the same hash on the device as on the host (`rngTgsl.ts`), keyed on
@@ -46,10 +57,14 @@ All in `src/gpu/graph/ops/springs/`, each with a TGSL kernel and a CPU golden.
 - **CSynth's gate.** A pair whose contact is missing or excluded switches other terms off for
   that pair. Each term works its own gate out from the contact map; none reaches into another.
 
-Two changes to the runtime (`src/gpu/graph/executor.ts`):
+Changes to the runtime (`src/gpu/graph/executor.ts`):
 
 - **`advance(..., { materialise })`.** It downloaded its sink every tick. `"last"` downloads once
   at the end of a batch; `"none"` returns the buffer for a view to bind.
+- **A resident bundle can sit on a feedback edge.** The commit adopted and released a value's own
+  buffer only; a bundle's are in its parts. The bond table needs this.
+- **`simStateValue` and `downloadValue`**: the value a feedback node holds (what a view binds),
+  and the explicit way to bring one to the host.
 - **A feedback value that only feeds itself now advances.** A tick computed only what the sink
   depends on, so a counter (whose next value nothing else reads) stayed at its seed.
 
@@ -58,6 +73,18 @@ Checked (`springOps.gpu.test.ts`): every kernel against its golden; the graph ag
 at once over a three-species state with dead slots, rods, pins, pulls, torsion springs and a
 contact map that gates pairs; the chromatin scenarios (distances, contacts) and the spheroid
 (2D, 3D) built from their own params; a whole run with one download, and one with none.
+
+Rules (`springRules.gpu.test.ts`): each of break, form, division and leader selection gives
+exactly the host function's result on the same state, on the device and in its golden. The
+spheroid's whole tick as a graph, run on the CPU, makes exactly the host scenario's decisions
+over 30 steps in 2D and 3D (same species, same bond table). On the device it runs 60 steps with
+no download and ends within a tenth of the host's cell count; single precision can tip a bond
+over its yield a step early, after which the runs are different runs of the same model.
+
+One host rule changed so the device could match it. `selectLeaders` walked the cells in order
+and let each new leader inhibit later candidates, which is sequential. Now a candidate is
+blocked by a leader that stays or by a candidate with a lower index. They differ only when two
+candidates fall near each other in one round. The seed sweep in `spring-model.md` predates this.
 
 Measured under Node on Dawn/Metal, one download at the end of the run, single runs.
 
@@ -70,6 +97,17 @@ Measured under Node on Dawn/Metal, one download at the end of the run, single ru
 | spheroid, 3D | 1,790 | 5 | 0.81 | 0.91 | 1.1 |
 | | 4,774 | 5 | 2.02 | 2.46 | 1.2 |
 | chromatin, distances | 400 | 2 | 0.47 | 0.40 | 0.9 |
+
+The spheroid's whole tick (forces, turnover, division, leaders), 3D, against the legacy runner,
+which downloads every ten steps and runs division and leader selection on the host:
+
+| particles | legacy runner | graph, no download | ratio |
+| --- | --- | --- | --- |
+| 4,190 | 3.3 ms a step | 3.9 ms a tick | 1.16 |
+| 7,174 | 6.0 | 7.1 | 1.18 |
+| 10,716 | 9.4 | 11.2 | 1.19 |
+
+The buffer pool did not grow over 100 ticks at any size.
 
 - **A fixed cost of about 0.1 ms a tick** (submits, the executor's bookkeeping, sources uploaded
   again each tick) is all that separates the two when the kernels are cheap.
@@ -136,9 +174,9 @@ parameters), not the legacy object. The graph version must offer:
 
 | issue | handling |
 | --- | --- |
-| A resident **bundle on a feedback edge**. The executor's commit adopts and releases `value.buffer` only; a bundle's buffers are in `parts`. Read, not yet tested. | Fix in the executor when `bondBreak` first puts the table on a feedback edge (slice 4). Until then the table is a source and is uploaded each tick. |
-| **Division needs free slots.** | k-th divider to k-th free slot by prefix sums (`src/gpu/scan`). The CPU rule changes to match if it must. |
-| **Sources are uploaded every tick** (bond table, species, radius, matrices, rods and so on). | Small, but it is host work inside the loop. They become state on feedback edges as the ops that change them arrive (slice 4); static inputs want a resident source. |
+| **Static sources are uploaded every tick** (matrices, rods, the species tables; the bond table and species too when no rule rewrites them). | Small, but it is host work inside the loop. Wants a resident source that uploads once. |
+| **Leaders are not cleared when leader selection is switched off**, as the host scenario does. | A graph is built for one set of rules. Live settings are slice 5. |
+| **Totals and events** (bonds broken, divisions) are not counted on the device. | Reductions, with the readouts. |
 | **`addFields` is host-only.** | `addForces` stands in. Making `addFields` resident would replace it. |
 
 ## Slices
@@ -148,8 +186,8 @@ parameters), not the legacy object. The graph version must offer:
 2. ~~Pair ops: push-apart (local), adhesion, outward, density.~~ Built.
 3. ~~The remaining terms: mobility, noise, motility, viscosity, container, centring, rods, fix,
    pull, torsion, and CSynth's other pair terms.~~ Built.
-4. `bondBreak`, `bondForm`, `divide`, `selectLeaders` as ops, all on the device. Includes the
-   bundle-feedback fix.
+4. ~~`bondBreak`, `bondForm`, `divide`, `selectLeaders` as ops, all on the device, with the
+   bundle-feedback fix.~~ Built.
 5. Scenarios as graph builders; the page and the views read the sim state; the runner goes.
 6. The fusion spike: one kernel per loop group, then across groups. Compare with per-op and with
    the hand-fused kernel.
