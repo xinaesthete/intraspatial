@@ -5,7 +5,7 @@
 //   radius             points, f32
 //   density            points, vec2   (density, directional density)
 import { DEAD } from "#src/gpu/sim/springs/state";
-import type { ElementType, FieldValue, Shape } from "../../handle";
+import type { ElementType, FieldValue, ResidentBuffer, Shape } from "../../handle";
 import type { ParamSpec, Params } from "../../op";
 
 export const VEC2: ElementType = { kind: "vec", n: 2 };
@@ -53,9 +53,11 @@ export function hostF32(v: FieldValue | undefined, who: string): ArrayLike<numbe
   return v.data;
 }
 
-export function residentBuffer(v: FieldValue | undefined, who: string): GPUBuffer {
+/** The device buffer of an input, as the range it occupies (a part of a packed bundle is a
+ *  range of a larger buffer). Pass it to `rawBindGroup` as it is. */
+export function residentBuffer(v: FieldValue | undefined, who: string): ResidentBuffer {
   if (!v?.buffer) throw new Error(`${who}: resident op received a non-resident input`);
-  return v.buffer.buffer;
+  return v.buffer;
 }
 
 /** The `pairRange` param every pair op takes. */

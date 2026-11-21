@@ -127,21 +127,87 @@ The buffer pool did not grow over 100 ticks at any size.
 - **So fusion has less to win than the pass count suggests.** The synthetic four-term case, at
   about twice, is where it would show.
 
-## For the fusion spike
+## Fusion: packed bundles and an interpreted pair kernel (slice 6, a spike)
 
-Ops fall into four groups by the loop their kernel runs. Terms in one group could share a loop.
+**Result.** One interpreted pass over the pairs does the work of the model's four pair ops at the
+speed of the hand-fused kernel, with the terms chosen by a program that is data. It needs the
+state and inputs packed, each in one buffer.
 
-| loop | over | terms |
-| --- | --- | --- |
-| particle | nothing: one particle | gravity, container, viscosity, noise, motility, pull |
-| bond | the particle's own bond slots | spring |
-| quad | the four-particle windows the particle is in | torsion |
-| pair | every other particle within `pairRange` | push-apart (local, global, density), density, adhesion, outward, fractal, backbone, distance target, contact, Lorentzian contact, boids |
+### Packed bundles
 
-The pair group is where fusion should pay, though the measurements above say by less than the
-pass count suggests. The three simplest CSynth pair terms already share one kernel that a
-uniform selects a term from: fusion in miniature, and the shape an interpreter would have
-([`agent-programs.md`](agent-programs.md)).
+A kernel may bind eight storage buffers. A kernel doing the work of many ops needs more values
+than that, however it is produced. So a bundle can be **packed**: its parts are ranges of one
+buffer (`FieldValue.packed`, `ResidentBuffer.offset` and `.sliceOf`, `packOp`).
+
+| who binds | how |
+| --- | --- |
+| an op that wants one part | that range, as its own binding: its kernel is unchanged |
+| a fused kernel | the whole buffer, once, as raw words, with part offsets passed as data |
+| an op that binds whole buffers | the executor hands it a copy (`OpType.slices` says an op takes ranges) |
+
+- Offsets are multiples of 256 bytes, the alignment a binding may start on (`packedLayout`).
+- Ownership is the root buffer's. A slice is a view; `payloadsOf` reports roots.
+- On the host a packed bundle is an ordinary bundle of separate arrays.
+- `springGraph(..., { packed: true })` keeps the state in one bundle on one feedback edge and
+  the fixed inputs in another. The ops are the same and the results are the same bits (tested
+  over the spheroid's whole tick, 2D and 3D).
+- Read and write never share a buffer: a tick reads the state bundle and `pack` writes a new one,
+  and the feedback edge swaps them.
+
+### The interpreter
+
+`pairInterpreter` (`pairInterpreter.ts`) takes the packed state and inputs and outputs a force
+and a density. Its program is two parts of the inputs bundle: `[opcode, paramBase]` pairs and a
+block of parameters. `springGraph(..., { fusePairs: true })` uses it in place of `pushApart`,
+`adhesion`, `outward` and `pairDensity`, which remain the definition.
+
+- **Each particle decodes the program once, into registers.** The loop over pairs then reads
+  nothing but positions. The first version read opcodes and parameters per pair per
+  instruction, and was slower than the separate ops by half again.
+- **Terms that need the whole neighbourhood** (the outward push) gather into registers and are
+  finished after the loop.
+- **A term may appear once in a program.** Registers are named per term. A program with repeats
+  would need registers in an array.
+- Four storage buffers: state, inputs, and the two outputs.
+
+Checked: against its own golden; against the three force ops it replaces, summed (10⁻⁴); the
+density against `pairDensity`; a graph with it against `stepSprings`; the spheroid's whole tick.
+
+### Measured
+
+Node on Dawn/Metal. Best of four rounds, the variants taken in turn within each round. Another
+session was using the same GPU, and rounds differed by up to a half at one size, hence best-of.
+
+Synthetic tissue, four pair terms on, ms a tick:
+
+| particles | hand-fused | per-op | per-op, packed | interpreted |
+| --- | --- | --- | --- | --- |
+| 1,024 | 0.82 | 1.36 | 1.38 | 0.81 |
+| 4,096 | 2.73 | 4.90 | 4.92 | 2.74 |
+| 8,192 | 4.64 | 9.52 | 9.42 | 5.34 |
+
+Spheroid, 3D, whole tick, ms a tick:
+
+| particles | legacy runner | per-op | per-op, packed | interpreted pairs |
+| --- | --- | --- | --- | --- |
+| 7,174 | 6.78 | 9.42 | 8.73 | 7.36 |
+| 10,716 | 9.28 | 11.32 | 10.75 | 8.70 |
+
+- **Packing costs nothing measurable** for the per-op graph.
+- **The interpreter matches the hand-fused kernel** to within a sixth, and is 1.7 to 1.8 times
+  faster than the separate ops where four pair terms are on.
+- **At the larger spheroid the graph with interpreted pairs is ahead of the legacy runner**,
+  which also downloads every ten steps.
+
+### Not done
+
+- CSynth's other pair terms are still separate ops. They need the contact gate as a shared
+  per-pair value, and the two matrices in the inputs bundle.
+- The bond, particle and quad loops are not fused. They are cheap; the gain would be fewer
+  dispatches, about 0.1 ms a tick in all.
+- Compiled fusion was not tried. The interpreter already matches the hand-fused kernel, so it
+  would have to win on something other than speed.
+- Software Vulkan (CI) has not run these kernels yet.
 
 ## Values
 
@@ -201,7 +267,6 @@ parameters), not the legacy object. The graph version must offer:
    bundle-feedback fix.~~ Built.
 5. ~~Scenarios as graph builders; a runner the page drives; every input held on the device.~~
    Built. The page's views still read the host's copy.
-6. The fusion spike: one kernel per loop group, then across groups. Compare with per-op and with
-   the hand-fused kernel.
+6. ~~The fusion spike.~~ Done as packed bundles and an interpreted pair kernel; see above.
 
 Explainer candidate: a simulation as a graph of force ops around one feedback loop, and what fusing does to the pass count.

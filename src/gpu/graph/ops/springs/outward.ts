@@ -217,6 +217,7 @@ export const outwardOp: OpType = {
     return [VEC4];
   },
   resident: true,
+  slices: true,
   async execute(ctx, inputs, params) {
     const n = sameParticles(
       inputs.map((v) => v.shape),

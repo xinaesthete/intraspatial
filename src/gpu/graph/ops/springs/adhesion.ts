@@ -186,6 +186,7 @@ export const adhesionOp: OpType = {
     return [VEC4];
   },
   resident: true,
+  slices: true,
   async execute(ctx, inputs, params) {
     const n = sameParticles(
       inputs.slice(0, 3).map((v) => v.shape),

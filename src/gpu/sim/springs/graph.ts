@@ -3,9 +3,21 @@
 // the fused `stepSprings` takes, including only the terms that are switched on. `stepSprings` is
 // the reference the graph must equal.
 import type { GpuBackend } from "#src/gpu/graph/backend";
+import { type BundleSpec, bundleValue, extractOp, packOp } from "#src/gpu/graph/ops/bundleOps";
 import { bondTableOf, VEC4, writeBondTable } from "#src/gpu/graph/ops/springs/bondTable";
+import { hasOp, registerOp } from "#src/gpu/graph/registry";
 import { VEC2 } from "#src/gpu/graph/ops/springs/common";
-import { downloadValue, type FieldValue, Graph, type GpuField, type Params, type SimState, simStateValue } from "../../graph/index";
+import { pairProgram } from "#src/gpu/graph/ops/springs/pairInterpreter";
+import {
+  downloadValue,
+  type ElementType,
+  type FieldValue,
+  Graph,
+  type GpuField,
+  type Params,
+  type SimState,
+  simStateValue,
+} from "../../graph/index";
 import { MAX_SPECIES, type SpringParams } from "./params";
 import type { SpringMatrices, SpringState } from "./state";
 import { pairTermsActive } from "./step";
@@ -80,7 +92,88 @@ export const SPRING_STATE = {
   radius: "springs:radius",
   bonds: "springs:bonds",
   step: "springs:step",
+  /** In a packed graph: the one bundle that holds every part above. */
+  packed: "springs:state",
+  /** In a packed graph: the one bundle that holds every fixed input. */
+  inputs: "springs:inputs",
 } as const;
+
+/** The parts of a spring model's state, in the order a packed state lays them out. */
+export const STATE_PARTS = ["pos", "prev", "species", "radius", "link", "spring", "step"] as const;
+export type StatePart = (typeof STATE_PARTS)[number];
+
+/** A spring model's whole state as one bundle. Packed, its parts are ranges of one buffer. */
+export const SPRING_STATE_BUNDLE: BundleSpec = {
+  name: "springState",
+  label: "Spring state",
+  parts: [
+    { name: "pos", kind: "points", describe: "Positions: xyz and density." },
+    { name: "prev", kind: "points", describe: "Positions one step ago." },
+    { name: "species", kind: "points", describe: "Species of each particle; 255 is an unused slot." },
+    { name: "radius", kind: "points", describe: "Radius of each particle." },
+    { name: "link", kind: "points", describe: "Bond table: partner and kind per slot." },
+    { name: "spring", kind: "points", describe: "Bond table: rest length, strength and power per slot." },
+    { name: "step", kind: "scalar", describe: "The step counter." },
+  ],
+};
+
+/** What a part of a packed bundle holds. A bundle's shape says how many samples each part has
+ *  but not what a sample is, and the ops downstream check that when the graph is built. */
+interface PartType {
+  readonly dtype: "f32" | "u32";
+  readonly element?: ElementType;
+}
+
+/** Register a bundle's pack op and typed take-apart ops, once. */
+function registerPacked(spec: BundleSpec, types: Readonly<Record<string, PartType>>): void {
+  if (!hasOp(`${spec.name}.pack`)) registerOp(packOp(spec));
+  for (const part of spec.parts) {
+    const base = extractOp(spec, part.name);
+    if (hasOp(base.name)) continue;
+    const type = types[part.name] ?? { dtype: "f32" };
+    registerOp({
+      ...base,
+      outputs: [{ name: part.name, kind: part.kind, dtype: type.dtype }],
+      inferElements: () => [type.element ?? { kind: "scalar" }],
+    });
+  }
+}
+registerPacked(SPRING_STATE_BUNDLE, {
+  pos: { dtype: "f32", element: VEC4 },
+  prev: { dtype: "f32", element: VEC4 },
+  species: { dtype: "u32" },
+  radius: { dtype: "f32" },
+  link: { dtype: "u32" },
+  spring: { dtype: "f32", element: VEC4 },
+  step: { dtype: "u32" },
+});
+
+/** How a build lays out what the model reads. */
+interface BuildMode {
+  /** State and fixed inputs each in one buffer, their parts ranges of it. */
+  readonly packed: boolean;
+  /** Packed build, second pass: the fixed inputs as one bundle, made from the first pass. */
+  readonly inputs?: { readonly spec: BundleSpec; field(graph: Graph): GpuField };
+  /** Packed build, first pass: collects the fixed inputs the model asks for. */
+  readonly record?: Map<string, FieldValue>;
+  /** Do the model's own pair terms in one interpreted pass. Needs a packed build. */
+  readonly fuse?: boolean;
+}
+
+export interface SpringGraphOptions {
+  /**
+   * Keep the state in one buffer and the fixed inputs in another, each part a range of its
+   * buffer. The ops are the same and so are the results; what changes is that a kernel doing the
+   * work of several ops can bind everything in two bindings (WebGPU allows eight).
+   */
+  readonly packed?: boolean;
+  /**
+   * Fuse the model's own pair terms (push-apart, adhesion, outward, density) into one pass over
+   * the pairs, run by an interpreter from a program held as data (`pairInterpreter`). Implies
+   * `packed`. The separate ops remain the definition; the two must give the same result.
+   */
+  readonly fusePairs?: boolean;
+}
 
 export type { SpringRules } from "./rules";
 
@@ -100,16 +193,19 @@ export interface SpringGraph {
   readonly species: GpuField;
   readonly radius: GpuField;
   readonly bonds: GpuField;
+  /** Whether the state and inputs are packed (`SpringGraphOptions.packed`). */
+  readonly packed: boolean;
 }
 
-/**
- * A graph that advances `s` by one step per tick under the terms `p` and `t` switch on. The
- * state is copied in as the seed; nothing here writes back to `s`. `m` holds the distance and
- * contact matrices CSynth's targets read, when the model has them. `rules` adds bond turnover,
- * division and leader selection after the step; what they change (the bond table, species,
- * radius) is then state on feedback edges too.
- */
-export function springGraph(s: SpringState, t: SpringTopology, p: SpringParams, m?: SpringMatrices, rules: SpringRules = {}): SpringGraph {
+/** The build behind `springGraph`: see there. */
+function buildSpringGraph(
+  s: SpringState,
+  t: SpringTopology,
+  p: SpringParams,
+  m: SpringMatrices | undefined,
+  rules: SpringRules,
+  mode: BuildMode,
+): SpringGraph {
   const graph = new Graph();
   const n = s.n;
   const points = { kind: "points", n } as const;
@@ -120,28 +216,90 @@ export function springGraph(s: SpringState, t: SpringTopology, p: SpringParams, 
   // device: it is uploaded for the first tick and the state then holds that buffer, where a
   // plain source would be uploaded again every tick.
   const held = (value: FieldValue, key: string): GpuField => {
+    // First pass of a packed build: note what the model needs, so one buffer can hold it all.
+    mode.record?.set(key, value);
+    if (mode.inputs) return graph.op1(`${mode.inputs.spec.name}.${key}`, { bundle: mode.inputs.field(graph) });
     const fb = graph.feedback(graph.source(value, key), `springs:${key}`);
     fb.close(fb.state);
     return fb.state;
   };
   const changesWho = rules.division !== undefined || rules.leaders !== undefined;
   const changesBonds = rules.breakRule !== undefined || rules.formRule !== undefined;
-  const fbSpecies = graph.feedback(
-    graph.source({ shape: points, dtype: "u32", data: Uint32Array.from(s.species) }, "species"),
-    SPRING_STATE.species,
-  );
-  const species = fbSpecies.state;
-  const fbRadius = graph.feedback(
-    graph.source({ shape: points, dtype: "f32", data: Float32Array.from(s.radius) }, "radius"),
-    SPRING_STATE.radius,
-  );
-  const radius = fbRadius.state;
-  const fbBonds = graph.feedback(graph.source(bondTableOf(t), "bonds"), SPRING_STATE.bonds);
-  const bonds = fbBonds.state;
-  const fbPos = graph.feedback(graph.source(vec4Value(s.pos), "pos"), SPRING_STATE.pos);
-  const fbPrev = graph.feedback(graph.source(vec4Value(s.prev), "prev"), SPRING_STATE.prev);
-  const pos = fbPos.state;
-  const prev = fbPrev.state;
+
+  // The state, part by part. Unpacked, each part is its own feedback edge. Packed, they are
+  // ranges of one buffer on one edge: each is taken out here and they are packed again below.
+  const seeds: Record<StatePart, FieldValue> = {
+    pos: vec4Value(s.pos),
+    prev: vec4Value(s.prev),
+    species: { shape: points, dtype: "u32", data: Uint32Array.from(s.species) },
+    radius: { shape: points, dtype: "f32", data: Float32Array.from(s.radius) },
+    link: bondTableOf(t).parts!.link!,
+    spring: bondTableOf(t).parts!.spring!,
+    step: { shape: { kind: "scalar" }, dtype: "u32", data: Uint32Array.of(s.step) },
+  };
+  const nextState: Partial<Record<StatePart, GpuField>> = {};
+  let stateBundle: GpuField | undefined;
+  let cells: Record<StatePart, GpuField>;
+  let commit: () => void;
+  if (mode.packed) {
+    const seed: FieldValue = {
+      ...bundleValue(
+        SPRING_STATE_BUNDLE,
+        STATE_PARTS.map((part) => seeds[part]),
+      ),
+      packed: true,
+    };
+    const fb = graph.feedback(graph.source(seed, "state"), SPRING_STATE.packed);
+    stateBundle = fb.state;
+    const take = (part: StatePart) => graph.op1(`${SPRING_STATE_BUNDLE.name}.${part}`, { bundle: fb.state });
+    cells = {
+      pos: take("pos"),
+      prev: take("prev"),
+      species: take("species"),
+      radius: take("radius"),
+      link: take("link"),
+      spring: take("spring"),
+      step: take("step"),
+    };
+    commit = () => {
+      const parts = Object.fromEntries(STATE_PARTS.map((part) => [part, nextState[part] ?? cells[part]]));
+      fb.close(graph.op1(`${SPRING_STATE_BUNDLE.name}.pack`, parts));
+    };
+  } else {
+    const fbs = {
+      pos: graph.feedback(graph.source(seeds.pos, "pos"), SPRING_STATE.pos),
+      prev: graph.feedback(graph.source(seeds.prev, "prev"), SPRING_STATE.prev),
+      species: graph.feedback(graph.source(seeds.species, "species"), SPRING_STATE.species),
+      radius: graph.feedback(graph.source(seeds.radius, "radius"), SPRING_STATE.radius),
+      bonds: graph.feedback(graph.source(bondTableOf(t), "bonds"), SPRING_STATE.bonds),
+      step: graph.feedback(graph.source(seeds.step, "step"), SPRING_STATE.step),
+    };
+    const bondsNow = fbs.bonds.state;
+    cells = {
+      pos: fbs.pos.state,
+      prev: fbs.prev.state,
+      species: fbs.species.state,
+      radius: fbs.radius.state,
+      link: graph.op1("bondTable.link", { bundle: bondsNow }),
+      spring: graph.op1("bondTable.spring", { bundle: bondsNow }),
+      step: fbs.step.state,
+    };
+    commit = () => {
+      fbs.pos.close(nextState.pos ?? cells.pos);
+      fbs.prev.close(nextState.prev ?? cells.prev);
+      fbs.species.close(nextState.species ?? cells.species);
+      fbs.radius.close(nextState.radius ?? cells.radius);
+      fbs.step.close(nextState.step ?? cells.step);
+      const unchanged = nextState.link === undefined && nextState.spring === undefined;
+      fbs.bonds.close(
+        unchanged
+          ? bondsNow
+          : graph.op1("bondTable.bundle", { link: nextState.link ?? cells.link, spring: nextState.spring ?? cells.spring }),
+      );
+    };
+  }
+  const { pos, prev, species, radius } = cells;
+  const bonds = graph.op1("bondTable.bundle", { link: cells.link, spring: cells.spring });
   const hasPull = t.pull.some((v, k) => k % 4 === 3 && v !== 0);
   const pull = hasPull ? held(vec4Value(t.pull), "pull") : undefined;
   const rate = { springrate: p.springrate };
@@ -170,17 +328,65 @@ export function springGraph(s: SpringState, t: SpringTopology, p: SpringParams, 
       { ...rate, pullspringforce: p.pullspringforce, pullspringpow: p.pullspringpow },
     );
   }
-  if (p.pushapartlocalforce !== 0) terms.pushApart = graph.op1("pushApart", { pos, species }, pushApartParams(p));
-  if (any(p.repulsion) || any(p.adhesion)) {
-    const repulsion = held({ shape: table, dtype: "f32", data: Float32Array.from(p.repulsion) }, "repulsion");
-    const adhesion = held({ shape: table, dtype: "f32", data: Float32Array.from(p.adhesion) }, "adhesion");
-    terms.adhesion = graph.op1(
-      "adhesion",
-      { pos, species, radius, repulsion, adhesion },
-      { ...pairRange(p), adhesionRange: p.adhesionRange },
-    );
+  // The model's own pair terms: one op each, or, fused, one interpreted pass over the pairs that
+  // does all of them from a program held as data.
+  const pushOn = p.pushapartlocalforce !== 0;
+  const adhesionOn = any(p.repulsion) || any(p.adhesion);
+  const outwardOn = any(p.protrusion) || any(p.thrust);
+  const tables = adhesionOn
+    ? {
+        repulsion: held({ shape: table, dtype: "f32", data: Float32Array.from(p.repulsion) }, "repulsion"),
+        adhesion: held({ shape: table, dtype: "f32", data: Float32Array.from(p.adhesion) }, "adhesion"),
+      }
+    : undefined;
+  let fusedDensity: GpuField | undefined;
+  if (mode.fuse && (pushOn || adhesionOn || outwardOn)) {
+    const range = p.pairRange ?? Number.POSITIVE_INFINITY;
+    const steps: Parameters<typeof pairProgram>[0][number][] = [];
+    if (pushOn) {
+      steps.push({
+        op: "pushApart",
+        values: {
+          force: p.pushapartlocalforce,
+          nonBackboneLen: p.nonBackboneLen,
+          backboneScale: p.backboneScale,
+          delta: p.pushapartdelta,
+          pairRange: range,
+          speciesMask: p.pairSpeciesMask,
+        },
+      });
+    }
+    if (adhesionOn) steps.push({ op: "adhesion", values: { range: p.adhesionRange, pairRange: range } });
+    if (outwardOn) {
+      steps.push({
+        op: "outward",
+        values: {
+          range: p.protrusionRange,
+          full: p.protrusionFull,
+          pairRange: range,
+          tissueMask: p.tissueMask,
+          ...perSpecies("protrusion", p.protrusion),
+          ...perSpecies("thrust", p.thrust),
+        } as Record<string, number>,
+      });
+    }
+    steps.push({ op: "density", values: { pairRange: range, densityRange: p.densityRange } });
+    const compiled = pairProgram(steps);
+    held({ shape: { kind: "points", n: compiled.program.length }, dtype: "u32", data: compiled.program }, "program");
+    held({ shape: { kind: "points", n: compiled.params.length }, dtype: "f32", data: compiled.params }, "programParams");
+    // The first pass of a packed build only finds out what is needed; the node is made on the second.
+    if (mode.inputs && stateBundle) {
+      const [fused, crowd] = graph.op("pairInterpreter", { state: stateBundle, inputs: mode.inputs.field(graph) }, rate);
+      if (!fused || !crowd) throw new Error("springGraph: pairInterpreter did not produce a force and a density");
+      terms.pairInterpreter = fused;
+      fusedDensity = crowd;
+    }
+  } else {
+    if (pushOn) terms.pushApart = graph.op1("pushApart", { pos, species }, pushApartParams(p));
+    if (tables)
+      terms.adhesion = graph.op1("adhesion", { pos, species, radius, ...tables }, { ...pairRange(p), adhesionRange: p.adhesionRange });
+    if (outwardOn) terms.outward = graph.op1("outward", { pos, species }, outwardParams(p));
   }
-  if (any(p.protrusion) || any(p.thrust)) terms.outward = graph.op1("outward", { pos, species }, outwardParams(p));
 
   // ── CSynth's other pair terms. Each reads the contact map to work out its own gate. ──
   const size = m?.size ?? 0;
@@ -301,12 +507,9 @@ export function springGraph(s: SpringState, t: SpringTopology, p: SpringParams, 
   const ruled = changesWho || changesBonds;
   let stepAfter: GpuField | undefined;
   if (noise || motile || ruled) {
-    const fbStep = graph.feedback(
-      graph.source({ shape: { kind: "scalar" }, dtype: "u32", data: Uint32Array.of(s.step) }, "step"),
-      SPRING_STATE.step,
-    );
-    stepAfter = graph.op1("tick", { step: fbStep.state });
-    fbStep.close(stepAfter);
+    const fbStep = { state: cells.step };
+    stepAfter = graph.op1("tick", { step: cells.step });
+    nextState.step = stepAfter;
     const random = { seed: p.seed, dims: p.dims };
     if (noise) {
       terms.noiseForce = graph.op1(
@@ -327,7 +530,7 @@ export function springGraph(s: SpringState, t: SpringTopology, p: SpringParams, 
   }
 
   const density = pairs
-    ? graph.op1("pairDensity", { pos, prev, species }, pairDensityParams(p))
+    ? (fusedDensity ?? graph.op1("pairDensity", { pos, prev, species }, pairDensityParams(p)))
     : held({ shape: points, dtype: "f32", element: VEC2, data: new Float32Array(n * 2) }, "density");
   const [moved, nextPrev] = graph.op("springIntegrate", { pos, prev, force, density, species }, springIntegrateParams(p));
   if (!moved || !nextPrev) throw new Error("springGraph: springIntegrate did not produce pos and prev");
@@ -426,19 +629,90 @@ export function springGraph(s: SpringState, t: SpringTopology, p: SpringParams, 
     }
   }
 
-  fbPos.close(next);
-  fbPrev.close(nextPrevOut);
-  fbSpecies.close(speciesOut);
-  fbRadius.close(radiusOut);
-  fbBonds.close(bondsOut);
-  return { graph, pos: next, prev: nextPrevOut, force, terms, density, species: speciesOut, radius: radiusOut, bonds: bondsOut };
+  nextState.pos = next;
+  nextState.prev = nextPrevOut;
+  nextState.species = speciesOut;
+  nextState.radius = radiusOut;
+  if (bondsOut !== bonds) {
+    nextState.link = graph.op1("bondTable.link", { bundle: bondsOut });
+    nextState.spring = graph.op1("bondTable.spring", { bundle: bondsOut });
+  }
+  commit();
+  return {
+    graph,
+    pos: next,
+    prev: nextPrevOut,
+    force,
+    terms,
+    density,
+    species: speciesOut,
+    radius: radiusOut,
+    bonds: bondsOut,
+    packed: mode.packed,
+  };
+}
+
+/**
+ * A graph that advances `s` by one step per tick under the terms `p` and `t` switch on. The
+ * state is copied in as the seed; nothing here writes back to `s`. `m` holds the distance and
+ * contact matrices CSynth's targets read, when the model has them. `rules` adds bond turnover,
+ * division and leader selection after the step.
+ */
+export function springGraph(
+  s: SpringState,
+  t: SpringTopology,
+  p: SpringParams,
+  m?: SpringMatrices,
+  rules: SpringRules = {},
+  opts: SpringGraphOptions = {},
+): SpringGraph {
+  const fuse = opts.fusePairs === true;
+  if (!opts.packed && !fuse) return buildSpringGraph(s, t, p, m, rules, { packed: false });
+  // Which fixed inputs a model reads depends on which terms are on. Build once to find out,
+  // then again with those inputs as one packed bundle.
+  const record = new Map<string, FieldValue>();
+  buildSpringGraph(s, t, p, m, rules, { packed: true, record, fuse });
+  if (record.size === 0) return buildSpringGraph(s, t, p, m, rules, { packed: true, fuse });
+  const names = [...record.keys()];
+  const spec: BundleSpec = {
+    name: `springInputs[${names.join(",")}]`,
+    label: "Spring inputs",
+    parts: names.map((name) => ({ name, kind: record.get(name)!.shape.kind })),
+  };
+  registerPacked(
+    spec,
+    Object.fromEntries(
+      names.map((name) => [
+        name,
+        { dtype: record.get(name)!.dtype === "u32" ? "u32" : "f32", element: record.get(name)!.element } satisfies PartType,
+      ]),
+    ),
+  );
+  const value: FieldValue = {
+    ...bundleValue(
+      spec,
+      names.map((name) => record.get(name)!),
+    ),
+    packed: true,
+  };
+  let held: GpuField | undefined;
+  const field = (graph: Graph): GpuField => {
+    if (!held) {
+      // Fed to itself: uploaded for the first tick, on the device from then on.
+      const fb = graph.feedback(graph.source(value, "inputs"), SPRING_STATE.inputs);
+      fb.close(fb.state);
+      held = fb.state;
+    }
+    return held;
+  };
+  return buildSpringGraph(s, t, p, m, rules, { packed: true, inputs: { spec, field }, fuse });
 }
 
 /** A scenario as a graph: its forces, and whatever rules it applies after each step, with its
  *  settings as they are now. The whole tick runs on the device. Settings are read once, here: a
  *  scenario that is reconfigured needs a new graph (`createSpringSim` does that). */
-export function scenarioGraph(sc: Scenario): SpringGraph {
-  return springGraph(sc.state, sc.topology, sc.params, sc.matrices, sc.graphRules?.() ?? {});
+export function scenarioGraph(sc: Scenario, opts: SpringGraphOptions = {}): SpringGraph {
+  return springGraph(sc.state, sc.topology, sc.params, sc.matrices, sc.graphRules?.() ?? {}, opts);
 }
 
 /** `scenarioGraph`, by its first name. */
@@ -456,18 +730,21 @@ export async function readSpringState(state: SimState, s: SpringState, t: Spring
     const v = simStateValue(state, key);
     return v ? await downloadValue(v, backend) : undefined;
   };
-  const pos = await fetch(SPRING_STATE.pos);
-  const prev = await fetch(SPRING_STATE.prev);
-  if (pos?.data) s.pos.set(pos.data);
-  if (prev?.data) s.prev.set(prev.data);
-  const species = await fetch(SPRING_STATE.species);
-  if (species?.data) s.species.set(species.data);
-  const radius = await fetch(SPRING_STATE.radius);
-  if (radius?.data) s.radius.set(radius.data);
-  const step = await fetch(SPRING_STATE.step);
-  if (step?.data) s.step = step.data[0]!;
-  const bonds = await fetch(SPRING_STATE.bonds);
-  const link = bonds?.parts?.link?.data;
-  const spring = bonds?.parts?.spring?.data;
+  // A packed graph holds every part in one bundle; an unpacked one holds each under its own key.
+  const packed = await fetch(SPRING_STATE.packed);
+  const bonds = packed ? undefined : await fetch(SPRING_STATE.bonds);
+  const part = async (name: StatePart, key: string) => (packed ? packed.parts?.[name]?.data : (await fetch(key))?.data);
+  const pos = await part("pos", SPRING_STATE.pos);
+  const prev = await part("prev", SPRING_STATE.prev);
+  const species = await part("species", SPRING_STATE.species);
+  const radius = await part("radius", SPRING_STATE.radius);
+  const step = await part("step", SPRING_STATE.step);
+  if (pos) s.pos.set(pos);
+  if (prev) s.prev.set(prev);
+  if (species) s.species.set(species);
+  if (radius) s.radius.set(radius);
+  if (step) s.step = step[0]!;
+  const link = packed ? packed.parts?.link?.data : bonds?.parts?.link?.data;
+  const spring = packed ? packed.parts?.spring?.data : bonds?.parts?.spring?.data;
   if (link && spring) writeBondTable(t, link, spring);
 }

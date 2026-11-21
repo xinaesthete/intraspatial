@@ -121,6 +121,8 @@ export function kernelOp<U>(cfg: KernelOpConfig<U>): OpType {
       return [elementOf(cfg.output.lanes)];
     },
     resident: true,
+    // Inputs are bound by range, so a part of a packed bundle is read where it lies.
+    slices: true,
     async execute(ctx, inputs, params) {
       const shapes = inputs.map((v) => v.shape);
       const n = checked(shapes);
@@ -131,7 +133,7 @@ export function kernelOp<U>(cfg: KernelOpConfig<U>): OpType {
       pipe.uniform.write(cfg.uniforms(n, params, shapes));
       const buffers = inputs.map((v, k) => {
         if (!v.buffer) throw new Error(`${cfg.name}.${cfg.inputs[k]!.name}: resident op received a non-resident input`);
-        return v.buffer.buffer;
+        return v.buffer;
       });
       const bind = rawBindGroup(device, root, cfg.layout, [pipe.uniform, ...buffers, out.buffer], cfg.name);
       submitDispatch(device, cfg.name, pipe.pipeline, bind, Math.max(1, Math.ceil(n / WG)));

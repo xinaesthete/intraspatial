@@ -257,6 +257,7 @@ export const springForceOp: OpType = {
     return [VEC4];
   },
   resident: true,
+  slices: true,
   async execute(ctx, inputs, params) {
     const pos = inputs[0]!;
     const table = inputs[1]!;
@@ -284,13 +285,7 @@ export const springForceOp: OpType = {
       kindHi: d.vec4f(mult[4]!, mult[5]!, mult[6]!, mult[7]!),
     });
     // Order matches the layout: params, pos, link, spring, force.
-    const bind = rawBindGroup(
-      device,
-      root,
-      layout,
-      [pipe.params, pos.buffer.buffer, link.buffer, spring.buffer, out.buffer],
-      "springForce",
-    );
+    const bind = rawBindGroup(device, root, layout, [pipe.params, pos.buffer, link, spring, out.buffer], "springForce");
     submitDispatch(device, "springForce", pipe.pipeline, bind, Math.ceil(n / WG));
     return [{ shape: { kind: "points", n }, dtype: "f32", element: VEC4, buffer: out }];
   },

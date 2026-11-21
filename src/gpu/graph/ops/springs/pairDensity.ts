@@ -149,6 +149,7 @@ export const pairDensityOp: OpType = {
     return [VEC2];
   },
   resident: true,
+  slices: true,
   async execute(ctx, inputs, params) {
     const n = sameParticles(
       inputs.map((v) => v.shape),

@@ -270,6 +270,7 @@ export const divisionPlanOp: OpType = {
     return [{ kind: "points", n }];
   },
   resident: true,
+  slices: true,
   async execute(ctx, inputs) {
     const n = pointsN(inputs[0]!.shape, "divisionPlan.wants");
     const wants = inputs[0]!.buffer;
@@ -298,13 +299,7 @@ export const divisionPlanOp: OpType = {
     run(
       "divisionPlan:flags",
       pipes.flags,
-      rawBindGroup(
-        device,
-        root,
-        flagsLayout,
-        [pipes.uniform, wants.buffer, species.buffer, divider.buffer, free.buffer],
-        "divisionPlan:flags",
-      ),
+      rawBindGroup(device, root, flagsLayout, [pipes.uniform, wants, species, divider.buffer, free.buffer], "divisionPlan:flags"),
     );
     const dividers = encodeScan(scan, "u32", divider.buffer, n, enc, undefined, "springs:dividers");
     const frees = encodeScan(scan, "u32", free.buffer, n, enc, undefined, "springs:frees");
@@ -560,6 +555,7 @@ export const inheritFieldOp: OpType = {
     return [inputs[0] ?? { kind: "scalar" }];
   },
   resident: true,
+  slices: true,
   async execute(ctx, inputs) {
     const field = inputs[0]!;
     const n = pointsN(field.shape, "inheritField.field");
@@ -579,7 +575,7 @@ export const inheritFieldOp: OpType = {
     }
     const out = await ctx.backend.lease(n * lanes * 4);
     pipe.uniform.write({ n, lanes });
-    const bind = rawBindGroup(device, root, inheritLayout, [pipe.uniform, field.buffer.buffer, plan.buffer, out.buffer], "inheritField");
+    const bind = rawBindGroup(device, root, inheritLayout, [pipe.uniform, field.buffer, plan, out.buffer], "inheritField");
     const enc = device.createCommandEncoder({ label: "inheritField" });
     const pass = enc.beginComputePass({ label: "inheritField" });
     pass.setPipeline(pipe.pipeline);

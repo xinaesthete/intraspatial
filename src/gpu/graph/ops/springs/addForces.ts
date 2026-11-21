@@ -66,6 +66,7 @@ export const addForcesOp: OpType = {
     return [VEC4];
   },
   resident: true,
+  slices: true,
   async execute(ctx, inputs) {
     const n = sameParticles([inputs[0]!.shape, inputs[1]!.shape], "addForces");
     const device = await ctx.backend.getDevice();

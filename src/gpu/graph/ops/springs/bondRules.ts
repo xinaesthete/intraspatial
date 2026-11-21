@@ -19,7 +19,7 @@ import { submitDispatch } from "#src/gpu/device";
 import { pairHash, probThreshold, SALT } from "#src/gpu/sim/springs/rng";
 import { typegpuComputePipeline } from "#src/gpu/typegpuPipeline";
 import type { Root } from "../../backend";
-import type { FieldValue, Shape } from "../../handle";
+import type { FieldValue, ResidentBuffer, Shape } from "../../handle";
 import type { ExecCtx, OpType, ParamSpec, Params } from "../../op";
 import { rawBindGroup } from "../../residentBind";
 import { BOND_TABLE_PORT, bondTableValue, NO_LINK, slotsPerParticle, VEC4 } from "./bondTable";
@@ -48,8 +48,8 @@ function pipelineOf(name: string, kernel: Resolvable): (device: GPUDevice, root:
 interface TableBuffers {
   readonly n: number;
   readonly K: number;
-  readonly link: GPUBuffer;
-  readonly spring: GPUBuffer;
+  readonly link: ResidentBuffer;
+  readonly spring: ResidentBuffer;
 }
 
 function residentTable(table: FieldValue, n: number, who: string): TableBuffers {
@@ -57,7 +57,7 @@ function residentTable(table: FieldValue, n: number, who: string): TableBuffers 
   const link = table.parts?.link?.buffer;
   const spring = table.parts?.spring?.buffer;
   if (!link || !spring) throw new Error(`${who}: resident op received a bond table that is not on the device`);
-  return { n, K, link: link.buffer, spring: spring.buffer };
+  return { n, K, link, spring };
 }
 
 function hostTable(table: FieldValue, n: number, who: string): { K: number; link: Uint32Array; spring: Float32Array } {
@@ -107,7 +107,7 @@ const host = (v: FieldValue | undefined, who: string) => {
 };
 const device = (v: FieldValue | undefined, who: string) => {
   if (!v?.buffer) throw new Error(`${who}: resident op received a non-resident input`);
-  return v.buffer.buffer;
+  return v.buffer;
 };
 
 // ── bondBreak ──────────────────────────────────────────────────────────────────────────────────
@@ -230,6 +230,7 @@ export const bondBreakOp: OpType = {
     return [inputs[2]!];
   },
   resident: true,
+  slices: true,
   async execute(ctx, inputs, params) {
     const n = pointsN(inputs[0]!.shape, "bondBreak.pos");
     const table = residentTable(inputs[2]!, n, "bondBreak");
@@ -523,6 +524,7 @@ export const bondFormOp: OpType = {
     return [inputs[2]!];
   },
   resident: true,
+  slices: true,
   async execute(ctx, inputs, params) {
     const n = pointsN(inputs[0]!.shape, "bondForm.pos");
     const table = residentTable(inputs[2]!, n, "bondForm");

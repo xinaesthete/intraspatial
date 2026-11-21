@@ -21,15 +21,18 @@ import {
   readSpringState,
   relaxationScenario,
   selectLeaders,
+  SPRING_STATE,
   spheroidGraph,
   spheroidScenario,
+  springGraph,
   type SpringState,
   type SpringTopology,
   spawn,
   springParams,
   topologyDefect,
 } from "#src/gpu/sim/springs/index";
-import { advance, createSimState, type FieldValue, Graph, type GpuField, pull } from "../../index";
+import { advance, createSimState, type FieldValue, Graph, type GpuField, hasOp, pull, registerOp, simStateValue } from "../../index";
+import { extractOp, packOp } from "../bundleOps";
 import { bondTableOf, VEC4 } from "./bondTable";
 
 /** A jittered 2D lattice of two species, bonded to near neighbours, with a few slots left dead. */
@@ -343,8 +346,8 @@ describe("spring model rules as graph ops", () => {
     // Every input was uploaded for the first tick and has stayed on the device since.
     expect(bridges.length).toBe(firstTick);
     const buffers = sim.buffers();
-    expect(buffers?.positions.size).toBeGreaterThanOrEqual(sc.state.n * 16);
-    expect(buffers?.link.size).toBeGreaterThanOrEqual(sc.state.n * sc.topology.K * 4);
+    expect(buffers?.positions.size).toBe(sc.state.n * 16);
+    expect(buffers?.link.size).toBe(sc.state.n * sc.topology.K * 4);
     // The host state is stale until asked for.
     expect(sc.state.step).toBe(0);
     const cellsBefore = count(sc.state, CELL);
@@ -401,5 +404,106 @@ describe("spring model rules as graph ops", () => {
     // Bonds break at random with the same hash on both sides, so the tables should agree closely.
     expect(Math.abs(bondCount(strip.topology) - bondCount(host.topology))).toBeLessThanOrEqual(Math.ceil(bondCount(host.topology) * 0.03));
     stripSim.dispose();
+  });
+
+  it("a packed graph gives the same bits as an unpacked one, from one state buffer and one inputs buffer", async () => {
+    for (const dims of [2, 3] as const) {
+      const cfg = { ...SMALL, dims, matrixRadius: dims === 2 ? 5 : 4 };
+      const steps = 25;
+      const run = async (packed: boolean) => {
+        const sc = spheroidScenario(cfg);
+        const g = springGraph(sc.state, sc.topology, sc.params, undefined, sc.graphRules?.(), { packed });
+        const state = createSimState();
+        const bridges: string[] = [];
+        await advance(g.graph, g.pos, { steps: 1, state, materialise: "none" });
+        await advance(g.graph, g.pos, { steps: steps - 1, state, materialise: "none", onBridge: (k, dir) => bridges.push(`${dir} ${k}`) });
+        const held = { state: simStateValue(state, SPRING_STATE.packed), inputs: simStateValue(state, SPRING_STATE.inputs) };
+        await readSpringState(state, sc.state, sc.topology);
+        return { sc, bridges, held };
+      };
+      const plain = await run(false);
+      const packed = await run(true);
+      const label = `${dims}D`;
+      // The same kernels on the same numbers: not close, identical.
+      expect(Array.from(packed.sc.state.species), `${label} species`).toEqual(Array.from(plain.sc.state.species));
+      expect(Array.from(bondTableOf(packed.sc.topology).parts!.link!.data!), `${label} bonds`).toEqual(
+        Array.from(bondTableOf(plain.sc.topology).parts!.link!.data!),
+      );
+      expect(worstOf(packed.sc.state.pos, plain.sc.state.pos), `${label} positions`).toBe(0);
+      expect(worstOf(packed.sc.state.radius, plain.sc.state.radius), `${label} radius`).toBe(0);
+      expect(packed.sc.state.step).toBe(steps);
+      expect(count(packed.sc.state, CELL) + count(packed.sc.state, LEADER), label).toBeGreaterThan(
+        count(spheroidScenario(cfg).state, CELL),
+      );
+      // After the first tick nothing crosses to or from the host, packed or not.
+      expect(packed.bridges, label).toEqual([]);
+      expect(plain.bridges, label).toEqual([]);
+      // Every part of the state is a range of one buffer, at an aligned offset; likewise the inputs.
+      for (const bundle of [packed.held.state, packed.held.inputs]) {
+        const parts = Object.values(bundle?.parts ?? {});
+        expect(parts.length).toBeGreaterThan(1);
+        expect(new Set(parts.map((v) => v.buffer?.buffer)).size).toBe(1);
+        expect(parts.every((v) => v.buffer !== undefined && (v.buffer.offset ?? 0) % 256 === 0)).toBe(true);
+        expect(new Set(parts.map((v) => v.buffer?.offset ?? 0)).size).toBe(parts.length);
+      }
+      expect(plain.held.state).toBeUndefined();
+    }
+  });
+
+  it("a packed bundle crosses to an op that binds whole buffers as a copy, and back to the host part by part", async () => {
+    // `addGrids` is a host op and `threshold` binds whole buffers: neither knows about ranges.
+    const spec = {
+      name: "testPacked",
+      label: "Test packed",
+      parts: [
+        { name: "a", kind: "grid" as const },
+        { name: "b", kind: "grid" as const },
+      ],
+    };
+    for (const op of [packOp(spec), extractOp(spec, "a"), extractOp(spec, "b")]) if (!hasOp(op.name)) registerOp(op);
+    const g = new Graph();
+    const a = g.grid(Float32Array.of(0.1, 0.9, 0.4, 0.6), 2, 2);
+    const b = g.grid(Float32Array.of(0.8, 0.2, 0.7, 0.3), 2, 2);
+    const packed = g.op1("testPacked.pack", {
+      a: g.op1("threshold", { in: a }, { thresh: 0.5 }),
+      b: g.op1("threshold", { in: b }, { thresh: 0.5 }),
+    });
+    const second = g.op1("testPacked.b", { bundle: packed });
+    // A slice into an op that takes whole buffers, then into a host op.
+    const again = g.op1("threshold", { in: second }, { thresh: 0.5 });
+    const sum = g.op1("addGrids", { a: again, b: g.op1("testPacked.a", { bundle: packed }) }, { wa: 1, wb: 10 });
+    expect(Array.from((await pull(g, sum)).data!)).toEqual([1, 10, 1, 10]);
+    const whole = await pull(g, packed);
+    expect(Array.from(whole.parts!.a!.data!)).toEqual([0, 1, 0, 1]);
+    expect(Array.from(whole.parts!.b!.data!)).toEqual([1, 0, 1, 0]);
+  });
+
+  it("a spring sim runs packed and fused, and hands out its state as ranges of one buffer", async () => {
+    const plain = spheroidScenario({ ...SMALL, dims: 2 });
+    const fusedScenario = spheroidScenario({ ...SMALL, dims: 2 });
+    const a = createSpringSim(plain);
+    const b = createSpringSim(fusedScenario, { fusePairs: true });
+    await a.advance(40);
+    await b.advance(40);
+    const ranges = b.buffers()!;
+    const all = [ranges.positions, ranges.previous, ranges.species, ranges.radius, ranges.link, ranges.spring];
+    expect(new Set(all.map((r) => r.buffer)).size).toBe(1);
+    expect(new Set(all.map((r) => r.offset)).size).toBe(all.length);
+    expect(ranges.species.size).toBe(fusedScenario.state.n * 4);
+    expect(new Set([a.buffers()!.positions.buffer, a.buffers()!.species.buffer]).size).toBe(2);
+    await a.sync();
+    await b.sync();
+    expect(fusedScenario.state.step).toBe(40);
+    expect(topologyDefect(fusedScenario.topology)).toBeUndefined();
+    const tissue = (s: SpringState) => count(s, CELL) + count(s, LEADER);
+    expect(Math.abs(tissue(fusedScenario.state) - tissue(plain.state))).toBeLessThanOrEqual(Math.ceil(tissue(plain.state) * 0.1));
+    // A change of settings rebuilds a fused, packed graph too.
+    fusedScenario.configure({ leaderThrust: 0 });
+    await b.advance(10);
+    await b.sync();
+    expect(b.builds).toBe(2);
+    expect(count(fusedScenario.state, LEADER)).toBe(0);
+    a.dispose();
+    b.dispose();
   });
 });

@@ -6,30 +6,39 @@
 // boundary crossing, handled here: the state is brought back, the graph is rebuilt from it with
 // the new settings, and the run carries on. The host is never in the loop otherwise.
 import type { GpuBackend } from "../../graph/backend";
-import { advance, createSimState, disposeSimState, nodeBackend, type SimState, simStateValue } from "../../graph/index";
-import { readSpringState, SPRING_STATE, type SpringGraph, scenarioGraph } from "./graph";
+import { advance, createSimState, disposeSimState, type FieldValue, nodeBackend, type SimState, simStateValue } from "../../graph/index";
+import { readSpringState, SPRING_STATE, type SpringGraph, type StatePart, scenarioGraph } from "./graph";
 import { clearLeaders } from "./growth";
 import { CELL, LEADER, type Scenario } from "./scenarios";
 
-/** The device buffers of a running scenario, for a view to bind. Valid until the next `advance`. */
+/** Where one part of the state lies on the device: a buffer and the range of it the part
+ *  occupies. Pass it as a bind-group resource. In a packed graph several parts share a buffer. */
+export interface BufferRange {
+  readonly buffer: GPUBuffer;
+  /** Bytes from the start of `buffer`. */
+  readonly offset: number;
+  /** Bytes. */
+  readonly size: number;
+}
+
+/** The device state of a running scenario, for a view to bind. Valid until the next `advance`. */
 export interface SpringSimBuffers {
   readonly n: number;
   /** Bond slots per particle. */
   readonly K: number;
   /** `vec4f` per particle: xyz and density. */
-  readonly positions: GPUBuffer;
+  readonly positions: BufferRange;
   /** `vec4f` per particle: the positions one step ago. */
-  readonly previous: GpuBufferOrNone;
+  readonly previous: BufferRange;
   /** `u32` per particle; 255 is an unused slot. */
-  readonly species: GPUBuffer;
+  readonly species: BufferRange;
   /** `f32` per particle. */
-  readonly radius: GPUBuffer;
+  readonly radius: BufferRange;
   /** `u32` per bond slot: partner in the low 24 bits, kind in the high 8, `0xFFFFFFFF` empty. */
-  readonly link: GPUBuffer;
+  readonly link: BufferRange;
   /** `vec4f` per bond slot: rest length, strength, distance power, unused. */
-  readonly spring: GPUBuffer;
+  readonly spring: BufferRange;
 }
-type GpuBufferOrNone = GPUBuffer | undefined;
 
 export interface SpringSim {
   /** Run `steps` steps on the device. Nothing is downloaded. If the scenario's settings have
@@ -52,6 +61,10 @@ export interface SpringSim {
 export interface SpringSimOptions {
   /** The graph backend: `browserBackend` in a page. Defaults to the Node one. */
   readonly backend?: GpuBackend;
+  /** Keep the state in one buffer and the fixed inputs in another (`SpringGraphOptions.packed`). */
+  readonly packed?: boolean;
+  /** Do the model's own pair terms in one interpreted pass (`SpringGraphOptions.fusePairs`). */
+  readonly fusePairs?: boolean;
   /** Called for every upload or download the executor makes, for tests and diagnostics. */
   readonly onBridge?: (key: string, direction: "download" | "upload" | "detexture") => void;
 }
@@ -90,12 +103,19 @@ export function createSpringSim(sc: Scenario, opts: SpringSimOptions = {}): Spri
     // With leader selection off nothing else would turn existing leaders back into cells.
     const rules = sc.graphRules?.();
     if (rules && !rules.leaders && (rules.division || rules.breakRule || rules.formRule)) clearLeaders(sc.state, LEADER, CELL);
-    built = { graph: scenarioGraph(sc), state: createSimState(), from: fingerprint(sc), stepAtBuild: sc.state.step, ticks: 0 };
+    built = {
+      graph: scenarioGraph(sc, { packed: opts.packed, fusePairs: opts.fusePairs }),
+      state: createSimState(),
+      from: fingerprint(sc),
+      stepAtBuild: sc.state.step,
+      ticks: 0,
+    };
     stale = false;
     builds++;
   };
 
-  const buffer = (state: SimState, key: string) => simStateValue(state, key)?.buffer?.buffer;
+  const range = (v: FieldValue | undefined): BufferRange | undefined =>
+    v?.buffer ? { buffer: v.buffer.buffer, offset: v.buffer.offset ?? 0, size: v.buffer.byteLength } : undefined;
 
   return {
     async advance(steps) {
@@ -118,23 +138,19 @@ export function createSpringSim(sc: Scenario, opts: SpringSimOptions = {}): Spri
     },
     buffers() {
       if (!built) return undefined;
-      const positions = buffer(built.state, SPRING_STATE.pos);
-      const species = buffer(built.state, SPRING_STATE.species);
-      const radius = buffer(built.state, SPRING_STATE.radius);
-      const bonds = simStateValue(built.state, SPRING_STATE.bonds);
-      const link = bonds?.parts?.link?.buffer?.buffer;
-      const spring = bonds?.parts?.spring?.buffer?.buffer;
-      if (!positions || !species || !radius || !link || !spring) return undefined;
-      return {
-        n: sc.state.n,
-        K: sc.topology.K,
-        positions,
-        previous: buffer(built.state, SPRING_STATE.prev),
-        species,
-        radius,
-        link,
-        spring,
-      };
+      const state = built.state;
+      // Packed, every part is in one bundle; unpacked, each has its own key and the bond table its own bundle.
+      const packed = simStateValue(state, SPRING_STATE.packed);
+      const bonds = simStateValue(state, SPRING_STATE.bonds);
+      const part = (name: StatePart, key: string) => range(packed ? packed.parts?.[name] : simStateValue(state, key));
+      const positions = part("pos", SPRING_STATE.pos);
+      const previous = part("prev", SPRING_STATE.prev);
+      const species = part("species", SPRING_STATE.species);
+      const radius = part("radius", SPRING_STATE.radius);
+      const link = range(packed ? packed.parts?.link : bonds?.parts?.link);
+      const spring = range(packed ? packed.parts?.spring : bonds?.parts?.spring);
+      if (!positions || !previous || !species || !radius || !link || !spring) return undefined;
+      return { n: sc.state.n, K: sc.topology.K, positions, previous, species, radius, link, spring };
     },
     get builds() {
       return builds;

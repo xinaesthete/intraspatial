@@ -66,8 +66,11 @@ handed, and takes "wants to" as an input.
 ## Open
 
 - Where the interpreter lives. A general "agent program" op here, or wholly in inorganic.
-- Whether the same interpreter could serve the fusion spike: one fixed kernel per loop, with the
-  model's own terms as opcodes, is a third strategy beside per-op kernels and compiled fusion.
+- The spring model's pair terms now run through an interpreter of this kind (`pairInterpreter`,
+  `spring-model-as-ops.md`): one fixed kernel, the terms chosen by a program in a buffer, at the
+  speed of the hand-fused kernel. Every particle runs the same program there. A per-agent program
+  is a per-particle entry point into the same kind of buffer; whether that keeps the speed, with
+  particles no longer taking the same branches, is not measured.
 - Cost and reliability of a kernel that is all loops and switches on Dawn/Metal. Not measured.
   One silent wrong answer from control flow has already been seen here.
 - How to see what an evolved program does.

@@ -10,6 +10,7 @@ import {
   createTopology,
   DEAD,
   LEADER,
+  readSpringState,
   runSprings,
   setFix,
   setPull,
@@ -21,6 +22,7 @@ import {
   spheroidScenario,
   springGraph,
   springParams,
+  topologyDefect,
 } from "#src/gpu/sim/springs/index";
 import { advance, createSimState, type GpuField, pullData } from "../../index";
 
@@ -478,5 +480,77 @@ describe("spring model as graph ops", () => {
       const gpu = againstFused(onGpu.data!, reference.state.pos);
       expect(gpu.xyz, `${dims}D ${JSON.stringify(gpu)} ${Object.keys(g.terms).join(",")}`).toBeLessThan(5e-4);
     }
+  });
+
+  it("the interpreted pair kernel matches its golden, and the separate pair ops it stands in for", async () => {
+    const p = pairParams();
+    const separate = tissue(66);
+    const fusedRun = tissue(66);
+    const a = springGraph(separate.s, separate.t, p);
+    const b = springGraph(fusedRun.s, fusedRun.t, p, undefined, {}, { fusePairs: true });
+    expect(Object.keys(b.terms).sort()).toEqual(["pairInterpreter", "springForce"]);
+    expect(b.packed).toBe(true);
+    // Its own golden.
+    const gpu = await pullData(b.graph, b.terms.pairInterpreter!);
+    const cpu = await pullData(b.graph, b.terms.pairInterpreter!, { mode: "cpu" });
+    expect(worst(gpu, cpu)).toBeLessThan(1e-4);
+    // The three ops it replaces, summed. One pass adds a pair's terms before scaling by the
+    // direction, three passes scale each first, so the last bits differ.
+    const parts = await Promise.all(["pushApart", "adhesion", "outward"].map((name) => pullData(a.graph, a.terms[name]!)));
+    const summed = parts[0]!.map((v, k) => v + parts[1]![k]! + parts[2]![k]!);
+    expect(worst(gpu, summed)).toBeLessThan(1e-4);
+    expect(Math.max(...Array.from(summed, Math.abs))).toBeGreaterThan(1e-2);
+    // And the density it computes on the way.
+    expect(
+      worst(await pullData(b.graph, b.density), await pullData(a.graph, a.density)) / Math.max(...(await pullData(a.graph, a.density))),
+    ).toBeLessThan(1e-5);
+  });
+
+  it("a graph with its pair terms fused equals the fused step, and never leaves the device", async () => {
+    const steps = 8;
+    const p = pairParams();
+    const reference = tissue(66);
+    const run = tissue(66);
+    const g = springGraph(run.s, run.t, p, undefined, {}, { fusePairs: true });
+    const state = createSimState();
+    await advance(g.graph, g.pos, { steps: 1, state, materialise: "none" });
+    const bridges: string[] = [];
+    const out = await advance(g.graph, g.pos, {
+      steps: steps - 1,
+      state,
+      materialise: "last",
+      onBridge: (k, dir) => bridges.push(`${dir} ${k}`),
+    });
+    runSprings(reference.s, reference.t, p, steps);
+    const got = againstFused(out.data!, reference.s.pos);
+    expect(got.xyz, JSON.stringify(got)).toBeLessThan(5e-4);
+    expect(got.density, JSON.stringify(got)).toBeLessThan(1e-2);
+    // One download, of the sink at the end; no uploads once the first tick has run.
+    expect(bridges.length).toBe(1);
+  });
+
+  it("the spheroid's whole tick runs with its pair terms fused", async () => {
+    const cfg = { dims: 3 as const, cellRadius: 2, matrixRadius: 4, leaderThrust: 0.4, protrusion: 0.05, divisionTime: 25, seed: 5 };
+    const counts = async (fusePairs: boolean) => {
+      const sc = spheroidScenario(cfg);
+      const start = sc.state.species.filter((v) => v === CELL).length;
+      const g = springGraph(sc.state, sc.topology, sc.params, undefined, sc.graphRules?.(), { fusePairs });
+      const state = createSimState();
+      await advance(g.graph, g.pos, { steps: 40, state, materialise: "none" });
+      await readSpringState(state, sc.state, sc.topology);
+      return {
+        start,
+        tissue: sc.state.species.filter((v) => v === CELL || v === LEADER).length,
+        defect: topologyDefect(sc.topology),
+        terms: Object.keys(g.terms),
+      };
+    };
+    const separate = await counts(false);
+    const fused = await counts(true);
+    expect(fused.terms).toContain("pairInterpreter");
+    expect(fused.terms).not.toContain("adhesion");
+    expect(fused.defect).toBeUndefined();
+    expect(fused.tissue).toBeGreaterThan(fused.start + 3);
+    expect(Math.abs(fused.tissue - separate.tissue)).toBeLessThanOrEqual(Math.ceil(separate.tissue * 0.1));
   });
 });

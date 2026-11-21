@@ -14,8 +14,8 @@
 import type { GpuBackend } from "./backend";
 import { nodeBackend } from "./backend.node";
 import type { Graph, GraphNode } from "./graph";
-import type { FieldValue, GpuField, ResidentPayload } from "./handle";
-import { isResidentTexture, payloadsOf } from "./handle";
+import type { FieldValue, GpuField, ResidentBuffer, ResidentPayload } from "./handle";
+import { isResidentTexture, packedLayout, payloadsOf, sliceBuffer } from "./handle";
 import type { GraphMemo } from "./memo";
 import { hashSource, hashString, stableJSON } from "./memo";
 import type { ExecCtx, OpType } from "./op";
@@ -211,9 +211,31 @@ function withoutResidentHandles(v: FieldValue): FieldValue {
  *  `readBackBytes` in `device.ts` says why that is a separate path rather than a second wrapper. */
 async function downloadBuffer(ctx: ExecCtx, v: FieldValue): Promise<Float32Array | Uint32Array | Int32Array> {
   const buf = v.buffer!;
-  if (v.dtype === "f32") return ctx.backend.readbackF32(buf.buffer, buf.byteLength / 4);
-  const bytes = await ctx.backend.readbackBytes(buf.buffer, buf.byteLength);
+  const offset = buf.offset ?? 0;
+  if (v.dtype === "f32" && offset === 0) return ctx.backend.readbackF32(buf.buffer, buf.byteLength / 4);
+  // A slice: read up to its end and keep its own range.
+  const bytes = (await ctx.backend.readbackBytes(buf.buffer, offset + buf.byteLength)).slice(offset);
+  if (v.dtype === "f32") return new Float32Array(bytes);
   return v.dtype === "u32" ? new Uint32Array(bytes) : new Int32Array(bytes);
+}
+
+/** `v` with every sliced buffer replaced by a copy in a buffer of its own. The copies are pushed
+ *  to `made`, for the caller to release. */
+async function withoutSlices(ctx: ExecCtx, v: FieldValue, made: ResidentBuffer[]): Promise<FieldValue> {
+  if (v.parts) {
+    const parts: Record<string, FieldValue> = {};
+    for (const [name, part] of Object.entries(v.parts)) parts[name] = await withoutSlices(ctx, part, made);
+    return { ...v, parts };
+  }
+  const buf = v.buffer;
+  if (!buf?.sliceOf) return v;
+  const copy = await ctx.backend.lease(buf.byteLength);
+  const device = await ctx.backend.getDevice();
+  const enc = device.createCommandEncoder({ label: "executor:unslice" });
+  enc.copyBufferToBuffer(buf.buffer, buf.offset ?? 0, copy.buffer, 0, Math.ceil(buf.byteLength / 4) * 4);
+  device.queue.submit([enc.finish()]);
+  made.push(copy);
+  return { ...v, buffer: copy };
 }
 
 /** Run one tick: execute the cut-DAG, then commit feedback `next` values into the
@@ -399,12 +421,31 @@ async function runTick(graph: Graph, field: GpuField, o: TickOptions): Promise<M
   const bundleIsResident = (v: FieldValue): boolean =>
     payloadsOf(v).length > 0 && !Object.values(v.parts ?? {}).some((p) => p.data && !p.buffer);
 
+  /** Upload a packed bundle as one buffer with each part a range of it (`FieldValue.packed`). */
+  const residentPacked = async (v: FieldValue, took: ResidentPayload[]): Promise<FieldValue> => {
+    const entries = Object.entries(v.parts ?? {});
+    const arrays = entries.map(([name, part]) => {
+      if (!part.data) throw new Error(`executor: packed bundle part "${name}" has no host data to upload`);
+      return part.data;
+    });
+    const { offsets, total } = packedLayout(arrays.map((a) => a.byteLength));
+    const bytes = new Uint8Array(total);
+    arrays.forEach((a, i) => bytes.set(new Uint8Array(a.buffer, a.byteOffset, a.byteLength), offsets[i]!));
+    const root = await o.ctx.backend.upload(bytes);
+    took.push(root);
+    const parts: Record<string, FieldValue> = {};
+    entries.forEach(([name, part], i) => {
+      parts[name] = { ...part, buffer: sliceBuffer(root, offsets[i]!, arrays[i]!.byteLength) };
+    });
+    return { ...v, parts };
+  };
+
   /** Upload whichever parts of a bundle are still host-side, and own the leases that took. */
   const residentBundle = async (k: string, v: FieldValue): Promise<FieldValue> => {
     if (bundleIsResident(v)) return v;
     o.onBridge?.(k, "upload");
     const took: ResidentPayload[] = [];
-    const bridged = await residentPart(v, took);
+    const bridged = v.packed ? await residentPacked(v, took) : await residentPart(v, took);
     pulled.set(k, bridged);
     for (const p of took) own(k, p);
     return bridged;
@@ -545,6 +586,12 @@ async function runTick(graph: Graph, field: GpuField, o: TickOptions): Promise<M
     const wantResident = o.mode === "gpu" && op.resident === true;
     const inputs: FieldValue[] = [];
     for (const k of inputKeys) inputs.push(wantResident ? await residentAt(k) : await hostAt(k));
+    // An op that binds whole buffers cannot be handed a range of one. Give it a copy; the copies
+    // are this node's own and go back when it has run.
+    const unsliced: ResidentBuffer[] = [];
+    if (wantResident && !op.slices) {
+      for (let i = 0; i < inputs.length; i++) inputs[i] = await withoutSlices(o.ctx, inputs[i]!, unsliced);
+    }
 
     // Which input port each payload came in on, so an output that hands one straight back is
     // recognised as a borrow rather than double-owned (ADR-0023).
@@ -554,6 +601,7 @@ async function runTick(graph: Graph, field: GpuField, o: TickOptions): Promise<M
     });
 
     const outs = await runNode(op, o.ctx, o.mode, inputs, node.params);
+    for (const copy of unsliced) o.ctx.backend.release(copy);
     op.outputs.forEach((out, i) => {
       const v = outs[i];
       if (v === undefined) throw new Error(`executor (unexpected): no output for ${i}`);

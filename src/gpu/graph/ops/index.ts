@@ -50,6 +50,7 @@ import { leaderApplyOp, leaderStatusOp } from "./springs/leaders";
 import { BOND_TABLE } from "./springs/bondTable";
 import { outwardOp } from "./springs/outward";
 import { pairDensityOp } from "./springs/pairDensity";
+import { pairInterpreterOp } from "./springs/pairInterpreter";
 import { pushApartOp } from "./springs/pushApart";
 import { springForceOp } from "./springs/springForce";
 import { springIntegrateOp } from "./springs/springIntegrate";
@@ -79,6 +80,7 @@ export function registerBuiltinOps(): void {
   reg(springIntegrateOp);
   reg(addForcesOp);
   reg(pairDensityOp);
+  reg(pairInterpreterOp);
   reg(pushApartOp);
   reg(adhesionOp);
   reg(outwardOp);
