@@ -48,6 +48,7 @@ import {
 } from "../../index";
 import { extractOp, packOp } from "../bundleOps";
 import { bondTableOf, VEC4 } from "./bondTable";
+import { pairInterpreterOp } from "./pairInterpreter";
 
 /** A jittered 2D lattice of two species, bonded to near neighbours, with a few slots left dead. */
 function sheet(cols: number, rows: number, K = 8): { s: SpringState; t: SpringTopology } {
@@ -567,6 +568,32 @@ describe("spring model rules as graph ops", () => {
     await plain.dispose();
     await sim.dispose();
     expect(nodeBackend.poolStats().live).toBe(before);
+  });
+
+  it("the pair interpreter refuses a program that is not plain u32 words, on both paths", async () => {
+    const shape = { kind: "points" as const, n: 2 };
+    const program = (extra: Partial<FieldValue>): FieldValue => ({
+      shape: { kind: "bundle", parts: {} } as FieldValue["shape"],
+      dtype: "f32",
+      parts: { program: { shape, dtype: "u32", data: new Uint32Array(4), ...extra } },
+    });
+    const bad = [program({ axes: [{ name: "c", type: "channel", length: 2 }] }), program({ element: VEC4 }), program({ dtype: "f32" })];
+    const state = program({});
+    const refusals: boolean[] = [];
+    for (const fixed of bad) {
+      const gpu = await pairInterpreterOp.execute({ backend: nodeBackend }, [state, fixed], {}).then(
+        () => "ran",
+        (e: Error) => e.message,
+      );
+      let cpu = "ran";
+      try {
+        pairInterpreterOp.cpuGolden?.([state, fixed], {});
+      } catch (e) {
+        cpu = (e as Error).message;
+      }
+      refusals.push(/scalar u32 words/.test(gpu) && /scalar u32 words/.test(cpu));
+    }
+    expect(refusals).toEqual([true, true, true]);
   });
 
   it("returns what a tick leased when one of its ops rejects", async () => {

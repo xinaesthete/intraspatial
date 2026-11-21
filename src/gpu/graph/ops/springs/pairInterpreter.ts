@@ -18,7 +18,7 @@ import * as std from "typegpu/std";
 import { submitDispatch } from "#src/gpu/device";
 import { typegpuComputePipeline } from "#src/gpu/typegpuPipeline";
 import type { Root } from "../../backend";
-import type { FieldValue, ResidentBuffer, Shape } from "../../handle";
+import { axesProduct, type FieldValue, type ResidentBuffer, type Shape } from "../../handle";
 import type { OpType, ParamSpec } from "../../op";
 import { rawBindGroup } from "../../residentBind";
 import { contactForce } from "./adhesion";
@@ -282,8 +282,8 @@ function part(bundle: FieldValue, name: string, who: string): FieldValue {
 /** The program part, checked: scalar u32 words, so both paths count the same instructions. */
 function programPart(fixed: FieldValue): FieldValue {
   const v = part(fixed, "program", "the inputs");
-  if (v.dtype !== "u32" || (v.element && v.element.kind !== "scalar")) {
-    throw new Error("pairInterpreter.inputs.program: expected scalar u32 words");
+  if (v.dtype !== "u32" || (v.element && v.element.kind !== "scalar") || axesProduct(v.axes) !== 1) {
+    throw new Error("pairInterpreter.inputs.program: expected scalar u32 words with no extra axes");
   }
   return v;
 }
@@ -315,7 +315,6 @@ function interpretCpu(state: FieldValue, inputs: FieldValue, rate: number): { fo
   const prev = data(state, "prev", "the state");
   const species = data(state, "species", "the state");
   const radius = data(state, "radius", "the state");
-  programPart(inputs);
   const program = data(inputs, "program", "the inputs");
   const params = data(inputs, "programParams", "the inputs");
   const n = species.length;
@@ -436,6 +435,7 @@ export const pairInterpreterOp: OpType = {
   slices: true,
   async execute(ctx, inputs, params) {
     const [state, fixed] = inputs as [FieldValue, FieldValue];
+    programPart(fixed);
     const n = count(part(state, "species", "the state").shape);
     const stateRoot = rootOf(state, "the state");
     const inputsRoot = rootOf(fixed, "the inputs");
@@ -495,6 +495,7 @@ export const pairInterpreterOp: OpType = {
   },
   cpuGolden(inputs, params) {
     const [state, fixed] = inputs as [FieldValue, FieldValue];
+    programPart(fixed);
     const { force, density } = interpretCpu(state, fixed, num(params, "springrate"));
     const shape: Shape = { kind: "points", n: force.length / 4 };
     return [
