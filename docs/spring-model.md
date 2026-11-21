@@ -3,9 +3,11 @@
 Status: **built** (2026-11-20), CPU reference and GPU kernels. Code: `src/gpu/sim/springs/`.
 Playground: `playground/springs.html`. Bond table design: [`bond-primitive.md`](bond-primitive.md).
 
-A port of CSynth's spring dynamics (`organic/TS/springs.ts`, `springsfs.ts`), plus bond turnover,
-adhesion and growth. The additions are what a model of cells in a viscoelastic matrix needs
-(Elosegui-Artola et al., _Nature Materials_ 22, 117–127, 2023).
+A port of [CSynth](https://csynth.github.io/csynth/)'s spring dynamics (`organic/TS/springs.ts`,
+`springsfs.ts`; Todd et al., [CSynth: an interactive modelling and visualization tool for 3D chromatin structure](https://doi.org/10.1093/bioinformatics/btaa757),
+_Bioinformatics_ 37, 951–955, 2021), plus bond turnover, adhesion and growth. The additions are what a model of cells in a viscoelastic matrix needs
+(Elosegui-Artola et al., [Matrix viscoelasticity controls spatiotemporal tissue organization](https://doi.org/10.1038/s41563-022-01400-4),
+_Nature Materials_ 22, 117–127, 2023).
 
 ## What is here
 
@@ -167,16 +169,30 @@ A leader's force is concentrated on one cell, so it cuts a matrix that holds bac
 a whole. The paper reports leader cells with nuclear YAP at the tips of its fingers; the selection
 rule here is this project's, not the paper's.
 
-Regimes found (one seed each unless said; matrix stiffness 0.3, yield 0.3, disorder 0.2):
+Six seeds per regime, 7,000 steps, on the GPU (matrix radius 11, stiffness 0.3, yield 0.3,
+disorder 0.2; range over seeds, median in brackets). Detached is the share of cells not joined
+to the main body.
 
-| setting                                            | outcome                                             |
-| -------------------------------------------------- | --------------------------------------------------- |
-| no leaders                                         | ball; stalls near 275 cells                         |
-| leaders, adhesion 0.06, cell stiffness 0.3         | thin arms that pinch off into travelling clusters   |
-| leaders (thrust 0.6), adhesion 0.1, cell stiffness 0.5 | thick arms that stay attached; 9 branches at 7,000 steps, 13 at 10,500 |
-| the same with thrust 0.8                           | more arms (11 at 7,000 steps); a few leaders tear free |
-| adhesion 0.1 with cell stiffness 0.3               | the tissue crushes itself                           |
-| leader thrust 0.2 with grip 1                      | leaders tear free and leave alone                   |
+| regime                                  | cells                   | branches       | detached  |
+| --------------------------------------- | ----------------------- | -------------- | --------- |
+| no leaders                              | 449 to 481 (455)        | 0 in all six   | 0%        |
+| leaders, thrust 0.6, adhesion 0.1, cell stiffness 0.5 | 748 to 1,502 (1,128) | 5 to 9 (8.5) | 0 to 24% |
+| the same with thrust 0.8                | 2,005 to 3,000 (2,734)  | 11 to 14 (13.5)| 2 to 6%   |
+| leaders, adhesion 0.06, cell stiffness 0.3 | 728 to 1,684 (951)   | 5 to 14 (10)   | 8 to 32%  |
+| leaders, matrix that never yields       | 479 to 938 (604)        | 5 to 10 (7)    | 1 to 9%   |
+
+- **Leaders decide whether it branches.** None without them; at least 5 branches in every run
+  with them. More thrust gives more branches.
+- **An elastic matrix slows branching but does not stop it.** Leaders get through without
+  breaking bonds, probably between matrix particles (not confirmed). So the 3D model does not
+  yet show matrix relaxation controlling branching, which is the paper's claim.
+- **Strong and weak cohesion overlap** in how much tissue detaches. They are a tendency, not
+  two phases.
+- **Read it before 7,000 steps.** By 10,500 most runs hit the 3,000-cell cap and fill the gel
+  to its wall, and the Sholl count then measures lumps on a mass.
+
+Seen in single runs while tuning: adhesion 0.1 with cell stiffness 0.3 crushes the tissue;
+thrust 0.2 with grip 1 lets leaders tear free and leave alone.
 
 Three things had to be fixed on the way, and each is now a setting:
 
@@ -194,8 +210,8 @@ factor, which favours flat surface over bumps, and only inflated the ball.
 Branches are counted with `shollProfile`: concentric shells about the centre, and the number of
 separate pieces of tissue in each. `shape3d` gives reach, compactness and anisotropy.
 
-Not done: a sweep over seeds, a phase diagram in 3D, any comparison with real branching data,
-and keeping every arm attached (some clusters still break away in the cohesive regime).
+Not done: a matrix that can stop a leader, a phase diagram in 3D, any comparison with real
+branching data, and keeping every arm attached.
 
 ## GPU limits
 
@@ -215,7 +231,7 @@ and keeping every arm attached (some clusters still break away in the cohesive r
 2. Division on the GPU: match the k-th dividing cell to the k-th free slot with two prefix sums.
 3. Graph ops, so the model composes with fields (chemotaxis: splat, gradient, force).
 4. Read the authors' code and compare force laws.
-5. Seeds and a phase diagram for the 3D branching regimes.
+5. Make the matrix able to stop a leader, then a 3D phase diagram over relaxation and thrust.
 
 Explainer candidates: the propose and accept handshake, and a strained lattice relaxing as its
 bonds turn over. The playground's stress relaxation setup is most of the second.

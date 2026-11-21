@@ -495,8 +495,20 @@ export function SpringsDemo() {
     <div>
       <h2 className="page">Springs: bonds that break, cells that stick</h2>
       <p className="page">
-        A port of the spring dynamics from CSynth, with three additions: bonds that break and re-form, adhesion between particles, and cells
-        that divide. Everything on this page runs the same step function.
+        A port of the spring dynamics from{" "}
+        <a href="https://csynth.github.io/csynth/" target="_blank" rel="noreferrer">
+          CSynth
+        </a>{" "}
+        (Todd et al., Bioinformatics 2021), with three additions: bonds that break and re-form, adhesion between particles, and cells that
+        divide. Everything on this page runs the same step function.
+      </p>
+      <p className="page prototype">
+        <strong>First prototype.</strong> This page is a starting point for trying the model out, not a finished tool. The views are drawn
+        on a 2D canvas for now, the settings are in the model's own arbitrary units, and the results have not been compared with{" "}
+        <a href="https://doi.org/10.1038/s41563-022-01400-4" target="_blank" rel="noreferrer">
+          the paper the model follows
+        </a>{" "}
+        (Elosegui-Artola et al., Nature Materials 2023). Treat what you see as a sketch of the behaviour.
       </p>
       <div className="layout">
         <div className="controls">
