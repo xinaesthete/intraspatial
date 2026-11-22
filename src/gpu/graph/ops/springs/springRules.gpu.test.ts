@@ -600,6 +600,45 @@ describe("spring model rules as graph ops", () => {
     expect(refusals).toEqual([true, true, true]);
   });
 
+  it("advance without a state of the caller's leaves nothing leased but the sink", async () => {
+    const live = () => nodeBackend.poolStats().live;
+    const before = live();
+    const sc = chainScenario({ n: 8, seed: 1 });
+    const leaked: Record<string, number> = {};
+    const measure = async (name: string, run: () => Promise<void>) => {
+      const at = live();
+      await run();
+      leaked[name] = live() - at;
+    };
+    for (const packed of [false, true]) {
+      const g = springGraph(sc.state, sc.topology, sc.params, undefined, {}, { packed });
+      // Kept on the device: the sink is the caller's, and the private state's other buffers go back.
+      await measure(`resident, packed ${packed}`, async () => {
+        const sink = await advance(g.graph, g.pos, { steps: 3, materialise: "none" });
+        if (sink.buffer) nodeBackend.release(sink.buffer);
+      });
+      // Brought to the host: nothing is left on the device at all.
+      await measure(`advance to host, packed ${packed}`, async () => void (await advance(g.graph, g.pos, { steps: 2 })));
+      await measure(`pull, packed ${packed}`, async () => void (await pull(g.graph, g.pos)));
+    }
+    // And when a tick fails part-way.
+    const bad = springGraph(sc.state, sc.topology, { ...sc.params, damp: Number.NaN });
+    await measure("advance fails", () =>
+      advance(bad.graph, bad.pos, { steps: 2 }).then(
+        () => undefined,
+        () => undefined,
+      ),
+    );
+    await measure("pull fails", () =>
+      pull(bad.graph, bad.pos).then(
+        () => undefined,
+        () => undefined,
+      ),
+    );
+    expect(Object.fromEntries(Object.entries(leaked).filter(([, n]) => n !== 0))).toEqual({});
+    expect(live()).toBe(before);
+  });
+
   it("returns what a tick leased when one of its ops rejects", async () => {
     const before = nodeBackend.poolStats().live;
     const sc = chainScenario({ n: 8, seed: 1 });

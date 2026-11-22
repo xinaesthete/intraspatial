@@ -818,9 +818,17 @@ export async function pullResident(graph: Graph, field: GpuField, opts: PullOpti
   return runOnce(graph, field, opts, false);
 }
 
-/** Empty a private sim state, returning its leases except any the value handed to the caller carries. */
-function disposeExcept(store: SimState, backend: GpuBackend, handed: FieldValue): void {
-  const keep = new Set<ResidentPayload>(payloadsOf(handed));
+/** Empty a private sim state and give back the value for the caller.
+ *
+ *  A value brought to the host is the caller's as data only: a fed-back sink still carries the
+ *  state's buffer, which goes back with the rest, and the handles are dropped so nobody reads it.
+ *  A value kept on the device keeps its payloads, which are now the caller's to release. */
+function closePrivateState(store: SimState, backend: GpuBackend, out: FieldValue, onHost: boolean): FieldValue {
+  if (onHost) {
+    disposeSimState(store, backend);
+    return withoutResidentHandles(out);
+  }
+  const keep = new Set<ResidentPayload>(payloadsOf(out));
   const held = new Set<ResidentPayload>();
   for (const v of store.values()) {
     if (v instanceof FieldRing) continue;
@@ -828,6 +836,7 @@ function disposeExcept(store: SimState, backend: GpuBackend, handed: FieldValue)
   }
   store.clear();
   returnPayloads(backend, [...held]);
+  return out;
 }
 
 async function runOnce(graph: Graph, field: GpuField, opts: PullOptions, materialiseSink: boolean): Promise<FieldValue> {
@@ -850,8 +859,7 @@ async function runOnce(graph: Graph, field: GpuField, opts: PullOptions, materia
   if (!out) throw new Error(`executor: requested field not produced`);
   // A one-shot pull has no next tick, so whatever its feedback nodes adopted would be stranded.
   // Return it, except a payload the caller is being handed.
-  disposeExcept(store, ctx.backend, out);
-  return out;
+  return closePrivateState(store, ctx.backend, out, materialiseSink);
 }
 
 export interface AdvanceOptions extends PullOptions {
@@ -923,7 +931,7 @@ export async function advance(graph: Graph, field: GpuField, opts: AdvanceOption
     if (!opts.state) disposeSimState(store, ctx.backend);
     throw e;
   }
-  if (!opts.state && last) disposeExcept(store, ctx.backend, last);
+  if (!opts.state && last) return closePrivateState(store, ctx.backend, last, materialise !== "none");
   if (last === undefined) throw new Error(`executor (unexpected): no value output for field ${field.id}`);
   return last;
 }
