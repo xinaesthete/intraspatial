@@ -741,6 +741,10 @@ async function runTick(graph: Graph, field: GpuField, o: TickOptions): Promise<M
     // one buffer, and two keys holding ranges of one packed root.
     const stillHeld = new Set<ResidentPayload>();
     for (const s of o.store.values()) if (!(s instanceof FieldRing)) for (const p of payloadsOf(s)) stillHeld.add(p);
+    // A sink left on the device that is itself a feedback node's state is the outgoing value.
+    // The caller is about to be handed it, so it becomes theirs instead of going back.
+    const outgoingSink = pulled.get(sinkKey);
+    if (!o.materialiseSink && outgoingSink) for (const p of payloadsOf(outgoingSink)) stillHeld.add(p);
     returnPayloads(
       o.ctx.backend,
       [...new Set(superseded)].filter((p) => !stillHeld.has(p)),
@@ -920,7 +924,14 @@ export async function advance(graph: Graph, field: GpuField, opts: AdvanceOption
       });
       last = pulled.get(key(field.producer, field.outPort));
       if (!last) throw new Error("advance: sink not produced");
-      opts.onFrame?.(t, last);
+      try {
+        opts.onFrame?.(t, last);
+      } catch (e) {
+        // The caller never gets this tick's sink, so a lease of it that the state does not hold
+        // has to go back here.
+        if (!materialiseSink) returnPayloads(ctx.backend, payloadsNotHeld(store, last));
+        throw e;
+      }
       // An unmaterialised sink of a tick that is not the last would otherwise be a lease nobody
       // returns. One the sim state holds is the state's; it goes back at the next commit.
       // A bundle's leases are in its parts, so go by payload.

@@ -37,6 +37,7 @@ import {
   advance,
   createSimState,
   disposeSimState,
+  downloadValue,
   type FieldValue,
   Graph,
   type GpuField,
@@ -621,6 +622,33 @@ describe("spring model rules as graph ops", () => {
       await measure(`advance to host, packed ${packed}`, async () => void (await advance(g.graph, g.pos, { steps: 2 })));
       await measure(`pull, packed ${packed}`, async () => void (await pull(g.graph, g.pos)));
     }
+    // A sink that is a feedback node's own state: the outgoing buffer is handed over, not recycled.
+    const loop = new Graph();
+    const seed = loop.source({ shape: { kind: "scalar" }, dtype: "u32", data: Uint32Array.of(5) }, "seed");
+    const counter = loop.feedback(seed, "counter");
+    counter.close(loop.op1("tick", { step: counter.state }));
+    const counted: number[] = [];
+    await measure("state as the sink", async () => {
+      const state = createSimState();
+      const held = await advance(loop, counter.state, { steps: 3, state, materialise: "none" });
+      const mine = payloadsNotHeld(state, held);
+      counted.push(mine.length, (await downloadValue(held)).data![0]!);
+      for (const p of mine) if ("buffer" in p) nodeBackend.release(p);
+      disposeSimState(state, nodeBackend);
+    });
+    await measure("onFrame throws", () =>
+      advance(loop, counter.state, {
+        steps: 2,
+        materialise: "none",
+        onFrame: () => {
+          throw new Error("stop");
+        },
+      }).then(
+        () => undefined,
+        () => undefined,
+      ),
+    );
+    expect(counted).toEqual([1, 7]);
     // And when a tick fails part-way.
     const bad = springGraph(sc.state, sc.topology, { ...sc.params, damp: Number.NaN });
     await measure("advance fails", () =>
