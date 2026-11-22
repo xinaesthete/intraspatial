@@ -61,13 +61,14 @@ function gather(tiles: readonly PointsTile[], window: Rect, qvMin: number, stret
   let n = 0;
   let zLo = Number.POSITIVE_INFINITY;
   let zHi = Number.NEGATIVE_INFINITY;
+  // Decided by the molecules kept: an empty tile carries no `z`, and must not flatten the rest.
   let hasDepth = true;
   for (const t of tiles) {
     const zs = t.columns.z;
-    if (!zs) hasDepth = false;
     for (let i = 0; i < t.count; i++) {
       if (!keep(t, i)) continue;
       n++;
+      if (!zs) hasDepth = false;
       const z = zs?.[i] ?? 0;
       zLo = Math.min(zLo, z);
       zHi = Math.max(zHi, z);
@@ -95,6 +96,39 @@ function gather(tiles: readonly PointsTile[], window: Rect, qvMin: number, stret
     }
   }
   return { n, positions, codes, scale, window, depth: n && hasDepth ? zHi - zLo : 0, hasDepth, counts };
+}
+
+/** What one gene's level is measured against: its mean density in the window, and the layer the
+ *  molecules fill. Null for an empty slot. */
+interface LevelBasis {
+  /** Molecules per unit volume (per unit area with no depth), unstretched. */
+  readonly mean: number;
+  /** The layer's real depth; 1 with no depth, so `mean × depth` is per unit area either way. */
+  readonly depth: number;
+  /** The layer's depth as drawn, stretched; 0 with no depth. */
+  readonly thickness: number;
+  readonly radius: number;
+}
+
+function levelBasis(cloud: Cloud | null, code: number | null | undefined, stretch: number, radius: number): LevelBasis | null {
+  if (!cloud || code === null || code === undefined) return null;
+  const area = (cloud.window.maxX - cloud.window.minX) * (cloud.window.maxY - cloud.window.minY);
+  const depth = cloud.hasDepth ? Math.max(cloud.depth, 1e-6) : 1;
+  return {
+    mean: (cloud.counts.get(code) ?? 0) / (area * depth),
+    depth,
+    thickness: cloud.hasDepth ? cloud.depth * stretch : 0,
+    radius,
+  };
+}
+
+/** A level as a field value: the value in the middle of an even layer of molecules of the wanted
+ *  density, as deep as these are once stretched (`slabLevel`, checked against a splat in its tests).
+ *  Stretching leaves the molecules per unit area of the layer unchanged. */
+function levelOf(basis: LevelBasis | null, level: { relative: number } | { absolute: number }): number {
+  if (!basis) return Number.POSITIVE_INFINITY;
+  const wanted = "relative" in level ? level.relative * basis.mean : level.absolute / 1000;
+  return slabLevel(wanted * basis.depth, basis.radius, basis.thickness);
 }
 
 /** A window `side` across, centred at the fractions `fx`, `fy` of `extent` and kept inside it. */
@@ -193,7 +227,8 @@ export function Density3D() {
   );
   // The choice belongs to one element. It starts as the three commonest genes of the first window.
   const [choice, setChoice] = useState<{ source: object; slots: readonly (number | null)[] }>();
-  if (source.value && choice?.source !== source.value && ranked.length > 0) {
+  // Only from the window asked for: just after a new element opens, the tiles may still be the old window's.
+  if (source.value && choice?.source !== source.value && ranked.length > 0 && cloud?.window === wanted) {
     const first = ranked.filter((g) => !CONTROL.test(g.name)).slice(0, SLOTS);
     setChoice({ source: source.value, slots: Array.from({ length: SLOTS }, (_, i) => first[i]?.code ?? null) });
   }
@@ -232,20 +267,18 @@ export function Density3D() {
     useGpuBuffer(device, weights1, "density3d:weights-1"),
     useGpuBuffer(device, weights2, "density3d:weights-2"),
   ] as const;
-  const density = useDensityFields({ device, points, n: cloud?.n ?? 0, weights: gpuWeights, box, radius });
-
-  // A level as a field value: the value in the middle of an even layer of molecules of that density,
-  // as deep as these are once stretched (`slabLevel`, checked against a splat in its tests).
-  // Stretching depth leaves the molecules per unit area of the layer unchanged.
-  const levelOf = (slot: number): number => {
-    const code = slots[slot];
-    if (!cloud || code === null || code === undefined) return Number.POSITIVE_INFINITY;
-    const area = (cloud.window.maxX - cloud.window.minX) * (cloud.window.maxY - cloud.window.minY);
-    const depth = cloud.hasDepth ? Math.max(cloud.depth, 1e-6) : 1;
-    const mean = (cloud.counts.get(code) ?? 0) / (area * depth);
-    const wantedDensity = levelMode === "relative" ? relative * mean : absolute / 1000;
-    return slabLevel(wantedDensity * depth, radius, cloud.hasDepth ? cloud.depth * stretch : 0);
-  };
+  // What each slot's level is measured against, kept with the fields made from it (see `levelOf`).
+  const bases = useMemo(() => slots.map((code) => levelBasis(cloud, code, stretch, radius)), [cloud, slots, stretch, radius]);
+  const density = useDensityFields({
+    device,
+    source: source.value ?? null,
+    points,
+    n: cloud?.n ?? 0,
+    weights: gpuWeights,
+    box,
+    radius,
+    tag: bases,
+  });
 
   // The camera: reset for a new window size, otherwise the user's.
   const startView = useMemo(
@@ -270,7 +303,7 @@ export function Density3D() {
           id: `surface-${slot}`,
           field,
           ...fields.box,
-          threshold: levelOf(slot),
+          threshold: levelOf(fields.tag[slot] ?? null, levelMode === "relative" ? { relative } : { absolute }),
           color: SLOT_COLOURS[slot]!,
           maxSteps,
         }),
@@ -347,7 +380,8 @@ export function Density3D() {
                 <option value="">none</option>
                 {code !== null && !ranked.some((g) => g.code === code) && <option value={code}>{names.get(code) ?? code} (0)</option>}
                 {ranked.map((g) => (
-                  <option key={g.code} value={g.code}>
+                  // A gene has one slot: its molecules carry one colour and weigh in one field.
+                  <option key={g.code} value={g.code} disabled={g.code !== code && slots.includes(g.code)}>
                     {g.name} ({fmt(g.count)})
                   </option>
                 ))}

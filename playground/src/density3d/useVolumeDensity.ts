@@ -34,8 +34,10 @@ export interface FieldBox {
   readonly voxel: number;
 }
 
-export interface DensityFieldsOptions {
+export interface DensityFieldsOptions<T> {
   readonly device: GPUDevice | null;
+  /** What the points were read from. A field made from one source is never shown for another. */
+  readonly source: object | null;
   /** 4 f32 per point, x y z first. */
   readonly points: GPUBuffer | null;
   readonly n: number;
@@ -44,25 +46,39 @@ export interface DensityFieldsOptions {
   readonly box: FieldBox | null;
   /** How far a point's influence reaches. */
   readonly radius: number;
+  /** Anything the caller needs to read a field with, such as what each slot's level is measured
+   *  against. Handed back with the fields it was made with, so a field still on screen while newer
+   *  ones are worked out is read with its own inputs. A new tag asks for new fields. */
+  readonly tag: T;
 }
 
-export interface DensityFields {
+export interface DensityFields<T> {
   /** One per weight slot, in the same order. */
   readonly fields: readonly (GPUBuffer | null)[];
   readonly box: FieldBox;
+  /** The `tag` these fields were made with. */
+  readonly tag: T;
   /** Time from asking for the fields to the device saying they are done. */
   readonly ms: number;
 }
 
-/** The fields for the latest inputs, or while those are being worked out, the last ones done: a
- *  surface stays on screen through a slider drag instead of blinking out. `pending` says the value
- *  answers earlier inputs. A result's buffers are freed once a newer one replaces it. */
-export function useDensityFields(o: DensityFieldsOptions): { value: DensityFields | null; error: string | null; pending: boolean } {
-  const { device, points, n, box, radius } = o;
+/** The fields for the latest inputs, or while those are being worked out, the last ones done for
+ *  the same device and points source: a surface stays on screen through a slider drag instead of
+ *  blinking out. `pending` says newer fields are on their way. A result's buffers are freed once a
+ *  newer one replaces it; a job that fails frees its own and leaves the shown result in place. */
+export function useDensityFields<T>(o: DensityFieldsOptions<T>): {
+  value: DensityFields<T> | null;
+  error: string | null;
+  pending: boolean;
+} {
+  const { device, source, points, n, box, radius, tag } = o;
   const [w0, w1, w2] = o.weights;
   // One identity for this set of inputs.
-  const key = useMemo(() => ({ device, points, n, w0, w1, w2, box, radius }), [device, points, n, w0, w1, w2, box, radius]);
-  const [shown, setShown] = useState<{ key: typeof key; value: DensityFields } | null>(null);
+  const key = useMemo(
+    () => ({ device, source, points, n, w0, w1, w2, box, radius, tag }),
+    [device, source, points, n, w0, w1, w2, box, radius, tag],
+  );
+  const [shown, setShown] = useState<{ key: typeof key; value: DensityFields<T> } | null>(null);
   const [failed, setFailed] = useState<{ key: object; error: string } | null>(null);
 
   useEffect(() => {
@@ -71,29 +87,49 @@ export function useDensityFields(o: DensityFieldsOptions): { value: DensityField
     const weights = [key.w0, key.w1, key.w2];
     let stale = false;
     let adopted = false;
-    const fields = weights.map((w, i) =>
-      w ? device.createBuffer({ label: `density3d:field-${i}`, size: volumeBytes(box.dims), usage: GPUBufferUsage.STORAGE }) : null,
-    );
-    createSplatVolume(device)
-      .then(async (splat) => {
-        if (stale) return;
-        const started = performance.now();
+    let fields: (GPUBuffer | null)[] = [];
+    let released = false;
+    // Later, as work already submitted may still be using them.
+    const release = () => {
+      if (adopted || released) return;
+      released = true;
+      const doomed = fields;
+      setTimeout(() => doomed.forEach((f) => f?.destroy()), 1000);
+    };
+    (async () => {
+      const splat = await createSplatVolume(device);
+      if (stale) return;
+      const started = performance.now();
+      // Running out of memory or a bad dispatch is reported through error scopes, not thrown.
+      device.pushErrorScope("out-of-memory");
+      device.pushErrorScope("validation");
+      let thrown: unknown;
+      try {
+        fields = weights.map((w, i) =>
+          w ? device.createBuffer({ label: `density3d:field-${i}`, size: volumeBytes(box.dims), usage: GPUBufferUsage.STORAGE }) : null,
+        );
         fields.forEach((field, i) => {
           const w = weights[i];
           if (field && w) splat(points, n, field, { ...box, radius, stride: 4, weights: w });
         });
-        await device.queue.onSubmittedWorkDone();
-        if (stale) return;
-        adopted = true;
-        setShown({ key, value: { fields, box, ms: performance.now() - started } });
-      })
-      .catch((e: unknown) => {
-        if (!stale) setFailed({ key, error: e instanceof Error ? e.message : String(e) });
-      });
+      } catch (e) {
+        thrown = e;
+      }
+      const scoped = await Promise.all([device.popErrorScope(), device.popErrorScope()]);
+      if (thrown !== undefined) throw thrown;
+      const gpuError = scoped.find((e) => e !== null);
+      if (gpuError) throw new Error(`density fields: ${gpuError.message}`);
+      await device.queue.onSubmittedWorkDone();
+      if (stale) return;
+      adopted = true;
+      setShown({ key, value: { fields, box, tag: key.tag, ms: performance.now() - started } });
+    })().catch((e: unknown) => {
+      release();
+      if (!stale) setFailed({ key, error: e instanceof Error ? e.message : String(e) });
+    });
     return () => {
       stale = true;
-      // Never shown, so nothing draws them but work already submitted.
-      if (!adopted) setTimeout(() => fields.forEach((f) => f?.destroy()), 1000);
+      release();
     };
   }, [key]);
 
@@ -106,11 +142,8 @@ export function useDensityFields(o: DensityFieldsOptions): { value: DensityField
     };
   }, [shown]);
 
-  // Old fields are for this device and a non-empty cloud only.
-  const usable = shown && shown.key.device === device && n > 0 ? shown : null;
-  return {
-    value: usable?.value ?? null,
-    error: failed?.key === key ? failed.error : null,
-    pending: usable?.key !== key,
-  };
+  // Old fields are shown only for the same device and points source, and a non-empty cloud.
+  const usable = shown && shown.key.device === device && shown.key.source === source && n > 0 ? shown : null;
+  const error = failed?.key === key ? failed.error : null;
+  return { value: usable?.value ?? null, error, pending: usable !== null && usable.key !== key && error === null };
 }
