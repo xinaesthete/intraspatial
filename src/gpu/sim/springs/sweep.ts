@@ -5,9 +5,16 @@
 import { projectedShape, type ShapeReadout } from "./readouts";
 import { CELL, LEADER, type SpheroidConfig, spheroidScenario } from "./scenarios";
 
+/** The `SpheroidConfig` settings a phase axis can vary: the numeric ones, bar `dims`, since a
+ *  diagram measures the 2D outline. */
+export type PhaseSetting = Exclude<
+  { [K in keyof SpheroidConfig]-?: Required<SpheroidConfig>[K] extends number ? K : never }[keyof SpheroidConfig],
+  "dims"
+>;
+
 export interface PhaseAxis {
   /** The `SpheroidConfig` field this axis varies. */
-  readonly key: keyof SpheroidConfig;
+  readonly key: PhaseSetting;
   readonly values: readonly number[];
 }
 

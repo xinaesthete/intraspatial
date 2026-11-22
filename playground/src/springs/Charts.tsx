@@ -1,6 +1,9 @@
 // Small chart pieces for the springs page: a line chart and the phase-diagram grid.
 import type { PhasePoint } from "../../../src/gpu/sim/springs/index";
 
+/** How many times the area grew; a run that started with no outline has no ratio. */
+const grew = (growth: number) => (Number.isFinite(growth) ? `×${growth.toFixed(1)}` : "n/a");
+
 export interface Series {
   readonly label: string;
   readonly colour: string;
@@ -138,18 +141,16 @@ export function PhaseGrid(props: {
                   disabled={!q}
                   aria-label={
                     q
-                      ? `${props.xLabel} ${label(q.x)}, ${props.yLabel} ${label(q.y)}: grew ×${q.growth.toFixed(1)}, circularity ${q.shape.circularity.toFixed(2)}`
+                      ? `${props.xLabel} ${label(q.x)}, ${props.yLabel} ${label(q.y)}: grew ${grew(q.growth)}, circularity ${q.shape.circularity.toFixed(2)}`
                       : `${props.xLabel} ${label(props.xs[ix] ?? 0)}, ${props.yLabel} ${label(props.ys[iy] ?? 0)}: not run yet`
                   }
                   style={{ background: q ? circularityColour(q.shape.circularity) : "#111827" }}
                   title={
-                    q
-                      ? `circularity ${q.shape.circularity.toFixed(2)}, grew ×${q.growth.toFixed(1)}, ${q.shape.count} cells`
-                      : "not run yet"
+                    q ? `circularity ${q.shape.circularity.toFixed(2)}, grew ${grew(q.growth)}, ${q.shape.count} cells` : "not run yet"
                   }
                   onClick={() => q && props.onPick(q)}
                 >
-                  {q ? `×${q.growth.toFixed(1)}` : ""}
+                  {q ? grew(q.growth) : ""}
                 </button>
               );
             })}

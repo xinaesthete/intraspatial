@@ -16,6 +16,7 @@ import {
   DEFAULT_SPHEROID,
   distanceMatrix,
   type PhasePoint,
+  type PhaseSetting,
   type RelaxationScenario,
   relaxationScenario,
   type Scenario,
@@ -75,7 +76,7 @@ const KINDS: readonly { id: Kind; label: string; blurb: string }[] = [
 ];
 
 /** The spheroid settings that are numbers, which is what a slider or a phase axis can vary. */
-type NumericSetting = { [K in keyof SpheroidConfig]-?: Required<SpheroidConfig>[K] extends number ? K : never }[keyof SpheroidConfig];
+type NumericSetting = PhaseSetting;
 
 /** Spheroid settings the page exposes. `infinite` adds an off switch that sets the value to ∞. */
 const SPHEROID_CONTROLS: readonly {
@@ -440,15 +441,17 @@ export function SpringsDemo() {
     () => (scenario.kind === "chain" && latestStep !== undefined ? distanceMatrix(scenario.state, scenario.state.n) : null),
     [scenario, latestStep],
   );
+  // Both maps share the target's colour scale.
+  const targetMax = useMemo(() => (target ? target.reduce((a, b) => Math.max(a, b), 0) : 0), [target]);
+  useEffect(() => {
+    const t = targetMapRef.current?.getContext("2d");
+    if (target && size > 0 && t) drawMatrix(t, target, size, targetMax);
+  }, [target, size, targetMax]);
   // biome-ignore lint/correctness/useExhaustiveDependencies: `latestStep` is the redraw trigger
   useEffect(() => {
-    if (!target || size === 0) return;
-    const max = target.reduce((a, b) => Math.max(a, b), 0);
-    const t = targetMapRef.current?.getContext("2d");
     const m = modelMapRef.current?.getContext("2d");
-    if (t) drawMatrix(t, target, size, max);
-    if (m) drawMatrix(m, distanceMatrix(scenario.state, size), size, max);
-  }, [scenario, target, size, latestStep]);
+    if (target && size > 0 && m) drawMatrix(m, distanceMatrix(scenario.state, size), size, targetMax);
+  }, [scenario, target, size, targetMax, latestStep]);
 
   // Phase diagram, run in a worker.
   const [xKey, setXKey] = useState<NumericSetting>("yieldStrain");

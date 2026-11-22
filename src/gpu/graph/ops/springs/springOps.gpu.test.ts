@@ -272,17 +272,21 @@ describe("spring model as graph ops", () => {
     return { xyz, density };
   }
 
-  it("the graph with pair terms equals the fused step, on the CPU and on the device", async () => {
-    // Eight steps: this state is a crowded tangle, and rounding differences grow by about half
-    // again each step, so a long run would be testing chaos, not the ops.
-    const steps = 8;
-    const reference = tissue(66);
-    const p = pairParams();
-    const cpuRun = tissue(66);
-    const cpuGraph = springGraph(cpuRun.s, cpuRun.t, p);
+  /** Run the same graph on the CPU and on the device, each from a fresh copy of the start, and the
+   *  fused step on a third. Few steps: from a crowded tangle rounding differences grow by about
+   *  half again each step, so a long run would be testing chaos, not the ops. */
+  async function bothAgainstFused(
+    start: () => { s: SpringState; t: ReturnType<typeof createTopology> },
+    p: SpringParams,
+    steps: number,
+    m?: Parameters<typeof springGraph>[3],
+  ) {
+    const reference = start();
+    const cpuRun = start();
+    const cpuGraph = springGraph(cpuRun.s, cpuRun.t, p, m);
     const onCpu = await advance(cpuGraph.graph, cpuGraph.pos, { steps, state: createSimState(), mode: "cpu" });
-    const gpuRun = tissue(66);
-    const gpuGraph = springGraph(gpuRun.s, gpuRun.t, p);
+    const gpuRun = start();
+    const gpuGraph = springGraph(gpuRun.s, gpuRun.t, p, m);
     const downloads: string[] = [];
     const onGpu = await advance(gpuGraph.graph, gpuGraph.pos, {
       steps,
@@ -292,20 +296,16 @@ describe("spring model as graph ops", () => {
         if (dir === "download") downloads.push(k);
       },
     });
-    runSprings(reference.s, reference.t, p, steps);
-    const cpu = againstFused(onCpu.data!, reference.s.pos);
-    const gpu = againstFused(onGpu.data!, reference.s.pos);
-    expect(cpu.xyz, JSON.stringify(cpu)).toBeLessThan(2e-5);
-    expect(cpu.density, JSON.stringify(cpu)).toBeLessThan(1e-3);
-    expect(gpu.xyz, JSON.stringify(gpu)).toBeLessThan(5e-4);
-    expect(gpu.density, JSON.stringify(gpu)).toBeLessThan(1e-2);
-    expect(downloads.length).toBe(1);
-    // Dead slots did not move, and the live ones did.
-    expect(onGpu.data![5 * 4]).toBe(reference.s.pos[5 * 4]);
-    expect(againstFused(onGpu.data!, tissue(66).s.pos).xyz).toBeGreaterThan(1e-2);
-    // The density lane holds real densities, not the zeros it started with.
-    expect(Math.max(...Array.from({ length: 66 }, (_, i) => onGpu.data![i * 4 + 3]!))).toBeGreaterThan(0.1);
-  });
+    runSprings(reference.s, reference.t, p, steps, m);
+    return {
+      reference,
+      onGpu: onGpu.data!,
+      terms: gpuGraph.terms,
+      downloads,
+      cpu: againstFused(onCpu.data!, reference.s.pos),
+      gpu: againstFused(onGpu.data!, reference.s.pos),
+    };
+  }
 
   /** The tissue with every per-particle extra: rods, pinned and pulled particles, torsion springs. */
   function rigged(n: number) {
@@ -384,33 +384,20 @@ describe("spring model as graph ops", () => {
     expect(worst(first.data!, second.data!)).toBeGreaterThan(1e-3);
   });
 
+  // The model's own pair terms (with a finite pair range) and every other term but CSynth's.
   it("the graph with every term but CSynth's own pair forces equals the fused step", async () => {
-    const steps = 6;
-    const p = everything();
-    const reference = rigged(66);
-    const cpuRun = rigged(66);
-    const cpuGraph = springGraph(cpuRun.s, cpuRun.t, p);
-    const onCpu = await advance(cpuGraph.graph, cpuGraph.pos, { steps, state: createSimState(), mode: "cpu" });
-    const gpuRun = rigged(66);
-    const gpuGraph = springGraph(gpuRun.s, gpuRun.t, p);
-    const downloads: string[] = [];
-    const onGpu = await advance(gpuGraph.graph, gpuGraph.pos, {
-      steps,
-      state: createSimState(),
-      materialise: "last",
-      onBridge: (k, dir) => {
-        if (dir === "download") downloads.push(k);
-      },
-    });
-    runSprings(reference.s, reference.t, p, steps);
-    const cpu = againstFused(onCpu.data!, reference.s.pos);
-    const gpu = againstFused(onGpu.data!, reference.s.pos);
-    expect(cpu.xyz, JSON.stringify(cpu)).toBeLessThan(2e-5);
-    expect(gpu.xyz, JSON.stringify(gpu)).toBeLessThan(5e-4);
-    expect(gpu.density, JSON.stringify(gpu)).toBeLessThan(1e-2);
-    expect(downloads.length).toBe(1);
-    // A pinned particle is exactly where it was pinned.
-    expect([onGpu.data![8 * 4], onGpu.data![8 * 4 + 1], onGpu.data![8 * 4 + 2]]).toEqual(Array.from(reference.s.pos.subarray(32, 35)));
+    const r = await bothAgainstFused(() => rigged(66), everything(), 6);
+    expect(r.cpu.xyz, JSON.stringify(r.cpu)).toBeLessThan(2e-5);
+    expect(r.cpu.density, JSON.stringify(r.cpu)).toBeLessThan(1e-3);
+    expect(r.gpu.xyz, JSON.stringify(r.gpu)).toBeLessThan(5e-4);
+    expect(r.gpu.density, JSON.stringify(r.gpu)).toBeLessThan(1e-2);
+    expect(r.downloads.length).toBe(1);
+    // Dead slots did not move, the live ones did, and a pinned particle is exactly where it was pinned.
+    expect(r.onGpu[5 * 4]).toBe(r.reference.s.pos[5 * 4]);
+    expect(againstFused(r.onGpu, rigged(66).s.pos).xyz).toBeGreaterThan(1e-2);
+    expect([r.onGpu[8 * 4], r.onGpu[8 * 4 + 1], r.onGpu[8 * 4 + 2]]).toEqual(Array.from(r.reference.s.pos.subarray(32, 35)));
+    // The density lane holds real densities, not the zeros it started with.
+    expect(Math.max(...Array.from({ length: 66 }, (_, i) => r.onGpu[i * 4 + 3]!))).toBeGreaterThan(0.1);
   });
 
   /** A contact map and a distance map over the first `size` particles, with a few pairs marked
@@ -502,22 +489,10 @@ describe("spring model as graph ops", () => {
   });
 
   it("the graph with every term of the model equals the fused step", async () => {
-    const steps = 5;
-    const p = csynth();
-    const reference = rigged(66);
-    const m = maps(reference.s, 50);
-    const cpuRun = rigged(66);
-    const cpuGraph = springGraph(cpuRun.s, cpuRun.t, p, m);
-    const onCpu = await advance(cpuGraph.graph, cpuGraph.pos, { steps, state: createSimState(), mode: "cpu" });
-    const gpuRun = rigged(66);
-    const gpuGraph = springGraph(gpuRun.s, gpuRun.t, p, m);
-    const onGpu = await advance(gpuGraph.graph, gpuGraph.pos, { steps, state: createSimState(), materialise: "last" });
-    runSprings(reference.s, reference.t, p, steps, m);
-    expect(Object.keys(gpuGraph.terms).length).toBe(18);
-    const cpu = againstFused(onCpu.data!, reference.s.pos);
-    const gpu = againstFused(onGpu.data!, reference.s.pos);
-    expect(cpu.xyz, JSON.stringify(cpu)).toBeLessThan(2e-5);
-    expect(gpu.xyz, JSON.stringify(gpu)).toBeLessThan(5e-4);
+    const r = await bothAgainstFused(() => rigged(66), csynth(), 5, maps(rigged(66).s, 50));
+    expect(Object.keys(r.terms).length).toBe(18);
+    expect(r.cpu.xyz, JSON.stringify(r.cpu)).toBeLessThan(2e-5);
+    expect(r.gpu.xyz, JSON.stringify(r.gpu)).toBeLessThan(5e-4);
   });
 
   it("the chromatin scenarios run as graphs and match the fused step", async () => {

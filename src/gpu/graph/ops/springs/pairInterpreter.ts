@@ -223,7 +223,8 @@ const interpFn = tgpu
                 const t = std.clamp((len / (std.min(chainGap, pushLen) * pushScale + pushDelta) - 0.5) / 0.5, 0, 1);
                 along += -pushForce * (1 - t * t * (3 - 2 * t));
               }
-              if (stickOn && len <= stickRange) {
+              // A species the tables do not cover takes no part; with no tables, none is covered.
+              if (stickOn && len <= stickRange && si < P.speciesCount && sj < P.speciesCount) {
                 const pair = si * P.speciesCount + sj;
                 const sigma = ri + std.bitcastU32toF32(layout.$.state[P.radius + j]!);
                 if (len < sigma) {
@@ -325,8 +326,11 @@ function interpretCpu(state: FieldValue, inputs: FieldValue, rate: number): { fo
   const n = species.length;
   const instructions = program.length / PAIR_INSTRUCTION_WORDS;
   const has = (op: number) => Array.from({ length: instructions }, (_, k) => program[k * 2]).includes(op);
-  const repulsion = has(PAIR_OP.adhesion) ? data(inputs, "repulsion", "the inputs") : undefined;
-  const adhesion = has(PAIR_OP.adhesion) ? data(inputs, "adhesion", "the inputs") : undefined;
+  // Without the tables an adhesion instruction does nothing, as on the GPU, where the program
+  // cannot be read to refuse it.
+  const tables = has(PAIR_OP.adhesion) && inputs.parts?.repulsion && inputs.parts.adhesion;
+  const repulsion = tables ? data(inputs, "repulsion", "the inputs") : undefined;
+  const adhesion = tables ? data(inputs, "adhesion", "the inputs") : undefined;
   const speciesCount = repulsion ? Math.round(Math.sqrt(repulsion.length)) : 0;
   const force = new Float32Array(n * 4);
   const density = new Float32Array(n * 2);
@@ -357,7 +361,7 @@ function interpretCpu(state: FieldValue, inputs: FieldValue, rate: number): { fo
           if (len <= p(4) && ((mask >> si) & 1) === 1 && ((mask >> sj) & 1) === 1) {
             along += -p(0) * (1 - smooth(len / (Math.min(Math.abs(i - j), p(1)) * p(2) + p(3))));
           }
-        } else if (op === PAIR_OP.adhesion && repulsion && adhesion) {
+        } else if (op === PAIR_OP.adhesion && repulsion && adhesion && si < speciesCount && sj < speciesCount) {
           if (len <= p(1))
             along += contactForce(
               len,
@@ -430,6 +434,14 @@ export const pairInterpreterOp: OpType = {
     const program = inputs.parts.program;
     if (program.kind !== "points" || program.n % PAIR_INSTRUCTION_WORDS !== 0) {
       throw new Error("pairInterpreter.inputs.program: expected a points field of u32 with an even number of words");
+    }
+    // The tables come as a pair of the same square size: each path indexes both by that side.
+    const { repulsion, adhesion } = inputs.parts;
+    if (repulsion || adhesion) {
+      const side = (t: Shape | undefined) => (t?.kind === "matrix" && t.rows === t.cols ? t.rows : -1);
+      if (side(repulsion) < 0 || side(repulsion) !== side(adhesion)) {
+        throw new Error("pairInterpreter.inputs: `repulsion` and `adhesion` must both be there, as square matrices of one size");
+      }
     }
     return [species, species];
   },

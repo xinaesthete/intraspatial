@@ -45,6 +45,7 @@ import {
   payloadsNotHeld,
   pull,
   registerOp,
+  type Shape,
   simStateValue,
 } from "../../index";
 import { extractOp, packOp } from "../bundleOps";
@@ -599,6 +600,31 @@ describe("spring model rules as graph ops", () => {
       refusals.push(/scalar u32 words/.test(gpu) && /scalar u32 words/.test(cpu));
     }
     expect(refusals).toEqual([true, true, true]);
+  });
+
+  it("the pair interpreter takes its species tables as a pair of one square size", () => {
+    const table = (side: number) => ({ kind: "matrix" as const, rows: side, cols: side });
+    const state: Shape = { kind: "bundle", name: "springState", parts: { species: { kind: "points", n: 4 } } };
+    const inputs = (parts: Record<string, Shape>): Shape => ({
+      kind: "bundle",
+      name: "springInputs",
+      parts: { program: { kind: "points", n: 2 }, programParams: { kind: "points", n: 2 }, ...parts },
+    });
+    const accepts = (parts: Record<string, Shape>) => {
+      try {
+        pairInterpreterOp.inferShapes([state, inputs(parts)], {});
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    expect([
+      accepts({}),
+      accepts({ repulsion: table(3), adhesion: table(3) }),
+      accepts({ repulsion: table(3) }),
+      accepts({ repulsion: table(3), adhesion: table(2) }),
+      accepts({ repulsion: { kind: "matrix", rows: 3, cols: 2 }, adhesion: { kind: "matrix", rows: 3, cols: 2 } }),
+    ]).toEqual([true, true, false, false, false]);
   });
 
   it("advance without a state of the caller's leaves nothing leased but the sink", async () => {
