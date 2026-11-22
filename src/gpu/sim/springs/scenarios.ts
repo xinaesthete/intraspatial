@@ -182,6 +182,10 @@ export interface SpheroidConfig {
   /** Stiffness of the contact repulsion between cells. It has to outweigh adhesion, or the
    *  tissue crushes itself. */
   readonly cellRepulsion?: number;
+  /** Stiffness of the contact repulsion between a cell and a matrix particle. At full overlap it
+   *  pushes back with this force at most, so a leader pulling harder walks through the matrix
+   *  rather than having to strain or break it. */
+  readonly cellMatrixRepulsion?: number;
   /** Cell–cell adhesion strength. */
   readonly cellAdhesion?: number;
   /** How far past touching adhesion reaches, as a fraction of a cell diameter. With a long
@@ -268,6 +272,7 @@ export const DEFAULT_SPHEROID: Required<SpheroidConfig> = {
   matrixRepulsion: 0.05,
   matrixMobility: 1,
   cellRepulsion: 0.3,
+  cellMatrixRepulsion: 0.3,
   cellAdhesion: 0.02,
   adhesionRange: 0.5,
   ligand: 0.02,
@@ -457,8 +462,8 @@ function spheroidParams(c: Required<SpheroidConfig>): Partial<SpringParams> {
       [CELL, CELL, c.cellRepulsion],
       [CELL, LEADER, c.cellRepulsion],
       [LEADER, LEADER, c.cellRepulsion],
-      [CELL, MATRIX, 0.3],
-      [LEADER, MATRIX, 0.3],
+      [CELL, MATRIX, c.cellMatrixRepulsion],
+      [LEADER, MATRIX, c.cellMatrixRepulsion],
       [MATRIX, MATRIX, c.matrixRepulsion],
     ]),
     adhesion: speciesTable([
