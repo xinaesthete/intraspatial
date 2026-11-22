@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 import { getDevice, readBackBytes } from "../device";
-import { splatVolumeResident, volumeBytes } from "./splatVolume";
+import { slabLevel, splatVolumeResident, volumeBytes } from "./splatVolume";
 
 describe("splatVolume", () => {
   it("matches a brute-force sum on the host, voxel for voxel, direct and indexed", async () => {
@@ -149,5 +149,43 @@ describe("splatVolume", () => {
     }
     expect(total).toBeGreaterThan(10);
     expect(worst).toBeLessThan(1e-4);
+  });
+  it("gives slabLevel's value at the middle of an even slab of points", async () => {
+    const device = await getDevice();
+    const radius = 3;
+    const spacing = 0.25;
+    // One voxel, centred on the slab's middle.
+    const o = { dims: [1, 1, 1] as const, origin: [-0.5, -0.5, -0.5] as const, voxel: 1, radius, stride: 3 };
+    const across = Math.ceil((2 * radius + 2) / spacing);
+    const slab = async (thickness: number, layers: number): Promise<number> => {
+      const n = across * across * layers;
+      const pts = new Float32Array(n * 3);
+      let at = 0;
+      for (let k = 0; k < layers; k++) {
+        // Midpoint layers through the depth, as an even spread of molecules sits.
+        const z = layers === 1 ? 0 : -thickness / 2 + ((k + 0.5) * thickness) / layers;
+        for (let j = 0; j < across; j++) {
+          for (let i = 0; i < across; i++) {
+            pts.set([(i + 0.5 - across / 2) * spacing, (j + 0.5 - across / 2) * spacing, z], at);
+            at += 3;
+          }
+        }
+      }
+      const points = device.createBuffer({
+        label: "test:slab",
+        size: pts.byteLength,
+        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+      });
+      device.queue.writeBuffer(points, 0, pts);
+      const field = device.createBuffer({ label: "test:slab-field", size: 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC });
+      await splatVolumeResident(points, n, field, { ...o, index: true });
+      const got = new Float32Array(await readBackBytes(device, "test:slab-field", field, 0, 4))[0]!;
+      points.destroy();
+      field.destroy();
+      return got / slabLevel(layers / spacing ** 2, radius, thickness);
+    };
+    // A plane, a slab thinner than the reach, and one deeper than the whole sphere.
+    const ratios = [await slab(0, 1), await slab(2, 8), await slab(10, 40)];
+    expect(Math.max(...ratios.map((r) => Math.abs(r - 1)))).toBeLessThan(5e-3);
   });
 });

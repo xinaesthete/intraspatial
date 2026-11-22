@@ -54,18 +54,23 @@ export interface DensityFields {
   readonly ms: number;
 }
 
-export function useDensityFields(o: DensityFieldsOptions): { value: DensityFields | null; error: string | null } {
+/** The fields for the latest inputs, or while those are being worked out, the last ones done: a
+ *  surface stays on screen through a slider drag instead of blinking out. `pending` says the value
+ *  answers earlier inputs. A result's buffers are freed once a newer one replaces it. */
+export function useDensityFields(o: DensityFieldsOptions): { value: DensityFields | null; error: string | null; pending: boolean } {
   const { device, points, n, box, radius } = o;
   const [w0, w1, w2] = o.weights;
-  // One identity for this set of inputs: a result is shown only while it answers them.
+  // One identity for this set of inputs.
   const key = useMemo(() => ({ device, points, n, w0, w1, w2, box, radius }), [device, points, n, w0, w1, w2, box, radius]);
-  const [state, setState] = useState<{ key: object; value: DensityFields | null; error: string | null } | null>(null);
+  const [shown, setShown] = useState<{ key: typeof key; value: DensityFields } | null>(null);
+  const [failed, setFailed] = useState<{ key: object; error: string } | null>(null);
 
   useEffect(() => {
     const { device, points, n, box, radius } = key;
     if (!device || !points || !box || n === 0) return;
     const weights = [key.w0, key.w1, key.w2];
     let stale = false;
+    let adopted = false;
     const fields = weights.map((w, i) =>
       w ? device.createBuffer({ label: `density3d:field-${i}`, size: volumeBytes(box.dims), usage: GPUBufferUsage.STORAGE }) : null,
     );
@@ -78,18 +83,34 @@ export function useDensityFields(o: DensityFieldsOptions): { value: DensityField
           if (field && w) splat(points, n, field, { ...box, radius, stride: 4, weights: w });
         });
         await device.queue.onSubmittedWorkDone();
-        if (!stale) setState({ key, value: { fields, box, ms: performance.now() - started }, error: null });
+        if (stale) return;
+        adopted = true;
+        setShown({ key, value: { fields, box, ms: performance.now() - started } });
       })
       .catch((e: unknown) => {
-        if (!stale) setState({ key, value: null, error: e instanceof Error ? e.message : String(e) });
+        if (!stale) setFailed({ key, error: e instanceof Error ? e.message : String(e) });
       });
     return () => {
       stale = true;
-      setTimeout(() => {
-        for (const f of fields) f?.destroy();
-      }, 1000);
+      // Never shown, so nothing draws them but work already submitted.
+      if (!adopted) setTimeout(() => fields.forEach((f) => f?.destroy()), 1000);
     };
   }, [key]);
 
-  return state?.key === key ? { value: state.value, error: state.error } : { value: null, error: null };
+  // A shown result's fields are freed when a newer one replaces it, or the page goes. Later, because a
+  // frame already on its way may still be drawing them.
+  useEffect(() => {
+    const fields = shown?.value.fields;
+    return () => {
+      setTimeout(() => fields?.forEach((f) => f?.destroy()), 1000);
+    };
+  }, [shown]);
+
+  // Old fields are for this device and a non-empty cloud only.
+  const usable = shown && shown.key.device === device && n > 0 ? shown : null;
+  return {
+    value: usable?.value ?? null,
+    error: failed?.key === key ? failed.error : null,
+    pending: usable?.key !== key,
+  };
 }

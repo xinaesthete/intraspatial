@@ -16,6 +16,7 @@ import { useSettled } from "../hooks/useAsync";
 import { usePointsSource, usePointsTiles, useSpatialData } from "../hooks/useSpatialData";
 import { StoreInput } from "../modes/PageControls";
 import { Explain } from "../transcript/Explain";
+import { slabLevel } from "../../../src/gpu/spatial/splatVolume";
 import { type FieldBox, useDensityFields, useGpuBuffer } from "./useVolumeDensity";
 
 const DEFAULT_STORE =
@@ -228,18 +229,16 @@ export function Density3D() {
   const density = useDensityFields({ device, points, n: cloud?.n ?? 0, weights: gpuWeights, box, radius });
 
   // A level as a field value: the value in the middle of an even layer of molecules of that density,
-  // as deep as these are. A layer thinner than twice the reach fills only part of a molecule's
-  // sphere of influence, which is the `u` below; stretching depth thins the molecules by the stretch.
+  // as deep as these are once stretched (`slabLevel`, checked against a splat in its tests).
+  // Stretching depth leaves the molecules per unit area of the layer unchanged.
   const levelOf = (slot: number): number => {
     const code = slots[slot];
     if (!cloud || code === null || code === undefined) return Number.POSITIVE_INFINITY;
     const area = (cloud.window.maxX - cloud.window.minX) * (cloud.window.maxY - cloud.window.minY);
-    const mean = (cloud.counts.get(code) ?? 0) / (area * (cloud.hasDepth ? Math.max(cloud.depth, 1e-6) : 1));
+    const depth = cloud.hasDepth ? Math.max(cloud.depth, 1e-6) : 1;
+    const mean = (cloud.counts.get(code) ?? 0) / (area * depth);
     const wantedDensity = levelMode === "relative" ? relative * mean : absolute / 1000;
-    if (!cloud.hasDepth) return wantedDensity * (Math.PI / 3) * radius ** 2;
-    const u = Math.min(1, (cloud.depth * stretch) / 2 / radius);
-    const spread = ((2 * Math.PI) / 3) * radius ** 3 * (u - u ** 3 + (3 * u ** 5) / 5 - u ** 7 / 7);
-    return (wantedDensity * spread) / stretch;
+    return slabLevel(wantedDensity * depth, radius, cloud.hasDepth ? cloud.depth * stretch : 0);
   };
 
   // The camera: reset for a new window size, otherwise the user's.
@@ -428,6 +427,7 @@ export function Density3D() {
               {device ? "WebGPU" : status}
               {cloud && ` · ${fmt(cloud.n)} molecules in the window, ${cloud.depth.toFixed(1)} units deep`}
               {fields && ` · ${fields.box.dims.join("×")} small cubes · density worked out in ${fields.ms.toFixed(0)} ms`}
+              {fields && density.pending && " · working out the new density…"}
             </div>
           </div>
           <div className="explainers">

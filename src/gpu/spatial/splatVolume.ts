@@ -177,6 +177,21 @@ async function getCtx(device?: GPUDevice): Promise<Ctx> {
   return ctx;
 }
 
+/**
+ * The field value at the middle of an even slab of points, `thickness` deep, holding `perArea`
+ * points (or total weight) per unit area of its face; `thickness` 0 is a plane. This turns a
+ * density into a level to draw a surface at: the surface then encloses where the points are denser.
+ *
+ * A point's kernel summed over a plane at height z is `(πR²/3)(1 - z²/R²)³`; this averages that
+ * over the slab's depth. A slab deeper than 2R fills the whole sphere, `32πR³/105` per unit volume.
+ */
+export function slabLevel(perArea: number, radius: number, thickness: number): number {
+  const plane = (Math.PI / 3) * radius ** 2;
+  if (thickness >= 2 * radius) return (perArea * (32 * Math.PI * radius ** 3)) / (105 * thickness);
+  const u = thickness / (2 * radius);
+  return perArea * plane * (1 - u ** 2 + (3 * u ** 4) / 5 - u ** 6 / 7);
+}
+
 /** Bytes a field of these dimensions needs. */
 export function volumeBytes(dims: readonly [number, number, number]): number {
   return dims[0] * dims[1] * dims[2] * 4;
