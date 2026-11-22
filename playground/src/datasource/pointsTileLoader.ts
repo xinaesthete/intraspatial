@@ -114,23 +114,46 @@ export async function openPointsSource(sdata: SpatialData, element: string, opts
   const grid = pointsGrid(meta.bounds, meta.totalRows, { minRowsPerTile: opts.minRowsPerTile ?? 2 * meta.maxRowsPerGroup });
   const catalog = await el.listFeatures();
   const features = (catalog?.entries ?? []).map((e) => ({ code: e.code, name: e.name, count: e.count }));
-  const columns = [...(opts.columns ?? [])];
+  const asked = [...(opts.columns ?? [])];
+  let columns = asked;
   const empty = (id: ChunkId): PointsTile =>
     ownedTile(grid, id, { xs: [], ys: [], codes: [], columns: Object.fromEntries(columns.map((c) => [c, []])) });
+  type Read = Awaited<ReturnType<typeof el.loadPointsInBounds>>;
+  const toTile = (id: ChunkId, res: Read): PointsTile => {
+    // An empty tile may omit the requested columns (sd.js 0.11.1, when no row group is selected).
+    if ((res.data[0]?.length ?? 0) === 0) return empty(id);
+    const codes = res.featureCodes ?? res.featureIndices;
+    if (!codes) throw new Error(`points/${element}: the tiled read returned no feature codes`);
+    const got = res.columns ?? {};
+    const missing = columns.filter((c) => !got[c]);
+    if (missing.length) throw new Error(`points/${element}: sd.js did not return column(s) ${missing.join(", ")}`);
+    const kept = Object.fromEntries(columns.map((c) => [c, got[c]!]));
+    const [xs, ys, zs] = res.data;
+    if (!xs || !ys) throw new Error(`points/${element}: the tiled read returned no coordinates`);
+    return ownedTile(grid, id, { xs, ys, codes, columns: opts.depth && zs ? { ...kept, z: zs } : kept });
+  };
+  const read = async (id: ChunkId): Promise<Read> => el.loadPointsInBounds({ bounds: tileRect(grid, id.x, id.y), columns });
+
+  // sd.js has no schema to ask, and leaves out a column the element does not have. So when columns
+  // are asked for, the middle tile is read now to learn which the element has; every tile shares
+  // one schema. That tile is handed over on its first request instead of being read again. An empty
+  // middle tile tells nothing: every column stays asked for, and a tile that lacks one throws.
+  let probe: { id: ChunkId; tile: PointsTile } | undefined;
+  if (asked.length > 0) {
+    const id = { level: grid.level, x: Math.floor(grid.cols / 2), y: Math.floor(grid.rows / 2), z: 0 };
+    const res = await read(id);
+    if ((res.data[0]?.length ?? 0) > 0) columns = asked.filter((c) => res.columns?.[c]);
+    probe = { id, tile: toTile(id, res) };
+  }
 
   const loader: Loader<PointsTile> = {
     async getChunk(id) {
-      const res = await el.loadPointsInBounds({ bounds: tileRect(grid, id.x, id.y), columns });
-      // An empty tile may omit the requested columns (sd.js 0.11.1, when no row group is selected).
-      if ((res.data[0]?.length ?? 0) === 0) return empty(id);
-      const codes = res.featureCodes ?? res.featureIndices;
-      if (!codes) throw new Error(`points/${element}: the tiled read returned no feature codes`);
-      const got = res.columns ?? {};
-      const missing = columns.filter((c) => !got[c]);
-      if (missing.length) throw new Error(`points/${element}: sd.js did not return column(s) ${missing.join(", ")}`);
-      const [xs, ys, zs] = res.data;
-      if (!xs || !ys) throw new Error(`points/${element}: the tiled read returned no coordinates`);
-      return ownedTile(grid, id, { xs, ys, codes, columns: opts.depth && zs ? { ...got, z: zs } : got });
+      if (probe && probe.id.x === id.x && probe.id.y === id.y) {
+        const { tile } = probe;
+        probe = undefined;
+        return tile;
+      }
+      return toTile(id, await read(id));
     },
   };
 
@@ -140,7 +163,7 @@ export async function openPointsSource(sdata: SpatialData, element: string, opts
     loader,
     features,
     columns,
-    missingColumns: [],
+    missingColumns: asked.filter((c) => !columns.includes(c)),
     tiled: true,
     totalRows: meta.totalRows,
     space: elementSpace(sdata, element),

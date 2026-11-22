@@ -130,6 +130,7 @@ function Range(props: {
   step: number;
   /** A log slider: `value` runs from `min` to `max` in equal ratios. */
   log?: boolean;
+  disabled?: boolean;
   onChange: (v: number) => void;
 }) {
   const to = props.log ? Math.log : (v: number) => v;
@@ -143,6 +144,7 @@ function Range(props: {
         max={to(props.max)}
         step={props.log ? 0.01 : props.step}
         value={to(props.value)}
+        disabled={props.disabled}
         onChange={(e) => props.onChange(from(Number(e.target.value)))}
       />
     </label>
@@ -166,9 +168,13 @@ export function Density3D() {
 
   const sd = useSpatialData(storeUrl);
   const pointsNames = useMemo(() => (sd.value ? listPointsElements(sd.value) : []), [sd.value]);
-  const pointsEl = pointsName ?? pointsNames.find((n) => /morton/.test(n) && !/feature_then/.test(n)) ?? pointsNames[0];
+  // A name chosen in another store is no choice here.
+  const chosen = pointsName && pointsNames.includes(pointsName) ? pointsName : undefined;
+  const pointsEl = chosen ?? pointsNames.find((n) => /morton/.test(n) && !/feature_then/.test(n)) ?? pointsNames[0];
   const source = usePointsSource(sd.value, pointsEl, POINTS_OPTIONS);
   const extent = source.value?.grid.bounds;
+  // The quality filter needs the element's qv column; without one every molecule is kept.
+  const hasQv = source.value?.columns.includes("qv") ?? true;
   const wanted = useMemo(() => (extent ? windowAt(extent, side, across, down) : undefined), [extent, side, across, down]);
   const rect = useSettled(wanted, 250);
   const tiles = usePointsTiles(source.value, rect, 0);
@@ -401,7 +407,17 @@ export function Density3D() {
             </select>
           </label>
           <Range label={`Depth stretched ${stretch.toFixed(1)}×`} value={stretch} min={1} max={12} step={0.5} onChange={setStretch} />
-          <Range label={`Leave out molecules of quality below ${qvMin}`} value={qvMin} min={0} max={40} step={1} onChange={setQvMin} />
+          <Range
+            label={
+              hasQv ? `Leave out molecules of quality below ${qvMin}` : "Quality: this element has no qv column, so every molecule is kept"
+            }
+            value={qvMin}
+            min={0}
+            max={40}
+            step={1}
+            disabled={!hasQv}
+            onChange={setQvMin}
+          />
           <div className="status">
             {busy}
             {error && <span className="error">{error.message}</span>}
