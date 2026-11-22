@@ -21,6 +21,7 @@ import { Model } from "@luma.gl/engine";
 import type { ShaderModule } from "@luma.gl/shadertools";
 import type { Color } from "./DensityLayer";
 import { type BufferSource, HandleCache, resolveBuffer } from "./handles";
+import { ISO_MARCH_WGSL } from "./isoMarchWgsl";
 import { MATERIAL_WGSL, VIEW_FRAME_WGSL } from "./shadingWgsl";
 
 export type IsoSurfaceLayerProps = {
@@ -125,24 +126,7 @@ fn vertexMain(@builtin(vertex_index) vertexIndex: u32) -> Varyings {
   return output;
 }
 
-fn iso_voxel(x: i32, y: i32, z: i32) -> f32 {
-  let n = vec3<i32>(iso.dims.xyz);
-  let q = clamp(vec3<i32>(x, y, z), vec3<i32>(0), n - vec3<i32>(1));
-  return field[u32(q.x + n.x * (q.y + n.y * q.z))];
-}
-
-/** The field at box coordinates u (0..1 along each edge), interpolated between voxel centres. */
-fn iso_field(u: vec3<f32>) -> f32 {
-  let g = u * iso.dims.xyz - vec3<f32>(0.5);
-  let base = floor(g);
-  let f = g - base;
-  let i = vec3<i32>(base);
-  let x00 = mix(iso_voxel(i.x, i.y, i.z), iso_voxel(i.x + 1, i.y, i.z), f.x);
-  let x10 = mix(iso_voxel(i.x, i.y + 1, i.z), iso_voxel(i.x + 1, i.y + 1, i.z), f.x);
-  let x01 = mix(iso_voxel(i.x, i.y, i.z + 1), iso_voxel(i.x + 1, i.y, i.z + 1), f.x);
-  let x11 = mix(iso_voxel(i.x, i.y + 1, i.z + 1), iso_voxel(i.x + 1, i.y + 1, i.z + 1), f.x);
-  return mix(mix(x00, x10, f.y), mix(x01, x11, f.y), f.z);
-}
+${ISO_MARCH_WGSL}
 
 struct FragmentOutput {
   @location(0) color: vec4<f32>,
@@ -173,63 +157,26 @@ fn fragmentMain(input: Varyings) -> FragmentOutput {
   if (abs(leave) > abs(enter)) {
     discard;
   }
-  if (!parallel) {
-    enter = max(enter, -length(fromCamera));
-  }
-
-  // Half a voxel at a step. Where a step ends close under the level the field may have risen over
-  // it and fallen back in between (a line of sight grazing the surface), so that stretch is looked
-  // at four times as closely: without this the outline breaks into teeth.
-  let perStep = 0.5 / max(length(du * iso.dims.xyz), 1e-9);
-  let steps = clamp(ceil((leave - enter) / perStep), 1.0, iso.march.x);
-  let dt = (leave - enter) / steps;
-  let level = iso.dims.w;
-  var before = iso_field(u0 + du * enter);
-  var hit = before >= level;
-  // The crossing lies between these: below the level at "under", at or above it at "over".
-  var under = enter;
-  var over = enter;
-  if (!hit) {
-    for (var k = 1.0; k <= steps; k = k + 1.0) {
-      let t = enter + dt * k;
-      let here = iso_field(u0 + du * t);
-      if (here >= level) {
-        under = t - dt;
-        over = t;
-        hit = true;
-        break;
-      }
-      if (max(before, here) > 0.5 * level) {
-        var found = false;
-        var foundAt = t;
-        for (var j = 1.0; j < 4.0; j = j + 1.0) {
-          let tj = t - dt + dt * j * 0.25;
-          if (!found && iso_field(u0 + du * tj) >= level) {
-            found = true;
-            foundAt = tj;
-          }
-        }
-        if (found) {
-          under = foundAt - dt * 0.25;
-          over = foundAt;
-          hit = true;
-          break;
-        }
-      }
-      before = here;
+  // Nothing nearer than the near plane is seen. Clip z is linear along the line of sight, so where it
+  // is 0 is one division away. Starting there, the view may be inside the surface: see iso_march.
+  let clip0 = project_common_position_to_clipspace(vec4<f32>(input.place, 1.0));
+  let clipPerT = project_common_position_to_clipspace(vec4<f32>(input.place + dir, 1.0)) - clip0;
+  var fromNear = false;
+  if (clipPerT.z > 0.0) {
+    let near = -clip0.z / clipPerT.z;
+    if (near > enter) {
+      enter = near;
+      fromNear = true;
     }
   }
-  if (!hit) {
+  if (enter >= leave) {
     discard;
   }
-  // Halve the stretch until the crossing is pinned down to a small fraction of a voxel.
-  for (var r = 0; r < 6; r = r + 1) {
-    let mid = 0.5 * (under + over);
-    let above = iso_field(u0 + du * mid) >= level;
-    under = select(mid, under, above);
-    over = select(over, mid, above);
+  let found = iso_march(u0, du, enter, leave, fromNear);
+  if (!found.hit) {
+    discard;
   }
-  let at = select(0.5 * (under + over), enter, over <= enter);
+  let at = found.at;
 
   let u = u0 + du * at;
   // Sloped over a whole voxel either side: between neighbouring voxels the interpolated field's own
@@ -243,6 +190,8 @@ fn fragmentMain(input: Varyings) -> FragmentOutput {
   // Outward is downhill. A flat field (the box's own face cutting through) faces the viewer.
   var outward = -(input.row0 * slope.x + input.row1 * slope.y + input.row2 * slope.z);
   outward = select(outward, -dir, dot(outward, outward) < 1e-12);
+  // Seen from inside, the wall is lit on the side facing the viewer.
+  outward = select(outward, -outward, found.exiting);
   let normal = to_view(normalize(outward), view);
 
   let clip = project_common_position_to_clipspace(vec4<f32>(input.place + dir * at, 1.0));
