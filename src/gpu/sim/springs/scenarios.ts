@@ -398,9 +398,13 @@ export function spheroidScenario(cfg: SpheroidConfig = {}): SpheroidScenario {
       // Only live settings: a structural one passed by spread would misreport what was built.
       const live: Record<string, unknown> = { ...defined(change) };
       for (const key of STRUCTURE) delete live[key];
-      c = { ...c, ...live };
-      rules = spheroidRules(c);
-      scenario.params = { ...scenario.params, ...spheroidParams(c) };
+      // Build and check the whole change before keeping any of it: a refused setting must not stick.
+      const next = { ...c, ...live };
+      const nextRules = spheroidRules(next);
+      const nextParams = spheroidParams(next);
+      c = next;
+      rules = nextRules;
+      scenario.params = { ...scenario.params, ...nextParams };
     },
     advance(steps) {
       for (let k = 0; k < steps; k++) {

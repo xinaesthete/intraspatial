@@ -772,6 +772,9 @@ describe("scenarios", () => {
     // Two steps of half a unit re-bond as often as one step of a whole unit.
     expect(1 - (1 - (rules.formRule.prob ?? 0)) ** 2).toBeCloseTo(0.1, 12);
     expect(() => sc.configure({ dt: 0 })).toThrow(RangeError);
+    // The refused step did not stick.
+    sc.configure({ motility: 0.05 });
+    expect(sc.config.dt).toBe(0.5);
     expect(spheroidDefaults(2).dt).toBe(1);
   });
 

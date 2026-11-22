@@ -651,7 +651,7 @@ export function SpringsDemo() {
                   max={c.max}
                   step={c.step}
                   infinite={c.infinite}
-                  value={ball[c.key] ?? DEFAULT_SPHEROID[c.key]}
+                  value={ball[c.key] ?? spheroidDefaults(3)[c.key]}
                   onChange={(v) => setBall({ ...ball, [c.key]: v })}
                 />
               ))}
