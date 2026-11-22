@@ -14,7 +14,7 @@ import { adoptDevice, getDevice } from "../../../src/gpu/device";
 let shared: Promise<SharedGpu> | undefined;
 
 /** The page's device. The same one on every call. */
-export function globalGpu(): Promise<SharedGpu> {
+function globalGpu(): Promise<SharedGpu> {
   shared ??= (async () => {
     const adapter = await navigator.gpu?.requestAdapter();
     if (!adapter) throw new Error("This page needs WebGPU, and the browser offers no adapter.");
