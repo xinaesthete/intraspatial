@@ -210,6 +210,9 @@ export function useSimulation(o: SimulationOptions): { samples: readonly Sample[
         }
       }
       frame++;
+      // React's development build records a performance measure for every render, and the browser
+      // keeps them all: at this frame rate an hour's worth runs the page out of memory.
+      if (import.meta.env.DEV && frame % 600 === 0) performance.clearMeasures();
       now.onFrame(sc, time);
       raf = requestAnimationFrame(tick);
     };

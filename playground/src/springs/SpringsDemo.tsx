@@ -111,7 +111,7 @@ const SPHEROID_CONTROLS: readonly {
   {
     key: "reformProb",
     label: "Healing rate",
-    hint: "chance per step that broken matrix re-bonds",
+    hint: "chance per unit of time that broken matrix re-bonds",
     min: 0,
     max: 0.02,
     step: 0.0001,
@@ -120,7 +120,7 @@ const SPHEROID_CONTROLS: readonly {
   {
     key: "bondLifetime",
     label: "Bond lifetime",
-    hint: "bonds also break at random after about this many steps",
+    hint: "bonds also break at random after about this much time",
     min: 20,
     max: 3000,
     step: 10,
@@ -175,7 +175,7 @@ const SPHEROID_CONTROLS: readonly {
   {
     key: "divisionTime",
     label: "Division time",
-    hint: "steps between divisions of an uncrowded cell",
+    hint: "time between divisions of an uncrowded cell",
     min: 50,
     max: 2000,
     step: 10,
@@ -184,11 +184,15 @@ const SPHEROID_CONTROLS: readonly {
   },
 ];
 
-/** Structure of the 3D run, and the two regimes found by searching. */
+/** Structure of the 3D run, and the regimes found by searching. Tuned at the stable time step
+ *  (0.15): a longer step made contacts flip every step, which broke gel bonds and kept cells
+ *  jiggling, and the earlier presets had leaned on that. */
 const BALL_STRUCTURE: SpheroidConfig = { dims: 3, cellRadius: 2.5, matrixRadius: 11, maxCells: 3000, matrixDisorder: 0.2 };
 const BALL_BASE: SpheroidConfig = {
-  stiffness: 0.3,
-  yieldStrain: 0.3,
+  stiffness: 0.2,
+  yieldStrain: 0.2,
+  // Stable contacts pack cells tighter than the 3D default allows for, which stops growth early.
+  maxDensity: 30,
   reformProb: 0.0005,
   matrixRepulsion: 0.05,
   motility: 0.02,
@@ -205,17 +209,17 @@ const BALL_PRESETS: readonly { label: string; hint: string; config: SpheroidConf
   {
     label: "Branching",
     hint: "cells hold together: thick arms that stay attached, each led by a tip cell",
-    config: { ...BALL_BASE, ...COHESIVE, leaderThrust: 0.6 },
+    config: { ...BALL_BASE, ...COHESIVE, leaderThrust: 0.8 },
   },
   {
     label: "Dense branching",
-    hint: "stronger leaders: more arms, and a few leaders tear free",
-    config: { ...BALL_BASE, ...COHESIVE, leaderThrust: 0.8 },
+    hint: "stronger leaders, closer together",
+    config: { ...BALL_BASE, ...COHESIVE, leaderThrust: 1, leaderSpacing: 3 },
   },
   {
     label: "Breaking away",
     hint: "weaker cohesion: thin arms that pinch off and travel as clusters",
-    config: { ...BALL_BASE, leaderThrust: 0.6, cellAdhesion: 0.06, cellRepulsion: 0.3, leaderTime: 200, divisionTime: 200 },
+    config: { ...BALL_BASE, leaderThrust: 0.8, cellAdhesion: 0.06, cellRepulsion: 0.3, leaderTime: 200, divisionTime: 200 },
   },
   {
     label: "No leaders",
@@ -225,7 +229,7 @@ const BALL_PRESETS: readonly { label: string; hint: string; config: SpheroidConf
   {
     label: "Elastic gel",
     hint: "leaders, but a gel that never yields",
-    config: { ...BALL_BASE, ...COHESIVE, leaderThrust: 0.6, yieldStrain: Number.POSITIVE_INFINITY },
+    config: { ...BALL_BASE, ...COHESIVE, leaderThrust: 0.8, yieldStrain: Number.POSITIVE_INFINITY },
   },
 ];
 const BALL_CONTROLS: readonly {
@@ -237,6 +241,14 @@ const BALL_CONTROLS: readonly {
   step: number;
   infinite?: string;
 }[] = [
+  {
+    key: "dt",
+    label: "Time step",
+    hint: "model time per step; above about 0.2 cells and gel flip back and forth every step",
+    min: 0.05,
+    max: 1,
+    step: 0.05,
+  },
   {
     key: "leaderThrust",
     label: "Leader pull",
@@ -253,7 +265,7 @@ const BALL_CONTROLS: readonly {
     max: 10,
     step: 0.5,
   },
-  { key: "leaderTime", label: "Leader delay", hint: "steps before an exposed cell becomes a leader", min: 20, max: 600, step: 10 },
+  { key: "leaderTime", label: "Leader delay", hint: "time before an exposed cell becomes a leader", min: 20, max: 600, step: 10 },
   {
     key: "leaderGrip",
     label: "Leader grip",
@@ -281,11 +293,18 @@ const BALL_CONTROLS: readonly {
     step: 0.01,
     infinite: "never breaks (elastic)",
   },
-  { key: "reformProb", label: "Gel healing rate", hint: "chance per step that broken gel re-bonds", min: 0, max: 0.02, step: 0.0001 },
+  {
+    key: "reformProb",
+    label: "Gel healing rate",
+    hint: "chance per unit of time that broken gel re-bonds",
+    min: 0,
+    max: 0.02,
+    step: 0.0001,
+  },
   {
     key: "divisionTime",
     label: "Division time",
-    hint: "steps between divisions of an uncrowded cell",
+    hint: "time between divisions of an uncrowded cell",
     min: 40,
     max: 800,
     step: 10,
@@ -645,7 +664,8 @@ export function SpringsDemo() {
                 Gel only fails where it is pulled apart
               </label>
               <p className="hint">
-                Settings act on the running tissue. Arms take a few thousand steps to appear; raise steps per frame to get there sooner.
+                Settings act on the running tissue, and times are in model time, not steps. Arms take a few thousand units of time to
+                appear, many thousand steps; raise steps per frame to get there sooner.
               </p>
             </>
           )}

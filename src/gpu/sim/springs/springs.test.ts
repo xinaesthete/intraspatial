@@ -26,6 +26,7 @@ import {
   LEADER,
   lineCells,
   liveCount,
+  MATRIX,
   MAX_SPECIES,
   pairRand01,
   phaseDiagram,
@@ -46,6 +47,7 @@ import {
   type SpringState,
   speciesTable,
   spawn,
+  spheroidDefaults,
   spheroidScenario,
   springParams,
   stepSprings,
@@ -754,6 +756,60 @@ describe("scenarios", () => {
     expect(topologyDefect(scattered.topology)).toBeUndefined();
     scattered.advance(20);
     expect(liveCount(scattered.state, CELL)).toBeGreaterThan(20);
+  });
+
+  it("spheroid: settings are in model time, and the step turns them into per-step values", () => {
+    const cfg = { divisionTime: 100, leaderTime: 40, leaderThrust: 0.5, bondLifetime: 50, reformProb: 0.1, motility: 0.04 };
+    const sc = spheroidScenario({ ...cfg, dt: 0.5 });
+    const { rules, params } = sc;
+    expect([params.springrate, rules.division?.tau, rules.leaders?.tau, rules.breakRule.tau, params.motility[CELL]]).toEqual([
+      0.5,
+      200,
+      80,
+      100,
+      0.04 / Math.sqrt(0.5),
+    ]);
+    // Two steps of half a unit re-bond as often as one step of a whole unit.
+    expect(1 - (1 - (rules.formRule.prob ?? 0)) ** 2).toBeCloseTo(0.1, 12);
+    expect(() => sc.configure({ dt: 0 })).toThrow(RangeError);
+    expect(spheroidDefaults(2).dt).toBe(1);
+  });
+
+  it("spheroid in 3D: its default step is short enough that contacts do not flip every step", () => {
+    /** Movement over two steps against the sum of the two single steps, over the run's last few
+     *  steps: about 2 for a steady drift, near 0 for particles flipping back and forth. */
+    const smoothness = (dt: number) => {
+      const sc = spheroidScenario({ dims: 3, cellRadius: 1.5, matrixRadius: 4, matrixDisorder: 0.2, seed: 1 });
+      sc.configure({ stiffness: 0.3, cellRepulsion: 0.5, cellAdhesion: 0.1, motility: 0.02, adhesionRange: 0.25, dt });
+      const steps = Math.round(20 / dt);
+      sc.advance(steps - 2);
+      const frames = [sc.state.pos.slice()];
+      for (let k = 0; k < 2; k++) {
+        sc.advance(1);
+        frames.push(sc.state.pos.slice());
+      }
+      const [a, b, c] = frames as [Float32Array, Float32Array, Float32Array];
+      const by: Record<string, [number, number]> = { cell: [0, 0], matrix: [0, 0] };
+      for (let i = 0; i < sc.state.n; i++) {
+        const sp = sc.state.species[i];
+        const row = sp === CELL ? by.cell : sp === MATRIX ? by.matrix : undefined;
+        if (!row) continue;
+        const d = (x: Float32Array, y: Float32Array) =>
+          Math.hypot(x[i * 4]! - y[i * 4]!, x[i * 4 + 1]! - y[i * 4 + 1]!, x[i * 4 + 2]! - y[i * 4 + 2]!);
+        row[0] += d(a, c);
+        row[1] += d(a, b) + d(b, c);
+      }
+      return { cell: (2 * by.cell![0]) / by.cell![1], matrix: (2 * by.matrix![0]) / by.matrix![1] };
+    };
+    const long = smoothness(1);
+    const short = smoothness(spheroidDefaults(3).dt);
+    expect(
+      { long: long.cell < 0.5 && long.matrix < 0.5, short: short.cell > 1.2 && short.matrix > 1.2 },
+      JSON.stringify({ long, short }),
+    ).toEqual({
+      long: true,
+      short: true,
+    });
   });
 
   it("spheroid: a yielding matrix lets the tissue outgrow an elastic one", () => {

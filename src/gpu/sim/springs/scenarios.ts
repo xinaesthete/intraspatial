@@ -167,12 +167,12 @@ export interface SpheroidConfig {
   readonly stiffness?: number;
   /** A matrix bond stretched past this strain breaks; `Infinity` is an elastic matrix. */
   readonly yieldStrain?: number;
-  /** Mean lifetime of a matrix bond in steps, regardless of load; `Infinity` is none. */
+  /** Mean lifetime of a matrix bond in model time, regardless of load; `Infinity` is none. */
   readonly bondLifetime?: number;
   /** Matrix bonds re-form between particles closer than this. */
   readonly reformRange?: number;
-  /** Chance per step that an eligible pair re-bonds. Low values leave broken matrix weak for a
-   *  while, so damage stays where it happened. */
+  /** Chance per unit of model time that an eligible pair re-bonds. Low values leave broken matrix
+   *  weak for a while, so damage stays where it happened. */
   readonly reformProb?: number;
   /** Stiffness of the contact repulsion between matrix particles: how hard the matrix is to
    *  compress, as opposed to shear. */
@@ -203,7 +203,7 @@ export interface SpheroidConfig {
   /** How much more strongly a leader holds on to its followers than cells hold each other.
    *  Too little and a leader tears free and leaves alone. */
   readonly leaderGrip?: number;
-  /** Mean steps before an exposed cell becomes a leader. */
+  /** Mean model time before an exposed cell becomes a leader. */
   readonly leaderTime?: number;
   /** No new leader forms within this distance of another: how far apart branches start. */
   readonly leaderSpacing?: number;
@@ -216,7 +216,12 @@ export interface SpheroidConfig {
   readonly matrixDisorder?: number;
   /** 2 for a sheet, 3 for a ball in a block of matrix. */
   readonly dims?: 2 | 3;
-  /** Mean steps between divisions of an uncrowded cell; `Infinity` is no growth. */
+  /** Model time per step. Times and rates above are in model time, so a smaller step resolves the
+   *  same run more finely rather than slowing it. The step is explicit, so one too long for the
+   *  stiffest contacts makes particles flip back and forth every step, at the speed limit: 1 is
+   *  fine in 2D, but a 3D ball's twelve-neighbour contacts need about 0.15. */
+  readonly dt?: number;
+  /** Mean model time between divisions of an uncrowded cell; `Infinity` is no growth. */
   readonly divisionTime?: number;
   /** Density above which a cell does not divide. Default 9.5 in 2D and 22 in 3D: both are a
    *  close-packed cell squeezed about 14% closer to its neighbours. */
@@ -249,7 +254,7 @@ export interface SpheroidScenario extends Scenario {
 export function spheroidDefaults(dims: 2 | 3): Required<SpheroidConfig> {
   // A close-packed cell has 6 touching neighbours in 2D and 12 in 3D, so the same squeeze reads
   // as a higher density in 3D.
-  return dims === 3 ? { ...DEFAULT_SPHEROID, dims, maxDensity: 22 } : { ...DEFAULT_SPHEROID, dims };
+  return dims === 3 ? { ...DEFAULT_SPHEROID, dims, maxDensity: 22, dt: 0.15 } : { ...DEFAULT_SPHEROID, dims };
 }
 
 export const DEFAULT_SPHEROID: Required<SpheroidConfig> = {
@@ -276,6 +281,7 @@ export const DEFAULT_SPHEROID: Required<SpheroidConfig> = {
   yieldInCompression: true,
   matrixDisorder: 0,
   dims: 2,
+  dt: 1,
   divisionTime: 400,
   maxDensity: 9.5,
   maxCells: 600,
@@ -418,8 +424,11 @@ export function spheroidScenario(cfg: SpheroidConfig = {}): SpheroidScenario {
 function spheroidParams(c: Required<SpheroidConfig>): Partial<SpringParams> {
   const mobility = Array.from({ length: MAX_SPECIES }, () => 1);
   mobility[MATRIX] = c.matrixMobility;
+  // A fresh random kick every step: scaled by 1/√dt, it spreads a cell as far per unit time
+  // whatever the step.
+  const kick = c.motility / Math.sqrt(c.dt);
   const motility = Array.from({ length: MAX_SPECIES }, () => 0);
-  motility[CELL] = c.motility;
+  motility[CELL] = kick;
   const roleforces = Array.from({ length: 8 }, () => 1);
   roleforces[KIND_MATRIX] = c.stiffness;
   roleforces[KIND_LIGAND] = c.ligand;
@@ -427,8 +436,9 @@ function spheroidParams(c: Required<SpheroidConfig>): Partial<SpringParams> {
   protrusion[CELL] = c.protrusion;
   const thrust = Array.from({ length: MAX_SPECIES }, () => 0);
   thrust[LEADER] = c.leaderThrust;
-  motility[LEADER] = c.motility;
+  motility[LEADER] = kick;
   return {
+    springrate: c.dt,
     // Far enough for every pair term that is on: density, adhesion's reach, the outward terms.
     pairRange: Math.max(1.5, 1 + c.adhesionRange, c.protrusion !== 0 || c.leaderThrust !== 0 ? c.protrusionRange : 0),
     adhesionRange: c.adhesionRange,
@@ -469,11 +479,12 @@ export interface SpheroidRules {
 
 /** The turnover and growth rules the spheroid's settings decide. */
 function spheroidRules(c: Required<SpheroidConfig>): SpheroidRules {
+  if (!(c.dt > 0 && Number.isFinite(c.dt))) throw new RangeError(`spheroid: dt must be a positive number, got ${c.dt}`);
   const breakRule: BreakRule = {
     kinds: (1 << KIND_MATRIX) | (1 << KIND_LIGAND),
     maxStrain: Number.isFinite(c.yieldStrain) ? c.yieldStrain : undefined,
     tensionOnly: !c.yieldInCompression,
-    tau: Number.isFinite(c.bondLifetime) ? c.bondLifetime : undefined,
+    tau: Number.isFinite(c.bondLifetime) ? c.bondLifetime / c.dt : undefined,
   };
   const kindOf = Array.from({ length: MAX_SPECIES * MAX_SPECIES }, () => -1);
   kindOf[MATRIX * MAX_SPECIES + MATRIX] = KIND_MATRIX;
@@ -489,11 +500,12 @@ function spheroidRules(c: Required<SpheroidConfig>): SpheroidRules {
     kindOf,
     strength: UNIT_STRENGTHS,
     rest: "current",
-    prob: c.reformProb,
+    // Per step, the chance that compounds to `reformProb` over a unit of time.
+    prob: 1 - (1 - Math.min(1, c.reformProb)) ** c.dt,
     speciesCount: MAX_SPECIES,
   };
   const division: DivisionRule | undefined = Number.isFinite(c.divisionTime)
-    ? { species: CELL, tau: c.divisionTime, maxDensity: c.maxDensity, offset: 0.5 }
+    ? { species: CELL, tau: c.divisionTime / c.dt, maxDensity: c.maxDensity, offset: 0.5 }
     : undefined;
   // A full shell is 6 neighbours in 2D and 12 in 3D. A surface cell of a packed tissue has about
   // two thirds of that, so that is the limit for becoming a leader; only a leader with a full
@@ -501,7 +513,14 @@ function spheroidRules(c: Required<SpheroidConfig>): SpheroidRules {
   const shell = c.dims === 2 ? 6 : 12;
   const leaders: LeaderRule | undefined =
     c.leaderThrust !== 0
-      ? { from: CELL, to: LEADER, tau: c.leaderTime, maxNeighbours: (shell * 2) / 3, spacing: c.leaderSpacing, revertNeighbours: shell }
+      ? {
+          from: CELL,
+          to: LEADER,
+          tau: c.leaderTime / c.dt,
+          maxNeighbours: (shell * 2) / 3,
+          spacing: c.leaderSpacing,
+          revertNeighbours: shell,
+        }
       : undefined;
   return { breakRule, formRule, division, leaders, turnover: breakRule.maxStrain !== undefined || breakRule.tau !== undefined };
 }
