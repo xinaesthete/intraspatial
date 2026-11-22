@@ -244,11 +244,11 @@ async function withoutSlices(ctx: ExecCtx, v: FieldValue, made: ResidentBuffer[]
   const buf = v.buffer;
   if (!buf?.sliceOf) return v;
   const copy = await ctx.backend.lease(buf.byteLength);
+  made.push(copy); // before anything else can throw, so a failed tick returns it
   const device = await ctx.backend.getDevice();
   const enc = device.createCommandEncoder({ label: "executor:unslice" });
   enc.copyBufferToBuffer(buf.buffer, buf.offset ?? 0, copy.buffer, 0, Math.ceil(buf.byteLength / 4) * 4);
   device.queue.submit([enc.finish()]);
-  made.push(copy);
   return { ...v, buffer: copy };
 }
 
@@ -510,10 +510,14 @@ async function runTick(graph: Graph, field: GpuField, o: TickOptions): Promise<M
   // Copies made for ops that cannot bind a range of a buffer; live only while their node runs.
   const unsliced: ResidentBuffer[] = [];
   /** A tick that throws never reaches its closing sweep. Return what it leased, leaving alone
-   *  anything the sim state has adopted: that belongs to the last committed tick. */
+   *  anything the sim state holds: that belongs to the last committed tick. Go by payload, not
+   *  key: a seed extracted from a packed bundle is held under the extract's key, while the root
+   *  it is a range of is owned under the pack's. */
   const releaseAfterFailure = () => {
     for (const copy of unsliced) o.ctx.backend.release(copy);
-    for (const [k, list] of owned) if (!adopted.has(k)) for (const p of list) releasePayload(p);
+    const held = new Set<ResidentPayload>();
+    for (const s of o.store.values()) if (!(s instanceof FieldRing)) for (const p of payloadsOf(s)) held.add(p);
+    for (const [k, list] of owned) if (!adopted.has(k)) for (const p of list) if (!held.has(p)) releasePayload(p);
   };
 
   try {
@@ -708,14 +712,19 @@ async function runTick(graph: Graph, field: GpuField, o: TickOptions): Promise<M
     // `[src, dst] = [dst, src]` expressed through the lease API rather than by hand. The steady
     // state is constant in tick count — no per-tick allocation, and no download anywhere in the
     // loop, which is what invariant 1 asks for and what Tier-1 could not provide.
-    // Every readback a commit needs happens first. One that fails then leaves the state where it
-    // was, so the tick can be run again; nothing below this block can reject.
+    // Every readback a commit needs happens first, and every delay frame is checked against its
+    // ring. One that fails then leaves the state where it was, so the tick can be run again;
+    // nothing below this block can reject.
     const sinkKey = key(field.producer, field.outPort);
     if (o.materialiseSink) await hostAt(sinkKey);
     const delayFrames = new Map<GraphNode, FieldValue>();
     for (const node of delayNodes) {
       const nextRef = node.inputs.next;
-      if (nextRef && o.store.get(storeKey(node)) instanceof FieldRing) delayFrames.set(node, await hostAt(key(nextRef.node, nextRef.port)));
+      const ring = o.store.get(storeKey(node));
+      if (!nextRef || !(ring instanceof FieldRing)) continue;
+      const frame = await hostAt(key(nextRef.node, nextRef.port));
+      ring.check(frame);
+      delayFrames.set(node, frame);
     }
 
     const superseded: ResidentPayload[] = [];
@@ -777,6 +786,10 @@ async function runTick(graph: Graph, field: GpuField, o: TickOptions): Promise<M
       // `pullResident` deliberately skips this: there the *caller* owns the buffer.
       pinned.delete(sinkKey);
       releaseIfDead(sinkKey);
+      // The caller gets data. A buffer still on the value is not theirs: it may be a state the
+      // commit just returned, or one the sim state will return next tick.
+      const sinkValue = pulled.get(sinkKey);
+      if (sinkValue) pulled.set(sinkKey, withoutResidentHandles(sinkValue));
     }
 
     // The sink is pinned, so nothing above released it; if it borrowed, split its lender now.

@@ -46,8 +46,8 @@ const adhesionFn = tgpu
         const ri = layout.$.radius[i]!;
         for (let j = d.u32(0); j < layout.$.params.n; j++) {
           const sj = layout.$.species[j]!;
-          // A species the tables do not cover takes no part, rather than reading another pair's cell.
-          if (j !== i && si < layout.$.params.speciesCount && sj < layout.$.params.speciesCount) {
+          // A dead neighbour, or a species the tables do not cover, takes no part (a 256-wide table covers 255).
+          if (j !== i && sj !== 255 && si < layout.$.params.speciesCount && sj < layout.$.params.speciesCount) {
             const dd = std.sub(layout.$.pos[j]!.xyz, me);
             const len = std.length(dd);
             if (len > 0 && len <= layout.$.params.pairRange) {

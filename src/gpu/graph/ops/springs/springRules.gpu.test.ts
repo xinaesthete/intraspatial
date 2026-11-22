@@ -636,33 +636,23 @@ describe("spring model rules as graph ops", () => {
       for (const p of mine) if ("buffer" in p) nodeBackend.release(p);
       disposeSimState(state, nodeBackend);
     });
+    // Throw on frame 1, once the sink is a resident buffer the caller would have been handed.
     await measure("onFrame throws", () =>
-      advance(loop, counter.state, {
-        steps: 2,
-        materialise: "none",
-        onFrame: () => {
-          throw new Error("stop");
-        },
-      }).then(
-        () => undefined,
-        () => undefined,
-      ),
+      expect(
+        advance(loop, counter.state, {
+          steps: 3,
+          materialise: "none",
+          onFrame: (t) => {
+            if (t === 1) throw new Error("stop");
+          },
+        }),
+      ).rejects.toThrow("stop"),
     );
     expect(counted).toEqual([1, 7]);
     // And when a tick fails part-way.
     const bad = springGraph(sc.state, sc.topology, { ...sc.params, damp: Number.NaN });
-    await measure("advance fails", () =>
-      advance(bad.graph, bad.pos, { steps: 2 }).then(
-        () => undefined,
-        () => undefined,
-      ),
-    );
-    await measure("pull fails", () =>
-      pull(bad.graph, bad.pos).then(
-        () => undefined,
-        () => undefined,
-      ),
-    );
+    await measure("advance fails", () => expect(advance(bad.graph, bad.pos, { steps: 2 })).rejects.toThrow());
+    await measure("pull fails", () => expect(pull(bad.graph, bad.pos)).rejects.toThrow());
     expect(Object.fromEntries(Object.entries(leaked).filter(([, n]) => n !== 0))).toEqual({});
     expect(live()).toBe(before);
   });

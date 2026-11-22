@@ -136,9 +136,17 @@ export class FieldRing implements MemoryReporting {
     this.ring = new RingBuffer(numCells(shape) * elementLanes(element), capacity);
   }
 
-  push(field: FieldValue): void {
+  /** Throw what `push` would throw for `field`, without recording it. */
+  check(field: FieldValue): void {
     if (!field.data) throw new Error("FieldRing.push: field has no data");
-    this.ring.push(field.data);
+    if (field.data.length < this.ring.frameLength) {
+      throw new Error(`RingBuffer.push: data length ${field.data.length} < frameLength ${this.ring.frameLength}`);
+    }
+  }
+
+  push(field: FieldValue): void {
+    this.check(field);
+    this.ring.push(field.data!);
   }
 
   get frames(): number {

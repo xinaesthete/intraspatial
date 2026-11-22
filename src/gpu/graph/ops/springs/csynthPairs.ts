@@ -654,6 +654,14 @@ const DISTANCE_PARAMS: ParamSpec[] = [
 ];
 const distanceNum = numbers(DISTANCE_PARAMS, "distanceForce");
 
+/** Both paths index the distance matrix with `matrixSize` as its stride, so it must be that wide. */
+function distanceCommon(n: number, p: Params, shapes: readonly Shape[]): CommonValues {
+  const c = commonValues(n, p, distanceNum, matrixSide(shapes[2]!));
+  const s = matrixSide(shapes[3]!);
+  if (c.msize > 0 && s !== c.msize) throw new Error(`distanceForce: the distance matrix is ${s} wide, but matrixSize is ${c.msize}`);
+  return c;
+}
+
 export const distanceForceOp = kernelOp<d.Infer<typeof DistanceParams>>({
   name: "distanceForce",
   label: "Distance targets",
@@ -666,13 +674,13 @@ export const distanceForceOp = kernelOp<d.Infer<typeof DistanceParams>>({
   uniform: (root) => root.createBuffer(DistanceParams).$usage("uniform").$name("distanceForce:params"),
   check: squareContact,
   uniforms: (n, p, shapes) => ({
-    c: commonValues(n, p, distanceNum, matrixSide(shapes[2]!)),
+    c: distanceCommon(n, p, shapes),
     force: distanceNum(p, "xyzforce"),
     power: distanceNum(p, "xyzpow"),
     maxDist: distanceNum(p, "xyzMaxDist"),
   }),
-  cpu([pos, species, contact, dist], n, p) {
-    const c = commonValues(n, p, distanceNum, side(contact!.length));
+  cpu([pos, species, contact, dist], n, p, shapes) {
+    const c = distanceCommon(n, p, shapes);
     return alongCpu(n, pos!, species!, contact!, c, (q) => {
       if (!(q.inRange && q.inMatrix)) return 0;
       const target = dist![q.i * c.msize + q.j]!;

@@ -18,6 +18,9 @@ import type { FieldValue, Shape, ShapeKind } from "../handle";
 import { packedLayout, sliceBuffer } from "../handle";
 import type { OpType } from "../op";
 
+/** `GPUBufferUsage.COPY_SRC`, by value: the global is absent where WebGPU is not loaded. */
+const COPY_SRC = 0x04;
+
 /** One member of a bundle. The `kind` is what makes an extract op's output port properly typed
  *  rather than `any`: the part's exact SHAPE needs a run, but its kind never changes, so the
  *  composer can colour the port and refuse a wrong edge at wiring time. */
@@ -193,6 +196,9 @@ export function packOp(spec: BundleSpec): OpType {
     async execute(ctx, inputs) {
       const sources = inputs.map((v, i) => {
         if (!v.buffer) throw new Error(`${who}: part "${spec.parts[i]!.name}" is not on the device`);
+        // A failed copy is a device validation error, not a throw: check here or pack garbage.
+        if ((v.buffer.buffer.usage & COPY_SRC) === 0)
+          throw new Error(`${who}: part "${spec.parts[i]!.name}" is in a buffer without COPY_SRC`);
         return v.buffer;
       });
       const { offsets, total } = packedLayout(sources.map((b) => b.byteLength));
