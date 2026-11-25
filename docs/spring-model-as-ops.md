@@ -225,7 +225,7 @@ Spheroid, 3D, whole tick, ms a tick:
 
 | group | ops | in → out |
 | --- | --- | --- |
-| forces | one per term above | state (+ `bondTable`) → `force` |
+| forces | one per term above; `traction` turns `outward`'s pull into a pull on gripped partners | state (+ `bondTable`) → `force` |
 | sum | `addFields` (exists) | forces → `force` |
 | integrate | `springIntegrate`: mobility, damping types 1–4, speed cap, half-step fix | `pos`, `prev`, `force` → `pos`, `prev` |
 | constraints | `rodConstraint`, `centre`, `fixConstraint` | `pos` → `pos` |
@@ -252,9 +252,25 @@ parameters), not the legacy object. The graph version must offer:
 | --- | --- |
 | **A change of settings is a round trip.** The graph reads settings when it is built, so `createSpringSim` downloads the state and rebuilds. | Fine for a slider; settings as graph inputs would avoid it. |
 | **The playground still downloads every batch**, because it draws on a 2D canvas from the host's copy. | The deck views bind `buffers()` and leave the download out. |
-| **The legacy `SpringsGpu` and `createSpheroidGpuRunner` are still there**, as the fused baseline and because the views branch uses them. | Remove once nothing calls them. |
+| **The legacy `SpringsGpu` and `createSpheroidGpuRunner` are still there**, as the fused baseline and because the views branch uses them. They do not do traction, and refuse a scenario that has it. | Remove once nothing calls them. |
 | **Totals and events** (bonds broken, divisions) are not counted on the device. | Reductions, with the readouts. |
 | **`addFields` is host-only.** | `addForces` stands in. Making `addFields` resident would replace it. |
+
+## 3D ball: time step, traction, presets (open)
+
+**Open: recalibrate the 3D presets with traction on.** The tools are in; the presets are not.
+
+| found | done |
+| --- | --- |
+| The explicit step was too long in 3D: gel and cells flipped back and forth every step at the speed limit. The flip broke gel bonds, and the 3D presets relied on it to branch. | `SpheroidConfig.dt`, settings in model time; 3D defaults to 0.15 (0.25 still flips). |
+| At a stable step, no gel/leader setting kept the old contrasts across seeds 1–3. Leaders pulled with a force from nowhere, and cell–matrix contact (fixed at 0.3) could not push back against a 0.6–0.8 pull, so leaders walked through any gel. | `cellMatrixRepulsion` setting; `SpringParams.tractionKinds` with the `traction` op (thrust as traction on gripped partners ahead, forces sum to zero); `SpheroidConfig.traction`, **off by default**. |
+| With traction on and `cellMatrixRepulsion` 1.0 (seed 1, t = 2500): an elastic gel confines (compactness 0.94), no leaders stays round, and a gel that fails only in tension makes 3 arms. Arms are thin because leaders rarely hold a ligand bond: ligand bonds form at `reformProb`. With `reformProb` 0.02 every leader grips, and tissue beyond 1.5 × r50 reaches 0.11–0.18 against 0.07 with no leaders and 0.02 in an elastic gel (seed 1). | Not yet in the presets. Start there. |
+| Sholl branch counts score lumps on a ~1000-cell ball as branches, and compactness is set by single escaped leaders. | A better readout was tried in the sweep only: tissue beyond 1.5 × r50, and clusters of ≥ 5 such cells. |
+
+To do: a ligand formation rate apart from gel healing (or initial ligand bonds); calibrate
+Branching, Dense, Breaking away, No leaders and Elastic over three or more seeds with traction on
+and `yieldInCompression` off; move the arm readout into `readouts.ts` and the page's chart. Sweep
+data so far: the session notes' `ball-preset-sweeps.txt`.
 
 ## Slices
 

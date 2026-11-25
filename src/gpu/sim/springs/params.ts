@@ -142,6 +142,12 @@ export interface SpringParams {
   /** Per-species thrust: a force of this fixed size in the same outward direction as
    *  `protrusion`, whatever the shape of the surface. What a leader cell pulls with. */
   thrust: readonly number[];
+  /** Bitmask of bond kinds a thrusting particle grips through. 0: thrust is a force from nowhere,
+   *  as in CSynth. Otherwise a particle pulls itself towards the partners of those bonds that lie
+   *  ahead of it, and they are pulled back by the same total force, shared by how far ahead each
+   *  lies; with none ahead it does not pull. An elastic network then has to store the strain the
+   *  pull puts into it, and the particle advances only where bonds give way. */
+  tractionKinds: number;
   /** Bitmask of the species that count as a particle's own tissue when finding which way is
    *  outward. A particle's own species always counts. */
   tissueMask: number;
@@ -235,6 +241,7 @@ export const DEFAULT_SPRING_PARAMS: SpringParams = {
   protrusionRange: 1.5,
   protrusionFull: 3.8,
   thrust: fill(MAX_SPECIES, 0),
+  tractionKinds: 0,
   tissueMask: 0,
   densityRange: Number.POSITIVE_INFINITY,
   seed: 1,

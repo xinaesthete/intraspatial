@@ -53,6 +53,7 @@ import { pairDensityOp } from "./springs/pairDensity";
 import { pairInterpreterOp } from "./springs/pairInterpreter";
 import { pushApartOp } from "./springs/pushApart";
 import { springForceOp } from "./springs/springForce";
+import { tractionOp } from "./springs/traction";
 import { springIntegrateOp } from "./springs/springIntegrate";
 import { thresholdOp } from "./threshold";
 import { vietorisRipsOp } from "./vietorisRips";
@@ -84,6 +85,7 @@ export function registerBuiltinOps(): void {
   reg(pushApartOp);
   reg(adhesionOp);
   reg(outwardOp);
+  reg(tractionOp);
   for (const op of [torsionForceOp, pullForceOp, viscosityOp, containerOp, mobilityOp, tickOp, noiseForceOp, motilityForceOp]) reg(op);
   for (const op of [rodConstraintOp, centreConstraintOp, fixConstraintOp, pullFixOp]) reg(op);
   for (const op of [bondBreakOp, bondFormOp]) reg(op);

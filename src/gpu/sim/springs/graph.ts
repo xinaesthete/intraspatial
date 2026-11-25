@@ -65,12 +65,19 @@ export function pushApartParams(p: SpringParams): Params {
   };
 }
 
+/** Whether thrust acts as traction on gripped partners, through its own two ops. */
+const tractionOn = (p: SpringParams) => p.tractionKinds !== 0 && p.thrust.some((v) => v !== 0);
+
+/** Thrust that the outward term itself applies: none when it is traction instead. */
+const outwardThrust = (p: SpringParams): readonly number[] => (tractionOn(p) ? p.thrust.map(() => 0) : p.thrust);
+
 /** `outward`'s params for a `SpringParams`. */
 export function outwardParams(p: SpringParams): Params {
   const out: Params = { ...pairRange(p), protrusionRange: p.protrusionRange, protrusionFull: p.protrusionFull, tissueMask: p.tissueMask };
+  const thrust = outwardThrust(p);
   for (let s = 0; s < MAX_SPECIES; s++) {
     out[`protrusion${s}`] = p.protrusion[s]!;
-    out[`thrust${s}`] = p.thrust[s]!;
+    out[`thrust${s}`] = thrust[s]!;
   }
   return out;
 }
@@ -333,7 +340,7 @@ function buildSpringGraph(
   // does all of them from a program held as data.
   const pushOn = p.pushapartlocalforce !== 0;
   const adhesionOn = any(p.repulsion) || any(p.adhesion);
-  const outwardOn = any(p.protrusion) || any(p.thrust);
+  const outwardOn = any(p.protrusion) || any(outwardThrust(p));
   const tables = adhesionOn
     ? {
         repulsion: held({ shape: table, dtype: "f32", data: Float32Array.from(p.repulsion) }, "repulsion"),
@@ -367,7 +374,7 @@ function buildSpringGraph(
           pairRange: range,
           tissueMask: p.tissueMask,
           ...perSpecies("protrusion", p.protrusion),
-          ...perSpecies("thrust", p.thrust),
+          ...perSpecies("thrust", outwardThrust(p)),
         },
       });
     }
@@ -387,6 +394,18 @@ function buildSpringGraph(
     if (tables)
       terms.adhesion = graph.op1("adhesion", { pos, species, radius, ...tables }, { ...pairRange(p), adhesionRange: p.adhesionRange });
     if (outwardOn) terms.outward = graph.op1("outward", { pos, species }, outwardParams(p));
+  }
+  // Thrust as traction: the pull alone, then shared back onto what each puller grips.
+  if (tractionOn(p)) {
+    const pullOnly: Params = {
+      ...outwardParams({ ...p, tractionKinds: 0 }),
+      ...perSpecies(
+        "protrusion",
+        p.protrusion.map(() => 0),
+      ),
+    };
+    const thrust = graph.op1("outward", { pos, species }, pullOnly);
+    terms.traction = graph.op1("traction", { pos, thrust, bonds }, { kinds: p.tractionKinds });
   }
 
   // ── CSynth's other pair terms. Each reads the contact map to work out its own gate. ──

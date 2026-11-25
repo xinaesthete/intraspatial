@@ -201,6 +201,12 @@ export interface SpheroidConfig {
   /** How far a cell looks for its own kind when working out which way is outward, in cell
    *  diameters. Larger values make broader branches. */
   readonly protrusionRange?: number;
+  /** Whether a leader pulls by gripping the matrix through its ligand bonds, so the matrix takes
+   *  the reaction (`SpringParams.tractionKinds`): an elastic matrix then holds it back, and it
+   *  advances where bonds give way. Off, its pull is a force from nowhere, which in time gets
+   *  through any matrix. Traction needs `cellMatrixRepulsion` at least `leaderThrust`, or a leader
+   *  walks through the particle it grips. */
+  readonly traction?: boolean;
   /** Force a leader cell pulls outward with; 0 is no leaders. Exposed surface cells become
    *  leaders, as tip cells do in a sprouting vessel. */
   readonly leaderThrust?: number;
@@ -280,6 +286,7 @@ export const DEFAULT_SPHEROID: Required<SpheroidConfig> = {
   protrusion: 0,
   protrusionRange: 1.5,
   leaderThrust: 0,
+  traction: false,
   leaderGrip: 3,
   leaderTime: 200,
   leaderSpacing: 5,
@@ -455,6 +462,7 @@ function spheroidParams(c: Required<SpheroidConfig>): Partial<SpringParams> {
     // Summed weight of a full shell of neighbours out to two diameters, in each packing.
     protrusionFull: c.dims === 2 ? 3.8 : 11,
     thrust,
+    tractionKinds: c.traction ? 1 << KIND_LIGAND : 0,
     tissueMask: (1 << CELL) | (1 << LEADER),
     protrusionRange: c.protrusionRange,
     // A leader is a cell: it repels and adheres as one.

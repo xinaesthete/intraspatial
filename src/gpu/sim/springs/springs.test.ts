@@ -53,6 +53,7 @@ import {
   stepSprings,
   topologyDefect,
   torsionForces,
+  tractionForces,
 } from "./index";
 
 /** Overdamped, no clipping in the range these tests use, no pair terms: springs only. */
@@ -477,6 +478,29 @@ describe("adhesion", () => {
     const mobility = [1, 0.25, 1, 1];
     stepSprings(s, t, plain({ repulsion: speciesTable([[0, 1, 0.5]]), mobility }));
     expect(-s.pos[0]!).toBeCloseTo(4 * (s.pos[4]! - 0.8), 5);
+  });
+});
+
+describe("thrust as traction", () => {
+  /** A leader (species 2) with a cell behind it, so outward is +x, bonded (kind 2) to a matrix
+   *  particle (species 1) at `gx, gy`. */
+  const setup = (gx: number, gy: number) => {
+    const s = createState(3);
+    spawn(s, 0, 0, 0, 0, 2);
+    spawn(s, 1, -1, 0, 0, 0);
+    spawn(s, 2, gx, gy, 0, 1);
+    const t = createTopology(3, 4);
+    addSpring(t, 0, 2, 1, 1, 0, 2);
+    const p = springParams({ thrust: [0, 0, 0.5, 0], tractionKinds: 1 << 2, tissueMask: 0b101, protrusionRange: 2 });
+    return tractionForces(s, t, p);
+  };
+
+  it("pulls a leader towards what it grips ahead, and that back by the same force", () => {
+    expect(Array.from(setup(1, 0)).map((v) => Math.round(v * 1e6) / 1e6 + 0)).toEqual([0.5, 0, 0, 0, 0, 0, -0.5, 0, 0]);
+  });
+
+  it("does not pull with nothing gripped ahead", () => {
+    expect(Array.from(setup(-0.5, 1)).every((v) => v === 0)).toBe(true);
   });
 });
 

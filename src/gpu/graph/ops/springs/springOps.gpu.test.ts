@@ -307,6 +307,38 @@ describe("spring model as graph ops", () => {
     };
   }
 
+  it("thrust as traction: the kernel matches its golden, the pull sums to zero, and the graph equals the fused step", async () => {
+    // Species 2 pulls; the tissue's kind-1 bonds are what it grips.
+    const p = pairParams({ tractionKinds: 1 << 1 });
+    const { s, t } = tissue(66);
+    const { graph, terms } = springGraph(s, t, p);
+    const gpu = await pullData(graph, terms.traction!);
+    const cpu = await pullData(graph, terms.traction!, { mode: "cpu" });
+    let net = [0, 0, 0];
+    let pullers = 0;
+    for (let i = 0; i < 66; i++) {
+      net = net.map((v, c) => v + gpu[i * 4 + c]!);
+      if (s.species[i] === 2 && Math.hypot(gpu[i * 4]!, gpu[i * 4 + 1]!, gpu[i * 4 + 2]!) > 0.05) pullers++;
+    }
+    const r = await bothAgainstFused(() => tissue(66), p, 6);
+    expect(
+      {
+        kernel: worst(gpu, cpu) < 1e-5,
+        netZero: Math.max(...net.map(Math.abs)) < 1e-5,
+        somePull: pullers > 0,
+        cpu: r.cpu.xyz < 2e-5,
+        gpu: r.gpu.xyz < 5e-4,
+      },
+      JSON.stringify({ worst: worst(gpu, cpu), net, pullers, cpu: r.cpu, gpu: r.gpu }),
+    ).toEqual({
+      kernel: true,
+      netZero: true,
+      somePull: true,
+      cpu: true,
+      gpu: true,
+    });
+  });
+
   /** The tissue with every per-particle extra: rods, pinned and pulled particles, torsion springs. */
   function rigged(n: number) {
     const { s, t } = tissue(n);

@@ -640,6 +640,10 @@ function packStepUniform(
   pairs: boolean,
   torsion: boolean,
 ): ArrayBuffer {
+  // This fused kernel predates traction and would apply thrust as a force from nowhere.
+  if (p.tractionKinds !== 0 && p.thrust.some((v) => v !== 0)) {
+    throw new Error("springsGpu: thrust as traction (tractionKinds) is not supported here; run the scenario as a graph (createSpringSim)");
+  }
   const buf = new ArrayBuffer(UNI_BYTES);
   const dv = new DataView(buf);
   const f32s = (offset: number, values: readonly number[], count: number) => {

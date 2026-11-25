@@ -77,6 +77,84 @@ export function pairTermsActive(p: SpringParams): boolean {
   );
 }
 
+/** The outward direction of particle `i`, unnormalised: away from its tissue neighbours, each
+ *  weighted by closeness. The same sum the pair loop makes for `protrusion` and `thrust`. */
+function awayFrom(s: SpringState, p: SpringParams, i: number): [number, number, number] {
+  const { n, pos, species } = s;
+  const si = species[i]!;
+  let ax = 0;
+  let ay = 0;
+  let az = 0;
+  for (let j = 0; j < n; j++) {
+    const sj = species[j]!;
+    if (j === i || sj === DEAD) continue;
+    if (sj !== si && ((p.tissueMask >> sj) & 1) !== 1) continue;
+    const dx = pos[j * 4]! - pos[i * 4]!;
+    const dy = pos[j * 4 + 1]! - pos[i * 4 + 1]!;
+    const dz = pos[j * 4 + 2]! - pos[i * 4 + 2]!;
+    const len = Math.hypot(dx, dy, dz);
+    if (len === 0 || (p.pairRange !== undefined && len > p.pairRange) || !(len < p.protrusionRange)) continue;
+    const w = 1 - len / p.protrusionRange;
+    ax -= (dx * w) / len;
+    ay -= (dy * w) / len;
+    az -= (dz * w) / len;
+  }
+  return [ax, ay, az];
+}
+
+/**
+ * Thrust as traction (`tractionKinds`): each thrusting particle pulls itself forward and the
+ * partners it grips ahead of it back, by the same total force, so the pull puts strain into
+ * whatever it grips instead of coming from nowhere. A partner's share is its forward cosine over
+ * the sum of them; with nothing gripped ahead there is no pull. Returns the force on every
+ * particle, xyz per particle.
+ */
+export function tractionForces(s: SpringState, t: SpringTopology, p: SpringParams): Float64Array {
+  const { n, pos, species } = s;
+  const out = new Float64Array(n * 3);
+  for (let i = 0; i < n; i++) {
+    const si = species[i]!;
+    if (si === DEAD) continue;
+    const thrust = p.thrust[si]!;
+    if (thrust === 0) continue;
+    const [ax, ay, az] = awayFrom(s, p, i);
+    const awayLen = Math.hypot(ax, ay, az);
+    if (!(awayLen > 1e-6)) continue;
+    const ux = ax / awayLen;
+    const uy = ay / awayLen;
+    const uz = az / awayLen;
+    const base = i * t.K * SLOT_WORDS;
+    let total = 0;
+    for (let pass = 0; pass < 2; pass++) {
+      for (let k = 0; k < t.K; k++) {
+        const bits = t.slotBits[base + k * SLOT_WORDS]!;
+        if (bits === NO_BOND || ((p.tractionKinds >> slotKind(bits)) & 1) !== 1) continue;
+        const j = slotPartner(bits);
+        const dx = pos[j * 4]! - pos[i * 4]!;
+        const dy = pos[j * 4 + 1]! - pos[i * 4 + 1]!;
+        const dz = pos[j * 4 + 2]! - pos[i * 4 + 2]!;
+        const len = Math.hypot(dx, dy, dz);
+        if (len === 0) continue;
+        const ahead = (dx * ux + dy * uy + dz * uz) / len;
+        if (!(ahead > 0)) continue;
+        if (pass === 0) total += ahead;
+        else {
+          const share = (thrust * ahead) / total;
+          out[j * 3]! -= ux * share;
+          out[j * 3 + 1]! -= uy * share;
+          out[j * 3 + 2]! -= uz * share;
+        }
+      }
+      if (total === 0) break;
+    }
+    if (total === 0) continue;
+    out[i * 3]! += ux * thrust;
+    out[i * 3 + 1]! += uy * thrust;
+    out[i * 3 + 2]! += uz * thrust;
+  }
+  return out;
+}
+
 /** Advance the state by one step, in place. */
 export function stepSprings(s: SpringState, t: SpringTopology, p: SpringParams, m?: SpringMatrices): void {
   const { n, pos, prev, species, radius } = s;
@@ -90,6 +168,7 @@ export function stepSprings(s: SpringState, t: SpringTopology, p: SpringParams, 
   const torsionOn = p.backbonetorsionspringforce !== 0 || (p.torsionspringforce !== 0 && t.torsion.some((v, k) => k % 2 === 1 && v !== 0));
   const torsionMaxSq = p.torsionMaxLen * p.torsionMaxLen;
   const quadOut = new Float64Array(13);
+  const traction = p.tractionKinds !== 0 && p.thrust.some((v) => v !== 0) ? tractionForces(s, t, p) : undefined;
 
   for (let i = 0; i < n; i++) {
     const i4 = i * 4;
@@ -178,7 +257,8 @@ export function stepSprings(s: SpringState, t: SpringTopology, p: SpringParams, 
       let bvz = 0;
       let boidn = 0;
       const protrude = p.protrusion[si]!;
-      const thrust = p.thrust[si]!;
+      // As traction, thrust is added below, with its reaction on what the particle grips.
+      const thrust = traction ? 0 : p.thrust[si]!;
       const outward = protrude !== 0 || thrust !== 0;
       let awayWeight = 0;
       let awayX = 0;
@@ -308,6 +388,11 @@ export function stepSprings(s: SpringState, t: SpringTopology, p: SpringParams, 
       fx += outwardScale * awayX;
       fy += outwardScale * awayY;
       fz += outwardScale * awayZ;
+      if (traction) {
+        fx += traction[i * 3]!;
+        fy += traction[i * 3 + 1]!;
+        fz += traction[i * 3 + 2]!;
+      }
       if (boidn > 0) {
         fx += (bpx / boidn - ox) * p.boidcohesion + (bvx / boidn - vx) * p.boidalignment;
         fy += (bpy / boidn - oy) * p.boidcohesion + (bvy / boidn - vy) * p.boidalignment;
