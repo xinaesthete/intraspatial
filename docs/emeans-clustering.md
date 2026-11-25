@@ -4,7 +4,9 @@ Status: **design note** (2026-11-14). **Slice 1 is built**: the CPU golden `src/
 (`emeans`, `lloyd`, `emeansSchedule`, `assignNearest`; k-means++ seeding as an option), exported from
 `intraspatial/spatial`. So is its **first use: gene modules** for whole-transcriptome points
 (`src/spatial/geneModules.ts`), now a channel option on the transcript-modes page, which also reads
-the SD.js demo's Atera store well (see "Built: gene modules on Atera" below). Slices 2–5 are not.
+the SD.js demo's Atera store well (see "Built: gene modules on Atera" below). **Slice 2 is built**
+(2026-11-18): the fit/assign split, weights and masks, with a **niche map** on the same page as its
+first consumer (see "Built: fit once, assign per tile — the niche map"). Slices 3–5 are not.
 
 Source: Bessa, Mazaré, Szilvasy, Touvron, Picard, Douze & Jégou, *e-means: outperforming k-means (in
 one-tenth the epochs)*, [arXiv:2611.09501](https://arxiv.org/abs/2611.09501) (Meta FAIR, 2026). The
@@ -242,13 +244,74 @@ need:
 A streaming batch *source* is not needed. Because the fit runs on a sample that fits in memory,
 the resident-array `fit` is enough. Only `assign` needs to be tiled.
 
+### Built: fit once, assign per tile — the niche map
+
+**API** (`emeans.ts`):
+
+| Call                                         | Does                                                                                   |
+| -------------------------------------------- | -------------------------------------------------------------------------------------- |
+| `emeansFit(data, n, d, k, opts)`             | Returns a `CentroidTable` (`k`, `d`, `centroids`) plus `mass`, `schedule`, `splits`.    |
+| `assignCentroids(table, data, n, opts)`      | Labels any points against a frozen table: `labels` (−1 if left out), `counts`, `mass`, `mse`. |
+| `emeans(...)`                                | Fit, then assign the same points. Its result is itself a table.                        |
+| `opts.weights`, `opts.mask`                 | Taken by all three and `lloyd`: a weight ≥ 0 per point; a `PointMask` is a `Domain` plus each point's position. |
+
+Decisions:
+
+- **Weight 0 and outside the mask are the same thing**: the point is dropped before the fit, so it
+  is never a seed and the result equals removing it exactly (tested, both seedings). Seeding is
+  weighted k-means++ (∝ w·D²) or a uniform draw from the kept points.
+- **Weights are rescaled to mean 1** over the kept points, so the fit does not depend on their units,
+  and equal weights run exactly the unweighted arithmetic.
+- **The scaling laws take n = points kept**, not an effective sample size (Σw)²/Σw². B and α₀ set
+  how many point visits a step averages and how many steps an epoch takes, and weights change
+  neither. Strongly uneven weights make a batch noisier than its size suggests; the laws were not
+  fit for that.
+- Lloyd's empty-cluster split now fires only at weight exactly 0, so a light cluster stays.
+
+Tests pin: weight 2 = the point twice (Lloyd, and e-means at the Lloyd corner); weight 0 = removed;
+the Lloyd corner still matches `lloyd` with weights; units do not matter; no zero-weight seed;
+assign reproduces the fit's labels, and a tile labelled alone agrees with the whole; masks.
+
+**The niche map** (transcript-modes page, "Niche map"; `playground/src/transcript/useNicheMap.ts`):
+
+1. **Bins** are a quadtree level over the element's extent (`channelBins.ts`), at or finer than
+   every tile level used, so each bin belongs to exactly one tile. Each molecule is weighted by
+   1/`pointFraction`.
+2. **Pooled 3 × 3** (`pooledBins`). A bin's descriptor is the Hellinger mix `√(count_c / total)` of
+   the 9 bins centred on it, and its fit weight the molecules those stand for. Only bins with
+   molecules of their own are labelled (a lumen stays empty), and a pool with fewer than 20 molecules
+   read is weight 0. Without pooling, that cut-off blanked most sparse tissue (table below).
+3. **Fit** on the whole-element tiles the gene modules use, in a worker: best of 4 k-means++ starts.
+4. **Assign** tiles from **one fixed level** (one finer than the sample's), whatever the zoom. A
+   tile's pools reach into the 8 tiles around it, so those are read too, and the tile is labelled
+   once they are binned. Pooled tile by tile equals pooled whole (tested), and every read is fixed,
+   so a label cannot change under pan or zoom. Each tile is one `BitmapLayer`.
+
+Measured on Atera kidney, k = 8, whole slide (160 tiles). "Holes" are unlabelled bins with molecules,
+enclosed by labelled tissue:
+
+| Channels, bin               | Fit sample                               | Fit bins kept, single → pooled | Holes, single → pooled |
+| --------------------------- | ---------------------------------------- | ------------------------------ | ---------------------- |
+| 8 starter sets, 47 µm       | 4.27M: every molecule (subset read)      | 25,465 → 27,487 of 29,628      | 782\* → 59             |
+| 12 gene modules, 47 µm      | 4.63M: 0.39% random sample               | 14,549 → 25,671 of 26,823      | 846 → 87               |
+| 12 gene modules, 23.5 µm    | same                                     | 1,011 → 89,243 of 95,710       | 5,398\* → 447          |
+
+\* Counted with a stricter test (at least 3 of the 4 adjacent bins labelled), so these understate
+the single-bin holes; the other counts need labelled tissue within 8 bins in all four directions.
+
+The fit takes 0.1–0.2 s. What stays dark is mostly vessel lumens and bins with no channel molecule
+read (2,337 enclosed at 23.5 µm, where a tile is a 1/64 read). On modules the niches are anatomy:
+proximal tubule (PCK1 module), thick ascending limb (UMOD), vessels (TAGLN), and glomeruli
+(NPHS2 + MME) as round patches in the cortex; pooling turned single-bin speckle into contiguous
+regions. **Stability, checked in a real browser (WebGPU):** after a pan, 47,787 of 47,787 bins in
+both views kept their label; after a zoom, 24,076 of 24,076.
+
 ## Slices
 
 1. **CPU golden** — built. It is in f64, deterministic per seed, and pinned by tests: the schedule
    against the published laws, the Lloyd corner reproducing `lloyd` exactly, escape from the line
    trap, revival, and the d ≤ 3 default.
-2. **Fit/assign split, weights and masks** (CPU). This adds the API needs above. It comes before
-   the op slices, because each of them needs it.
+2. **Fit/assign split, weights and masks** (CPU) — built, with the niche map as its consumer.
 3. **Neighbourhood clustering op.** A k-hop (or radius) type-composition gather over the existing
    uniform-grid index, then `emeans`, giving a per-cell niche label and a centroid table (each
    niche's mean composition). This works on the CPU first, so it can be checked against
@@ -269,4 +332,5 @@ the resident-array `fit` is enough. Only `assign` needs to be tiled.
    near-ties.
 5. **Tiled assignment over zarr.** Fit on a points-zarr sampled level (or on random level-0
    tiles), then label tiles lazily as the viewport loads them. The output is a label column for
-   points, or a label raster for OME-Zarr imagery and environmental grids.
+   points, or a label raster for OME-Zarr imagery and environmental grids. The niche map does this
+   for points bins in the playground; imagery and grids remain.

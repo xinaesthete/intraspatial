@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vite-plus/test";
 import { mulberry32 } from "#src/evo/rng";
-import { assignNearest, emeans, emeansAlpha0, emeansBatch, emeansSchedule, lloyd } from "./emeans";
+import { rectDomain } from "./domain";
+import { assignCentroids, assignNearest, emeans, emeansAlpha0, emeansBatch, emeansFit, emeansSchedule, lloyd } from "./emeans";
 
 interface Blob {
   w: number;
@@ -173,5 +174,140 @@ describe("emeans", () => {
     expect(() => emeans(x, 10, 2, 11)).toThrow(/at least k/);
     expect(() => emeans(x, 11, 2, 3)).toThrow(/n·d/);
     expect(() => emeans(x, 10, 2, 3, { init: [1, 2] })).toThrow(/k·d/);
+  });
+});
+
+/** Rows of `x` (dimension d) with row i repeated `times[i]` times (0 drops it), in order. */
+function repeatRows(x: Float64Array, d: number, times: ArrayLike<number>): Float64Array {
+  const out: number[] = [];
+  for (let i = 0; i < times.length; i++) for (let r = 0; r < times[i]!; r++) for (let t = 0; t < d; t++) out.push(x[i * d + t]!);
+  return Float64Array.from(out);
+}
+
+describe("weights and masks", () => {
+  const d = 3;
+  const k = 5;
+  const n = 1500;
+  const x = mixture(
+    9,
+    n,
+    d,
+    [0, 1, 2, 3, 4].map((c) => ({ w: 1 + c, mu: [c * 1.5, c % 2, (c * 7) % 3], s: 0.6 })),
+  );
+  // Every third point weighs 2, every seventh 0, the rest 1.
+  const w = Float64Array.from({ length: n }, (_, i) => (i % 7 === 0 ? 0 : i % 3 === 0 ? 2 : 1));
+  const xDup = repeatRows(x, d, w);
+  const nDup = xDup.length / d;
+  // Seeds that are kept points, so the two runs start from the same centroids.
+  const init = x.slice(d, d + k * d);
+
+  it("a weight of 2 is the point twice and 0 is no point (Lloyd)", () => {
+    const a = lloyd(x, n, d, k, { weights: w, init, iters: 10 });
+    const b = lloyd(xDup, nDup, d, k, { init, iters: 10 });
+    for (let i = 0; i < k * d; i++) expect(a.centroids[i]).toBeCloseTo(b.centroids[i]!, 10);
+    expect(Array.from(a.mass)).toEqual(Array.from(b.counts));
+    expect(a.mse).toBeCloseTo(b.mse, 12);
+    expect(Array.from(a.labels).filter((_, i) => w[i] === 0)).toEqual(Array(Math.ceil(n / 7)).fill(-1));
+  });
+
+  it("a weight of 2 is the point twice (e-means at the Lloyd corner)", () => {
+    const corner = { epochs: 6, alpha0: 1, schedule: "constant", revive: 0, init } as const;
+    const a = emeans(x, n, d, k, { ...corner, batch: n, weights: w });
+    const b = emeans(xDup, nDup, d, k, { ...corner, batch: nDup });
+    for (let i = 0; i < k * d; i++) expect(a.centroids[i]).toBeCloseTo(b.centroids[i]!, 10);
+    expect(a.mse).toBeCloseTo(b.mse, 12);
+  });
+
+  it("a weight of 0 is exactly the point removed, for every seeding", () => {
+    const zeroed = Float64Array.from({ length: n }, (_, i) => (i % 7 === 0 ? 0 : 1));
+    const kept = repeatRows(x, d, zeroed);
+    const m = kept.length / d;
+    for (const seeding of ["random", "kmeans++"] as const) {
+      const a = emeans(x, n, d, k, { seed: 3, seeding, weights: zeroed });
+      const b = emeans(kept, m, d, k, { seed: 3, seeding });
+      expect(a.centroids).toEqual(b.centroids);
+      expect(a.mse).toBe(b.mse);
+      expect(Array.from(a.labels).filter((l) => l >= 0)).toEqual(Array.from(b.labels));
+    }
+  });
+
+  it("is still Lloyd at the corner B = n, α = 1 with weights", () => {
+    const corner = { epochs: 7, batch: n, alpha0: 1, schedule: "constant", revive: 0, init, weights: w } as const;
+    const e = emeans(x, n, d, k, corner);
+    const l = lloyd(x, n, d, k, { iters: 7, init, weights: w });
+    for (let i = 0; i < k * d; i++) expect(e.centroids[i]).toBeCloseTo(l.centroids[i]!, 10);
+    expect(e.labels).toEqual(l.labels);
+  });
+
+  it("does not depend on the weights' units", () => {
+    const a = emeans(x, n, d, k, { seed: 4, seeding: "kmeans++", weights: w });
+    const b = emeans(x, n, d, k, { seed: 4, seeding: "kmeans++", weights: w.map((v) => v * 1000) });
+    for (let i = 0; i < k * d; i++) expect(a.centroids[i]).toBeCloseTo(b.centroids[i]!, 9);
+    expect(b.mass.reduce((s, v) => s + v, 0)).toBeCloseTo(1000 * w.reduce((s, v) => s + v, 0), 6);
+  });
+
+  it("never seeds from a point of weight 0", () => {
+    // Far outliers of weight 0: any seed drawn from them would leave a centroid out there.
+    const far = Float64Array.from(x);
+    const zero = new Float64Array(n).fill(1);
+    for (let i = 0; i < n; i += 5) {
+      far[i * d] = 1e6;
+      zero[i] = 0;
+    }
+    for (let seed = 0; seed < 8; seed++)
+      for (const seeding of ["random", "kmeans++"] as const) {
+        const fit = emeansFit(far, n, d, k, { seed, seeding, weights: zero, epochs: 1 });
+        for (let j = 0; j < k; j++) expect(Math.abs(fit.centroids[j * d]!)).toBeLessThan(100);
+      }
+  });
+
+  it("is deterministic for a seed, with weights", () => {
+    const a = emeans(x, n, d, k, { seed: 21, weights: w, seeding: "kmeans++" });
+    const b = emeans(x, n, d, k, { seed: 21, weights: w, seeding: "kmeans++" });
+    expect(a.centroids).toEqual(b.centroids);
+    expect(a.labels).toEqual(b.labels);
+    expect(a.mse).toBe(b.mse);
+  });
+
+  it("assign reproduces the fit's labels, and a tile labelled alone agrees with the whole", () => {
+    const fit = emeansFit(x, n, d, k, { seed: 2, weights: w });
+    const whole = assignCentroids(fit, x, n, { weights: w });
+    expect(whole.labels).toEqual(emeans(x, n, d, k, { seed: 2, weights: w }).labels);
+    const nearestOnly = new Int32Array(n);
+    assignNearest(x, n, d, fit.centroids, k, nearestOnly);
+    expect(Array.from(whole.labels)).toEqual(Array.from(nearestOnly, (l, i) => (w[i] === 0 ? -1 : l)));
+    // Points 600–899 as a tile of their own.
+    const tile = assignCentroids(fit, x.subarray(600 * d, 900 * d), 300, { weights: w.subarray(600, 900) });
+    expect(tile.labels).toEqual(whole.labels.subarray(600, 900));
+    // Fit mass is the finalisation epoch's; the final assignment moves only a little of it.
+    const total = w.reduce((s, v) => s + v, 0);
+    expect(fit.mass.reduce((s, v) => s + v, 0)).toBeCloseTo(total, 6);
+    expect(whole.mass.reduce((s, v) => s + v, 0)).toBeCloseTo(total, 6);
+  });
+
+  it("masks by position: outside the domain is weight 0 and label −1", () => {
+    // Positions independent of the descriptor: a 30 × 50 grid, masked to its left half.
+    const xs = Float64Array.from({ length: n }, (_, i) => i % 30);
+    const ys = Float64Array.from({ length: n }, (_, i) => Math.floor(i / 30));
+    const mask = { domain: rectDomain([0, 0, 14.5, 50]), xs, ys };
+    const inside = Float64Array.from(xs, (v) => (v <= 14.5 ? 1 : 0));
+    const a = emeans(x, n, d, k, { seed: 5, mask });
+    const b = emeans(x, n, d, k, { seed: 5, weights: inside });
+    expect(a.centroids).toEqual(b.centroids);
+    expect(a.labels).toEqual(b.labels);
+    expect(Array.from(a.labels).every((l, i) => (xs[i]! > 14.5 ? l === -1 : l >= 0))).toBe(true);
+    expect(a.counts.reduce((s, c) => s + c, 0)).toBe(15 * 50);
+    // Mask and weights compose.
+    const both = assignCentroids(a, x, n, { mask, weights: w });
+    expect(Array.from(both.labels).every((l, i) => (xs[i]! > 14.5 || w[i] === 0 ? l === -1 : l >= 0))).toBe(true);
+  });
+
+  it("rejects bad weights and a sample left with fewer than k points", () => {
+    expect(() => emeans(x, n, d, k, { weights: w.subarray(0, 10) })).toThrow(/weights have 10/);
+    expect(() => emeans(x, n, d, k, { weights: w.map((v, i) => (i === 3 ? -1 : v)) })).toThrow(/weight 3 is -1/);
+    expect(() => emeans(x, n, d, k, { weights: w.map((v, i) => (i === 4 ? Number.NaN : v)) })).toThrow(/weight 4 is NaN/);
+    expect(() => emeans(x, n, d, k, { weights: new Float64Array(n).map((_, i) => (i < 3 ? 1 : 0)) })).toThrow(
+      /weight > 0 inside the mask \(got 3\)/,
+    );
   });
 });

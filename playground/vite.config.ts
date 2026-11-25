@@ -203,6 +203,7 @@ export default defineConfig({
         transcriptmodes: fileURLToPath(new URL("./transcriptmodes.html", import.meta.url)),
         density: fileURLToPath(new URL("./density.html", import.meta.url)),
         springs: fileURLToPath(new URL("./springs.html", import.meta.url)),
+        density3d: fileURLToPath(new URL("./density3d.html", import.meta.url)),
         r3fspike: fileURLToPath(new URL("./r3fspike.html", import.meta.url)),
         umap: fileURLToPath(new URL("./umap.html", import.meta.url)),
       },

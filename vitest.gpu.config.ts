@@ -43,6 +43,6 @@ export default defineConfig({
     pool: "forks",
     fileParallelism: true,
     testTimeout: 30_000,
-    include: ["test/**/*.gpu.test.ts", "src/**/*.gpu.test.ts"],
+    include: ["test/**/*.gpu.test.ts", "src/**/*.gpu.test.ts", "packages/*/src/**/*.gpu.test.ts"],
   },
 });
