@@ -688,6 +688,9 @@ export interface SpringsGpu {
   readonly stepIndex: number;
   /** Send a state, its topology and (optionally) its target matrices to the device. */
   upload(s: SpringState, t: SpringTopology, m?: SpringMatrices): void;
+  /** Send the bond table and per-particle attributes only, leaving positions as they are on the
+   *  device: for an edit to the topology made on the host while the model runs. */
+  uploadTopology(s: SpringState, t: SpringTopology): void;
   /** Advance by `steps` steps. */
   step(p: SpringParams, steps?: number): void;
   /** `breakBonds` on the device. */
@@ -703,9 +706,23 @@ export interface SpringsGpu {
    *  with `download`. For a host that needs positions now and then (picking, a follow camera)
    *  without bringing the bond table back. */
   snapshotPositions(): Promise<Float32Array>;
-  /** The buffer holding the current `[pos | prev]`, for a renderer to bind. */
+  /** The buffer holding the current `[pos | prev]`, for a renderer to bind: `vec4f` per particle
+   *  (xyz, density), the `n` current positions first. The step ping-pongs two buffers, so ask
+   *  again every frame. */
   positions(): GPUBuffer;
+  /** Per-particle attributes, for a renderer to bind: `ATTR_FLOATS` f32 per particle, the species
+   *  at `ATTR_SPECIES` (`DEAD` for an unused slot) and the radius at `ATTR_RADIUS`. One buffer for
+   *  the life of the object; `upload` rewrites it. */
+  readonly attrs: GPUBuffer;
+  /** The bond table, for a renderer to bind: `K` slots of `vec4u` per particle, word 0 being
+   *  `slotWord(partner, kind)` or `NO_BOND`. One buffer for the life of the object. */
+  readonly slots: GPUBuffer;
 }
+
+/** Layout of `SpringsGpu.attrs`: floats per particle, and where the species and radius sit. */
+export const ATTR_FLOATS = 16;
+export const ATTR_SPECIES = 12;
+export const ATTR_RADIUS = 13;
 
 let nextId = 0;
 
@@ -784,6 +801,22 @@ export async function createSpringsGpu(n: number, K: number, opts: { device?: GP
     device.queue.writeBuffer(turnUni, 0, buf);
   };
 
+  const writeTopology = (s: SpringState, t: SpringTopology) => {
+    writeView(device.queue, slots, t.slots);
+    const at = new Float32Array(n * ATTR_FLOATS);
+    for (let i = 0; i < n; i++) {
+      at.set(t.rod.subarray(i * 4, i * 4 + 4), i * 16);
+      at.set(t.fix.subarray(i * 4, i * 4 + 4), i * 16 + 4);
+      at.set(t.pull.subarray(i * 4, i * 4 + 4), i * 16 + 8);
+      at[i * 16 + ATTR_SPECIES] = s.species[i]!;
+      at[i * 16 + ATTR_RADIUS] = s.radius[i]!;
+      at[i * 16 + 14] = t.torsion[i * 2]!;
+      at[i * 16 + 15] = t.torsion[i * 2 + 1]!;
+    }
+    writeView(device.queue, attrs, at);
+    explicitTorsion = t.torsion.some((v, k) => k % 2 === 1 && v !== 0);
+  };
+
   return {
     n,
     K,
@@ -796,20 +829,8 @@ export async function createSpringsGpu(n: number, K: number, opts: { device?: GP
       st.set(s.pos, 0);
       st.set(s.prev, n * 4);
       writeView(device.queue, cur, st);
-      writeView(device.queue, slots, t.slots);
-      const at = new Float32Array(n * 16);
-      for (let i = 0; i < n; i++) {
-        at.set(t.rod.subarray(i * 4, i * 4 + 4), i * 16);
-        at.set(t.fix.subarray(i * 4, i * 4 + 4), i * 16 + 4);
-        at.set(t.pull.subarray(i * 4, i * 4 + 4), i * 16 + 8);
-        at[i * 16 + 12] = s.species[i]!;
-        at[i * 16 + 13] = s.radius[i]!;
-        at[i * 16 + 14] = t.torsion[i * 2]!;
-        at[i * 16 + 15] = t.torsion[i * 2 + 1]!;
-      }
-      writeView(device.queue, attrs, at);
+      writeTopology(s, t);
       matrices = m;
-      explicitTorsion = t.torsion.some((v, k) => k % 2 === 1 && v !== 0);
       if (m) {
         const mm = m.size * m.size;
         const packed = new Float32Array(mm * 2);
@@ -819,6 +840,10 @@ export async function createSpringsGpu(n: number, K: number, opts: { device?: GP
         writeView(device.queue, mats, packed);
       }
       stepIndex = s.step;
+    },
+    uploadTopology(s, t) {
+      if (s.n !== n || t.n !== n || t.K !== K) throw new Error(`springsGpu: built for n=${n}, K=${K}; got n=${s.n}, K=${t.K}`);
+      writeTopology(s, t);
     },
     step(p, steps = 1) {
       const pairs = pairTermsActive(p);
@@ -894,6 +919,8 @@ export async function createSpringsGpu(n: number, K: number, opts: { device?: GP
     positions() {
       return cur;
     },
+    attrs,
+    slots,
   };
 }
 
@@ -904,11 +931,14 @@ export async function createSpringsGpu(n: number, K: number, opts: { device?: GP
  * After each `advance` the scenario's `state` and `topology` are current.
  *
  * Not tracked on this path: `totals.broken`, `totals.formed` and `takeEvents()`.
+ *
+ * `hostCurrent: false` leaves out the download at the end of each `advance`, for a view that draws
+ * from `gpu`'s buffers: the host state is then only as fresh as the last sync (`synced` counts them).
  */
 export async function createSpheroidGpuRunner(
   sc: SpheroidScenario,
-  opts: { device?: GPUDevice; syncEvery?: number } = {},
-): Promise<{ advance(steps: number): Promise<void> }> {
+  opts: { device?: GPUDevice; syncEvery?: number; hostCurrent?: boolean } = {},
+): Promise<{ readonly gpu: SpringsGpu; readonly synced: number; advance(steps: number): Promise<void> }> {
   const syncEvery = opts.syncEvery ?? 10;
   const gpu = await createSpringsGpu(sc.state.n, sc.topology.K, opts);
   gpu.upload(sc.state, sc.topology);
@@ -928,9 +958,15 @@ export async function createSpheroidGpuRunner(
     if (!leaders) changed += clearLeaders(sc.state, LEADER, CELL);
     if (changed > 0) gpu.upload(sc.state, sc.topology);
     sinceSync = 0;
+    synced++;
   };
+  let synced = 0;
   let advancing = false;
   return {
+    gpu,
+    get synced() {
+      return synced;
+    },
     async advance(steps) {
       // A second call while one is awaiting its sync would share `sinceSync` and upload growth
       // computed from an older snapshot.
@@ -945,7 +981,7 @@ export async function createSpheroidGpuRunner(
           if (++sinceSync >= syncEvery) await sync();
         }
         // Already current when the batch ended exactly on a sync.
-        if (sinceSync > 0) await sync();
+        if (opts.hostCurrent !== false && sinceSync > 0) await sync();
       } finally {
         advancing = false;
       }

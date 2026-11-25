@@ -15,6 +15,7 @@ import {
   shape3d,
   shollProfile,
 } from "../../../src/gpu/sim/springs/index";
+import { type SimBuffers, simSnapshot } from "./springsLayers";
 
 export interface Sample {
   readonly step: number;
@@ -77,31 +78,49 @@ function measure(sc: Scenario): Sample {
   return base;
 }
 
-/** Something that advances a scenario on the device and leaves its host state current. */
+/** Something that advances a scenario on the device. */
 interface GpuRunner {
+  /** The view's copy of the device state, when a view draws it. */
+  readonly buffers: SimBuffers | null;
   advance(steps: number): Promise<void>;
   /** Release the resident state once any in-flight advance has settled. */
   dispose(): Promise<void>;
 }
 
+/** With a view drawing the device's state, the host's copy is brought up to date once in this
+ *  many advances: often enough for the charts, which sample at the same rate. */
+const SYNC_EVERY = 4;
+
 /**
  * The scenario as a graph of ops on the device (`createSpringSim`). The whole step runs there,
  * including bond turnover, division and leader selection, and a change of settings is picked up
- * without a restart. This page draws on a 2D canvas from the host's copy, so each batch is
- * followed by a download; a view that binds the sim's buffers would leave that out.
+ * without a restart.
+ *
+ * A page that draws on a 2D canvas from the host's copy needs a download after every batch. One
+ * whose view draws from the device (`drawOn`) gets a device-side copy after every batch instead,
+ * and the host's copy only now and then, for the charts.
  */
-function gpuRunner(sc: Scenario): GpuRunner {
+function gpuRunner(sc: Scenario, drawOn: GPUDevice | null): GpuRunner {
   const sim = createSpringSim(sc, { backend: browserBackend });
+  const view = drawOn ? simSnapshot(drawOn, sim, sc.state.n, sc.topology.K) : null;
   let tail: Promise<void> = Promise.resolve();
+  let advances = 0;
   return {
+    buffers: view?.buffers ?? null,
     async advance(steps) {
-      const run = sim.advance(steps).then(() => sim.sync());
+      const sync = !view || ++advances % SYNC_EVERY === 0;
+      const run = sim.advance(steps).then(() => {
+        view?.refresh();
+        return sync ? sim.sync() : undefined;
+      });
       tail = run.catch(() => {});
       await run;
     },
     async dispose() {
       await tail;
       await sim.dispose();
+      // A little later: a frame already on its way may still be drawing the copy.
+      setTimeout(() => view?.destroy(), 1000);
     },
   };
 }
@@ -114,6 +133,10 @@ export interface SimulationOptions {
   /** Run on the GPU: the chain setups and the spheroid can. Bond-break events and the
    *  broken-bond total are not reported on this path. */
   readonly gpu: boolean;
+  /** A view draws the device's state (`Simulation.buffers`) on this device, which must be the
+   *  one the library computes on (`useGlobalDevice`). `null`: that device is still being made, so
+   *  the run waits for it. Absent: nothing draws from the device. */
+  readonly drawOn?: GPUDevice | null;
   /** Parameter overrides applied every frame, for controls that act on a running model. */
   readonly live: Partial<SpringParams>;
   /** Called once per animation frame with the current scenario. */
@@ -134,6 +157,15 @@ interface History extends Relaxation {
   readonly samples: readonly Sample[];
 }
 
+export interface Simulation {
+  readonly samples: readonly Sample[];
+  readonly error: string | null;
+  readonly relaxation: Relaxation;
+  /** The running scenario's device buffers, for a view to bind; null on the CPU path and until
+   *  the run has started. */
+  readonly buffers: SimBuffers | null;
+}
+
 /** Add a sample to a scenario's history, or start a new history for a new scenario. */
 function extend(prev: History | null, scenario: Scenario, sample: Sample): History {
   const same = prev?.scenario === scenario ? prev : null;
@@ -147,8 +179,9 @@ function extend(prev: History | null, scenario: Scenario, sample: Sample): Histo
   };
 }
 
-export function useSimulation(o: SimulationOptions): { samples: readonly Sample[]; error: string | null; relaxation: Relaxation } {
+export function useSimulation(o: SimulationOptions): Simulation {
   const [history, setHistory] = useState<History | null>(null);
+  const [live, setLive] = useState<{ scenario: Scenario; buffers: SimBuffers } | null>(null);
   // Keyed by scenario, so an error from a run that has been replaced is not shown on the next.
   const [error, setError] = useState<{ scenario: Scenario; message: string } | null>(null);
   // The loop reads the latest options without restarting when they change.
@@ -157,7 +190,8 @@ export function useSimulation(o: SimulationOptions): { samples: readonly Sample[
     latest.current = o;
   });
 
-  const { scenario: sc, gpu: wantGpu } = o;
+  const { scenario: sc, gpu: wantGpu, drawOn } = o;
+  const wait = drawOn === null;
   useEffect(() => {
     let gpu: GpuRunner | null = null;
     let busy = false;
@@ -167,9 +201,10 @@ export function useSimulation(o: SimulationOptions): { samples: readonly Sample[
     const report = (e: unknown) => {
       if (!stopped) setError({ scenario: sc, message: e instanceof Error ? e.message : String(e) });
     };
-    if (wantGpu) {
+    if (wantGpu && !wait) {
       try {
-        gpu = gpuRunner(sc);
+        gpu = gpuRunner(sc, drawOn ?? null);
+        if (gpu.buffers) setLive({ scenario: sc, buffers: gpu.buffers });
       } catch (e) {
         report(e);
       }
@@ -222,12 +257,13 @@ export function useSimulation(o: SimulationOptions): { samples: readonly Sample[
       cancelAnimationFrame(raf);
       void gpu?.dispose();
     };
-  }, [sc, wantGpu]);
+  }, [sc, wantGpu, drawOn, wait]);
 
   const current = history?.scenario === sc ? history : null;
   return {
     samples: current?.samples ?? [],
     error: error?.scenario === sc ? error.message : null,
     relaxation: { baseline: current?.baseline, halfStep: current?.halfStep },
+    buffers: wantGpu && !wait && live?.scenario === sc ? live.buffers : null,
   };
 }

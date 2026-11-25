@@ -294,4 +294,25 @@ describe("springs on the GPU", () => {
     expect(restErr).toBeLessThan(1e-5);
     expect(topologyDefect(gt)).toBeUndefined();
   });
+
+  it("uploadTopology sends an edited bond table and leaves the positions alone", async () => {
+    const sc = chromatinScenario({ n: 40, mode: "distances", seed: 2 });
+    const gpu = await createSpringsGpu(sc.state.n, sc.topology.K);
+    gpu.upload(sc.state, sc.topology, sc.matrices);
+    gpu.step(sc.params, 5);
+    const before = cloneState(sc.state);
+    await gpu.download(before, cloneTopology(sc.topology));
+    // Edit the host's table while the device has moved on, and send only the table.
+    expect(addSpring(sc.topology, 3, 30, 1.5, 0.3, 0, 3)).toBe(true);
+    gpu.uploadTopology(sc.state, sc.topology);
+    const after = cloneState(sc.state);
+    const table = cloneTopology(sc.topology);
+    table.slotBits.fill(0);
+    await gpu.download(after, table);
+    expect(worst(before, after).err).toBe(0);
+    expect(after.step).toBe(before.step);
+    let mismatches = 0;
+    for (let w = 0; w < table.slotBits.length; w++) if (table.slotBits[w] !== sc.topology.slotBits[w]) mismatches++;
+    expect(mismatches).toBe(0);
+  });
 });
