@@ -21,7 +21,7 @@
   "usedClassMembers": [
     {
       "extends": "Layer",
-      "members": ["layerName", "defaultProps", "initializeState", "shouldUpdateState", "updateState", "finalizeState", "draw"]
+      "members": ["layerName", "defaultProps", "initializeState", "shouldUpdateState", "updateState", "finalizeState", "draw", "getModels"]
     },
     // deck calls a view controller's `setProps` on every render.
     { "extends": "OrbitController", "members": ["setProps"] }

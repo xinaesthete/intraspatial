@@ -234,6 +234,11 @@ branching data, and keeping every arm attached.
 - **Slots are bound as `vec4u`.** An empty slot's bit pattern is a NaN, which `f32` need not
   preserve.
 
+Measured 2026-11-21 in Chrome (Metal), `foldsynth.html`, 64-particle chain: 200 steps submitted
+together finish in about 14 ms, 0.07 ms a step, and the page holds the display's 120 frames a second
+at 16 steps per frame. (An earlier reading of 4.5 ms a step was wrong: it divided the frame time by
+the steps per frame while the browser pane was throttled.)
+
 ## Next
 
 1. Grid-indexed pairs on the GPU.
