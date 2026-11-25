@@ -43,6 +43,9 @@ export default defineConfig({
     pool: "forks",
     fileParallelism: true,
     testTimeout: 30_000,
+    // Hooks too: a `beforeAll` that makes the device can pass 10 s on CI's software Vulkan while
+    // other files compile their kernels (springOps/springRules timed out there, 2026-11-25).
+    hookTimeout: 30_000,
     include: ["test/**/*.gpu.test.ts", "src/**/*.gpu.test.ts", "packages/*/src/**/*.gpu.test.ts"],
   },
 });
