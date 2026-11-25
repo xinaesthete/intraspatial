@@ -22,7 +22,9 @@
     {
       "extends": "Layer",
       "members": ["layerName", "defaultProps", "initializeState", "shouldUpdateState", "updateState", "finalizeState", "draw"]
-    }
+    },
+    // deck calls a view controller's `setProps` on every render.
+    { "extends": "OrbitController", "members": ["setProps"] }
   ],
 
   "duplicates": { "minOccurrences": 3 },

@@ -7,7 +7,7 @@
 
 import { type Layer, OrbitView, type OrbitViewState } from "@deck.gl/core";
 import DeckGL from "@deck.gl/react";
-import { type Color, IsoSurfaceLayer } from "@intraspatial/deck";
+import { type Color, IsoSurfaceLayer, nearestPoint, PivotOrbitController, type PivotPicker } from "@intraspatial/deck";
 import { useCallback, useMemo, useState } from "react";
 import { type PointsTile, pointFraction, type Rect } from "../../../src/datasource/points";
 import { listPointsElements } from "../datasource/pointsTileLoader";
@@ -33,6 +33,8 @@ const HIDDEN = SLOTS;
 const CONTROL = /^(blank|negcontrol|unassigned|deprecated|intergenic|genomiccontrol)/i;
 /** Depth for the third dimension; quality to filter on, where the element has it. */
 const POINTS_OPTIONS = { columns: ["qv"], depth: true };
+/** Most points the pointer is tested against when it picks what to turn about. */
+const PICK_MAX = 30_000;
 const VIEW = new OrbitView({ id: "orbit", orbitAxis: "Z", fovy: 35 });
 
 interface Cloud {
@@ -288,6 +290,25 @@ export function Density3D() {
   const [view, setView] = useState<{ for: OrbitViewState; now: OrbitViewState }>({ for: startView, now: startView });
   if (view.for !== startView) setView({ for: startView, now: startView });
   const viewState = view.for === startView ? view.now : startView;
+  // Turning and zooming hold on to a chosen gene's molecule under the pointer. A thinned copy is tested.
+  const pickable = useMemo(() => {
+    if (!cloud || !categories) return null;
+    let shown = 0;
+    for (let i = 0; i < cloud.n; i++) if (categories[i] !== HIDDEN) shown++;
+    const every = Math.max(1, Math.ceil(shown / PICK_MAX));
+    const out: number[] = [];
+    let seen = 0;
+    for (let i = 0; i < cloud.n; i++) {
+      if (categories[i] === HIDDEN) continue;
+      if (seen++ % every === 0) out.push(cloud.positions[i * 4]!, cloud.positions[i * 4 + 1]!, cloud.positions[i * 4 + 2]!, 0);
+    }
+    return new Float32Array(out);
+  }, [cloud, categories]);
+  const pick = useCallback<PivotPicker>(
+    (pos, viewport) => (pickable ? (nearestPoint(pickable, pos, viewport, { maxPixels: 40 })?.position ?? null) : null),
+    [pickable],
+  );
+  const controller = useMemo(() => ({ type: PivotOrbitController, getPivot: pick, getAnchor: pick }), [pick]);
   const onViewStateChange = useCallback(({ viewState: next }: { viewState: unknown }) => {
     setView((v) => ({ ...v, now: next as OrbitViewState }));
   }, []);
@@ -332,7 +353,8 @@ export function Density3D() {
       </p>
       <p className="page">
         Where are a gene's molecules crowded together, in three dimensions? Each chosen gene gets a surface wrapped around the places where
-        its molecules are denser than the level you set. Drag to turn, scroll to zoom, right-drag to slide.
+        its molecules are denser than the level you set. Drag to turn about the molecule under the pointer, scroll to zoom toward it,
+        right-drag to slide.
       </p>
       <div className="layout">
         <div className="controls">
@@ -469,7 +491,7 @@ export function Density3D() {
               views={VIEW}
               viewState={viewState}
               onViewStateChange={onViewStateChange}
-              controller
+              controller={controller}
               layers={layers}
               deviceProps={GLOBAL_DEVICE_PROPS}
             />
