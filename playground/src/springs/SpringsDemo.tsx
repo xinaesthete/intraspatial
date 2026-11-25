@@ -5,6 +5,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   applyLines,
+  CELL,
+  LEADER,
   chainRadius,
   chainScenario,
   DEFAULT_LINE_SPRINGS,
@@ -29,8 +31,11 @@ import {
 import { MathTex } from "../Math";
 import { BarChart, LineChart, PhaseGrid } from "./Charts";
 import { MapEditor } from "./MapEditor";
-import { drawBall, drawChainAesthetic, drawChainAnalytic, drawEvents, drawMatrix, drawSheetAesthetic, drawSheetAnalytic } from "./draw";
+import { drawChainAesthetic, drawChainAnalytic, drawEvents, drawMatrix, drawSheetAesthetic, drawSheetAnalytic } from "./draw";
 import type { PhaseMessage } from "./phaseWorker";
+import { nearestPoint, type PivotPicker } from "@intraspatial/deck";
+import { useGlobalDevice } from "../deck/useGlobalDevice";
+import { SpringsOrbitView } from "./SpringsOrbitView";
 import { useSimulation } from "./useSimulation";
 
 type Kind = "spheroid" | "ball" | "relaxation" | "distances" | "contacts" | "draw";
@@ -187,7 +192,7 @@ const SPHEROID_CONTROLS: readonly {
 /** Structure of the 3D run, and the regimes found by searching. Tuned at the stable time step
  *  (0.15): a longer step made contacts flip every step, which broke gel bonds and kept cells
  *  jiggling, and the earlier presets had leaned on that. */
-const BALL_STRUCTURE: SpheroidConfig = { dims: 3, cellRadius: 2.5, matrixRadius: 11, maxCells: 3000, matrixDisorder: 0.2 };
+export const BALL_STRUCTURE: SpheroidConfig = { dims: 3, cellRadius: 2.5, matrixRadius: 11, maxCells: 3000, matrixDisorder: 0.2 };
 const BALL_BASE: SpheroidConfig = {
   stiffness: 0.2,
   yieldStrain: 0.2,
@@ -205,7 +210,7 @@ const BALL_BASE: SpheroidConfig = {
   ligand: 0.02,
 };
 const COHESIVE: SpheroidConfig = { cellAdhesion: 0.1, cellRepulsion: 0.5 };
-const BALL_PRESETS: readonly { label: string; hint: string; config: SpheroidConfig }[] = [
+export const BALL_PRESETS: readonly { label: string; hint: string; config: SpheroidConfig }[] = [
   {
     label: "Branching",
     hint: "cells hold together: thick arms that stay attached, each led by a tip cell",
@@ -389,6 +394,9 @@ export function SpringsDemo() {
   const chain = kind === "distances" || kind === "contacts";
   const [ball, setBall] = useState<SpheroidConfig>(BALL_PRESETS[0]?.config ?? BALL_BASE);
   const useGpu = kind === "ball" || (gpu && chain);
+  // The 3D setup is drawn by deck from the simulation's own buffers, so it runs on deck's device.
+  const { device: pageDevice } = useGlobalDevice();
+  const [showMatrix, setShowMatrix] = useState(false);
   // `nonce` seeds the run, so Restart gives a fresh one. Only the settings that decide which
   // particles exist are dependencies here; the rest are applied to the running scenario below.
   const { cellRadius, matrixRadius, maxCells } = spheroid;
@@ -440,7 +448,7 @@ export function SpringsDemo() {
       if (!canvas || !ctx) return;
       const view = { width: canvas.width, height: canvas.height, extent, yaw: time * 0.0003 };
       if (sc.kind === "chromatin" || sc.kind === "chain") (look === "analytic" ? drawChainAnalytic : drawChainAesthetic)(ctx, sc, view);
-      else if (sc.params.dims === 3) drawBall(ctx, sc, view, look === "aesthetic");
+      else if (sc.params.dims === 3) return;
       else {
         (look === "analytic" ? drawSheetAnalytic : drawSheetAesthetic)(ctx, sc, view);
         drawEvents(ctx, sc.takeEvents(), view);
@@ -449,7 +457,30 @@ export function SpringsDemo() {
     [look, extent],
   );
 
-  const { samples, error, relaxation } = useSimulation({ scenario, playing, stepsPerFrame, gpu: useGpu, live: chain ? live : {}, onFrame });
+  // Turn the 3D view about the cell under the pointer. The host's copy of the positions is at most
+  // a few steps old, which is near enough to grab a cell by.
+  const getPivot = useCallback<PivotPicker>(
+    (pos, viewport) => {
+      const { species } = scenario.state;
+      const tissue = (i: number) => species[i] === CELL || species[i] === LEADER;
+      return nearestPoint(scenario.state.pos, pos, viewport, { skip: (i) => !tissue(i), maxPixels: 30 })?.position ?? null;
+    },
+    [scenario],
+  );
+  const {
+    samples,
+    error,
+    relaxation,
+    buffers: simGpu,
+  } = useSimulation({
+    scenario,
+    playing,
+    stepsPerFrame,
+    gpu: useGpu,
+    drawOn: kind === "ball" ? pageDevice : undefined,
+    live: chain ? live : {},
+    onFrame,
+  });
 
   // Distance maps for the chain scenarios: the target once, the model whenever a sample lands.
   const size = scenario.matrices?.size ?? 0;
@@ -558,8 +589,9 @@ export function SpringsDemo() {
         divide. Everything on this page runs the same step function.
       </p>
       <p className="page prototype">
-        <strong>First prototype.</strong> This page is a starting point for trying the model out, not a finished tool. The views are drawn
-        on a 2D canvas for now, the settings are in the model's own arbitrary units, and the results have not been compared with{" "}
+        <strong>First prototype.</strong> This page is a starting point for trying the model out, not a finished tool. Most views are drawn
+        on a 2D canvas for now (the 3D one is on WebGPU), the settings are in the model's own arbitrary units, and the results have not been
+        compared with{" "}
         <a href="https://doi.org/10.1038/s41563-022-01400-4" target="_blank" rel="noreferrer">
           the paper the model follows
         </a>{" "}
@@ -593,9 +625,11 @@ export function SpringsDemo() {
             <button type="button" onClick={() => setNonce((v) => v + 1)}>
               Restart
             </button>
-            <button type="button" onClick={() => setLook(look === "analytic" ? "aesthetic" : "analytic")}>
-              View: {look}
-            </button>
+            {kind !== "ball" && (
+              <button type="button" onClick={() => setLook(look === "analytic" ? "aesthetic" : "analytic")}>
+                View: {look}
+              </button>
+            )}
           </div>
           <Slider
             label="Steps per frame"
@@ -663,6 +697,14 @@ export function SpringsDemo() {
                 />
                 Gel only fails where it is pulled apart
               </label>
+              <label className="check">
+                <input type="checkbox" checked={showMatrix} onChange={(e) => setShowMatrix(e.target.checked)} />
+                Show the gel (beads and bonds)
+              </label>
+              <p className="hint">
+                Drag the view to orbit: it turns about the cell under the pointer, or about the centre if there is none. Scroll to zoom. It
+                is drawn on the GPU straight from the buffers the simulation writes, so nothing is copied back to draw it.
+              </p>
               <p className="hint">
                 Settings act on the running tissue, and times are in model time, not steps. Arms take a few thousand units of time to
                 appear, many thousand steps; raise steps per frame to get there sooner.
@@ -798,7 +840,11 @@ export function SpringsDemo() {
 
         <div className="views">
           <div className="stage">
-            <canvas ref={canvasRef} width={720} height={720} className="sim-canvas" />
+            {kind === "ball" ? (
+              <SpringsOrbitView className="sim-canvas" gpu={simGpu} extent={extent} matrix={showMatrix} getPivot={getPivot} />
+            ) : (
+              <canvas ref={canvasRef} width={720} height={720} className="sim-canvas" />
+            )}
             <div className="side">
               {kind === "spheroid" && (
                 <>

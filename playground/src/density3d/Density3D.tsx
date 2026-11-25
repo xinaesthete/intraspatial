@@ -7,7 +7,15 @@
 
 import { type Layer, OrbitView, type OrbitViewState } from "@deck.gl/core";
 import DeckGL from "@deck.gl/react";
-import { anchorUnder, type Color, IsoSurfaceLayer, nearestPoint, PivotOrbitController, type PivotPicker } from "@intraspatial/deck";
+import {
+  anchorUnder,
+  type Color,
+  IsoSurfaceLayer,
+  nearestPoint,
+  ParticleLayer,
+  PivotOrbitController,
+  type PivotPicker,
+} from "@intraspatial/deck";
 import { useCallback, useMemo, useState } from "react";
 import { type PointsTile, pointFraction, type Rect } from "../../../src/datasource/points";
 import { listPointsElements } from "../datasource/pointsTileLoader";
@@ -27,14 +35,15 @@ const SLOT_COLOURS: readonly Color[] = [
   [251, 146, 60, 255],
   [163, 230, 53, 255],
 ];
-/** Category of a molecule that belongs to no chosen gene. */
+/** Category of a molecule that belongs to no chosen gene: not drawn. */
 const HIDDEN = SLOTS;
+const DOT_COLOURS: Color[] = [...SLOT_COLOURS, [0, 0, 0, 0]];
 /** Probes that are not genes: left out of the starting choice, though they can still be picked. */
 const CONTROL = /^(blank|negcontrol|unassigned|deprecated|intergenic|genomiccontrol)/i;
-/** Depth for the third dimension; quality to filter on, where the element has it. */
-const POINTS_OPTIONS = { columns: ["qv"], depth: true };
 /** Most points the pointer is tested against when it picks what to turn about. */
 const PICK_MAX = 30_000;
+/** Depth for the third dimension; quality to filter on, where the element has it. */
+const POINTS_OPTIONS = { columns: ["qv"], depth: true };
 const VIEW = new OrbitView({ id: "orbit", orbitAxis: "Z", fovy: 35 });
 
 interface Cloud {
@@ -201,6 +210,7 @@ export function Density3D() {
   const [levelMode, setLevelMode] = useState<"relative" | "absolute">("relative");
   const [relative, setRelative] = useState(4);
   const [absolute, setAbsolute] = useState(1);
+  const [showDots, setShowDots] = useState(true);
 
   const sd = useSpatialData(storeUrl);
   const pointsNames = useMemo(() => (sd.value ? listPointsElements(sd.value) : []), [sd.value]);
@@ -264,6 +274,7 @@ export function Density3D() {
   }, [cloud, stretch, radius, detail]);
 
   const points = useGpuBuffer(device, cloud?.positions ?? null, "density3d:points");
+  const dots = useGpuBuffer(device, categories, "density3d:categories");
   const gpuWeights = [
     useGpuBuffer(device, weights0, "density3d:weights-0"),
     useGpuBuffer(device, weights1, "density3d:weights-1"),
@@ -290,7 +301,7 @@ export function Density3D() {
   const [view, setView] = useState<{ for: OrbitViewState; now: OrbitViewState }>({ for: startView, now: startView });
   if (view.for !== startView) setView({ for: startView, now: startView });
   const viewState = view.for === startView ? view.now : startView;
-  // Turning and zooming hold on to a chosen gene's molecule under the pointer. A thinned copy is tested.
+  // Turning and zooming hold on to a drawn molecule under the pointer. A thinned copy is tested.
   const pickable = useMemo(() => {
     if (!cloud || !categories) return null;
     let shown = 0;
@@ -336,6 +347,22 @@ export function Density3D() {
         }),
       );
     });
+  }
+  if (showDots && points && dots && cloud && cloud.n > 0) {
+    layers.push(
+      new ParticleLayer({
+        id: "molecules",
+        positions: points,
+        count: cloud.n,
+        attributes: dots,
+        attributeStride: 1,
+        categoryFormat: "u32",
+        radius: Math.max(0.35, side / 1200),
+        radiusMinPixels: 0.75,
+        colors: DOT_COLOURS,
+        deadCategory: HIDDEN,
+      }),
+    );
   }
 
   const progress = tiles.progress && tiles.progress.total > 0 ? ` (${tiles.progress.done}/${tiles.progress.total} tiles)` : "";
@@ -480,6 +507,10 @@ export function Density3D() {
             disabled={!hasQv}
             onChange={setQvMin}
           />
+          <label className="check">
+            <input type="checkbox" checked={showDots} onChange={(e) => setShowDots(e.target.checked)} />
+            Show the chosen genes' molecules
+          </label>
           <div className="status">
             {busy}
             {error && <span className="error">{error.message}</span>}
