@@ -145,6 +145,10 @@ export interface OpType {
    *  rejects (a double release means two live values would share one buffer). Alias by copying,
    *  or emit one port and let a downstream op derive the rest. */
   resident?: boolean;
+  /** A resident op that binds its inputs by range, so it may be handed a slice (a part of a
+   *  packed bundle, `ResidentBuffer.offset`) as it is. Absent ⇒ the executor copies a sliced
+   *  input into a buffer of its own first, which is always correct and costs a copy. */
+  slices?: boolean;
   /** Run the op. Inputs are positional, matching `inputs`; outputs positional,
    *  matching `outputs`. */
   execute(ctx: ExecCtx, inputs: FieldValue[], params: Params): Promise<FieldValue[]>;

@@ -14,8 +14,8 @@
 import type { GpuBackend } from "./backend";
 import { nodeBackend } from "./backend.node";
 import type { Graph, GraphNode } from "./graph";
-import type { FieldValue, GpuField, ResidentPayload } from "./handle";
-import { isResidentTexture, payloadsOf } from "./handle";
+import type { FieldValue, GpuField, ResidentBuffer, ResidentPayload } from "./handle";
+import { isResidentTexture, packedLayout, payloadsOf, sliceBuffer } from "./handle";
 import type { GraphMemo } from "./memo";
 import { hashSource, hashString, stableJSON } from "./memo";
 import type { ExecCtx, OpType } from "./op";
@@ -52,22 +52,64 @@ export const createSimState = (): SimState => new Map();
  *  never reused and the footprint grows by one buffer per discarded simulation. Call this when
  *  resetting or disposing of a state. `advance({reset: true})` does it for you. */
 export function disposeSimState(state: SimState, backend: GpuBackend): void {
+  // Two keys can hold slices of one packed root, so collect before releasing: each lease once.
+  const held = new Set<ResidentPayload>();
   for (const v of state.values()) {
     if (v instanceof FieldRing) continue;
-    if (v.buffer) backend.release(v.buffer);
-    if (v.texture) backend.releaseTexture(v.texture);
+    for (const p of payloadsOf(v)) held.add(p);
   }
   state.clear();
+  returnPayloads(backend, [...held]);
+}
+
+/** Hand device payloads back to the pool they were leased from. */
+function returnPayloads(backend: GpuBackend, payloads: readonly ResidentPayload[]): void {
+  for (const p of payloads) {
+    if (isResidentTexture(p)) backend.releaseTexture(p);
+    else backend.release(p);
+  }
+}
+
+/** The value a feedback node currently holds, by the key it was made with (`Graph.feedback(init,
+ *  key)`): what the next tick will read. Resident values carry their device buffers, which is
+ *  what a view binds; they stay valid until the next tick replaces them. Undefined before the
+ *  first tick, and for a delay node. */
+export function simStateValue(state: SimState, key: string): FieldValue | undefined {
+  const v = state.get(key);
+  return v instanceof FieldRing ? undefined : v;
+}
+
+/** Bring a value to the host: the explicit download a resident simulation otherwise never does.
+ *  A bundle comes back with every part downloaded. The device copy is left as it is. */
+export async function downloadValue(v: FieldValue, backend: GpuBackend = nodeBackend): Promise<FieldValue> {
+  if (v.parts) {
+    const parts: Record<string, FieldValue> = {};
+    for (const [name, part] of Object.entries(v.parts)) parts[name] = await downloadValue(part, backend);
+    return { ...v, parts };
+  }
+  if (v.texture && !v.data && !v.buffer) throw new Error("downloadValue: a texture-only value cannot be read back here; pull it instead");
+  if (v.data || !v.buffer) return v;
+  return { ...v, data: await downloadBuffer({ backend }, v) };
 }
 
 /** Total resident bytes held in a sim state (feedback values + delay/history rings). Counts a
  *  GPU-resident value by its buffer's logical size — a resident feedback state occupies bytes
  *  just as a host one does, only on the device. */
+/** Bytes of host data in the parts of a bundle that have no device copy, however deep. */
+function hostOnlyBytes(v: FieldValue): number {
+  if (v.parts) return Object.values(v.parts).reduce((sum, part) => sum + hostOnlyBytes(part), 0);
+  return v.buffer || v.texture ? 0 : (v.data?.byteLength ?? 0);
+}
+
 export function simStateBytes(state: SimState): number {
   let total = 0;
   for (const v of state.values()) {
     if (v instanceof FieldRing) {
       total += v.byteLength;
+    } else if (v.parts) {
+      // A bundle: each device payload once (packed parts share a root), plus host-only parts.
+      for (const p of payloadsOf(v)) total += isResidentTexture(p) ? p.width * p.height * 4 : p.byteLength;
+      total += hostOnlyBytes(v);
     } else {
       const tex = v.texture ? v.texture.width * v.texture.height * 4 : 0;
       total += v.data?.byteLength ?? v.buffer?.byteLength ?? tex;
@@ -106,6 +148,15 @@ function topoOrder(graph: Graph, roots: string[]): GraphNode[] {
     order.push(node);
   };
   for (const r of roots) visit(r);
+  // A feedback or delay node the sink reads must also have its `next` computed this tick, or its
+  // state never advances. Usually the sink depends on that producer anyway; a counter that only
+  // feeds itself does not. Visiting it now is safe: the node it loops back to is already done.
+  for (let k = 0; k < order.length; k++) {
+    const node = order[k]!;
+    if (node.op !== "feedback" && node.op !== "delay") continue;
+    const next = node.inputs.next;
+    if (next) visit(next.node);
+  }
   return order;
 }
 
@@ -174,9 +225,31 @@ function withoutResidentHandles(v: FieldValue): FieldValue {
  *  `readBackBytes` in `device.ts` says why that is a separate path rather than a second wrapper. */
 async function downloadBuffer(ctx: ExecCtx, v: FieldValue): Promise<Float32Array | Uint32Array | Int32Array> {
   const buf = v.buffer!;
-  if (v.dtype === "f32") return ctx.backend.readbackF32(buf.buffer, buf.byteLength / 4);
-  const bytes = await ctx.backend.readbackBytes(buf.buffer, buf.byteLength);
+  const offset = buf.offset ?? 0;
+  if (v.dtype === "f32" && offset === 0) return ctx.backend.readbackF32(buf.buffer, buf.byteLength / 4);
+  // A slice: read up to its end and keep its own range.
+  const bytes = (await ctx.backend.readbackBytes(buf.buffer, offset + buf.byteLength)).slice(offset);
+  if (v.dtype === "f32") return new Float32Array(bytes);
   return v.dtype === "u32" ? new Uint32Array(bytes) : new Int32Array(bytes);
+}
+
+/** `v` with every sliced buffer replaced by a copy in a buffer of its own. The copies are pushed
+ *  to `made`, for the caller to release. */
+async function withoutSlices(ctx: ExecCtx, v: FieldValue, made: ResidentBuffer[]): Promise<FieldValue> {
+  if (v.parts) {
+    const parts: Record<string, FieldValue> = {};
+    for (const [name, part] of Object.entries(v.parts)) parts[name] = await withoutSlices(ctx, part, made);
+    return { ...v, parts };
+  }
+  const buf = v.buffer;
+  if (!buf?.sliceOf) return v;
+  const copy = await ctx.backend.lease(buf.byteLength);
+  made.push(copy); // before anything else can throw, so a failed tick returns it
+  const device = await ctx.backend.getDevice();
+  const enc = device.createCommandEncoder({ label: "executor:unslice" });
+  enc.copyBufferToBuffer(buf.buffer, buf.offset ?? 0, copy.buffer, 0, Math.ceil(buf.byteLength / 4) * 4);
+  device.queue.submit([enc.finish()]);
+  return { ...v, buffer: copy };
 }
 
 /** Run one tick: execute the cut-DAG, then commit feedback `next` values into the
@@ -362,12 +435,38 @@ async function runTick(graph: Graph, field: GpuField, o: TickOptions): Promise<M
   const bundleIsResident = (v: FieldValue): boolean =>
     payloadsOf(v).length > 0 && !Object.values(v.parts ?? {}).some((p) => p.data && !p.buffer);
 
+  /** Upload a packed bundle as one buffer with each part a range of it (`FieldValue.packed`). */
+  const residentPacked = async (v: FieldValue, took: ResidentPayload[]): Promise<FieldValue> => {
+    const entries = Object.entries(v.parts ?? {});
+    const arrays = entries.map(([name, part]) => {
+      if (!part.data) throw new Error(`executor: packed bundle part "${name}" has no host data to upload`);
+      return part.data;
+    });
+    const { offsets, total } = packedLayout(arrays.map((a) => a.byteLength));
+    const bytes = new Uint8Array(total);
+    arrays.forEach((a, i) => bytes.set(new Uint8Array(a.buffer, a.byteOffset, a.byteLength), offsets[i]!));
+    const root = await o.ctx.backend.upload(bytes);
+    took.push(root);
+    const parts: Record<string, FieldValue> = {};
+    entries.forEach(([name, part], i) => {
+      parts[name] = { ...part, buffer: sliceBuffer(root, offsets[i]!, arrays[i]!.byteLength) };
+    });
+    return { ...v, parts };
+  };
+
   /** Upload whichever parts of a bundle are still host-side, and own the leases that took. */
   const residentBundle = async (k: string, v: FieldValue): Promise<FieldValue> => {
     if (bundleIsResident(v)) return v;
     o.onBridge?.(k, "upload");
     const took: ResidentPayload[] = [];
-    const bridged = await residentPart(v, took);
+    let bridged: FieldValue;
+    try {
+      bridged = v.packed ? await residentPacked(v, took) : await residentPart(v, took);
+    } catch (e) {
+      // A later part failed to upload: the earlier ones are not yet anyone's, so return them here.
+      for (const p of took) releasePayload(p);
+      throw e;
+    }
     pulled.set(k, bridged);
     for (const p of took) own(k, p);
     return bridged;
@@ -408,243 +507,303 @@ async function runTick(graph: Graph, field: GpuField, o: TickOptions): Promise<M
     return bridged;
   };
 
-  for (const node of order) {
-    if (node.op === "source") {
-      if (!node.source) throw new Error(`executor: source node "${node.id}" has no value`);
-      const v = node.source;
+  // Copies made for ops that cannot bind a range of a buffer; live only while their node runs.
+  const unsliced: ResidentBuffer[] = [];
+  /** A tick that throws never reaches its closing sweep. Return what it leased, leaving alone
+   *  anything the sim state holds: that belongs to the last committed tick. Go by payload, not
+   *  key: a seed extracted from a packed bundle is held under the extract's key, while the root
+   *  it is a range of is owned under the pack's. */
+  const releaseAfterFailure = () => {
+    for (const copy of unsliced) o.ctx.backend.release(copy);
+    const held = new Set<ResidentPayload>();
+    for (const s of o.store.values()) if (!(s instanceof FieldRing)) for (const p of payloadsOf(s)) held.add(p);
+    for (const [k, list] of owned) if (!adopted.has(k)) for (const p of list) if (!held.has(p)) releasePayload(p);
+  };
+
+  try {
+    for (const node of order) {
+      if (node.op === "source") {
+        if (!node.source) throw new Error(`executor: source node "${node.id}" has no value`);
+        const v = node.source;
+        if (memo) {
+          const ck = hashSource(v);
+          contentKey.set(node.id, ck);
+          memo.set(`${ck}#out`, v);
+        }
+        emit(node.id, "out", v);
+        continue;
+      }
+
+      if (node.op === "feedback") {
+        const sk = storeKey(node);
+        const initRef = node.inputs.init;
+        if (!initRef) throw new Error(`executor: feedback node "${node.id}" has no init`);
+        const initKey = key(initRef.node, initRef.port);
+        const stored = o.store.get(sk);
+        let cur = stored instanceof FieldRing ? undefined : stored;
+        if (cur === undefined) {
+          // first tick (or post-reset): seed from `init`.
+          cur = pulled.get(initKey);
+          if (!cur) throw new Error(`executor: feedback init of "${node.id}" not computed`);
+          o.store.set(sk, cur);
+          // The store keeps this value past the end of the tick, so its lease must not be
+          // recycled here — the store releases it at the next commit (the ping-pong swap). A
+          // bundle's leases are in its parts.
+          if (payloadsOf(cur).length > 0) adopted.add(initKey);
+        }
+        // `init` is evaluated every tick but only *used* on the seeding one; recycle it on the
+        // ticks where it goes unread, or a resident init leaks one buffer per tick.
+        consume(initKey);
+        feedbackNodes.push(node);
+        emit(node.id, "state", cur);
+        continue;
+      }
+
+      if (node.op === "delay") {
+        // z⁻ᵏ: emit the value from `depth` ticks ago (a FieldRing of capacity `depth`),
+        // seeded by `init` until enough history has accrued. `next` is pushed at commit.
+        const sk = storeKey(node);
+        const depth = Math.max(1, Math.round(Number(node.params.depth ?? 1)));
+        const initRef = node.inputs.init;
+        if (!initRef) throw new Error(`executor: delay node "${node.id}" has no init`);
+        const initKey = key(initRef.node, initRef.port);
+        const initVal = pulled.get(initKey);
+        if (!initVal) throw new Error(`executor: delay init of "${node.id}" not computed`);
+        const stored = o.store.get(sk);
+        let ring = stored instanceof FieldRing ? stored : undefined;
+        if (!ring) {
+          ring = new FieldRing(initVal.shape, depth, initVal.element, initVal.dtype);
+          o.store.set(sk, ring);
+        }
+        const out = ring.frames >= depth ? ring.frame(depth - 1) : initVal;
+        delayNodes.push(node);
+        emit(node.id, "out", out);
+        // While the history is still filling, `out` IS `init` — the same value under two keys.
+        // Hand the lease to the output key so downstream consumers govern its lifetime; releasing
+        // it on the input key would recycle a buffer they are about to read.
+        if (out === initVal) transferOwnership(initKey, key(node.id, "out"));
+        consume(initKey);
+        continue;
+      }
+
+      const op = getOp(node.op);
+      let ck: string | undefined;
       if (memo) {
-        const ck = hashSource(v);
+        const inputKeys = op.inputs.map((spec) => {
+          const ref = node.inputs[spec.name];
+          if (!ref) throw new Error(`executor (unexpected): No input '${spec.name}' on ${node.id}`);
+          return `${contentKey.get(ref.node) ?? ref.node}#${ref.port}`;
+        });
+        ck = hashString(`${node.op}|${stableJSON(node.params)}|${inputKeys.join(",")}`);
         contentKey.set(node.id, ck);
-        memo.set(`${ck}#out`, v);
+        const hits = op.outputs.map((out) => memo.get(`${ck}#${out.name}`));
+        if (hits.every((h) => h !== undefined)) {
+          op.outputs.forEach((out, i) => {
+            const hit = hits[i];
+            if (hit !== undefined) emit(node.id, out.name, hit);
+          });
+          continue;
+        }
       }
-      emit(node.id, "out", v);
-      continue;
-    }
 
-    if (node.op === "feedback") {
-      const sk = storeKey(node);
-      const initRef = node.inputs.init;
-      if (!initRef) throw new Error(`executor: feedback node "${node.id}" has no init`);
-      const initKey = key(initRef.node, initRef.port);
-      const stored = o.store.get(sk);
-      let cur = stored instanceof FieldRing ? undefined : stored;
-      if (cur === undefined) {
-        // first tick (or post-reset): seed from `init`.
-        cur = pulled.get(initKey);
-        if (!cur) throw new Error(`executor: feedback init of "${node.id}" not computed`);
-        o.store.set(sk, cur);
-        // The store keeps this value past the end of the tick, so its lease must not be
-        // recycled here — the store releases it at the next commit (the ping-pong swap).
-        if (cur.buffer) adopted.add(initKey);
-      }
-      // `init` is evaluated every tick but only *used* on the seeding one; recycle it on the
-      // ticks where it goes unread, or a resident init leaks one buffer per tick.
-      consume(initKey);
-      feedbackNodes.push(node);
-      emit(node.id, "state", cur);
-      continue;
-    }
-
-    if (node.op === "delay") {
-      // z⁻ᵏ: emit the value from `depth` ticks ago (a FieldRing of capacity `depth`),
-      // seeded by `init` until enough history has accrued. `next` is pushed at commit.
-      const sk = storeKey(node);
-      const depth = Math.max(1, Math.round(Number(node.params.depth ?? 1)));
-      const initRef = node.inputs.init;
-      if (!initRef) throw new Error(`executor: delay node "${node.id}" has no init`);
-      const initKey = key(initRef.node, initRef.port);
-      const initVal = pulled.get(initKey);
-      if (!initVal) throw new Error(`executor: delay init of "${node.id}" not computed`);
-      const stored = o.store.get(sk);
-      let ring = stored instanceof FieldRing ? stored : undefined;
-      if (!ring) {
-        ring = new FieldRing(initVal.shape, depth, initVal.element, initVal.dtype);
-        o.store.set(sk, ring);
-      }
-      const out = ring.frames >= depth ? ring.frame(depth - 1) : initVal;
-      delayNodes.push(node);
-      emit(node.id, "out", out);
-      // While the history is still filling, `out` IS `init` — the same value under two keys.
-      // Hand the lease to the output key so downstream consumers govern its lifetime; releasing
-      // it on the input key would recycle a buffer they are about to read.
-      if (out === initVal) transferOwnership(initKey, key(node.id, "out"));
-      consume(initKey);
-      continue;
-    }
-
-    const op = getOp(node.op);
-    let ck: string | undefined;
-    if (memo) {
       const inputKeys = op.inputs.map((spec) => {
         const ref = node.inputs[spec.name];
         if (!ref) throw new Error(`executor (unexpected): No input '${spec.name}' on ${node.id}`);
-        return `${contentKey.get(ref.node) ?? ref.node}#${ref.port}`;
+        const k = key(ref.node, ref.port);
+        if (!pulled.has(k)) throw new Error(`executor: input "${spec.name}" of "${node.id}" not computed`);
+        return k;
       });
-      ck = hashString(`${node.op}|${stableJSON(node.params)}|${inputKeys.join(",")}`);
-      contentKey.set(node.id, ck);
-      const hits = op.outputs.map((out) => memo.get(`${ck}#${out.name}`));
-      if (hits.every((h) => h !== undefined)) {
-        op.outputs.forEach((out, i) => {
-          const hit = hits[i];
-          if (hit !== undefined) emit(node.id, out.name, hit);
-        });
-        continue;
+
+      // The bridge (ADR-0017). A resident op is handed GPU-resident inputs; every other op — and
+      // anything running in `cpu` mode — is handed host data. Either side may need a transfer,
+      // and this is the only place one is inserted, which is what makes invariant 4 measurable:
+      // once both ends of an edge are resident, no transfer happens at all.
+      const wantResident = o.mode === "gpu" && op.resident === true;
+      const inputs: FieldValue[] = [];
+      for (const k of inputKeys) inputs.push(wantResident ? await residentAt(k) : await hostAt(k));
+      // An op that binds whole buffers cannot be handed a range of one. Give it a copy; the copies
+      // are this node's own and go back when it has run.
+      if (wantResident && !op.slices) {
+        for (let i = 0; i < inputs.length; i++) inputs[i] = await withoutSlices(o.ctx, inputs[i]!, unsliced);
       }
-    }
 
-    const inputKeys = op.inputs.map((spec) => {
-      const ref = node.inputs[spec.name];
-      if (!ref) throw new Error(`executor (unexpected): No input '${spec.name}' on ${node.id}`);
-      const k = key(ref.node, ref.port);
-      if (!pulled.has(k)) throw new Error(`executor: input "${spec.name}" of "${node.id}" not computed`);
-      return k;
-    });
+      // Which input port each payload came in on, so an output that hands one straight back is
+      // recognised as a borrow rather than double-owned (ADR-0023).
+      const lenderOf = new Map<ResidentPayload, string>();
+      inputs.forEach((v, i) => {
+        for (const p of payloadsOf(v)) if (!lenderOf.has(p)) lenderOf.set(p, inputKeys[i]!);
+      });
 
-    // The bridge (ADR-0017). A resident op is handed GPU-resident inputs; every other op — and
-    // anything running in `cpu` mode — is handed host data. Either side may need a transfer,
-    // and this is the only place one is inserted, which is what makes invariant 4 measurable:
-    // once both ends of an edge are resident, no transfer happens at all.
-    const wantResident = o.mode === "gpu" && op.resident === true;
-    const inputs: FieldValue[] = [];
-    for (const k of inputKeys) inputs.push(wantResident ? await residentAt(k) : await hostAt(k));
-
-    // Which input port each payload came in on, so an output that hands one straight back is
-    // recognised as a borrow rather than double-owned (ADR-0023).
-    const lenderOf = new Map<ResidentPayload, string>();
-    inputs.forEach((v, i) => {
-      for (const p of payloadsOf(v)) if (!lenderOf.has(p)) lenderOf.set(p, inputKeys[i]!);
-    });
-
-    const outs = await runNode(op, o.ctx, o.mode, inputs, node.params);
-    op.outputs.forEach((out, i) => {
-      const v = outs[i];
-      if (v === undefined) throw new Error(`executor (unexpected): no output for ${i}`);
-      // Stamp the build-time-inferred basis (ADR-0006) so it propagates through ops
-      // that don't set it themselves (e.g. editing wavelet coefficients then idwt).
-      const b = node.outBases?.[i];
-      if (b && v.basis === undefined) v.basis = b;
-      // Axes/role/placement propagate the same way (ADR-0015 known gap + ADR-0018): stamp the
-      // inferred facet only when the op left it unset, so a constructing op (splat, centroid
-      // extract) that sets its own placement wins, while a generic op carries it through.
-      const ax = node.outAxes?.[i];
-      if (ax !== undefined && v.axes === undefined) v.axes = ax;
-      const rl = node.outRoles?.[i];
-      if (rl !== undefined && v.role === undefined) v.role = rl;
-      const pl = node.outPlacements?.[i];
-      if (pl !== undefined && v.placement === undefined) v.placement = pl;
-      if (memo && ck) memo.set(`${ck}#${out.name}`, v);
-      // A memoised value outlives the tick, so the tick must not reclaim its buffer. Not
-      // owning it pins it — correct, but it means resident values accumulate in the memo until
-      // eviction releases them (ADR-0017 leaves that coupling to a later stage).
-      else {
-        // ADR-0023: a payload the op did not create — it handed back one reachable from an input,
-        // as an extract op does — is BORROWED, not owned. Owning it would return a lease to the
-        // pool while the lender still points at it; the borrow edge instead keeps the lender
-        // alive until this port dies.
-        const outKey = key(node.id, out.name);
-        for (const p of payloadsOf(v)) {
-          const lender = lenderOf.get(p);
-          if (lender) borrow(outKey, lender);
-          else own(outKey, p);
+      const outs = await runNode(op, o.ctx, o.mode, inputs, node.params);
+      // A copy the op handed straight back is now the output's own lease, not a borrow from the
+      // sliced input; the rest go back.
+      const returned = new Set<ResidentPayload>(outs.flatMap((v) => payloadsOf(v)));
+      for (const copy of unsliced) {
+        if (returned.has(copy)) lenderOf.delete(copy);
+        else o.ctx.backend.release(copy);
+      }
+      unsliced.length = 0;
+      op.outputs.forEach((out, i) => {
+        const v = outs[i];
+        if (v === undefined) throw new Error(`executor (unexpected): no output for ${i}`);
+        // Stamp the build-time-inferred basis (ADR-0006) so it propagates through ops
+        // that don't set it themselves (e.g. editing wavelet coefficients then idwt).
+        const b = node.outBases?.[i];
+        if (b && v.basis === undefined) v.basis = b;
+        // Axes/role/placement propagate the same way (ADR-0015 known gap + ADR-0018): stamp the
+        // inferred facet only when the op left it unset, so a constructing op (splat, centroid
+        // extract) that sets its own placement wins, while a generic op carries it through.
+        const ax = node.outAxes?.[i];
+        if (ax !== undefined && v.axes === undefined) v.axes = ax;
+        const rl = node.outRoles?.[i];
+        if (rl !== undefined && v.role === undefined) v.role = rl;
+        const pl = node.outPlacements?.[i];
+        if (pl !== undefined && v.placement === undefined) v.placement = pl;
+        if (memo && ck) memo.set(`${ck}#${out.name}`, v);
+        // A memoised value outlives the tick, so the tick must not reclaim its buffer. Not
+        // owning it pins it — correct, but it means resident values accumulate in the memo until
+        // eviction releases them (ADR-0017 leaves that coupling to a later stage).
+        else {
+          // ADR-0023: a payload the op did not create — it handed back one reachable from an input,
+          // as an extract op does — is BORROWED, not owned. Owning it would return a lease to the
+          // pool while the lender still points at it; the borrow edge instead keeps the lender
+          // alive until this port dies.
+          const outKey = key(node.id, out.name);
+          for (const p of payloadsOf(v)) {
+            const lender = lenderOf.get(p);
+            if (lender) borrow(outKey, lender);
+            else own(outKey, p);
+          }
         }
+        emit(node.id, out.name, v);
+      });
+
+      // This node has consumed its inputs; any whose last reader that was can go back to the pool.
+      for (const k of inputKeys) consume(k);
+    }
+
+    /** A `pullResident` sink that BORROWED its payload (an extracted bundle part) is the one place
+     *  a lender must be dismantled rather than kept whole: the caller is handed one buffer and owns
+     *  it, so the lender's OTHER payloads — the index's `start` when you pulled its `items` — would
+     *  otherwise never come back. Release those, and let the borrowed one travel to the caller. */
+    const detachBorrowedSink = (k: string) => {
+      const ls = lenders.get(k);
+      if (!ls) return;
+      const sinkValue = pulled.get(k);
+      const keep = new Set<ResidentPayload>(sinkValue ? payloadsOf(sinkValue) : []);
+      // The commit above handed some leases to the sim state; those are not the tick's to return.
+      for (const s of o.store.values()) if (!(s instanceof FieldRing)) for (const p of payloadsOf(s)) keep.add(p);
+      lenders.delete(k);
+      for (const lender of ls) {
+        borrowers.get(lender)?.delete(k);
+        const list = owned.get(lender);
+        if (!list) continue;
+        owned.delete(lender);
+        for (const p of list) if (!keep.has(p)) releasePayload(p);
       }
-      emit(node.id, out.name, v);
-    });
+    };
 
-    // This node has consumed its inputs; any whose last reader that was can go back to the pool.
-    for (const k of inputKeys) consume(k);
-  }
-
-  /** A `pullResident` sink that BORROWED its payload (an extracted bundle part) is the one place
-   *  a lender must be dismantled rather than kept whole: the caller is handed one buffer and owns
-   *  it, so the lender's OTHER payloads — the index's `start` when you pulled its `items` — would
-   *  otherwise never come back. Release those, and let the borrowed one travel to the caller. */
-  const detachBorrowedSink = (k: string) => {
-    const ls = lenders.get(k);
-    if (!ls) return;
-    const sinkValue = pulled.get(k);
-    const keep = new Set<ResidentPayload>(sinkValue ? payloadsOf(sinkValue) : []);
-    lenders.delete(k);
-    for (const lender of ls) {
-      borrowers.get(lender)?.delete(k);
-      const list = owned.get(lender);
-      if (!list) continue;
-      owned.delete(lender);
-      for (const p of list) if (!keep.has(p)) releasePayload(p);
-    }
-  };
-
-  // Commit: store each feedback node's fed-back value for the next tick.
-  //
-  // RESIDENT FEEDBACK = PING-PONG (invariant 1). When the fed-back value is GPU-resident, the
-  // store adopts its lease and hands the *outgoing* state's buffer straight back to the pool.
-  // Because the pool is a free list, next tick's producer is then handed that very buffer: two
-  // buffers alternate for the lifetime of the simulation, which is exactly HsPf's
-  // `[src, dst] = [dst, src]` expressed through the lease API rather than by hand. The steady
-  // state is constant in tick count — no per-tick allocation, and no download anywhere in the
-  // loop, which is what invariant 1 asks for and what Tier-1 could not provide.
-  for (const node of feedbackNodes) {
-    const nextRef = node.inputs.next;
-    if (!nextRef) continue;
-    const k = key(nextRef.node, nextRef.port);
-    const v = pulled.get(k);
-    if (!v) continue;
-    const sk = storeKey(node);
-    const prev = o.store.get(sk);
-    o.store.set(sk, v);
-    if (v.buffer || v.texture) {
-      adopted.add(k); // the store owns this lease now, not the tick
-      owned.delete(k);
-    }
-    // Return the state we just superseded. Guarded against a self-loop, where the incoming and
-    // outgoing values are backed by the same resource and releasing would be a double free.
-    if (prev && !(prev instanceof FieldRing)) {
-      if (prev.buffer && prev.buffer !== v.buffer) o.ctx.backend.release(prev.buffer);
-      if (prev.texture && prev.texture !== v.texture) o.ctx.backend.releaseTexture(prev.texture);
-    }
-  }
-  // Commit: push each delay node's fed value into its history ring. The ring is host-backed
-  // (a `delay(k)` keeps k interpolatable frames), so a resident value is downloaded here —
-  // deliberate and explicit, not an accident of the bridge. ADR-0017 stage 3 leaves the
-  // ring-of-leases generalisation open; until then `delay` is a host sink.
-  for (const node of delayNodes) {
-    const nextRef = node.inputs.next;
-    if (!nextRef) continue;
-    const ring = o.store.get(storeKey(node));
-    if (!(ring instanceof FieldRing)) continue;
-    const k = key(nextRef.node, nextRef.port);
-    ring.push(await hostAt(k));
-    // The ring copied the bytes into its own host store, so the lease is dead the moment the
-    // push returns. Unlike `feedback`, nothing adopts it: a `FieldRing` holds host frames, so a
-    // `delay` keeps no GPU buffers and has nothing to ping-pong. Generalising the ring to a ring
-    // of leases is left open by ADR-0017 — ping-pong is the depth-1 case, and a depth-k history
-    // needs k+1 rotating buffers plus an on-device path for `sample`'s interpolation, which is a
-    // larger change than stage 3 calls for. Until then `delay` is an explicit host boundary.
-    pinned.delete(k);
-    releaseIfDead(k);
-  }
-
-  // Invariant 4's sink rule: the download happens here, once, because the *host* consumes the
-  // value — not because an interior edge needed it. A render sink asks for `pullResident` and
-  // this never runs, which is why the target for a render-terminated graph is zero downloads.
-  if (o.materialiseSink) {
+    // Commit: store each feedback node's fed-back value for the next tick.
+    //
+    // RESIDENT FEEDBACK = PING-PONG (invariant 1). When the fed-back value is GPU-resident, the
+    // store adopts its lease and hands the *outgoing* state's buffer straight back to the pool.
+    // Because the pool is a free list, next tick's producer is then handed that very buffer: two
+    // buffers alternate for the lifetime of the simulation, which is exactly HsPf's
+    // `[src, dst] = [dst, src]` expressed through the lease API rather than by hand. The steady
+    // state is constant in tick count — no per-tick allocation, and no download anywhere in the
+    // loop, which is what invariant 1 asks for and what Tier-1 could not provide.
+    // Every readback a commit needs happens first, and every delay frame is checked against its
+    // ring. One that fails then leaves the state where it was, so the tick can be run again;
+    // nothing below this block can reject.
     const sinkKey = key(field.producer, field.outPort);
-    await hostAt(sinkKey);
-    // The host now holds the bytes, so the device copy is dead and its lease goes back. Without
-    // this the sink is the one value pinned forever and the pool grows by one buffer per pull.
-    // `pullResident` deliberately skips this: there the *caller* owns the buffer.
-    pinned.delete(sinkKey);
-    releaseIfDead(sinkKey);
+    if (o.materialiseSink) await hostAt(sinkKey);
+    const delayFrames = new Map<GraphNode, FieldValue>();
+    for (const node of delayNodes) {
+      const nextRef = node.inputs.next;
+      const ring = o.store.get(storeKey(node));
+      if (!nextRef || !(ring instanceof FieldRing)) continue;
+      const frame = await hostAt(key(nextRef.node, nextRef.port));
+      ring.check(frame);
+      delayFrames.set(node, frame);
+    }
+
+    const superseded: ResidentPayload[] = [];
+    for (const node of feedbackNodes) {
+      const nextRef = node.inputs.next;
+      if (!nextRef) continue;
+      const k = key(nextRef.node, nextRef.port);
+      const v = pulled.get(k);
+      if (!v) continue;
+      const sk = storeKey(node);
+      const prev = o.store.get(sk);
+      o.store.set(sk, v);
+      // A bundle (the spring model's bond table) holds its leases in its parts, so ask for every
+      // payload the value carries, not just its own.
+      if (payloadsOf(v).length > 0) {
+        adopted.add(k); // the store owns these leases now, not the tick
+        owned.delete(k);
+      }
+      if (prev && !(prev instanceof FieldRing)) superseded.push(...payloadsOf(prev));
+    }
+    // Return the states just superseded, once every node has its new value: a buffer goes back
+    // only when no feedback node holds it any more. That covers a self-loop, two nodes seeded from
+    // one buffer, and two keys holding ranges of one packed root.
+    const stillHeld = new Set<ResidentPayload>();
+    for (const s of o.store.values()) if (!(s instanceof FieldRing)) for (const p of payloadsOf(s)) stillHeld.add(p);
+    // A sink left on the device that is itself a feedback node's state is the outgoing value.
+    // The caller is about to be handed it, so it becomes theirs instead of going back.
+    const outgoingSink = pulled.get(sinkKey);
+    if (!o.materialiseSink && outgoingSink) for (const p of payloadsOf(outgoingSink)) stillHeld.add(p);
+    returnPayloads(
+      o.ctx.backend,
+      [...new Set(superseded)].filter((p) => !stillHeld.has(p)),
+    );
+
+    // Push each delay node's fed value into its history ring. The ring is host-backed (a `delay(k)`
+    // keeps k interpolatable frames), so the value was downloaded above: deliberate and explicit.
+    // ADR-0017 stage 3 leaves a ring of leases open; until then `delay` is a host boundary, keeps
+    // no GPU buffers, and has nothing to ping-pong.
+    for (const [node, frame] of delayFrames) {
+      const ring = o.store.get(storeKey(node));
+      if (!(ring instanceof FieldRing)) continue;
+      ring.push(frame);
+      const nextRef = node.inputs.next!;
+      const k = key(nextRef.node, nextRef.port);
+      // The ring copied the bytes, so the lease is dead: unless it is also the sink, whose pin is
+      // the caller's.
+      if (k !== sinkKey) {
+        pinned.delete(k);
+        releaseIfDead(k);
+      }
+    }
+
+    // Invariant 4's sink rule: the download happens here, once, because the *host* consumes the
+    // value — not because an interior edge needed it. A render sink asks for `pullResident` and
+    // this never runs, which is why the target for a render-terminated graph is zero downloads.
+    if (o.materialiseSink) {
+      // The host now holds the bytes, so the device copy is dead and its lease goes back. Without
+      // this the sink is the one value pinned forever and the pool grows by one buffer per pull.
+      // `pullResident` deliberately skips this: there the *caller* owns the buffer.
+      pinned.delete(sinkKey);
+      releaseIfDead(sinkKey);
+      // The caller gets data. A buffer still on the value is not theirs: it may be a state the
+      // commit just returned, or one the sim state will return next tick.
+      const sinkValue = pulled.get(sinkKey);
+      if (sinkValue) pulled.set(sinkKey, withoutResidentHandles(sinkValue));
+    }
+
+    // The sink is pinned, so nothing above released it; if it borrowed, split its lender now.
+    if (!o.materialiseSink) detachBorrowedSink(key(field.producer, field.outPort));
+
+    // Return every lease the tick still owns. Nodes release as their last reader completes; this
+    // catches values nothing consumed. Pinned ports (the sink, anything fed back) are excluded.
+    // Borrowers first: a borrower owns nothing, but until it dies its lender cannot be released.
+    for (const k of [...lenders.keys()]) releaseIfDead(k);
+    for (const k of [...owned.keys()]) releaseIfDead(k);
+  } catch (e) {
+    releaseAfterFailure();
+    throw e;
   }
-
-  // The sink is pinned, so nothing above released it; if it borrowed, split its lender now.
-  if (!o.materialiseSink) detachBorrowedSink(key(field.producer, field.outPort));
-
-  // Return every lease the tick still owns. Nodes release as their last reader completes; this
-  // catches values nothing consumed. Pinned ports (the sink, anything fed back) are excluded.
-  // Borrowers first: a borrower owns nothing, but until it dies its lender cannot be released.
-  for (const k of [...lenders.keys()]) releaseIfDead(k);
-  for (const k of [...owned.keys()]) releaseIfDead(k);
 
   return pulled;
 }
@@ -676,19 +835,48 @@ export async function pullResident(graph: Graph, field: GpuField, opts: PullOpti
   return runOnce(graph, field, opts, false);
 }
 
+/** Empty a private sim state and give back the value for the caller.
+ *
+ *  A value brought to the host is the caller's as data only: a fed-back sink still carries the
+ *  state's buffer, which goes back with the rest, and the handles are dropped so nobody reads it.
+ *  A value kept on the device keeps its payloads, which are now the caller's to release. */
+function closePrivateState(store: SimState, backend: GpuBackend, out: FieldValue, onHost: boolean): FieldValue {
+  if (onHost) {
+    disposeSimState(store, backend);
+    return withoutResidentHandles(out);
+  }
+  const keep = new Set<ResidentPayload>(payloadsOf(out));
+  const held = new Set<ResidentPayload>();
+  for (const v of store.values()) {
+    if (v instanceof FieldRing) continue;
+    for (const p of payloadsOf(v)) if (!keep.has(p)) held.add(p);
+  }
+  store.clear();
+  returnPayloads(backend, [...held]);
+  return out;
+}
+
 async function runOnce(graph: Graph, field: GpuField, opts: PullOptions, materialiseSink: boolean): Promise<FieldValue> {
+  const ctx = opts.ctx ?? { backend: nodeBackend };
+  const store = createSimState();
   const pulled = await runTick(graph, field, {
-    ctx: opts.ctx ?? { backend: nodeBackend },
+    ctx,
     mode: opts.mode ?? "gpu",
     memo: opts.cache,
-    store: createSimState(),
+    store,
     onValue: opts.onValue,
     onBridge: opts.onBridge,
     materialiseSink,
+  }).catch((e: unknown) => {
+    // Nobody can retry with a private store, so what it adopted before the failure goes back.
+    disposeSimState(store, ctx.backend);
+    throw e;
   });
   const out = pulled.get(key(field.producer, field.outPort));
   if (!out) throw new Error(`executor: requested field not produced`);
-  return out;
+  // A one-shot pull has no next tick, so whatever its feedback nodes adopted would be stranded.
+  // Return it, except a payload the caller is being handed.
+  return closePrivateState(store, ctx.backend, out, materialiseSink);
 }
 
 export interface AdvanceOptions extends PullOptions {
@@ -700,6 +888,25 @@ export interface AdvanceOptions extends PullOptions {
   reset?: boolean;
   /** Called after each tick with the sink value. */
   onFrame?: (frame: number, value: FieldValue) => void;
+  /** When the sink is downloaded to the host. `"every"` (the default) does it each tick, which is
+   *  what a host consumer drawing every frame wants. `"last"` downloads only the final tick's, so
+   *  a resident simulation runs its whole batch on the device. `"none"` never does: the value
+   *  returned carries `buffer`, for a view that binds it. With `"none"`, a sink that is fed back
+   *  is owned by the sim state and stays valid until the next tick; one that is not is the
+   *  caller's lease to release, as with `pullResident`. */
+  materialise?: "every" | "last" | "none";
+}
+
+/** The device payloads of `v` that no feedback node in `store` holds: the caller's to release.
+ *  After `advance(..., { materialise: "none" })` this says which of the returned sink's leases are
+ *  yours; ones the state holds go back when the state moves on. */
+export function payloadsNotHeld(store: SimState, v: FieldValue): ResidentPayload[] {
+  const held = new Set<ResidentPayload>();
+  for (const s of store.values()) {
+    if (s instanceof FieldRing) continue;
+    for (const p of payloadsOf(s)) held.add(p);
+  }
+  return payloadsOf(v).filter((p) => !held.has(p));
 }
 
 /** Advance a feedback graph `steps` ticks, returning the sink at the final tick. */
@@ -708,24 +915,47 @@ export async function advance(graph: Graph, field: GpuField, opts: AdvanceOption
   const ctx = opts.ctx ?? { backend: nodeBackend };
   // Dispose rather than clear: a resident feedback state holds a pooled lease, and dropping the
   // map would strand it (the pool never destroys, so a stranded buffer is never reused).
+  const steps = opts.steps ?? 1;
+  if (!Number.isInteger(steps) || steps < 1) throw new Error(`advance: steps must be a positive whole number, got ${steps}`);
   if (opts.reset) disposeSimState(store, ctx.backend);
-  const steps = Math.max(1, opts.steps ?? 1);
   const mode = opts.mode ?? "gpu";
 
+  const materialise = opts.materialise ?? "every";
+
   let last: FieldValue | undefined;
-  for (let t = 0; t < steps; t++) {
-    const pulled = await runTick(graph, field, {
-      ctx,
-      mode,
-      store,
-      onValue: opts.onValue,
-      onBridge: opts.onBridge,
-      materialiseSink: true,
-    });
-    last = pulled.get(key(field.producer, field.outPort));
-    if (!last) throw new Error("advance: sink not produced");
-    opts.onFrame?.(t, last);
+  try {
+    for (let t = 0; t < steps; t++) {
+      const final = t === steps - 1;
+      const materialiseSink = materialise === "every" || (materialise === "last" && final);
+      const pulled = await runTick(graph, field, {
+        ctx,
+        mode,
+        store,
+        onValue: opts.onValue,
+        onBridge: opts.onBridge,
+        materialiseSink,
+      });
+      last = pulled.get(key(field.producer, field.outPort));
+      if (!last) throw new Error("advance: sink not produced");
+      try {
+        opts.onFrame?.(t, last);
+      } catch (e) {
+        // The caller never gets this tick's sink, so a lease of it that the state does not hold
+        // has to go back here.
+        if (!materialiseSink) returnPayloads(ctx.backend, payloadsNotHeld(store, last));
+        throw e;
+      }
+      // An unmaterialised sink of a tick that is not the last would otherwise be a lease nobody
+      // returns. One the sim state holds is the state's; it goes back at the next commit.
+      // A bundle's leases are in its parts, so go by payload.
+      if (!materialiseSink && !final) returnPayloads(ctx.backend, payloadsNotHeld(store, last));
+    }
+  } catch (e) {
+    // A state made here is out of the caller's reach: return what it holds.
+    if (!opts.state) disposeSimState(store, ctx.backend);
+    throw e;
   }
+  if (!opts.state && last) return closePrivateState(store, ctx.backend, last, materialise !== "none");
   if (last === undefined) throw new Error(`executor (unexpected): no value output for field ${field.id}`);
   return last;
 }

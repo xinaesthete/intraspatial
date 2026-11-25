@@ -181,6 +181,33 @@ export interface ResidentBuffer {
   readonly buffer: GPUBuffer;
   readonly byteLength: number;
   readonly lease: LeaseToken;
+  /** Where the value starts in `buffer`, in bytes. Absent ⇒ 0. Set on a slice. */
+  readonly offset?: number;
+  /** For a slice: the buffer it is a range of. The lease, and so the ownership, is that one's;
+   *  a slice is only a view. Parts of a packed bundle are slices of one buffer. */
+  readonly sliceOf?: ResidentBuffer;
+}
+
+/** Offsets of a packed bundle's parts are multiples of this, the smallest alignment WebGPU
+ *  guarantees a storage-buffer binding may start on (`minStorageBufferOffsetAlignment`). */
+export const PACK_ALIGN = 256;
+
+/** Where each part of a packed buffer starts, given the parts' byte lengths in order, and the
+ *  size of the whole. One rule, used by whatever packs and whatever reads. */
+export function packedLayout(byteLengths: readonly number[]): { offsets: number[]; total: number } {
+  const offsets: number[] = [];
+  let at = 0;
+  for (const bytes of byteLengths) {
+    offsets.push(at);
+    at += Math.max(PACK_ALIGN, Math.ceil(bytes / PACK_ALIGN) * PACK_ALIGN);
+  }
+  return { offsets, total: Math.max(at, PACK_ALIGN) };
+}
+
+/** A view of `byteLength` bytes of `root` starting at `offset`. Slicing a slice gives a slice of
+ *  the same root. */
+export function sliceBuffer(root: ResidentBuffer, offset: number, byteLength: number): ResidentBuffer {
+  return { buffer: root.buffer, byteLength, lease: root.lease, offset: (root.offset ?? 0) + offset, sliceOf: root.sliceOf ?? root };
 }
 
 /** Pool identity of a leased texture. Textures are bucketed on their whole descriptor rather than
@@ -297,6 +324,10 @@ export interface FieldValue {
    *  INVARIANT: at least one of `data` / `buffer` / `texture` / `payload` / `parts` is present. A
    *  value may carry more than one transiently — immediately after a bridge in either direction. */
   buffer?: ResidentBuffer;
+  /** On a `bundle`: its parts share one device buffer, each a range of it, so a kernel that
+   *  needs every part can bind the bundle as one binding. On the host the parts are ordinary
+   *  separate arrays; this says how to lay them out when the value goes to the device. */
+  packed?: boolean;
   /** The members of a `bundle` value (ADR-0023), keyed as the shape's `parts` are. Each is a whole
    *  `FieldValue`, so a part may be resident, host-side or opaque, and every facet (placement,
    *  element, role) already applies per part.
@@ -383,11 +414,13 @@ export function payloadsOf(v: FieldValue): ResidentPayload[] {
   const out: ResidentPayload[] = [];
   const walk = (x: FieldValue) => {
     if (x.texture) out.push(x.texture);
-    if (x.buffer) out.push(x.buffer);
+    // A slice is a view: what is owned, lent and released is the buffer it is a range of.
+    if (x.buffer) out.push(x.buffer.sliceOf ?? x.buffer);
     if (x.parts) for (const p of Object.values(x.parts)) walk(p);
   };
   walk(v);
-  return out;
+  // The parts of a packed bundle share one buffer; it is one payload, not one per part.
+  return [...new Set(out)];
 }
 
 export function numCells(shape: Shape): number {

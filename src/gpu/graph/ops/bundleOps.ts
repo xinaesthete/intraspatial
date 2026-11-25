@@ -15,7 +15,11 @@
 // `inferShapes` and by edge validation, so a runtime part name would cost per-part typing at
 // build time. A new bundle type is a few lines of registration.
 import type { FieldValue, Shape, ShapeKind } from "../handle";
+import { packedLayout, sliceBuffer } from "../handle";
 import type { OpType } from "../op";
+
+/** `GPUBufferUsage.COPY_SRC`, by value: the global is absent where WebGPU is not loaded. */
+const COPY_SRC = 0x04;
 
 /** One member of a bundle. The `kind` is what makes an extract op's output port properly typed
  *  rather than `any`: the part's exact SHAPE needs a run, but its kind never changes, so the
@@ -95,6 +99,8 @@ export function extractOp(spec: BundleSpec, part: string): OpType {
       return [undefined];
     },
     resident: true,
+    // Hands its inputs' payloads on untouched, ranges included.
+    slices: true,
     async execute(_ctx, inputs) {
       return [partOf(inputs[0]!, part, who)];
     },
@@ -127,6 +133,8 @@ export function combineOp(spec: BundleSpec): OpType {
       return [{ kind: "bundle", name: spec.name, parts }];
     },
     resident: true,
+    // Hands its inputs' payloads on untouched, ranges included.
+    slices: true,
     async execute(_ctx, inputs) {
       return [bundleValue(spec, inputs)];
     },
@@ -150,4 +158,71 @@ export function bundleValue(spec: BundleSpec, values: FieldValue[]): FieldValue 
   // A bundle has no dtype of its own; each part keeps its own. `f32` is the neutral label the
   // rest of the value model expects on every value.
   return { shape: { kind: "bundle", name: spec.name, parts: shapes }, dtype: "f32", parts };
+}
+
+/**
+ * `<parts...> -> packed bundle`. Unlike `combineOp` this copies: the parts are laid end to end in
+ * one buffer and the bundle's parts are ranges of it (`FieldValue.packed`). An op that wants one
+ * part still binds just that range; a kernel that wants them all binds the buffer once. That
+ * second use is the point: WebGPU allows a kernel eight storage buffers, and a kernel doing the
+ * work of many ops needs more values than that.
+ */
+export function packOp(spec: BundleSpec): OpType {
+  const who = `${spec.name}.pack`;
+  const shapeOf = (inputs: Shape[]): Shape => {
+    const parts: Record<string, Shape> = {};
+    spec.parts.forEach((p, i) => {
+      parts[p.name] = inputs[i]!;
+    });
+    return { kind: "bundle", name: spec.name, parts };
+  };
+  return {
+    name: who,
+    label: `${spec.label} ← parts, packed`,
+    category: spec.label,
+    describe: `Pack the ${spec.parts.length} parts of a ${spec.label.toLowerCase()} into one buffer.`,
+    inputs: spec.parts.map((p) => ({ name: p.name, kind: p.kind })),
+    outputs: [{ name: "bundle", kind: "bundle", bundle: { name: spec.name, parts: partNames(spec) } }],
+    params: [],
+    inferShapes(inputs) {
+      // A part must be one buffer to copy into the pack; a bundle keeps its buffers in its own parts.
+      inputs.forEach((shape, i) => {
+        if (shape.kind === "bundle") throw new Error(`${who}: part "${spec.parts[i]!.name}" is a bundle, which cannot be packed`);
+      });
+      return [shapeOf(inputs)];
+    },
+    resident: true,
+    slices: true,
+    async execute(ctx, inputs) {
+      const sources = inputs.map((v, i) => {
+        if (!v.buffer) throw new Error(`${who}: part "${spec.parts[i]!.name}" is not on the device`);
+        // A failed copy is a device validation error, not a throw: check here or pack garbage.
+        if ((v.buffer.buffer.usage & COPY_SRC) === 0)
+          throw new Error(`${who}: part "${spec.parts[i]!.name}" is in a buffer without COPY_SRC`);
+        return v.buffer;
+      });
+      const { offsets, total } = packedLayout(sources.map((b) => b.byteLength));
+      // The device first: nothing after the lease awaits, and a throw there returns the root.
+      const device = await ctx.backend.getDevice();
+      const root = await ctx.backend.lease(total);
+      try {
+        const enc = device.createCommandEncoder({ label: who });
+        sources.forEach((src, i) =>
+          enc.copyBufferToBuffer(src.buffer, src.offset ?? 0, root.buffer, offsets[i]!, Math.ceil(src.byteLength / 4) * 4),
+        );
+        device.queue.submit([enc.finish()]);
+      } catch (e) {
+        ctx.backend.release(root);
+        throw e;
+      }
+      const packed = bundleValue(
+        spec,
+        inputs.map((v, i) => ({ ...v, data: undefined, buffer: sliceBuffer(root, offsets[i]!, sources[i]!.byteLength) })),
+      );
+      return [{ ...packed, packed: true }];
+    },
+    cpuGolden(inputs) {
+      return [{ ...bundleValue(spec, inputs), packed: true }];
+    },
+  };
 }

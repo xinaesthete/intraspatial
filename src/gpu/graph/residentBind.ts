@@ -14,15 +14,24 @@
 // Ownership stays entirely with the pool, and nothing is registered with the root.
 
 import type { Root } from "./backend";
+import type { ResidentBuffer } from "./handle";
 
 /** A binding: either a raw pooled buffer or a TypeGPU-owned one (params/uniform blocks, which
  *  are module-scoped and long-lived, so wrapping is not a concern for them). */
-export type BindEntry = GPUBuffer | { readonly buffer: GPUBuffer };
+export type BindEntry = GPUBuffer | { readonly buffer: GPUBuffer } | ResidentBuffer;
 
 // `Root["unwrap"]` is overloaded across buffers/layouts/pipelines, so it does not give a single
 // usable parameter type here. These two helpers localise the casts rather than sprinkling them
 // through each op.
 type Unwrap = (x: unknown) => unknown;
+
+/** A pooled value, as opposed to a raw or a TypeGPU buffer: it has a lease. */
+const isResident = (b: BindEntry): b is ResidentBuffer => "lease" in b;
+
+/** A pooled value's binding: its own range of its buffer, which for a slice is not the whole. */
+function range(b: ResidentBuffer): GPUBufferBinding {
+  return { buffer: b.buffer, offset: b.offset ?? 0, size: Math.max(4, b.byteLength) };
+}
 
 function raw(root: Root, b: BindEntry): GPUBuffer {
   // A raw buffer passes straight through; a TypeGPU one is unwrapped to its device handle.
@@ -39,6 +48,6 @@ export function rawBindGroup(device: GPUDevice, root: Root, layout: unknown, ent
   return device.createBindGroup({
     label: label,
     layout: (root.unwrap as unknown as Unwrap)(layout) as GPUBindGroupLayout,
-    entries: entries.map((e, binding) => ({ binding, resource: { buffer: raw(root, e) } })),
+    entries: entries.map((e, binding) => ({ binding, resource: isResident(e) ? range(e) : { buffer: raw(root, e) } })),
   });
 }

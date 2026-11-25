@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Springs</title>
+  <style>
+    :root { color-scheme: dark; }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; min-height: 100%; background: #0b1020; color: #e2e8f0; font: 13px/1.5 ui-sans-serif, system-ui, sans-serif; }
+    #root { padding: 16px; }
+    h2.page { margin: 0 0 4px; font-size: 15px; font-weight: 600; }
+    p.page { margin: 0 0 14px; color: #94a3b8; font-size: 12px; max-width: 820px; }
+    p.prototype { border-left: 3px solid #f59e0b; padding: 6px 10px; background: #1e293b; color: #cbd5e1; }
+    p.prototype strong { color: #fbbf24; }
+    p.page a { color: #7dd3fc; }
+    h3 { margin: 18px 0 6px; font-size: 13px; font-weight: 600; }
+    .layout { display: grid; grid-template-columns: 300px minmax(0, 1fr); gap: 18px; align-items: start; }
+    @media (max-width: 900px) { .layout { grid-template-columns: 1fr; } }
+    .controls { display: flex; flex-direction: column; gap: 10px; }
+    .controls label { display: flex; flex-direction: column; gap: 3px; color: #cbd5e1; font-size: 12px; }
+    .controls .slider { display: flex; flex-direction: column; gap: 3px; }
+    .controls .row { display: flex; gap: 6px; align-items: center; }
+    .controls input:not([type=range]), .controls select { background: #111827; color: #e2e8f0; border: 1px solid #334155; border-radius: 4px; padding: 3px 6px; font: inherit; min-width: 0; flex: 1; }
+    button { background: #1e293b; color: #e2e8f0; border: 1px solid #334155; border-radius: 4px; padding: 3px 8px; font: inherit; cursor: pointer; }
+    .views { min-width: 0; }
+    .stage { display: flex; flex-wrap: wrap; gap: 14px; align-items: flex-start; }
+    .sim-canvas { width: min(62vh, 100%, 640px); aspect-ratio: 1; border-radius: 4px; background: #0b1020; }
+    .side { display: flex; flex-direction: column; gap: 8px; width: 330px; max-width: 100%; }
+    .controls label.check, .controls .check { display: flex; flex-direction: row; align-items: center; gap: 6px; color: #94a3b8; font-size: 11px; }
+    .controls .check input { flex: none; }
+    .status { color: #94a3b8; font-size: 12px; min-height: 18px; margin: 6px 0; }
+    .error { color: #f87171; }
+    .hint { color: #64748b; font-size: 11px; margin: 4px 0; max-width: 820px; }
+    .legend { display: flex; flex-wrap: wrap; gap: 6px 18px; margin: 8px 0; font-size: 12px; }
+    .legend-row { color: #94a3b8; display: flex; align-items: center; gap: 6px; }
+    .swatch { width: 12px; height: 12px; border-radius: 3px; display: inline-block; }
+    .chart { width: 100%; background: #0f172a; border: 1px solid #1e293b; border-radius: 4px; }
+    .chart-title { fill: #cbd5e1; font-size: 10px; }
+    .chart-tick { fill: #94a3b8; font-size: 9px; }
+    .chart-axis { stroke: #334155; stroke-width: 1; }
+    .chart-guide { stroke: #64748b; stroke-width: 1; stroke-dasharray: 3 3; }
+    .maps { display: flex; gap: 10px; }
+    .maps figure { margin: 0; flex: 1; }
+    .maps figcaption { color: #94a3b8; font-size: 11px; text-align: center; }
+    .map { width: 100%; aspect-ratio: 1; image-rendering: pixelated; border: 1px solid #1e293b; }
+    .map-editor { position: relative; width: 100%; aspect-ratio: 1; touch-action: none; }
+    .map-editor .map { position: absolute; inset: 0; height: 100%; }
+    .map-overlay { position: absolute; inset: 0; width: 100%; height: 100%; cursor: crosshair; }
+    .map-diagonal { stroke: rgba(255,255,255,0.25); stroke-width: 0.15; }
+    .map-cell { fill: rgba(255,255,255,0.9); pointer-events: none; }
+    .map-cell-mirror { fill: rgba(255,255,255,0.35); }
+    .map-line { stroke: #f472b6; stroke-width: 0.6; stroke-linecap: round; cursor: move; }
+    .map-handle { fill: rgba(244,114,182,0.25); stroke: #f472b6; stroke-width: 0.2; cursor: grab; }
+    .controls .row.presets { flex-wrap: wrap; }
+    .phase-controls { display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-end; margin: 6px 0; }
+    .phase-controls label { display: flex; flex-direction: column; gap: 3px; color: #cbd5e1; font-size: 12px; }
+    .phase-controls select, .phase-controls input { background: #111827; color: #e2e8f0; border: 1px solid #334155; border-radius: 4px; padding: 3px 6px; font: inherit; width: 170px; }
+    .phase { display: grid; grid-template-columns: auto auto; gap: 4px 8px; align-items: center; width: max-content; max-width: 100%; overflow-x: auto; }
+    .phase-y { writing-mode: vertical-rl; transform: rotate(180deg); color: #cbd5e1; font-size: 12px; }
+    .phase-x { grid-column: 2; text-align: center; color: #cbd5e1; font-size: 12px; }
+    .phase-grid { display: grid; gap: 2px; align-items: center; }
+    .phase-tick { color: #94a3b8; font-size: 11px; text-align: right; padding-right: 4px; }
+    .phase-tick-x { text-align: center; padding: 0; }
+    .phase-cell { width: 46px; height: 34px; padding: 0; border: 1px solid #0b1020; color: #0b1020; font-size: 11px; font-weight: 600; }
+    .phase-cell:disabled { cursor: default; }
+    .explainers { margin-top: 18px; display: flex; flex-direction: column; gap: 6px; max-width: 820px; }
+    details.explain { background: #0f172a; border: 1px solid #1e293b; border-radius: 6px; padding: 6px 10px; }
+    details.explain summary { cursor: pointer; color: #cbd5e1; font-weight: 600; }
+    .explain-body { color: #94a3b8; margin-top: 6px; }
+    .explain-math { margin-top: 6px; overflow-x: auto; }
+  </style>
+</head>
+
+<body>
+  <div id="root"></div>
+  <script type="module" src="/src/springsMain.tsx"></script>
+</body>
+
+</html>

@@ -90,7 +90,9 @@ time-stepping control likewise lives on the host.
 ## Where to take it next
 
 1. ~~`gradient` grid op~~ — built (`ops/fieldCalculus.ts`); an `integrate` op is named in ADR-0017.
-2. Particle integrator + a pairwise-force step (spring/Lennard-Jones/repulsion).
+2. ~~Particle integrator + a pairwise-force step~~ — built as the spring model
+   ([`spring-model.md`](spring-model.md), `src/gpu/sim/springs/`): CSynth's springs and pair
+   forces, bond turnover, adhesion, growth. Not yet graph ops.
 3. A composer demo: seed → reaction-diffusion subgraph pulled per frame, previewed as
    an animated grid.
 
