@@ -204,4 +204,25 @@ describe("crossPCFBootstrap", () => {
     expect(empty.nA).toBe(0);
     expect([...empty.g]).toEqual([0, 0, 0, 0, 0, 0]);
   });
+
+  it.each(["block", "anchor"] as const)("includeA / includeB equal pre-filtered clouds, band included (%s)", (scheme) => {
+    const rnd = mulberry32(8);
+    const a = uniform(700, rnd);
+    const b = uniform(600, rnd);
+    const incA = Uint8Array.from(a.xs, (_, i) => (i % 4 === 0 ? 0 : 1));
+    const incB = Uint8Array.from(b.xs, (_, i) => (i % 3 === 0 ? 0 : 1));
+    const pick = (c: { xs: number[]; ys: number[] }, m: Uint8Array) => {
+      const k = Array.from(m, (v, i) => (v ? i : -1)).filter((i) => i >= 0);
+      return { xs: k.map((i) => c.xs[i]!), ys: k.map((i) => c.ys[i]!) };
+    };
+    const q = { ...p, edgeCorrected: true } as const;
+    const opts = { resamples: 99, seed: 5, scheme } as const;
+    const masked = crossPCFBootstrap(a, b, { ...q, includeA: incA, includeB: incB }, opts);
+    const copied = crossPCFBootstrap(pick(a, incA), pick(b, incB), q, opts);
+    expect(Array.from(masked.g)).toEqual(Array.from(copied.g));
+    expect(Array.from(masked.lo)).toEqual(Array.from(copied.lo));
+    expect(Array.from(masked.hi)).toEqual(Array.from(copied.hi));
+    expect(masked.nA).toBe(copied.nA);
+    expect(() => crossPCFBootstrap(a, b, { ...q, includeA: incA.slice(1) }, opts)).toThrow(/row mask/);
+  });
 });

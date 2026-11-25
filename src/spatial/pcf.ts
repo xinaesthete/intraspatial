@@ -21,26 +21,50 @@
 // compared against expectations from another. See docs/stats-on-arbitrary-domains.md.
 
 import { type Domain, domainArea, domainContains, inverseAnnulusAreas, rectDomain } from "./domain";
+import { buildGrid } from "./pointGrid";
+import { checkMask, type RowMask, selectRows } from "./rowSelection";
 import type { CellCloud, Coords } from "./tcm";
 
-export interface PcfParams {
-  /** ROI `[minX, minY, maxX, maxY]` — sets ρ_B = N_B/|ROI|, and the clipping rectangle when
-   *  `edgeCorrected`. Ignored when `domain` is given. */
-  readonly bbox: readonly [number, number, number, number];
-  /** The region the cells were observed in, when it is not `bbox`. Sets ρ_B's area (unless
-   *  `roiArea` overrides it), the clip when `edgeCorrected`, and membership: cells outside it are
-   *  dropped from A and B and counted in `outside`. Without it no cell is dropped, as before. */
-  readonly domain?: Domain;
+type Box = readonly [number, number, number, number];
+
+/**
+ * The region the cells were observed in: a `bbox`, a `domain`, or both. Sets ρ_B's area (unless
+ * `roiArea` overrides it), the clip when `edgeCorrected`, and — for a `domain` — membership: cells
+ * outside it are dropped from A and B and counted in `outside`. Without a `domain` no cell is
+ * dropped. When both are given `domain` wins and `bbox` is ignored.
+ */
+export type PcfRegion = { readonly bbox: Box; readonly domain?: Domain } | { readonly bbox?: Box; readonly domain: Domain };
+
+interface PcfBase {
   /** Maximum radius (world units). Bins are equal width `dr = rMax / nBins`. */
   readonly rMax: number;
   /** Number of radial bins. */
   readonly nBins: number;
-  /** Area for ρ_B. Defaults to the bbox area; pass the ROI's own recorded area where one exists. */
+  /** Area for ρ_B. Defaults to the region's area; pass the ROI's own recorded area where one exists. */
   readonly roiArea?: number;
-  /** Clip each anchor's annulus to `bbox` — the paper's `A_{r_k}(x_a)` (eq 8). Default `false`, the
-   *  full annulus, which is exact for anchors ≥`rMax` inside the ROI and low near the boundary by an
-   *  amount set by the ROI's perimeter-to-area ratio. See `edgeCorrection.ts`. */
+  /** Clip each anchor's annulus to the region — the paper's `A_{r_k}(x_a)` (eq 8). The full annulus
+   *  is exact for anchors ≥`rMax` inside the ROI and low near the boundary by an amount set by the
+   *  ROI's perimeter-to-area ratio. See `edgeCorrection.ts`.
+   *
+   *  Default: `true` when a `domain` is given, `false` for a bare `bbox` (which keeps its earlier
+   *  behaviour). A drawn gate has a long boundary relative to its area, so the uncorrected estimate
+   *  is the biased one there. Pass `false` to opt out. */
   readonly edgeCorrected?: boolean;
+}
+
+export type { RowMask };
+
+export type PcfParams = PcfBase &
+  PcfRegion & {
+    /** Which A cells take part. Absent keeps all. Length must equal the A cloud's. */
+    readonly includeA?: RowMask;
+    /** Which B cells take part. Absent keeps all. Length must equal the B cloud's. */
+    readonly includeB?: RowMask;
+  };
+
+/** Resolves `edgeCorrected`'s default: on when there is an explicit domain. */
+function edgeCorrectedOf(p: { readonly domain?: Domain; readonly edgeCorrected?: boolean }): boolean {
+  return p.edgeCorrected ?? p.domain !== undefined;
 }
 
 export interface PcfResult {
@@ -55,35 +79,28 @@ export interface PcfResult {
 }
 
 /** The domain a call measures over: the explicit one, else the bbox. */
-function domainOf(p: { readonly bbox: readonly [number, number, number, number]; readonly domain?: Domain }): Domain {
-  return p.domain ?? rectDomain(p.bbox);
-}
-
-/** Indices of the points inside `d`. */
-function insideIndices(d: Domain, xs: Coords, ys: Coords): number[] {
-  const keep: number[] = [];
-  for (let i = 0; i < xs.length; i++) if (domainContains(d, xs[i]!, ys[i]!)) keep.push(i);
-  return keep;
-}
-
-/** `c` restricted to `d`, or `c` itself when there is no explicit domain to restrict to. */
-function restrictCloud(d: Domain | undefined, c: CellCloud): CellCloud {
-  if (!d) return c;
-  const keep = insideIndices(d, c.xs, c.ys);
-  if (keep.length === c.xs.length) return c;
-  return { xs: keep.map((i) => c.xs[i]!), ys: keep.map((i) => c.ys[i]!) };
+function domainOf(p: PcfRegion): Domain {
+  if (p.domain) return p.domain;
+  if (!p.bbox) throw new Error("PCF: give a `bbox` or a `domain`");
+  return rectDomain(p.bbox);
 }
 
 export function crossPCF(a0: CellCloud, b0: CellCloud, p: PcfParams): PcfResult {
   const domain = domainOf(p);
-  const a = restrictCloud(p.domain, a0);
-  const b = restrictCloud(p.domain, b0);
+  checkMask("crossPCF", p.includeA, a0.xs.length);
+  checkMask("crossPCF", p.includeB, b0.xs.length);
+  const a = a0;
+  const b = b0;
+  const selA = selectRows(p.domain, p.includeA, a.xs, a.ys);
+  const selB = selectRows(p.domain, p.includeB, b.xs, b.ys);
+  const rowsA = selA.idx;
+  const rowsB = selB.idx;
   const roiArea = Math.max(p.roiArea ?? domainArea(domain), 1e-12);
-  const rhoB = b.xs.length / roiArea; // global density of B (Mode 1)
+  const rhoB = selB.kept / roiArea; // global density of B (Mode 1)
   const dr = p.rMax / p.nBins;
   const rMax2 = p.rMax * p.rMax;
-  const nA = a.xs.length;
-  const nB = b.xs.length;
+  const nA = selA.kept;
+  const nB = selB.kept;
   const counts = new Float64Array(p.nBins);
   // Σ_a Σ_b 1/A_{r_k}(x_a) — equal to counts/(full annulus area) when uncorrected, but the anchor's
   // own clipped area when it is not, so the two cases share one accumulation.
@@ -94,32 +111,17 @@ export function crossPCF(a0: CellCloud, b0: CellCloud, p: PcfParams): PcfResult 
     const r1 = r0 + dr;
     invFull[k] = 1 / (Math.PI * (r1 * r1 - r0 * r0));
   }
-  const invAt = p.edgeCorrected ? inverseAnnulusAreas(domain, p.rMax, p.nBins) : () => invFull;
+  const invAt = edgeCorrectedOf(p) ? inverseAnnulusAreas(domain, p.rMax, p.nBins) : () => invFull;
 
   // Bucket grid over B, cell size = rMax: every B within rMax of an anchor lies in the anchor's 3×3
   // bucket neighbourhood (same argument as computeTcm), so the exact per-pair distance test runs
   // over only those candidates.
-  let bMinX = Infinity;
-  let bMinY = Infinity;
-  let bMaxX = -Infinity;
-  let bMaxY = -Infinity;
-  for (let j = 0; j < nB; j++) {
-    const x = b.xs[j]!;
-    const y = b.ys[j]!;
-    if (x < bMinX) bMinX = x;
-    if (x > bMaxX) bMaxX = x;
-    if (y < bMinY) bMinY = y;
-    if (y > bMaxY) bMaxY = y;
-  }
   const cell = Math.max(p.rMax, 1e-9);
-  const cols = nB > 0 ? Math.max(1, Math.ceil((bMaxX - bMinX) / cell) + 1) : 1;
-  const rows = nB > 0 ? Math.max(1, Math.ceil((bMaxY - bMinY) / cell) + 1) : 1;
-  const buckets: number[][] = Array.from({ length: cols * rows }, () => []);
-  const colOf = (x: number) => Math.min(cols - 1, Math.max(0, Math.floor((x - bMinX) / cell)));
-  const rowOf = (y: number) => Math.min(rows - 1, Math.max(0, Math.floor((y - bMinY) / cell)));
-  for (let j = 0; j < nB; j++) buckets[rowOf(b.ys[j]!) * cols + colOf(b.xs[j]!)]!.push(j);
+  const grid = buildGrid(b.xs, b.ys, rowsB, nB, cell);
+  const { cols, rows, colOf, rowOf } = grid;
 
-  for (let i = 0; i < nA; i++) {
+  for (let ii = 0; ii < nA; ii++) {
+    const i = rowsA ? rowsA[ii]! : ii;
     const ax = a.xs[i]!;
     const ay = a.ys[i]!;
     const inv = invAt(ax, ay);
@@ -131,7 +133,8 @@ export function crossPCF(a0: CellCloud, b0: CellCloud, p: PcfParams): PcfResult 
       for (let dCol = -1; dCol <= 1; dCol++) {
         const cc = c0 + dCol;
         if (cc < 0 || cc >= cols) continue;
-        for (const j of buckets[rr * cols + cc]!) {
+        for (let q = grid.start[rr * cols + cc]!, qEnd = grid.start[rr * cols + cc + 1]!; q < qEnd; q++) {
+          const j = grid.items[q]!;
           const dx = b.xs[j]! - ax;
           const dy = b.ys[j]! - ay;
           const d2 = dx * dx + dy * dy;
@@ -156,7 +159,7 @@ export function crossPCF(a0: CellCloud, b0: CellCloud, p: PcfParams): PcfResult 
     out.push(counts[k]!);
   }
   if (!p.domain) return { r, g, counts: out };
-  return { r, g, counts: out, outside: a0.xs.length - nA + (b0.xs.length - nB) };
+  return { r, g, counts: out, outside: selA.included - selA.kept + (selB.included - selB.kept) };
 }
 
 export interface PcfBinMembership {
@@ -199,32 +202,18 @@ export function crossPCFBinMembership(a: CellCloud, b: CellCloud, p: PcfParams):
   if (nA === 0 || nB === 0) return { maskA, maskB, countA, countB, nBins: p.nBins };
 
   // Same bucket grid as `crossPCF` — cell size rMax, so every in-range B is in the anchor's 3×3.
-  let bMinX = Infinity;
-  let bMinY = Infinity;
-  let bMaxX = -Infinity;
-  let bMaxY = -Infinity;
-  for (let j = 0; j < nB; j++) {
-    const x = b.xs[j]!;
-    const y = b.ys[j]!;
-    if (x < bMinX) bMinX = x;
-    if (x > bMaxX) bMaxX = x;
-    if (y < bMinY) bMinY = y;
-    if (y > bMaxY) bMaxY = y;
-  }
-  const cell = Math.max(p.rMax, 1e-9);
-  const cols = Math.max(1, Math.ceil((bMaxX - bMinX) / cell) + 1);
-  const rows = Math.max(1, Math.ceil((bMaxY - bMinY) / cell) + 1);
-  const buckets: number[][] = Array.from({ length: cols * rows }, () => []);
-  const colOf = (x: number) => Math.min(cols - 1, Math.max(0, Math.floor((x - bMinX) / cell)));
-  const rowOf = (y: number) => Math.min(rows - 1, Math.max(0, Math.floor((y - bMinY) / cell)));
-  // Cells outside `domain` are not in `crossPCF`'s pairs, so they stay unlit here too.
+  // Cells outside `domain` or excluded by a row mask are not in `crossPCF`'s pairs, so they stay unlit here too.
   const d = p.domain;
-  const bIndices = d ? insideIndices(d, b.xs, b.ys) : Array.from({ length: nB }, (_, j) => j);
-  for (const j of bIndices) buckets[rowOf(b.ys[j]!) * cols + colOf(b.xs[j]!)]!.push(j);
+  checkMask("crossPCFBinMembership", p.includeA, nA);
+  checkMask("crossPCFBinMembership", p.includeB, nB);
+  const selB = selectRows(d, p.includeB, b.xs, b.ys);
+  const grid = buildGrid(b.xs, b.ys, selB.idx, selB.kept, Math.max(p.rMax, 1e-9));
+  const { cols, rows, colOf, rowOf } = grid;
 
   for (let i = 0; i < nA; i++) {
     const ax = a.xs[i]!;
     const ay = a.ys[i]!;
+    if (p.includeA && !p.includeA[i]) continue;
     if (d && !domainContains(d, ax, ay)) continue;
     const c0 = colOf(ax);
     const r0 = rowOf(ay);
@@ -235,7 +224,8 @@ export function crossPCFBinMembership(a: CellCloud, b: CellCloud, p: PcfParams):
       for (let dCol = -1; dCol <= 1; dCol++) {
         const cc = c0 + dCol;
         if (cc < 0 || cc >= cols) continue;
-        for (const j of buckets[rr * cols + cc]!) {
+        for (let q = grid.start[rr * cols + cc]!, qEnd = grid.start[rr * cols + cc + 1]!; q < qEnd; q++) {
+          const j = grid.items[q]!;
           const dx = b.xs[j]! - ax;
           const dy = b.ys[j]! - ay;
           const d2 = dx * dx + dy * dy;
@@ -261,11 +251,14 @@ export function crossPCFBinMembership(a: CellCloud, b: CellCloud, p: PcfParams):
   return { maskA, maskB, countA, countB, nBins: p.nBins };
 }
 
+/** Per-cell type ids: a plain array or the integer typed columns a table store hands out. */
+export type TypeIds = readonly number[] | Uint8Array | Uint16Array | Int32Array;
+
 export interface LabelledCells {
-  readonly xs: readonly number[];
-  readonly ys: readonly number[];
-  /** Per-cell type id, index-aligned to xs/ys. */
-  readonly typeId: readonly number[];
+  readonly xs: Coords;
+  readonly ys: Coords;
+  /** Per-cell type id, index-aligned to xs/ys. Typed columns are read in place, not copied. */
+  readonly typeId: TypeIds;
 }
 
 export interface PcfMatrixParams {
@@ -308,12 +301,8 @@ export function crossPCFMatrix(cells: LabelledCells, p: PcfMatrixParams): PcfMat
   }
 
   // Bucket grid over all cells, cell size = radius (in-radius neighbours lie in the 3×3 neighbourhood).
-  const cols = Math.max(1, Math.ceil((maxX - minX) / r) + 1);
-  const rows = Math.max(1, Math.ceil((maxY - minY) / r) + 1);
-  const buckets: number[][] = Array.from({ length: cols * rows }, () => []);
-  const colOf = (x: number) => Math.min(cols - 1, Math.max(0, Math.floor((x - minX) / r)));
-  const rowOf = (y: number) => Math.min(rows - 1, Math.max(0, Math.floor((y - minY) / r)));
-  for (let i = 0; i < n; i++) buckets[rowOf(cells.ys[i]!) * cols + colOf(cells.xs[i]!)]!.push(i);
+  const grid = buildGrid(cells.xs, cells.ys, null, n, Math.max(r, 1e-9));
+  const { cols, rows, colOf, rowOf } = grid;
 
   const count = new Float64Array(N * N); // count[a*N + b] = ordered pairs (a-cell, b-cell) within r
   for (let i = 0; i < n; i++) {
@@ -328,7 +317,8 @@ export function crossPCFMatrix(cells: LabelledCells, p: PcfMatrixParams): PcfMat
       for (let dCol = -1; dCol <= 1; dCol++) {
         const cc = c0 + dCol;
         if (cc < 0 || cc >= cols) continue;
-        for (const j of buckets[rr * cols + cc]!) {
+        for (let q = grid.start[rr * cols + cc]!, qEnd = grid.start[rr * cols + cc + 1]!; q < qEnd; q++) {
+          const j = grid.items[q]!;
           if (j === i) continue; // exclude self-pairs
           const dx = cells.xs[j]! - ax;
           const dy = cells.ys[j]! - ay;
@@ -350,12 +340,7 @@ export function crossPCFMatrix(cells: LabelledCells, p: PcfMatrixParams): PcfMat
   return { types, counts: nPer, g };
 }
 
-export interface PcfMatrixBinnedParams {
-  /** ROI `[minX, minY, maxX, maxY]`. Also the clipping rectangle when `edgeCorrected`. Ignored when
-   *  `domain` is given. */
-  readonly bbox: readonly [number, number, number, number];
-  /** The region the cells were observed in, when it is not `bbox` — as `PcfParams.domain`. */
-  readonly domain?: Domain;
+interface PcfMatrixBinnedBase {
   /** Maximum radius; bins are equal width `dr = rMax / nBins`. */
   readonly rMax: number;
   readonly nBins: number;
@@ -368,10 +353,18 @@ export interface PcfMatrixBinnedParams {
   /** Area used for `ρ_B = N_B / area`. Defaults to the bbox area; pass the ROI's own recorded area
    *  when the source defines one (MDV carries `roi_area`, which is not always the bbox). */
   readonly roiArea?: number;
-  /** Clip each anchor's annulus to `bbox` — the paper's `A_{r_k}(x_a)` (eq 8). Default `false`,
-   *  which is the full annulus: exact for anchors ≥`rMax` inside the ROI, low near the boundary. */
+  /** Clip each anchor's annulus to the region — the paper's `A_{r_k}(x_a)` (eq 8). Default: `true`
+   *  when a `domain` is given, `false` for a bare `bbox` (the full annulus: exact for anchors
+   *  ≥`rMax` inside the ROI, low near the boundary). See `PcfBase.edgeCorrected`. */
   readonly edgeCorrected?: boolean;
 }
+
+/** `bbox` and/or `domain`, as `PcfParams`; `include` is the row filter, as `PcfParams.includeA`. */
+export type PcfMatrixBinnedParams = PcfMatrixBinnedBase &
+  PcfRegion & {
+    /** Which cells take part (all types). Absent keeps all. Length must equal the cell count. */
+    readonly include?: RowMask;
+  };
 
 export interface PcfMatrixBinnedResult {
   readonly nTypes: number;
@@ -407,6 +400,7 @@ export interface PcfMatrixBinnedResult {
  */
 export function crossPCFMatrixBinned(all: LabelledCells, p: PcfMatrixBinnedParams): PcfMatrixBinnedResult {
   const domain = domainOf(p);
+  const edgeCorrected = edgeCorrectedOf(p);
   const B = p.nBins;
   const dr = p.rMax / B;
   const rMax2 = p.rMax * p.rMax;
@@ -415,18 +409,15 @@ export function crossPCFMatrixBinned(all: LabelledCells, p: PcfMatrixBinnedParam
   // outside still keeps its row and column.
   let K = p.nTypes ?? 0;
   if (!p.nTypes) for (let i = 0; i < all.xs.length; i++) K = Math.max(K, all.typeId[i]! + 1);
-  let cells = all;
-  if (p.domain) {
-    const keep = insideIndices(p.domain, all.xs, all.ys);
-    if (keep.length !== all.xs.length) {
-      cells = { xs: keep.map((i) => all.xs[i]!), ys: keep.map((i) => all.ys[i]!), typeId: keep.map((i) => all.typeId[i]!) };
-    }
-  }
-  const n = cells.xs.length;
+  checkMask("crossPCFMatrixBinned", p.include, all.xs.length);
+  const cells = all;
+  const sel = selectRows(p.domain, p.include, all.xs, all.ys);
+  const rowIdx = sel.idx;
+  const n = sel.kept;
   const roiArea = Math.max(p.roiArea ?? domainArea(domain), 1e-12);
   const nPer = new Array<number>(K).fill(0);
-  for (let i = 0; i < n; i++) {
-    const t = cells.typeId[i]!;
+  for (let ii = 0; ii < n; ii++) {
+    const t = cells.typeId[rowIdx ? rowIdx[ii]! : ii]!;
     if (t < 0 || t >= K) throw new Error(`crossPCFMatrixBinned: type id ${t} outside [0, ${K})`);
     nPer[t]!++;
   }
@@ -434,25 +425,9 @@ export function crossPCFMatrixBinned(all: LabelledCells, p: PcfMatrixBinnedParam
   // Bucket grid over the cells, cell size = rMax, so every in-range neighbour is in the 3×3
   // neighbourhood. Built over the cells' own extent rather than the bbox: an ROI whose recorded
   // rectangle is larger than the data (a padded image) would otherwise allocate empty buckets.
-  let gMinX = Infinity;
-  let gMinY = Infinity;
-  let gMaxX = -Infinity;
-  let gMaxY = -Infinity;
-  for (let i = 0; i < n; i++) {
-    const x = cells.xs[i]!;
-    const y = cells.ys[i]!;
-    if (x < gMinX) gMinX = x;
-    if (x > gMaxX) gMaxX = x;
-    if (y < gMinY) gMinY = y;
-    if (y > gMaxY) gMaxY = y;
-  }
   const cell = Math.max(p.rMax, 1e-9);
-  const cols = n > 0 ? Math.max(1, Math.ceil((gMaxX - gMinX) / cell) + 1) : 1;
-  const rows = n > 0 ? Math.max(1, Math.ceil((gMaxY - gMinY) / cell) + 1) : 1;
-  const buckets: number[][] = Array.from({ length: cols * rows }, () => []);
-  const colOf = (x: number) => Math.min(cols - 1, Math.max(0, Math.floor((x - gMinX) / cell)));
-  const rowOf = (y: number) => Math.min(rows - 1, Math.max(0, Math.floor((y - gMinY) / cell)));
-  for (let i = 0; i < n; i++) buckets[rowOf(cells.ys[i]!) * cols + colOf(cells.xs[i]!)]!.push(i);
+  const grid = buildGrid(cells.xs, cells.ys, rowIdx, n, cell);
+  const { cols, rows, colOf, rowOf } = grid;
 
   // Reciprocal annulus areas: the interior (uncut) case once, the per-anchor case into a scratch
   // buffer only for anchors the boundary actually reaches.
@@ -462,12 +437,13 @@ export function crossPCFMatrixBinned(all: LabelledCells, p: PcfMatrixBinnedParam
     const r1 = r0 + dr;
     invFull[k] = 1 / (Math.PI * (r1 * r1 - r0 * r0));
   }
-  const invAt = p.edgeCorrected ? inverseAnnulusAreas(domain, p.rMax, B) : () => invFull;
+  const invAt = edgeCorrected ? inverseAnnulusAreas(domain, p.rMax, B) : () => invFull;
 
   const weighted = new Float64Array(K * K * B);
   const pairs = new Float64Array(K * K * B);
 
-  for (let i = 0; i < n; i++) {
+  for (let ii = 0; ii < n; ii++) {
+    const i = rowIdx ? rowIdx[ii]! : ii;
     const ax = cells.xs[i]!;
     const ay = cells.ys[i]!;
     const a = cells.typeId[i]!;
@@ -481,7 +457,8 @@ export function crossPCFMatrixBinned(all: LabelledCells, p: PcfMatrixBinnedParam
       for (let dCol = -1; dCol <= 1; dCol++) {
         const cc = c0 + dCol;
         if (cc < 0 || cc >= cols) continue;
-        for (const j of buckets[rr * cols + cc]!) {
+        for (let q = grid.start[rr * cols + cc]!, qEnd = grid.start[rr * cols + cc + 1]!; q < qEnd; q++) {
+          const j = grid.items[q]!;
           if (j === i) continue; // exclude self-pairs
           const dx = cells.xs[j]! - ax;
           const dy = cells.ys[j]! - ay;
@@ -511,8 +488,8 @@ export function crossPCFMatrixBinned(all: LabelledCells, p: PcfMatrixBinnedParam
   }
   if (!p.domain) return { nTypes: K, nBins: B, counts: nPer, r, g, pairs };
   const from = p.domain.kind === "mask" ? p.domain.derivedFrom : undefined;
-  if (!from) return { nTypes: K, nBins: B, counts: nPer, r, g, pairs, outside: all.xs.length - n };
+  if (!from) return { nTypes: K, nBins: B, counts: nPer, r, g, pairs, outside: sel.included - n };
   const confounded = new Uint8Array(K * K);
   for (const a of from) for (const b of from) if (a >= 0 && a < K && b >= 0 && b < K) confounded[a * K + b] = 1;
-  return { nTypes: K, nBins: B, counts: nPer, r, g, pairs, outside: all.xs.length - n, confounded };
+  return { nTypes: K, nBins: B, counts: nPer, r, g, pairs, outside: sel.included - n, confounded };
 }
