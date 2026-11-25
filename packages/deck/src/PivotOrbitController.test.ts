@@ -3,7 +3,7 @@
 // OrbitController beside it to show the difference.
 import { OrbitController, OrbitViewport } from "@deck.gl/core";
 import { describe, expect, it } from "vite-plus/test";
-import { nearestPoint, PivotOrbitController } from "./PivotOrbitController";
+import { anchorUnder, nearestPoint, PivotOrbitController } from "./PivotOrbitController";
 
 const VIEW = { width: 800, height: 600, target: [0, 0, 0] as [number, number, number], zoom: 4, rotationX: 20, rotationOrbit: 30 };
 const makeViewport = (props: Record<string, unknown>) => new OrbitViewport({ orbitAxis: "Y", fovy: 35, ...props });
@@ -62,6 +62,14 @@ describe("PivotOrbitController", () => {
     expect(moved(plain.pixel)).toBeGreaterThan(5);
   });
 
+  it("still has its picker in a state built from another, as a pinch does", () => {
+    // deck's pinch start is zoomStart().rotateStart(): the second state is made from the first.
+    const state = stateOf(PivotOrbitController, point)
+      .zoomStart({ pos: [10, 10] })
+      .rotateStart({ pos: [10, 10] });
+    expect(state.getState()).toMatchObject({ startRotatePivot: point });
+  });
+
   it("forgets the pivot when the drag ends", () => {
     const state = stateOf(PivotOrbitController, point).rotateStart({ pos: [10, 10] });
     expect(state.getState()).toMatchObject({ startRotatePivot: point });
@@ -72,7 +80,7 @@ describe("PivotOrbitController", () => {
 describe("nearestPoint", () => {
   // Screen position is x, y; depth is z: an identity "viewport".
   const flat = { project: (p: number[]) => p };
-  const positions = new Float32Array([0, 0, 5, 0, 100, 0, 5, 0, 103, 0, 1, 0, 400, 400, 0, 0]);
+  const positions = new Float32Array([0, 0, 0.5, 0, 100, 0, 0.5, 0, 103, 0, 0.1, 0, 400, 400, 0, 0]);
 
   it("picks the nearest on screen, and the nearer to the camera among close rivals", () => {
     expect(nearestPoint(positions, [2, 1], flat)?.index).toBe(0);
@@ -84,5 +92,33 @@ describe("nearestPoint", () => {
     expect(nearestPoint(positions, [250, 250], flat)).toBeNull();
     expect(nearestPoint(positions, [101.5, 0], flat, { skip: (i) => i === 2 })?.index).toBe(1);
     expect(nearestPoint(positions, [2, 1], flat, { count: 0 })).toBeNull();
+  });
+
+  it("never picks a point behind the camera, though deck gives it a place on screen", () => {
+    const viewport = makeViewport({ ...VIEW, rotationX: 0, rotationOrbit: 0 });
+    // The camera is about 59 units out along z. This point is behind it and projects to the centre.
+    const behind = [0, 0, 120];
+    const [x, y, depth] = viewport.project(behind);
+    expect([Math.round(x!), Math.round(y!)]).toEqual([400, 300]);
+    expect(depth).toBeGreaterThan(1);
+    const visible = [3, 0, 0];
+    const hit = nearestPoint(new Float32Array([...behind, 0, ...visible, 0]), [400, 300], viewport, { maxPixels: 200 });
+    expect(hit?.index).toBe(1);
+    expect(nearestPoint(new Float32Array([...behind, 0]), [400, 300], viewport)).toBeNull();
+  });
+});
+
+describe("anchorUnder", () => {
+  it("gives the point under the pointer at the nearest point's depth, not the point itself", () => {
+    const viewport = makeViewport(VIEW);
+    const molecule = [6, -3, 4];
+    const [mx, my, depth] = viewport.project(molecule);
+    // The pointer is 30 pixels to the left of the molecule.
+    const pointer: [number, number] = [mx! - 30, my!];
+    const anchor = anchorUnder(new Float32Array([...molecule, 0]), pointer, viewport, { maxPixels: 40 });
+    const [ax, ay, ad] = viewport.project(anchor!);
+    expect(Math.hypot(ax! - pointer[0], ay! - pointer[1])).toBeLessThan(0.01);
+    expect(Math.abs(ad! - depth!)).toBeLessThan(1e-6);
+    expect(anchorUnder(new Float32Array([...molecule, 0]), [mx! - 300, my!], viewport, { maxPixels: 40 })).toBeNull();
   });
 });

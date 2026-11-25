@@ -14,9 +14,16 @@
 
 import { OrbitController } from "@deck.gl/core";
 
-/** What a picker needs of a viewport: world → pixels (x, y from the view's top left, and depth). */
+/**
+ * What a picker needs of a viewport, as deck's viewports give it.
+ * `project`: world → pixels, x and y from the view's top left, then depth. A depth from -1 to 1 is
+ * in view; outside that the point is behind the camera or beyond the near or far plane, and its x
+ * and y are still finite numbers that mean nothing.
+ * `unproject`: pixels and a depth → the world point there.
+ */
 export interface Projector {
   project(xyz: number[]): number[];
+  unproject?(xyz: number[]): number[];
 }
 
 /** A world point for a pointer position (pixels from the view's top left), or null for none. */
@@ -26,20 +33,24 @@ type OrbitStateClass = OrbitController["ControllerState"];
 type OrbitStateOptions = ConstructorParameters<OrbitStateClass>[0];
 type RotateArgs = Parameters<InstanceType<OrbitStateClass>["rotate"]>[0];
 
+type PickPivot = (pos: number[]) => number[] | null;
 type PivotStart = { startRotatePivot?: number[] | null; startRotatePivotPixel?: number[] | null };
 
 /** deck's orbit state, with the pivot of the rotation in progress carried beside its own start values. */
 function withPivot(Base: OrbitStateClass): OrbitStateClass {
   return class PivotOrbitState extends Base {
-    private readonly pickPivot?: (pos: number[]) => number[] | null;
+    private readonly pickPivot?: PickPivot;
 
-    constructor(options: OrbitStateOptions & PivotStart & { pickPivot?: (pos: number[]) => number[] | null }) {
+    constructor(options: OrbitStateOptions & PivotStart & { pickPivot?: PickPivot }) {
       super(options);
       this.pickPivot = options.pickPivot;
       // Interaction state travels through `getState()`: deck spreads it into the next state's options.
-      const carried: PivotStart = {
+      // The picker travels with it, because deck builds a state from the one before in the middle of
+      // a gesture (a pinch is `zoomStart().rotateStart()`), and the second would otherwise have none.
+      const carried: PivotStart & { pickPivot?: PickPivot } = {
         startRotatePivot: options.startRotatePivot ?? null,
         startRotatePivotPixel: options.startRotatePivotPixel ?? null,
+        pickPivot: options.pickPivot,
       };
       Object.assign(this.getState(), carried);
     }
@@ -80,7 +91,9 @@ export class PivotOrbitController extends OrbitController {
   constructor(...args: ConstructorParameters<typeof OrbitController>) {
     super(...args);
     this.ControllerState = withPivot(this.ControllerState);
-    this._unproject3D = (pos) => this.pick("getAnchor", pos);
+    // deck's own answer (a picked coordinate, where its picking works) stands when the page has none.
+    const native = this._unproject3D;
+    this._unproject3D = (pos) => this.pick("getAnchor", pos) ?? native(pos);
   }
 
   private pick(which: keyof Pickers, pos: number[]): number[] | null {
@@ -90,7 +103,7 @@ export class PivotOrbitController extends OrbitController {
     return picker([pos[0] ?? 0, pos[1] ?? 0], this.makeViewport(this.controllerState.getViewportProps()));
   }
 
-  override setProps(props: SetPropsArg & { pickPivot?: (pos: number[]) => number[] | null }): void {
+  override setProps(props: SetPropsArg & { pickPivot?: PickPivot }): void {
     // Passed on to the state's constructor, as deck passes its own `unproject3D`.
     props.pickPivot = (pos) => this.pick("getPivot", pos);
     super.setProps(props);
@@ -108,17 +121,21 @@ export interface NearestPointOptions {
   readonly skip?: (i: number) => boolean;
 }
 
+/** Depths `Projector.project` gives for points in view. */
+const inView = (depth: number) => depth >= -1 && depth <= 1;
+
 /**
- * The point nearest the pointer on screen: its index and world position, or null when none is
- * within `maxPixels`. Among points equally near, the one nearest the camera. For a few thousand
- * points this is fast enough to run at the start of a drag.
+ * The point nearest the pointer on screen: its index, world position and depth, or null when none
+ * is within `maxPixels`. Among points equally near, the one nearest the camera. Points out of view
+ * (behind the camera, or past the near or far plane) are never picked. For a few thousand points
+ * this is fast enough to run at the start of a drag.
  */
 export function nearestPoint(
   positions: ArrayLike<number>,
   pos: readonly [number, number],
   viewport: Projector,
   o: NearestPointOptions = {},
-): { index: number; position: [number, number, number] } | null {
+): { index: number; position: [number, number, number]; depth: number } | null {
   const stride = o.stride ?? 4;
   const count = Math.min(o.count ?? Number.POSITIVE_INFINITY, Math.floor(positions.length / stride));
   const reach = o.maxPixels ?? 24;
@@ -128,9 +145,9 @@ export function nearestPoint(
   for (let i = 0; i < count; i++) {
     if (o.skip?.(i)) continue;
     const [x, y, depth = 0] = viewport.project([positions[i * stride]!, positions[i * stride + 1]!, positions[i * stride + 2]!]);
-    if (x === undefined || y === undefined) continue;
+    if (x === undefined || y === undefined || !inView(depth)) continue;
     const d = Math.hypot(x - pos[0], y - pos[1]);
-    // NaN (a point behind the camera) fails both comparisons and is passed over.
+    // NaN fails both comparisons and is passed over.
     if (d < bestDistance - 0.5 || (d <= bestDistance + 0.5 && d <= reach && depth < bestDepth)) {
       best = i;
       bestDistance = Math.min(d, bestDistance);
@@ -138,5 +155,25 @@ export function nearestPoint(
     }
   }
   if (best < 0) return null;
-  return { index: best, position: [positions[best * stride]!, positions[best * stride + 1]!, positions[best * stride + 2]!] };
+  return {
+    index: best,
+    position: [positions[best * stride]!, positions[best * stride + 1]!, positions[best * stride + 2]!],
+    depth: bestDepth,
+  };
+}
+
+/**
+ * The world point under the pointer, at the depth of the point nearest it: what `getAnchor` wants.
+ * Not the nearest point itself, which may be many pixels from the pointer: deck's zoom and pan
+ * treat the anchor as what the pointer is on, and would jump by that offset.
+ */
+export function anchorUnder(
+  positions: ArrayLike<number>,
+  pos: readonly [number, number],
+  viewport: Projector,
+  o: NearestPointOptions = {},
+): number[] | null {
+  const hit = nearestPoint(positions, pos, viewport, o);
+  if (!hit) return null;
+  return viewport.unproject?.([pos[0], pos[1], hit.depth]) ?? hit.position;
 }

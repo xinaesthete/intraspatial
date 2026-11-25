@@ -7,7 +7,7 @@
 
 import { type Layer, OrbitView, type OrbitViewState } from "@deck.gl/core";
 import DeckGL from "@deck.gl/react";
-import { type Color, IsoSurfaceLayer, nearestPoint, PivotOrbitController, type PivotPicker } from "@intraspatial/deck";
+import { anchorUnder, type Color, IsoSurfaceLayer, nearestPoint, PivotOrbitController, type PivotPicker } from "@intraspatial/deck";
 import { useCallback, useMemo, useState } from "react";
 import { type PointsTile, pointFraction, type Rect } from "../../../src/datasource/points";
 import { listPointsElements } from "../datasource/pointsTileLoader";
@@ -304,11 +304,17 @@ export function Density3D() {
     }
     return new Float32Array(out);
   }, [cloud, categories]);
-  const pick = useCallback<PivotPicker>(
+  // Turning is about the molecule nearest the pointer. Zoom and pan hold the point under the
+  // pointer itself, at that molecule's depth.
+  const getPivot = useCallback<PivotPicker>(
     (pos, viewport) => (pickable ? (nearestPoint(pickable, pos, viewport, { maxPixels: 40 })?.position ?? null) : null),
     [pickable],
   );
-  const controller = useMemo(() => ({ type: PivotOrbitController, getPivot: pick, getAnchor: pick }), [pick]);
+  const getAnchor = useCallback<PivotPicker>(
+    (pos, viewport) => (pickable ? anchorUnder(pickable, pos, viewport, { maxPixels: 40 }) : null),
+    [pickable],
+  );
+  const controller = useMemo(() => ({ type: PivotOrbitController, getPivot, getAnchor }), [getPivot, getAnchor]);
   const onViewStateChange = useCallback(({ viewState: next }: { viewState: unknown }) => {
     setView((v) => ({ ...v, now: next as OrbitViewState }));
   }, []);
