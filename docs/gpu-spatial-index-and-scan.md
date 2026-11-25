@@ -349,9 +349,10 @@ compiles today's kernel and the morphology bit-exact test stays green.
    block means psychogeo can call instead of its own `block_mean`.
 6. ~~**`dims: 3`** once ADR-0004's `points{n, dim}` lands (or via `stride: 3` before it).~~
    **Done 2026-08-22**: `latticeFor`/`buildBucketGrid` take `zs` (+ 6-number bounds) and the
-   lattice gains `depth`/`minZ`; the kernel reads z when the lattice has it (`stride: 3`
-   required, `dims: 3` on `buildGridIndexGpu`). Still open: the 3D note's `splatVolume`
-   gather over the same three ports, and the occupied-cell list as one `encodeCompact` over
+   lattice gains `depth`/`minZ`; the kernel reads z when the lattice has it (`stride: 3` or
+   more, `dims: 3` on `buildGridIndexGpu`). The 3D note's `splatVolume` gather is built as a
+   kernel (`src/gpu/spatial/splatVolume.ts`, direct and indexed forms, one f32 voxel buffer out, optional weight per point),
+   not yet as a graph op over the three ports. Still open: that op, and the occupied-cell list as one `encodeCompact` over
    `counts`; `dims` folds into `Shape.dim` when ADR-0004 lands.
 
 Promoted at step 1 (ADR-0022); the ADR records what is built, this note keeps the reasoning.

@@ -35,8 +35,9 @@ export interface GridIndexOptions {
   /** Cell side in world units — the query radius the index is built for. */
   readonly cell: number;
   /** Floats per point in the buffer (`[x, y]` or `[x, y, z]`). With `dims: 2` the first two
-   *  are indexed; `dims: 3` needs `stride: 3`. */
-  readonly stride?: 2 | 3;
+   *  are indexed; `dims: 3` needs at least 3. A larger stride skips the floats after the
+   *  coordinates (a simulation's `[x, y, z, w]` positions index as they are). */
+  readonly stride?: number;
   /** Lattice axes (default 2). `3` indexes z too and takes 6-number bounds. */
   readonly dims?: 2 | 3;
   /** `[minX, minY, maxX, maxY]` (`dims: 2`) or `[minX, minY, minZ, maxX, maxY, maxZ]`
@@ -174,7 +175,7 @@ export function encodeGridIndex(
   const stride = opts.stride ?? 2;
   const maxWg = opts.maxWorkgroupsPerDim ?? MAX_WORKGROUPS_PER_DIM;
   const key = opts.keyPrefix ?? "gridIndex";
-  if (lattice.depth !== undefined && stride !== 3) throw new Error(`gridIndex: a 3D lattice needs stride 3, got ${stride}`);
+  if (lattice.depth !== undefined && stride < 3) throw new Error(`gridIndex: a 3D lattice needs stride 3 or more, got ${stride}`);
   const M = numCells(lattice);
   // A sparse lattice (M ≫ n) is bounded by the scan over M + 1 cells, not by n. Occupied-cell
   // compaction is the real fix for that case; until then this is a loud failure, not a silent one.
@@ -255,7 +256,7 @@ export async function buildGridIndexGpu(points: Float32Array, opts: GridIndexOpt
   const { device } = ctx.scan;
   const stride = opts.stride ?? 2;
   const dims = opts.dims ?? 2;
-  if (dims === 3 && stride !== 3) throw new Error(`gridIndex: dims 3 needs stride 3, got ${stride}`);
+  if (dims === 3 && stride < 3) throw new Error(`gridIndex: dims 3 needs stride 3 or more, got ${stride}`);
   const n = Math.floor(points.length / stride);
   const key = opts.keyPrefix ?? "gridIndex";
 

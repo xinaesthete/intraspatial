@@ -78,6 +78,9 @@ export const SUBSET_READ_MAX_FEATURES = 128;
 export interface OpenPointsOptions {
   /** Passthrough numeric columns to carry per point, e.g. `["qv"]`. */
   readonly columns?: readonly string[];
+  /** Carry each point's third coordinate as the column `z`, where the element has one. A tile of an
+   *  element without depth has no `z` column; that is not an error. */
+  readonly depth?: boolean;
   /** Finest tile, in expected rows. Default: two row groups. */
   readonly minRowsPerTile?: number;
   /** Most rows an element with no tiled layout may have and still be read whole. */
@@ -111,23 +114,46 @@ export async function openPointsSource(sdata: SpatialData, element: string, opts
   const grid = pointsGrid(meta.bounds, meta.totalRows, { minRowsPerTile: opts.minRowsPerTile ?? 2 * meta.maxRowsPerGroup });
   const catalog = await el.listFeatures();
   const features = (catalog?.entries ?? []).map((e) => ({ code: e.code, name: e.name, count: e.count }));
-  const columns = [...(opts.columns ?? [])];
+  const asked = [...(opts.columns ?? [])];
+  let columns = asked;
   const empty = (id: ChunkId): PointsTile =>
     ownedTile(grid, id, { xs: [], ys: [], codes: [], columns: Object.fromEntries(columns.map((c) => [c, []])) });
+  type Read = Awaited<ReturnType<typeof el.loadPointsInBounds>>;
+  const toTile = (id: ChunkId, res: Read): PointsTile => {
+    // An empty tile may omit the requested columns (sd.js 0.11.1, when no row group is selected).
+    if ((res.data[0]?.length ?? 0) === 0) return empty(id);
+    const codes = res.featureCodes ?? res.featureIndices;
+    if (!codes) throw new Error(`points/${element}: the tiled read returned no feature codes`);
+    const got = res.columns ?? {};
+    const missing = columns.filter((c) => !got[c]);
+    if (missing.length) throw new Error(`points/${element}: sd.js did not return column(s) ${missing.join(", ")}`);
+    const kept = Object.fromEntries(columns.map((c) => [c, got[c]!]));
+    const [xs, ys, zs] = res.data;
+    if (!xs || !ys) throw new Error(`points/${element}: the tiled read returned no coordinates`);
+    return ownedTile(grid, id, { xs, ys, codes, columns: opts.depth && zs ? { ...kept, z: zs } : kept });
+  };
+  const read = async (id: ChunkId): Promise<Read> => el.loadPointsInBounds({ bounds: tileRect(grid, id.x, id.y), columns });
+
+  // sd.js has no schema to ask, and leaves out a column the element does not have. So when columns
+  // are asked for, the middle tile is read now to learn which the element has; every tile shares
+  // one schema. That tile is handed over on its first request instead of being read again. An empty
+  // middle tile tells nothing: every column stays asked for, and a tile that lacks one throws.
+  let probe: { id: ChunkId; tile: PointsTile } | undefined;
+  if (asked.length > 0) {
+    const id = { level: grid.level, x: Math.floor(grid.cols / 2), y: Math.floor(grid.rows / 2), z: 0 };
+    const res = await read(id);
+    if ((res.data[0]?.length ?? 0) > 0) columns = asked.filter((c) => res.columns?.[c]);
+    probe = { id, tile: toTile(id, res) };
+  }
 
   const loader: Loader<PointsTile> = {
     async getChunk(id) {
-      const res = await el.loadPointsInBounds({ bounds: tileRect(grid, id.x, id.y), columns });
-      // An empty tile may omit the requested columns (sd.js 0.11.1, when no row group is selected).
-      if ((res.data[0]?.length ?? 0) === 0) return empty(id);
-      const codes = res.featureCodes ?? res.featureIndices;
-      if (!codes) throw new Error(`points/${element}: the tiled read returned no feature codes`);
-      const got = res.columns ?? {};
-      const missing = columns.filter((c) => !got[c]);
-      if (missing.length) throw new Error(`points/${element}: sd.js did not return column(s) ${missing.join(", ")}`);
-      const [xs, ys] = res.data;
-      if (!xs || !ys) throw new Error(`points/${element}: the tiled read returned no coordinates`);
-      return ownedTile(grid, id, { xs, ys, codes, columns: got });
+      if (probe && probe.id.x === id.x && probe.id.y === id.y) {
+        const { tile } = probe;
+        probe = undefined;
+        return tile;
+      }
+      return toTile(id, await read(id));
     },
   };
 
@@ -137,7 +163,7 @@ export async function openPointsSource(sdata: SpatialData, element: string, opts
     loader,
     features,
     columns,
-    missingColumns: [],
+    missingColumns: asked.filter((c) => !columns.includes(c)),
     tiled: true,
     totalRows: meta.totalRows,
     space: elementSpace(sdata, element),
@@ -198,9 +224,9 @@ async function openPointsZarr(
       // The level is chosen for the UNCLIPPED tile, so an edge tile samples like its neighbours.
       const levelBounds = { ...rect, maxX: rect.minX + grid.tileSize, maxY: rect.minY + grid.tileSize };
       const res = await el.loadPointsZarrInBounds({ bounds, levelBounds, pointBudget, ...(featureCodes ? { featureCodes } : {}) });
-      const [xs, ys] = res.data;
+      const [xs, ys, zs] = res.data;
       if (!xs || !ys) throw new Error(`points/${element}: the points-zarr read returned no coordinates`);
-      const tile = ownedTile(grid, id, { xs, ys, codes: res.featureCodes });
+      const tile = ownedTile(grid, id, { xs, ys, codes: res.featureCodes, ...(opts.depth && zs ? { columns: { z: zs } } : {}) });
       const fractionOf = (level: number): number => {
         const f = level === 0 ? 1 : levelFractions?.[level];
         if (!f) throw new Error(`points/${element}: tile served from level ${level}, whose share of the points is unknown`);
@@ -269,14 +295,14 @@ async function openUntiled(sdata: SpatialData, element: string, el: PointsElemen
   }
   const res = await el.loadPoints({ memoryCap: budget, includeFeatureCodes: true });
   if (res.preloadTruncated) throw new Error(`points/${element}: the whole read stopped short of ${total.toLocaleString()} rows`);
-  const [xs, ys] = res.data;
+  const [xs, ys, zs] = res.data;
   const codes = res.featureCodes;
   if (!xs || !ys) throw new Error(`points/${element}: the whole read returned no coordinates`);
   if (!codes) throw new Error(`points/${element}: the whole read returned no feature codes, so there is nothing to make channels from`);
   const bounds = extentOf(xs, ys);
   if (!bounds) throw new Error(`points/${element} has no points with finite coordinates`);
   const grid = pointsGrid(bounds, xs.length, { minRowsPerTile: opts.minRowsPerTile ?? 100_000 });
-  const tiles = bucketPoints(grid, { xs, ys, codes });
+  const tiles = bucketPoints(grid, { xs, ys, codes, ...(opts.depth && zs ? { columns: { z: zs } } : {}) });
   const empty = (id: ChunkId): PointsTile => ownedTile(grid, id, { xs: [], ys: [], codes: [] });
   const loader: Loader<PointsTile> = { getChunk: async (id) => tiles.get(`${id.x},${id.y}`) ?? empty(id) };
   const counts = res.featureCodeCounts;

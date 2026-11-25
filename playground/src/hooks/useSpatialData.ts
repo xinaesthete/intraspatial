@@ -27,7 +27,7 @@ export function usePointsSource(
   // `columns` stands for opts.columns, so a fresh options object does not reopen the element.
   return useAsync(
     () => (sdata && element ? openPointsSource(sdata, element, opts) : undefined),
-    [sdata, element, columns, opts.minRowsPerTile, opts.untiledBudget, opts.tilePointBudget],
+    [sdata, element, columns, opts.depth, opts.minRowsPerTile, opts.untiledBudget, opts.tilePointBudget],
     scope,
   );
 }

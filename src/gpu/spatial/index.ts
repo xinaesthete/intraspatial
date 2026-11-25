@@ -29,6 +29,7 @@ export * from "./pcaGpu";
 export * from "./quadratCorrelationGpu";
 export * from "./similarityWgsl";
 export * from "./splatDensity";
+export * from "./splatVolume";
 export * from "./tcm";
 export * from "./tcmRender";
 export * from "./umapLayoutGpu";
