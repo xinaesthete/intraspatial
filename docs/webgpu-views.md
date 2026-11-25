@@ -30,7 +30,8 @@ pass with no camera.
 | deck 9.4 | `wand/BoundaryLayer.ts` | Region outline | deck's, adopted | Same | Same |
 | deck 9.4 | `packages/deck` `DensityLayer` | KDE fill and contours | deck's, passed to the kernels (no adoption) | Layer owns the field buffer the splat writes | Published layer; per-device kernel state |
 | deck 9.4 | `packages/deck` `ParticleLayer`, `BondLayer` (new) | Sphere impostors and bonds, 2D or 3D | deck's, passed to the simulation | Bind the simulation's position, attribute and slot buffers | See the spike below |
-| deck 9.4 | `packages/deck` `IsoSurfaceLayer` (new) | The surface where a 3D field crosses a level (metaballs, 3D density), ray-marched per pixel with depth written. Used by `density3d.html` (measured transcripts, one field per gene) | deck's, passed to the kernel | Binds a voxel buffer that `splatVolume` (`src/gpu/spatial`) fills from the simulation's positions | Any f32 voxel buffer. A mask would be a second buffer read in the march; a mesh for export is not made |
+| deck 9.4 | `packages/deck` `TubeLayer`, `SurfaceLayer`, `TraceLayer` (new) | A chain as an extruded tube, or with a `profile` (`cartoonProfile`) as a protein cartoon: ribbons and arrows, eased between profiles; a mesh over particles; the sheet a chain sweeps through time. Used by `foldsynth.html` | deck's, passed to the simulation | Bind the position buffer and a `PositionHistory` ring filled by buffer copies | Any ordered particles; any index list |
+| deck 9.4 | `packages/deck` `IsoSurfaceLayer` (new) | The surface where a 3D field crosses a level (metaballs, 3D density), ray-marched per pixel with depth written. Used by `foldsynth.html` ("Blobs") and `density3d.html` (measured transcripts, one field per gene) | deck's, passed to the kernel | Binds a voxel buffer that `splatVolume` (`src/gpu/spatial`) fills from the simulation's positions | Any f32 voxel buffer. A mask would be a second buffer read in the march; a mesh for export is not made |
 | raw | `docs-site/src/lib/hornMutator.ts` | 3×3 grid of horns, viewport + scissor per cell | Its own `requestDevice` | Compute output bound as vertex buffers | `syncSize` |
 | raw | `hspf/fieldRenderer.ts` | Full-screen field with palette and contours | Library's `getDevice()` | Binds `sim.currentStateBuffer()` | The whole file as a template |
 
@@ -47,7 +48,7 @@ the device and who owns the buffers.
 
 | Constraint | Where | Consequence |
 |---|---|---|
-| luma 9.4 cannot attach a `GPUDevice` (`WebGPUAdapter.attach` throws "not implemented") | `packages/deck` `sharedDeviceAdapter`, `deck/useGlobalDevice.ts` | Worked around: an adapter whose `create()` wraps a device it is given. The page makes one device, the library adopts it, and every Deck draws on it. `springs.html` (3D) and `density3d.html` use this; the `useSharedDevice` pages (`tissuesim`, cell and transcript modes) have not been moved. |
+| luma 9.4 cannot attach a `GPUDevice` (`WebGPUAdapter.attach` throws "not implemented") | `packages/deck` `sharedDeviceAdapter`, `deck/useGlobalDevice.ts` | Worked around: an adapter whose `create()` wraps a device it is given. The page makes one device, the library adopts it, and every Deck draws on it. `springs.html` (3D), `foldsynth.html` and `density3d.html` use this; the `useSharedDevice` pages (`tissuesim`, cell and transcript modes) have not been moved. |
 | `adoptDevice` takes one device per page | `src/gpu/device.ts` | One Deck per page on that path, and no GPU work before deck is up. |
 | Deck never destroys a finalised Deck's device | `device.ts` (`perDevice`) | A remount brings a second device. Kernels on `deviceScoped` and layers that pass their device explicitly survive it; `adoptDevice` pages reload. |
 | A layer must not read a buffer the next compute overwrites | `GramModesLayer` | Snapshot per result, or (simulation) ask for the buffer at draw time. |
@@ -112,7 +113,7 @@ Nothing fundamental blocked. Three things to know:
 | Sphere depth is exact in an orthographic view and approximate in perspective (the silhouette is the centre plane's). | Accepted for particles; a ray-sphere test would fix it. |
 
 Two device paths exist. `useGlobalDevice` makes one device, the library adopts it and every Deck
-on the page draws on it through `sharedDeviceAdapter`; the springs and 3D density pages use it, and
+on the page draws on it through `sharedDeviceAdapter`; the springs, FoldSynth and 3D density pages use it, and
 new views should. `useSharedDevice` lets deck create the device and adopts that; `tissuesim` and the
 older 2D pages still use it.
 
