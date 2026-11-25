@@ -189,4 +189,30 @@ describe("iso_march", () => {
     expect(hits[0]).toBeCloseTo(1, 2);
     expect(hits[1]).toBe(1);
   });
+
+  it("finds a wall it grazes on the way out (CodeRabbit's diagonal)", async () => {
+    // A 2×2 checkerboard [1, 0, 0, 1] at level 0.51, seen from a corner voxel's centre along the
+    // diagonal. The field dips to about 0.5 between two half-voxel steps that both stay above the
+    // level, so only the closer search finds the wall.
+    const device = await getDevice();
+    const dims: Dims = [2, 2, 1];
+    const values = [1, 0, 0, 1];
+    const level = 0.51;
+    const field = device.createBuffer({
+      label: "test:isoMarch:checker",
+      size: 16,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+    });
+    device.queue.writeBuffer(field, 0, new Float32Array(values));
+    // In box coordinates the direction is (1, 1, 0) / √2; rays here are in voxels.
+    const hits = await march(field, dims, level, new Float32Array([0.5, 0.5, 0.5, 1, Math.SQRT2, Math.SQRT2, 0, 0]));
+    field.destroy();
+    // The field where the march stopped, interpolated as the shader does.
+    const at = (v: number) => Math.min(Math.max(v, 0), 1);
+    const p = 0.5 + Math.SQRT2 * hits[0]! - 0.5;
+    const f = at(p);
+    const there = (1 - f) * (1 - f) * values[0]! + f * (1 - f) * (values[1]! + values[2]!) + f * f * values[3]!;
+    expect(hits[1]).toBe(1);
+    expect(Math.abs(there - level)).toBeLessThan(0.005);
+  });
 });

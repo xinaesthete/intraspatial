@@ -43,9 +43,10 @@ struct IsoHit {
  * the near plane (fromNear true), the view is inside the surface, and what is seen is the inside of
  * its wall: the first place the field falls below the level.
  *
- * Half a voxel at a step. Going in, where a step ends close under the level the field may have risen
- * over it and fallen back in between (a line of sight grazing the surface), so that stretch is looked
- * at four times as closely: without this the outline breaks into teeth. The crossing is then pinned
+ * Half a voxel at a step. Where a step ends close to the level, the field may have crossed it and come
+ * back in between (a line of sight grazing the surface: under the level going in, over it going out),
+ * so that stretch is looked at four times as closely: without this the outline breaks into teeth.
+ * Closeness is a factor of 2 either side of the level (0.5 going in, 1.5 going out). The crossing is then pinned
  * down by halving.
  */
 fn iso_march(u0: vec3<f32>, du: vec3<f32>, enter: f32, leave: f32, fromNear: bool) -> IsoHit {
@@ -70,12 +71,14 @@ fn iso_march(u0: vec3<f32>, du: vec3<f32>, enter: f32, leave: f32, fromNear: boo
         hit = true;
         break;
       }
-      if (!exiting && max(before, here) > 0.5 * level) {
+      // Close under the level going in, or close over it going out.
+      let grazing = select(max(before, here) > 0.5 * level, min(before, here) < 1.5 * level, exiting);
+      if (grazing) {
         var found = false;
         var foundAt = t;
         for (var j = 1.0; j < 4.0; j = j + 1.0) {
           let tj = t - dt + dt * j * 0.25;
-          if (!found && iso_field(u0 + du * tj) >= level) {
+          if (!found && (iso_field(u0 + du * tj) >= level) != exiting) {
             found = true;
             foundAt = tj;
           }
