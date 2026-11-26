@@ -33,10 +33,11 @@ Cartesian views only.
 
 ### Deck setup
 
-The layer needs deck on WebGPU. Ask for `float32-blendable` where the browser has it: with it the
-splat accumulates by additive blending into r32float, in hardware. Without it (Firefox's WebGPU, at
-the time of writing) the layer falls back to an exact fixed-point compute splat — the same field,
-slower where points are dense:
+The layer needs deck on WebGPU. Ask for `float32-blendable` where the adapter has it: with it the
+splat accumulates by additive blending into r32float, in hardware. Support varies by platform and
+GPU ([web3dsurvey](https://web3dsurvey.com/webgpu/features/float32-blendable); about 58% of Android
+devices reported it in November 2026). Without it the layer falls back to an exact fixed-point
+compute splat — the same field, slower where points are dense:
 
 ```ts
 import { webgpuAdapter } from "@luma.gl/webgpu";
@@ -97,8 +98,8 @@ default). Γ is rendered only for the view (plus a margin), with the marks only 
 Domains (ρ_B·|disk ∩ W| in place of ρ_B·πr²) are not supported yet.
 
 Deck must be on WebGPU **with `float32-blendable`**: both passes blend into r32float, and unlike
-`DensityLayer` there is no compute fallback, so on a device without it (Firefox's WebGPU, at the time
-of writing) the layer reports an error and draws nothing.
+`DensityLayer` there is no compute fallback, so on a device without it (see "Deck setup" above for
+how common that is) the layer reports an error and draws nothing.
 
 Each layer renders on deck's own device with a `TcmRenderer` of its own, so any number of TCM layers
 coexist. A render is synchronous — it writes, encodes and submits before the update returns — so

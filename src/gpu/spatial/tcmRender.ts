@@ -425,7 +425,7 @@ export class TcmRenderer {
     if (!device.features.has("float32-blendable")) {
       throw new Error(
         `${label}: this device lacks 'float32-blendable', which the TCM render needs (it blends into r32float). ` +
-          "Request it when creating the device; some browsers (Firefox, for one) do not offer it.",
+          "Request it when creating the device; not every adapter offers it.",
       );
     }
     this.device = device;

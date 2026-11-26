@@ -74,7 +74,7 @@ const ORANGES: Color[] = [
 const INITIAL_VIEW: OrthographicViewState = { target: [EXTENT / 2, EXTENT / 2, 0], zoom: -1.2 };
 const VIEW = new OrthographicView({ id: "ortho", flipY: false });
 /** Module-level, so deck doesn't rebuild its device. `?noblend` leaves out `float32-blendable`, as
- *  Firefox's WebGPU does, to exercise the layer's compute-splat fallback. */
+ *  a device without it would, to exercise the layer's compute-splat fallback. */
 const NO_BLEND = new URLSearchParams(location.search).has("noblend");
 const DEVICE_PROPS = {
   type: "webgpu" as const,
