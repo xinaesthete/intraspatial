@@ -119,6 +119,15 @@ const defaultProps: DefaultProps<TcmLayerProps> = {
   markCellsPerRadius: { type: "number", value: 8, min: 1 },
 };
 
+/** Props that change the uploaded points. */
+const DATA_PROPS = ["x", "y", "weightsA", "weightsB"] as const;
+/** Props that change Γ or the grids it is rendered on: every prop `planInput` and `refresh` read. */
+const FIELD_PROPS = ["radius", "sigma", "alpha", "kernel", "region", "cellsPerSigma", "pixelsPerCell", "markCellsPerRadius"] as const;
+
+function differs(keys: readonly (keyof TcmLayerProps)[], a: Partial<TcmLayerProps>, b: Partial<TcmLayerProps>): boolean {
+  return keys.some((k) => a[k] !== b[k]);
+}
+
 /** Γ's support in σ, the renderer's default, restated because the plans need it too. */
 const RADIUS_SIGMA = 4;
 /** Cells in either grid, at most. */
@@ -388,22 +397,11 @@ export class TcmLayer extends Layer<TcmLayerProps> {
   override updateState({ props, oldProps }: UpdateParameters<this>): void {
     const s = this.state;
     if (!s.ready) return;
-    if (props.x !== oldProps.x || props.y !== oldProps.y || props.weightsA !== oldProps.weightsA || props.weightsB !== oldProps.weightsB) {
+    if (differs(DATA_PROPS, props, oldProps)) {
       this.uploadPoints();
       s.version++;
     }
-    if (
-      props.radius !== oldProps.radius ||
-      props.sigma !== oldProps.sigma ||
-      props.alpha !== oldProps.alpha ||
-      props.kernel !== oldProps.kernel ||
-      props.region !== oldProps.region ||
-      props.cellsPerSigma !== oldProps.cellsPerSigma ||
-      props.pixelsPerCell !== oldProps.pixelsPerCell ||
-      props.markCellsPerRadius !== oldProps.markCellsPerRadius
-    ) {
-      s.version++;
-    }
+    if (differs(FIELD_PROPS, props, oldProps)) s.version++;
     if (props.colorRange !== oldProps.colorRange || !s.ramp) this.uploadRamp();
     this.refresh();
   }
@@ -510,10 +508,11 @@ export class TcmLayer extends Layer<TcmLayerProps> {
       s.shown = null;
       return;
     }
-    if (s.shown && s.shownVersion === s.version && planServes(s.shown, input)) return;
     const maxSide = s.device!.limits.maxTextureDimension2D;
+    const fit = (p: FieldPlan) => fitSide(p, maxSide);
+    if (s.shown && s.shownVersion === s.version && planServes(s.shown, input, fit)) return;
     const planned = planField(input);
-    const plan = planned && fitSide(planned, maxSide);
+    const plan = planned && fit(planned);
     const marks =
       plan &&
       planMarks({

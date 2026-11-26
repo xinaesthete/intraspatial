@@ -188,6 +188,23 @@ describe("TcmRenderer", () => {
     expect(err).toBeLessThan(1e-4);
   });
 
+  it("keeps one idle readback buffer across growing reads, not one per size", async () => {
+    const r = new TcmRenderer(await getDevice(), "test:staging");
+    const a = cloud(60, 0x51);
+    const b = cloud(60, 0x9e);
+    for (const h of [16, 24, 32, 48, 64]) await r.read(r.render(a, b, { ...P, width: 64, height: h }));
+    // A smaller read reuses the larger buffer.
+    await r.read(r.render(a, b, { ...P, width: 64, height: 16 }));
+    const staging = (r as unknown as { staging: { buf: GPUBuffer; busy: boolean }[] }).staging;
+    expect(staging).toHaveLength(1);
+    expect(staging[0]!.buf.size).toBe(tcmRowFloats(64) * 64 * 4);
+    // Two reads in flight at once each get their own buffer, and both come back right.
+    const [g1, g2] = await Promise.all([r.read(r.render(a, b, P)), r.read(r.render(b, a, P))]);
+    expect(peak(g1)).toBeGreaterThan(0);
+    expect(maxAbsDiff(g1, g2)).toBeGreaterThan(0);
+    r.destroy();
+  });
+
   it("refuses work after destroy()", async () => {
     const r = new TcmRenderer(await getDevice(), "test:destroyed");
     await r.read(r.render(cloud(20, 1), cloud(20, 2), P));

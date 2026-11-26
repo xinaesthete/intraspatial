@@ -47,7 +47,7 @@
 import { type KernelSpec, kernelCode, TOPHAT } from "#src/spatial/kernels";
 import type { CellCloud } from "#src/spatial/tcm";
 import type { TcmKernelParams } from "#src/spatial/tcmKernel";
-import { getDevice, perDevice, sized, writeView } from "../device";
+import { checkBindingSize, getDevice, perDevice, sized, writeView } from "../device";
 import { KERNEL_WGSL } from "./kernelWgsl";
 
 // Uniform block shared by both passes: one flat Float32Array, no std140 padding puzzles.
@@ -446,6 +446,9 @@ export class TcmRenderer {
     const markGrid = o.markGrid ?? o.grid;
     const mark = (this.mark = this.target(this.mark, "mark", markGrid.width, markGrid.height));
     const gamma = (this.gamma = this.target(this.gamma, "gamma", o.grid.width, o.grid.height));
+    // The max |Γ| reduction binds the whole padded field; check the device allows it before anything
+    // is encoded, so an oversized grid fails here rather than as a silent validation error.
+    if (o.out?.max) checkBindingSize(device, this.label, tcmRowFloats(o.grid.width) * o.grid.height * 4);
 
     const uni = new Float32Array(UNI_FLOATS);
     gridUniforms(uni, 0, o.grid);
@@ -520,6 +523,10 @@ export class TcmRenderer {
     const bytes = rowFloats * t.h * 4;
     let s = this.staging.find((x) => !x.busy && x.buf.size >= bytes);
     if (!s) {
+      // Idle buffers too small for this read are replaced, not kept: a series of growing reads would
+      // otherwise hold one buffer per size. Busy ones stay until their reads finish.
+      for (const x of this.staging) if (!x.busy) x.buf.destroy();
+      this.staging = this.staging.filter((x) => x.busy);
       s = {
         buf: this.device.createBuffer({
           label: `${this.label}:readback`,
@@ -535,18 +542,19 @@ export class TcmRenderer {
     const enc = this.device.createCommandEncoder({ label: `${this.label}:read` });
     enc.copyTextureToBuffer({ texture: t.tex }, { buffer: staging.buf, bytesPerRow: rowFloats * 4 }, { width: t.w, height: t.h });
     this.device.queue.submit([enc.finish()]);
-    return staging.buf.mapAsync(GPUMapMode.READ, 0, bytes).then(
-      () => {
-        const padded = new Float32Array(staging.buf.getMappedRange(0, bytes).slice(0));
-        staging.buf.unmap();
+    return staging.buf
+      .mapAsync(GPUMapMode.READ, 0, bytes)
+      .then(() => {
+        // Unpadded straight from the mapped range, which `unpad` copies out of before the unmap.
+        try {
+          return unpad(new Float32Array(staging.buf.getMappedRange(0, bytes)), t.w, t.h, rowFloats);
+        } finally {
+          staging.buf.unmap();
+        }
+      })
+      .finally(() => {
         staging.busy = false;
-        return unpad(padded, t.w, t.h, rowFloats);
-      },
-      (e: unknown) => {
-        staging.busy = false;
-        throw e;
-      },
-    );
+      });
   }
 
   /** Free every GPU resource this renderer owns. Safe at any time: nothing it encodes is waiting to
