@@ -193,6 +193,17 @@ screen. Measured on Leap034 (30 550 A cells against 7 641 B cells, 512² mark ra
 
 > CPU exact 597 ms vs GPU 42 ms (**14.3×**) · max |Δ| / peak = **0.138%**
 
+**Hosting it (2026-11).** The render path is a `TcmRenderer` per caller, on any device: it owns its
+uniforms, uploads, mark and Γ textures and bind groups, so several TCMs coexist (a deck layer per
+pair, a grid of them), and a render is synchronous (no await between writing and submitting), so a
+host can free it at any time. A and B are per-point weights, so both can be weightings of one point
+set; with 0/1 weights that is exactly the TCM of the two subsets, and other non-negative weights are
+masses. `renderResident` takes points already on the device, a Γ grid and a separate mark grid (so a
+view can render a window of Γ, with the marks over the window padded by Γ's support), and can copy Γ
+and max |Γ| into buffers the caller owns. The module-level functions (`renderTcm`,
+`computeTcmRender`, `renderKernelDensity`, `kernelDensityGpu`) remain, on one renderer per device
+and key, and take `device`. `@intraspatial/deck`'s `TcmLayer` is the deck host.
+
 ---
 
 ## 4. cross-PCF, and the N-way matrix
