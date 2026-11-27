@@ -16,6 +16,7 @@ export * from "./gramMatrix";
 export * from "./gramModes";
 export * from "./gramTerrain";
 export * from "./gridIndex";
+export * from "./histogram";
 export * from "./imageOverlayWgsl";
 export * from "./kernelWgsl";
 export * from "./knn";

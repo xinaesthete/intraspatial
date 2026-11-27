@@ -76,7 +76,12 @@ CPU-golden-validated.
 - → arithmetic (add/sub/mul/blend of two fields), LUT/palette apply, clamp/abs
 
 **Reductions**
-- → min / max / sum / mean, histogram → normalization, auto-contrast, stats
+- ✓ min / max / sum / mean (signed, finite-only) and histogram (counts, per-row CDF, edges,
+  under/over/non-finite totals, optional inside/outside mask) — `histogram` / `histogramMasked`
+  graph ops over an f32 grid or a `ResidentRasters` plane (f32/f16); quantiles (median, IQR,
+  p10/p90) from the CDF on the host. See [`histogram-op.md`](histogram-op.md)
+- → normalization, auto-contrast (a fixed-range histogram + `histogramQuantile` gives the
+  percentile window; the pointwise rescale is not built)
 
 **Resampling / pyramids**
 - → extract LL at level k (free from the forward DWT) → multiresolution overviews
@@ -134,8 +139,8 @@ ops over resources; barriers/pooling/submits derived, not assumed).
    (refactor, no behaviour change; tests stay green). This is the unlock.
 2. **First exercise — GPU wavelet denoise** (`fdwt → threshold → idwt`) to prove
    composition end-to-end.
-3. **Reductions + pointwise** (min/max/sum/histogram, arithmetic) — small, high
-   leverage, enable normalization/stats.
+3. **Reductions + pointwise** (✓ min/max/sum/mean + histogram, → arithmetic) — small,
+   high leverage, enable normalization/stats.
 4. **Color transforms (RCT/ICT)** — needed for multi-component anyway; reuse in
    viz.
 5. **Spatial convolution** + **resize/overview** primitives.

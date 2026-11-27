@@ -11,6 +11,7 @@ export * from "./eigenSym";
 export * from "./envelope";
 export * from "./geneModules";
 export * from "./gram";
+export * from "./histogram";
 export * from "./kernelAnalysis";
 export * from "./kernelSpectrum";
 export * from "./kernels";

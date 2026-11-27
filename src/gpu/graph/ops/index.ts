@@ -22,6 +22,7 @@ import { fuzzyAdjacencyOp } from "./fuzzyAdjacency";
 import { fuzzyAdjacencyAdaptiveOp } from "./fuzzyAdjacencyAdaptive";
 import { getisOrdOp } from "./getisOrd";
 import { gridIndexCombineOp, gridIndexOp, gridIndexPartOps } from "./gridIndex";
+import { histogramMaskedOp, histogramOp } from "./histogram";
 import { kthNeighborDistanceOp } from "./kthNeighborDistance";
 import { membershipToDistanceOp } from "./membershipToDistance";
 import { morphologyOp } from "./morphology";
@@ -76,6 +77,8 @@ export function registerBuiltinOps(): void {
   for (const op of gridIndexPartOps) reg(op);
   reg(gridIndexCombineOp);
   reg(cellCountsOp);
+  reg(histogramOp);
+  reg(histogramMaskedOp);
   // spring model (docs/spring-model-as-ops.md)
   reg(springForceOp);
   reg(springIntegrateOp);
@@ -197,6 +200,8 @@ export {
   fuzzyAdjacencyAdaptiveOp,
   fuzzyAdjacencyOp,
   getisOrdOp,
+  histogramMaskedOp,
+  histogramOp,
   kthNeighborDistanceOp,
   membershipToDistanceOp,
   morphologyOp,
