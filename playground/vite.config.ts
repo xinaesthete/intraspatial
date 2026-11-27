@@ -208,6 +208,7 @@ export default defineConfig({
         density3d: fileURLToPath(new URL("./density3d.html", import.meta.url)),
         r3fspike: fileURLToPath(new URL("./r3fspike.html", import.meta.url)),
         umap: fileURLToPath(new URL("./umap.html", import.meta.url)),
+        patchgrid: fileURLToPath(new URL("./patchgrid.html", import.meta.url)),
       },
     },
   },

@@ -117,7 +117,11 @@ Notes:
 
 ## Later
 
-- A playground page with a patch-size slider that draws the grid and kept patches, for "what
-  changes at smaller areas". The host layout is fast enough to re-run on every slider step.
+- Done as a prototype: `playground/patchgrid.html` lays the grid over an uploaded or fetched PNG
+  mask (or a made-up section), re-running `patchGrid` on every slider step (size, stride,
+  minimum fraction) and drawing it on WebGPU. It also sweeps the counts against patch size. On the
+  1/8-resolution Leap034 collagen mock at 8 µm/px it gives SIMBA's 387 / 387 at 300 / 150 µm.
+  Its `MaskLayer` (bit-packed mask) and `RectLayer` (rectangles by flag) are candidates for
+  `@intraspatial/deck` if MDV wants patches drawn.
 - Point counts on the GPU (bin centroids with `gridIndex`). Cell counts are cheap on the host
   today.
