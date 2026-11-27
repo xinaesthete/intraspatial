@@ -401,14 +401,26 @@ let probeOut: { raw: GPUBuffer; staging: GPUBuffer; cap: number } | undefined;
  * `res.resident`'s layout to read instead of `res.resident.buffer` — a copy the next compute will not
  * overwrite, such as the transcript page's snapshot.
  *
- * One probe at a time: the output buffers are shared, so callers coalesce rather than overlap.
+ * Calls are serialised internally (the output buffers are shared), so two callers — the wand and a
+ * hover readout, say — may probe at once; each should still coalesce its own stream of points.
  */
-export async function probeChannels(
+export function probeChannels(
   res: GramMatrixGpuResult,
   col: number,
   row: number,
   rasters: GPUBuffer = res.resident.buffer,
 ): Promise<Float64Array> {
+  const run = probeChain.then(
+    () => probeOnce(res, col, row, rasters),
+    () => probeOnce(res, col, row, rasters),
+  );
+  probeChain = run.catch(() => undefined);
+  return run;
+}
+
+let probeChain: Promise<unknown> = Promise.resolve();
+
+async function probeOnce(res: GramMatrixGpuResult, col: number, row: number, rasters: GPUBuffer): Promise<Float64Array> {
   const { device, probe } = await getProbe();
   const K = res.labels.length;
   const { rowWords, precision } = res.resident;

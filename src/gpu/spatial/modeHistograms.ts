@@ -126,15 +126,11 @@ export interface ModeHistograms {
   /** Per mode, max(|q_lo|, |q_hi|) of its values: the half-range the ramp saturates at when
    *  `modeParams` is given these as `ranges`. 0 for a mode that does not exist (K < 3). */
   readonly halfRanges: [number, number, number];
-  /** With `readback`: the three planes on the host, as `modeProjection` returns them. */
-  readonly planes?: Float32Array;
 }
 
 export interface ModeHistogramOptions extends Pick<HistogramOptions, "bins"> {
   /** The quantile the contrast clips at, each side. Default 0.01 (the 1st and 99th percentiles). */
   readonly clip?: number;
-  /** Also read the planes back (12 bytes a pixel), for a consumer that looks values up by pixel. */
-  readonly readback?: boolean;
 }
 
 /**
@@ -163,8 +159,7 @@ export function modeHistograms(
       const row = histogramRow(h);
       halfRanges[k] = Math.max(Math.abs(histogramQuantile(row, clip)), Math.abs(histogramQuantile(row, 1 - clip)));
     });
-    if (!opts.readback) return { modes, halfRanges };
-    return { modes, halfRanges, planes: await readPlanes(device, out, planeWords, res.width * res.height) };
+    return { modes, halfRanges };
   });
 }
 

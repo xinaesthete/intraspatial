@@ -117,10 +117,11 @@ the tolerance.
 **Hover links** (transcript-modes page). A histogram bar under the pointer becomes a `band` on
 `GramModesLayer`. Places whose mode value, or d, lies in that bar's range keep their colour, and the
 rest are dimmed. The band reads the shader's interpolated field, so its edge falls between pixel
-centres. Going the other way, the map pixel under the pointer marks its mode values and its d on
-the histograms. Its tolerance for joining the patch (`FloodAreaCurve.nearestCosts`) is marked on
-the area curve. For these lookups, `modeHistograms({ readback: true })` keeps the three mode planes
-on the host, at 12 bytes a pixel.
+centres. Going the other way, the place under the pointer marks its values on the histograms. Its
+mode values come from one `probeChannels` readback of K floats, projected on the host. Its d comes
+from the wand's field, which is on the host already. Its tolerance for joining the patch
+(`FloodAreaCurve.nearestCosts`) is marked on the area curve. `probeChannels` now serialises its own
+calls, so the hover probe and the wand's probe can't share its output buffer at the same time.
 
 **The graph wand** (`src/gpu/graph/wand.ts`, `wandPatch`). The curve does not apply as is.
 Its d is `mixtureDistance`, not `wandDistance`, and `floodFrom` uses `seedIn: true` (the seed is

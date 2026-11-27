@@ -57,8 +57,7 @@ describe("modeHistograms", () => {
     expect(peak).toBeGreaterThan(0.1);
     expect(worst / peak).toBeLessThan(1e-4);
 
-    const got = await modeHistograms(res, params, undefined, { bins: 32, readback: true });
-    expect(got.planes?.every((v, i) => Object.is(v, planes[i]))).toBe(true);
+    const got = await modeHistograms(res, params, undefined, { bins: 32 });
     expect(got.modes.length).toBe(3);
     const mismatched = got.modes
       .map((h, k) => {

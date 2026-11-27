@@ -27,6 +27,7 @@ import { ModeCharts } from "../modes/ModeCharts";
 import { ModeMap } from "../modes/ModeMap";
 import { ImagePicker, MapStyleControls, StoreInput, useImageChoice, useMapStyle } from "../modes/PageControls";
 import { rampHalfRanges, useModeHistograms } from "../modes/useModeHistograms";
+import { type RasterPoint, useModeValuesAt } from "../modes/useModeValuesAt";
 import { toRaster, useWand, type WandSource, wandLayerProps } from "../modes/useWand";
 import { WandPanel } from "../modes/WandPanel";
 import { useBoundarySettings, useMapSelection } from "../selection/useMapSelection";
@@ -207,17 +208,18 @@ export function TranscriptModes() {
   }, [g, lockedBasis, vectors]);
   const wand = useWand(wandSource);
   // Each painted mode's values over the window, for the legend and (by default) the colour range.
-  const modeHist = useModeHistograms(g, vectors, lockedBasis, true);
+  const modeHist = useModeHistograms(g, vectors, lockedBasis);
   // Hover links: a histogram bar under the pointer shows its places on the map (`band`), and the map
-  // pixel under the pointer marks its values on the histograms (`hoverPixel`, a raster index).
+  // place under the pointer (`hoverAt`, in raster pixels) marks its values on the histograms: the
+  // modes from one small probe there, d from the wand's field, which is on the host already.
   const [band, setBand] = useState<MapBand | null>(null);
-  const [hoverPixel, setHoverPixel] = useState<number>();
-  const planes = modeHist.hist?.forCurrent ? modeHist.hist.value.planes : undefined;
-  const hoverModes = useMemo(() => {
-    if (!planes || !g || hoverPixel === undefined) return undefined;
-    const n = g.res.width * g.res.height;
-    return [planes[hoverPixel]!, planes[n + hoverPixel]!, planes[2 * n + hoverPixel]!];
-  }, [planes, g, hoverPixel]);
+  const [hoverAt, setHoverAt] = useState<RasterPoint>();
+  const hoverModes = useModeValuesAt(wandSource, hoverAt);
+  const hoverPixel = useMemo(() => {
+    if (!hoverAt || !g) return undefined;
+    const { width, height } = g.res;
+    return Math.min(height - 1, Math.max(0, Math.round(hoverAt.row))) * width + Math.min(width - 1, Math.max(0, Math.round(hoverAt.col)));
+  }, [hoverAt, g]);
   const ranges = style.contrast === "view" ? modeHist.hist?.value.halfRanges : undefined;
   const legendHist = useMemo(
     () =>
@@ -278,12 +280,7 @@ export function TranscriptModes() {
         g && m && wx !== undefined && wy !== undefined
           ? toRaster(g.res, m.a * wx + m.c * wy + m.tx, m.b * wx + m.d * wy + m.ty)
           : undefined;
-      const { width, height } = g?.res ?? { width: 0, height: 0 };
-      setHoverPixel(
-        at
-          ? Math.min(height - 1, Math.max(0, Math.round(at.row))) * width + Math.min(width - 1, Math.max(0, Math.round(at.col)))
-          : undefined,
-      );
+      setHoverAt(at);
     },
     [toolsHover, toElement, g],
   );
@@ -528,14 +525,7 @@ export function TranscriptModes() {
         </aside>
 
         <main className="views">
-          <ModeMap
-            wand={wand}
-            modes={modes}
-            viewport={viewport}
-            toPlace={toPlace}
-            selection={tools}
-            onLeave={() => setHoverPixel(undefined)}
-          >
+          <ModeMap wand={wand} modes={modes} viewport={viewport} toPlace={toPlace} selection={tools} onLeave={() => setHoverAt(undefined)}>
             {/* Always mounted, never keyed: see SpatialDeckView on why deck must outlive a store. */}
             <SpatialDeckView
               className="deck-canvas"

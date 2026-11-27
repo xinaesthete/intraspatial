@@ -60,7 +60,7 @@ export function toRaster(res: GramMatrixGpuResult, x: number, y: number): { col:
  * other waiting job, and the loop re-checks after each run so the last job is never lost. `cancel`
  * drops the waiting job, and `live()` turns false for the running one, so it can land without effect.
  */
-function coalescing<T>(task: (job: T, live: () => boolean) => Promise<void>) {
+export function coalescing<T>(task: (job: T, live: () => boolean) => Promise<void>) {
   let waiting: { job: T } | null = null;
   let busy = false;
   let era = 0;

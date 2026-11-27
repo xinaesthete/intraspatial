@@ -24,8 +24,6 @@ export function useModeHistograms(
   g: { readonly res: GramMatrixGpuResult; readonly rasters: GPUBuffer } | undefined,
   vectors: Float64Array | undefined,
   basis?: ModeBasis,
-  /** Also keep the mode planes on the host, to read a pixel's values (hover). */
-  readback = false,
 ): { readonly hist?: ModeHistogramState; readonly error?: Error } {
   const [state, setState] = useState<{ key: object; value: ModeHistograms; width: number; height: number }>();
   const [error, setError] = useState<Error>();
@@ -36,7 +34,7 @@ export function useModeHistograms(
     void onGpu(async () => {
       if (!live) return;
       const params = modeParams(g.res, { vectors, ...(basis ? { basis } : {}) });
-      const value = await modeHistograms(g.res, params, g.rasters, { bins: 512, readback });
+      const value = await modeHistograms(g.res, params, g.rasters, { bins: 512 });
       if (!live) return;
       setState({ key, value, width: g.res.width, height: g.res.height });
       setError(undefined);
@@ -46,7 +44,7 @@ export function useModeHistograms(
     return () => {
       live = false;
     };
-  }, [g, vectors, basis, readback]);
+  }, [g, vectors, basis]);
   const hist = state && { value: state.value, width: state.width, height: state.height, forCurrent: state.key === g };
   return { ...(hist ? { hist } : {}), ...(error ? { error } : {}) };
 }
