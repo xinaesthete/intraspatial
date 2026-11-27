@@ -16,6 +16,26 @@ function lcg(seed: number): () => number {
   return () => (s = (Math.imul(s, 1664525) + 1013904223) >>> 0) / 2 ** 32;
 }
 
+/** The documented rule by brute force, with no division seed: the largest b in [0, bins) with
+ *  f32(b · range) <= t (see the header of ./histogram.ts; s = 1 for this range). */
+function thresholdBin(v: number, lo: number, hi: number, bins: number): number {
+  const f = Math.fround;
+  const range = f(hi - lo);
+  const t = f(f(v - lo) * bins);
+  let best = 0;
+  for (let b = 0; b < bins; b++) if (f(b * range) <= t) best = b;
+  return best;
+}
+
+const ulpView = new DataView(new ArrayBuffer(4));
+/** The adjacent f32 in direction `dir` (finite, non-zero `v`). */
+function nextF32(v: number, dir: 1 | -1): number {
+  ulpView.setFloat32(0, v);
+  const bits = ulpView.getUint32(0);
+  ulpView.setUint32(0, v > 0 === dir > 0 ? bits + 1 : bits - 1);
+  return ulpView.getFloat32(0);
+}
+
 describe("histogramCpu", () => {
   it("bins signed values, closes the last edge, and conserves the count", () => {
     const v = [-3, -1, 0, 0.5, 1, 2, 3];
@@ -77,8 +97,27 @@ describe("histogramCpu", () => {
       const x = ((v - lo) * 97) / (hi - lo);
       const exact = Math.min(96, Math.floor(x));
       const nearEdge = Math.abs(x - Math.round(x)) < 1e-4;
-      if (nearEdge ? Math.abs(b - exact) > 1 : b !== exact) bad++;
+      // Near an edge, the documented f32 threshold rule decides, checked independently below.
+      if (nearEdge ? b !== thresholdBin(v, lo, hi, 97) : b !== exact) bad++;
     }
+    expect(bad).toBe(0);
+  });
+
+  it("at every bin edge, +/- a few ulps, the bin is exactly the documented f32 threshold rule", () => {
+    const [lo, hi] = histogramEdges(-1.3, 7.9);
+    const bins = 97;
+    let checked = 0;
+    let bad = 0;
+    for (let k = 0; k <= bins; k++) {
+      let v = Math.fround(lo + (k * (hi - lo)) / bins);
+      for (let step = 0; step < 4; step++) v = nextF32(v, -1);
+      for (let step = 0; step < 9; step++, v = nextF32(v, 1)) {
+        if (v < lo || v > hi) continue;
+        checked++;
+        if (histogramBinOf(v, lo, hi, bins) !== thresholdBin(v, lo, hi, bins)) bad++;
+      }
+    }
+    expect(checked).toBeGreaterThan(bins * 8);
     expect(bad).toBe(0);
   });
 
