@@ -76,5 +76,5 @@ correlations need.
 |---|---|
 | R2 | Per-mode histograms in the playground's `GramModesLayer` / `ModeLegend`. A histogram of `wandDistance` in `WandPanel`, plus an area-vs-tolerance curve from one priority flood. |
 | R3 | A polygon/label rasteriser and labelled (zonal) reductions, with rows = labels × channels. `MAX_ROWS` (2) and the `rowOf` mask rule are the seam. |
-| R4 | Patch-grid generator. |
+| R4 | Patch-grid generator. Built: see [`patch-grid.md`](patch-grid.md). |
 | R5 | Anchor screen with a permutation null. |

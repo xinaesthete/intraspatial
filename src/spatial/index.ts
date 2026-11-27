@@ -17,6 +17,7 @@ export * from "./kernelSpectrum";
 export * from "./kernels";
 export * from "./knnDescent";
 export * from "./ngffTransform";
+export * from "./patchGrid";
 export * from "./pca";
 export * from "./pcf";
 export * from "./pcfBootstrap";

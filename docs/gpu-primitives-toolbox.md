@@ -80,6 +80,10 @@ CPU-golden-validated.
   under/over/non-finite totals, optional inside/outside mask) — `histogram` / `histogramMasked`
   graph ops over an f32 grid or a `ResidentRasters` plane (f32/f16); quantiles (median, IQR,
   p10/p90) from the CDF on the host. See [`histogram-op.md`](histogram-op.md)
+- ✓ patch support: a mask's support pixels in each of n rectangles, by one flat prefix scan and one
+  subtraction per row (`patchSupport` graph op). The patch layout itself (SIMBA's per-component
+  grid and support rules) is host-side `patchGrid`. See [`patch-grid.md`](patch-grid.md)
+- → zonal (per-label) statistics over patch rectangles or label layers (R3)
 - → normalization, auto-contrast (a fixed-range histogram + `histogramQuantile` gives the
   percentile window; the pointwise rescale is not built)
 

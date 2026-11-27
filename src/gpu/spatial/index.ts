@@ -26,6 +26,7 @@ export * from "./markerWgsl";
 export * from "./morphology";
 export * from "./nnDistance";
 export * from "./paintField";
+export * from "./patchSupport";
 export * from "./pcaGpu";
 export * from "./quadratCorrelationGpu";
 export * from "./similarityWgsl";
