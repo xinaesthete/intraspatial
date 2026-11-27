@@ -1,7 +1,7 @@
 import { beforeAll, describe, expect, it } from "vite-plus/test";
-import { getDevice, readBackBytes } from "#src/gpu/device";
+import { getDevice, readBackBytes, writeView } from "#src/gpu/device";
 import { gramMatrixGpu } from "#src/gpu/spatial/gramMatrix";
-import { histogramGpu, residentRasterPlane } from "#src/gpu/spatial/histogram";
+import { denseRasterPlane, histogramGpu, residentRasterPlane } from "#src/gpu/spatial/histogram";
 import { channelsFromLabels } from "#src/spatial/gram";
 import { type HistogramResult, histogramCpu, histogramRow, histogramSummary } from "#src/spatial/histogram";
 import { EPANECHNIKOV } from "#src/spatial/kernels";
@@ -169,6 +169,30 @@ describe("histogram graph op", () => {
     const g = new Graph();
     const { gpu, cpu } = await runOp(g, "histogram", { field: g.grid(signedField(4), W, H) }, { bins: 5000 });
     expect(diff(gpu, { ...cpu, bins: 5000, rows: 1 })).toBeUndefined();
+  });
+
+  it("concurrent histogramGpu calls on one device each get their own plane's result", async () => {
+    // Regression: the readback targets outlive the submit, so pooled (shared) targets let one
+    // call's submit overwrite another's before its readback copies ran. Leased targets fix it.
+    const device = await getDevice();
+    const planes = [signedField(11), signedField(12).map((v) => v * 3 - 7)].map((field, i) => {
+      const buffer = device.createBuffer({
+        label: `histogram-test:concurrent${i}`,
+        size: field.byteLength,
+        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+      });
+      writeView(device.queue, buffer, field);
+      return { plane: denseRasterPlane(buffer, W, H), want: histogramCpu(field, { bins: 64 }) };
+    });
+    const failures: string[] = [];
+    for (let round = 0; round < 4; round++) {
+      const got = await Promise.all(planes.map((p) => histogramGpu(p.plane, { bins: 64 })));
+      got.forEach((g, i) => {
+        const d = diff(g, planes[i]!.want);
+        if (d) failures.push(`round ${round} plane ${i}: ${d}`);
+      });
+    }
+    expect(failures).toEqual([]);
   });
 
   it("an f16 ResidentRasters plane with padded rows (synthetic, NaN/Inf/negative/subnormal texels)", async () => {

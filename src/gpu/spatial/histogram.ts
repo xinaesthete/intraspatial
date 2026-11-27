@@ -33,6 +33,8 @@
 import type { HistogramOptions, HistogramResult } from "#src/spatial/histogram";
 import { HISTOGRAM_MOMENTS, HISTOGRAM_TOTALS, histogramBins, histogramFixedRange } from "#src/spatial/histogram";
 import { checkBindingSize, compileShader, deviceScoped, perDevice, readBackBytes, sized } from "../device";
+import type { ResidentBuffer } from "../graph/handle";
+import { BufferPool } from "../graph/pool";
 import { encodeScan, ensureBuf, getScanCtx } from "../scan/prefixSum";
 import type { RasterPrecision, ResidentRasters } from "./gramMatrix";
 
@@ -486,44 +488,48 @@ export async function histogramResident(
 }
 
 /**
- * `histogramResident` into pooled targets, read back to the host as a `HistogramResult` — the
+ * `histogramResident` into leased targets, read back to the host as a `HistogramResult` — the
  * shape `histogramCpu` returns, so `histogramRow`/`histogramSummary` read either. For a consumer
  * that wants the numbers (a legend, a panel); a GPU consumer uses `histogramResident` or the graph
  * op and never reads back. Moments come back as f32 values.
  *
- * Calls on one device run one at a time: the targets are pooled, so a second call's submit must
- * not land between the first call's compute and its readback copies.
+ * The five targets are LEASED per call, not pooled scratch: they outlive the submit (the readback
+ * copies come after it), so a shared buffer would let a concurrent call's submit overwrite them
+ * before they were read.
  */
 export async function histogramGpu(plane: RasterPlane, opts: HistogramGpuOptions = {}, device?: GPUDevice): Promise<HistogramResult> {
   const dev = device ?? (await getCtx()).device;
-  const q = gpuQueue(dev);
-  const run = q.tail.then(() => histogramGpuNow(dev, plane, opts));
-  q.tail = run.catch(() => undefined); // the next call waits for this one, success or failure
-  return run;
-}
-
-const gpuQueue = perDevice((): { tail: Promise<unknown> } => ({ tail: Promise.resolve() }));
-
-async function histogramGpuNow(dev: GPUDevice, plane: RasterPlane, opts: HistogramGpuOptions): Promise<HistogramResult> {
   const bins = histogramBins(opts);
   const rows = opts.mask ? 2 : 1;
   const sizes = histogramByteSizes(bins, rows);
-  const usage = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC;
-  const out: HistogramTargets = {
-    counts: ensureBuf(dev, "histogram:out:counts", sizes.counts, usage),
-    cdf: ensureBuf(dev, "histogram:out:cdf", sizes.cdf, usage),
-    totals: ensureBuf(dev, "histogram:out:totals", sizes.totals, usage),
-    edges: ensureBuf(dev, "histogram:out:edges", sizes.edges, usage),
-    moments: ensureBuf(dev, "histogram:out:moments", sizes.moments, usage),
-  };
-  await histogramResident(plane, out, opts, dev);
-  const [counts, cdf, totals, edges, moments] = await Promise.all([
-    readBackBytes(dev, "histogram:rb:counts", out.counts, 0, sizes.counts),
-    readBackBytes(dev, "histogram:rb:cdf", out.cdf, 0, sizes.cdf),
-    readBackBytes(dev, "histogram:rb:totals", out.totals, 0, sizes.totals),
-    readBackBytes(dev, "histogram:rb:edges", out.edges, 0, sizes.edges),
-    readBackBytes(dev, "histogram:rb:moments", out.moments, 0, sizes.moments),
-  ]);
+  const pool = targetPool(dev);
+  const keys = ["counts", "cdf", "totals", "edges", "moments"] as const;
+  const leased: ResidentBuffer[] = [];
+  try {
+    for (const key of keys) leased.push(pool.lease(sizes[key]));
+    const [cb, fb, tb, eb, mb] = leased.map((b) => b.buffer) as [GPUBuffer, GPUBuffer, GPUBuffer, GPUBuffer, GPUBuffer];
+    await histogramResident(plane, { counts: cb, cdf: fb, totals: tb, edges: eb, moments: mb }, opts, dev);
+    const [counts, cdf, totals, edges, moments] = await Promise.all(
+      keys.map((key, i) => readBackBytes(dev, `histogram:rb:${key}`, leased[i]!.buffer, 0, sizes[key])),
+    );
+    return toResult(bins, rows, counts!, cdf!, totals!, edges!, moments!);
+  } finally {
+    for (const b of leased) pool.release(b);
+  }
+}
+
+/** Leases for `histogramGpu`'s targets, per device (resident usage: STORAGE | COPY_SRC | COPY_DST). */
+const targetPool = perDevice((device) => new BufferPool(device));
+
+function toResult(
+  bins: number,
+  rows: number,
+  counts: ArrayBuffer,
+  cdf: ArrayBuffer,
+  totals: ArrayBuffer,
+  edges: ArrayBuffer,
+  moments: ArrayBuffer,
+): HistogramResult {
   const e = new Float32Array(edges);
   return {
     bins,
