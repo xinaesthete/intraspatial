@@ -17,6 +17,7 @@
 //
 //   pnpm patchgrid:parity [--leap Leap034] [--anchor copper|collagen] [--size 300]
 //                         [--batch 3000] [--registered ~/data/tnbc_registered_res_1.0] [--simba ~/data/tnbc_simba_runs]
+import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -37,19 +38,35 @@ import {
   type SupportRule,
 } from "../src/spatial/patchGrid";
 
-const arg = (name: string, dflt: string) => {
+function fail(message: string): never {
+  console.error(`patchgrid:parity: ${message}`);
+  process.exit(2);
+}
+/** `--name value`, or `dflt` when the flag is absent; a flag without a value is an error. */
+const arg = (name: string, dflt: string): string => {
   const i = process.argv.indexOf(`--${name}`);
-  return i > 0 ? process.argv[i + 1]! : dflt;
+  if (i < 0) return dflt;
+  const v = process.argv[i + 1];
+  if (v === undefined || v.startsWith("--")) fail(`--${name} needs a value`);
+  return v;
+};
+/** A whole number >= 1 (checked before any raster is read: building Leap035's masks takes a minute). */
+const positiveInt = (name: string, dflt: string): number => {
+  const v = Number(arg(name, dflt));
+  if (!Number.isInteger(v) || v < 1) fail(`--${name} must be a whole number >= 1`);
+  return v;
 };
 const leap = arg("leap", "Leap034");
 const anchor = arg("anchor", "copper");
-const size = Number(arg("size", "300"));
+if (anchor !== "copper" && anchor !== "collagen") fail(`--anchor must be copper or collagen (got ${anchor})`);
+const size = positiveInt("size", "300");
+if (size % 2 !== 0) fail(`--size must be even: SIMBA's stride is half the size (got ${size})`);
 const stride = size / 2;
 // Patches per zonalStatsTiled call. The exact pass holds every value in each row's target bins
 // (zonal-stats.md, "Exact-pass memory"): 14k overlapping 300 µm patches on Leap035 collect 73M
 // values, past the default 128 MiB binding. Rows are independent and ids run top to bottom, so
 // a batch is a band of the slide and touches mostly its own tiles.
-const batch = Number(arg("batch", "3000"));
+const batch = positiveInt("batch", "3000");
 const registered = arg("registered", join(homedir(), "data/tnbc_registered_res_1.0"));
 const simba = arg("simba", join(homedir(), "data/tnbc_simba_runs"));
 const METALS = ["Cu", "Zn", "Fe", "Mg", "Mn"];
@@ -176,7 +193,11 @@ function report(
     n++;
     const a = ours[i]!;
     const b = Number(r[col]);
-    const rel = a === b ? 0 : Math.abs(a - b) / Math.max(1e-30, Math.abs(b));
+    // NaN on one side only (or ±Inf against a finite value) is a mismatch, not a NaN that compares
+    // false against the tolerance; NaN on both sides agrees.
+    const bothNaN = Number.isNaN(a) && Number.isNaN(b);
+    const rel =
+      a === b || bothNaN ? 0 : Number.isFinite(a) && Number.isFinite(b) ? Math.abs(a - b) / Math.max(1e-30, Math.abs(b)) : Infinity;
     worst = Math.max(worst, rel);
     if (rel > tol) off.push(`${r.patch_id}: ours ${a}, SIMBA ${b}`);
   });
@@ -189,6 +210,9 @@ async function main(): Promise<void> {
     anchor === "copper"
       ? `copper_level/regions/mintissuefrac0.5_patchum${size}_strideum${stride}`
       : `${size === 300 ? "collagen_level" : `collagen_level_${size}`}/regions/minacqfrac0.5_mincells50_patchum${size}_strideum${stride}`;
+  // Fail on a missing SIMBA table before the rasters are read, not after.
+  const regionsCsv = join(simba, run, `${leap}_patch_regions.csv`);
+  if (!existsSync(regionsCsv)) fail(`no SIMBA patch table for ${leap} ${anchor} ${size} µm: ${regionsCsv}`);
   const t0 = performance.now();
   let footprint: MaskRuns;
   const rules: SupportRule[] = [];
@@ -204,7 +228,7 @@ async function main(): Promise<void> {
   const grid = patchGrid({ footprint, size, stride, units: "um", pixelSize: 1, rules });
   const tGrid = performance.now();
 
-  const regions = new Map((await csv(join(simba, run, `${leap}_patch_regions.csv`))).map((r) => [rowKey(r), r]));
+  const regions = new Map((await csv(regionsCsv)).map((r) => [rowKey(r), r]));
   const mine = new Set(grid.patches.map((p) => key(p.x0, p.y0, p.x1, p.y1)));
   const onlySimba = [...regions.keys()].filter((k) => !mine.has(k)).length;
   const onlyOurs = [...mine].filter((k) => !regions.has(k)).length;
@@ -297,7 +321,7 @@ async function main(): Promise<void> {
       "imc_acquired_fraction",
     );
   }
-  await releaseDevice();
 }
 
-await main();
+// Release the device on failure too (a no-op when none was opened).
+await main().finally(releaseDevice);

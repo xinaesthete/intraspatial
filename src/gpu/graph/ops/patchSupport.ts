@@ -9,7 +9,7 @@
 //
 // A grid is f32 (support = finite and > 0) or u32 (support = non-zero). Output: `n × 1` u32.
 import { patchSupportResident } from "#src/gpu/spatial/patchSupport";
-import type { FieldValue, Shape } from "../handle";
+import { type ElementType, type FieldValue, SCALAR, type Shape } from "../handle";
 import type { OpType } from "../op";
 
 function gridOf(s: Shape): { width: number; height: number } {
@@ -66,6 +66,12 @@ export const patchSupportOp: OpType = {
   inferShapes(inShapes) {
     gridOf(inShapes[0]!);
     return [{ kind: "matrix", rows: rectCount(inShapes[1]!), cols: 1 }];
+  },
+  // Declared, so a multi-lane grid (vec4 channels, complex) is refused at build: the GPU path and
+  // the golden both read width × height single values, and would count lane 0 of every other pixel.
+  inferElements(inEls: ElementType[]) {
+    if (inEls.some((e) => e.kind !== "scalar")) throw new Error("patchSupport: mask and rects must be scalar (one value per cell)");
+    return [SCALAR];
   },
   inferPlacement: () => [undefined],
   inferAxes(inAxes) {

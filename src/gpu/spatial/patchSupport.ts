@@ -18,7 +18,7 @@
 // (33.5M at the default 128 MiB: about 5,800² ) is the ceiling; `checkBindingSize` throws past
 // it rather than returning a plausible wrong count. Full-resolution canvases go through the run
 // form on the host.
-import { checkBindingSize, compileShader, deviceScoped, dispatchGrid, sized } from "../device";
+import { checkBindingSize, compileShader, deviceScoped, dispatchGrid, perDevice, sized } from "../device";
 import { encodeScan, ensureBuf, getScanCtx, readBack, type ScanCtx } from "../scan/prefixSum";
 
 const WG = 64;
@@ -213,8 +213,23 @@ export async function patchSupportResident(a: PatchSupportResidentArgs, device?:
   dev.queue.submit([enc.finish()]);
 }
 
+/** The host form's tail of calls per device: its mask, rectangle, count and staging buffers are
+ *  pooled per device, so a second call uploading while the first awaits would be counted by the
+ *  first, and two readbacks would map one staging buffer at once (`serial` in modeHistograms.ts).
+ *  The resident form needs none: it writes its pooled scratch and submits without awaiting. */
+const hostChain = perDevice((): { chain: Promise<unknown> } => ({ chain: Promise.resolve() }));
+
+function serial<T>(device: GPUDevice, task: () => Promise<T>): Promise<T> {
+  const tail = hostChain(device);
+  const run = tail.chain.then(task, task);
+  // A failed call must not stall the ones queued behind it.
+  tail.chain = run.catch(() => undefined);
+  return run;
+}
+
 /** Host-array form: support pixels of `mask` in each `[x0, y0, x1, y1]` rectangle. A
- *  `Float32Array` mask counts finite values > 0, a `Uint32Array` / `Uint8Array` non-zero ones. */
+ *  `Float32Array` mask counts finite values > 0, a `Uint32Array` / `Uint8Array` non-zero ones.
+ *  Concurrent calls on one device run one at a time. */
 export async function patchSupportGpu(
   mask: Float32Array | Uint32Array | Uint8Array,
   width: number,
@@ -233,20 +248,22 @@ export async function patchSupportGpu(
   if (nRects === 0) return new Uint32Array(0);
   const encoding: SupportMaskEncoding = mask instanceof Float32Array ? "f32" : mask instanceof Uint8Array ? "u8" : "u32";
   const dev = (await getCtx(device)).scan.device;
-  const usage = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST;
-  const maskBytes = supportMaskWords(encoding, n) * 4;
-  const maskBuf = ensureBuf(dev, "patchSupport:mask", maskBytes, usage);
-  // writeBuffer needs a multiple of 4 bytes: a byte mask's 1-3 byte tail goes in its own word.
-  const aligned = mask.byteLength & ~3;
-  if (aligned > 0) dev.queue.writeBuffer(maskBuf, 0, mask.buffer, mask.byteOffset, aligned);
-  if (aligned < mask.byteLength) {
-    const tail = new Uint8Array(4);
-    tail.set(new Uint8Array(mask.buffer, mask.byteOffset + aligned, mask.byteLength - aligned));
-    dev.queue.writeBuffer(maskBuf, aligned, tail);
-  }
-  const rectBuf = ensureBuf(dev, "patchSupport:rects", nRects * 16, usage);
-  dev.queue.writeBuffer(rectBuf, 0, rects.buffer, rects.byteOffset, nRects * 16);
-  const counts = ensureBuf(dev, "patchSupport:counts", nRects * 4, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC);
-  await patchSupportResident({ mask: maskBuf, encoding, width, height, rects: rectBuf, nRects, counts }, dev);
-  return new Uint32Array(await readBack(dev, "patchSupport:staging", counts, 0, nRects * 4));
+  return serial(dev, async () => {
+    const usage = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST;
+    const maskBytes = supportMaskWords(encoding, n) * 4;
+    const maskBuf = ensureBuf(dev, "patchSupport:mask", maskBytes, usage);
+    // writeBuffer needs a multiple of 4 bytes: a byte mask's 1-3 byte tail goes in its own word.
+    const aligned = mask.byteLength & ~3;
+    if (aligned > 0) dev.queue.writeBuffer(maskBuf, 0, mask.buffer, mask.byteOffset, aligned);
+    if (aligned < mask.byteLength) {
+      const tail = new Uint8Array(4);
+      tail.set(new Uint8Array(mask.buffer, mask.byteOffset + aligned, mask.byteLength - aligned));
+      dev.queue.writeBuffer(maskBuf, aligned, tail);
+    }
+    const rectBuf = ensureBuf(dev, "patchSupport:rects", nRects * 16, usage);
+    dev.queue.writeBuffer(rectBuf, 0, rects.buffer, rects.byteOffset, nRects * 16);
+    const counts = ensureBuf(dev, "patchSupport:counts", nRects * 4, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC);
+    await patchSupportResident({ mask: maskBuf, encoding, width, height, rects: rectBuf, nRects, counts }, dev);
+    return new Uint32Array(await readBack(dev, "patchSupport:staging", counts, 0, nRects * 4));
+  });
 }

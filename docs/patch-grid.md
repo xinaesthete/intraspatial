@@ -149,6 +149,7 @@ SIMBA's `<leap>_copper_patch_features.csv` and `features/<run>/<leap>_imc_patch_
 | Leap034 copper | 300 | 831 | identical | `laicpmsi_cu_p50` identical | `n_tissue_pixels`, `tissue_fraction` identical | 6.0 s |
 | Leap034 collagen | 300 | 387 | identical | `imc_collagen_median` ≤ 5.6·10⁻⁸ rel | `imc_acquired_fraction` identical | 1.8 s |
 | Leap034 collagen | 150 | 1,504 | identical | `imc_collagen_median` ≤ 6.0·10⁻⁸ rel | `imc_acquired_fraction` identical | 1.4 s |
+| Leap035 collagen | 300 | 143 | identical | `imc_collagen_median` ≤ 5.5·10⁻⁸ rel | `imc_acquired_fraction`, `n_imc_cells` identical | 0.8 s |
 | Leap035 copper | 300 | 14,174 | identical | `laicpmsi_cu_p50` identical in f32 (5 differ ≤ 5.4·10⁻⁸ rel in f64) | `n_tissue_pixels`, `tissue_fraction` identical | 205 s (5 batches) |
 
 The collagen medians, and 5 Leap035 Cu medians, differ in f64 for the reason in
