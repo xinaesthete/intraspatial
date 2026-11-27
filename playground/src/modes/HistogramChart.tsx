@@ -2,7 +2,7 @@
 // outside), vertical markers, and an optional click that reports the value under the pointer. The
 // mode legend and the wand panel share it.
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { HistogramResult } from "../../../src/spatial/histogram";
 
 /** A drawn bar as a value range: [lo, hi), or [lo, hi] for the histogram's own last bin, whose
@@ -52,6 +52,29 @@ export function HistogramChart({ h, fills, markers = [], width = 220, height = 5
   const bw = (width - 2 * PAD) / bars;
   const domain = `${lo},${hi},${bars}`;
   const hoverBar = hovered && hovered.domain === domain ? hovered.bar : undefined;
+  // The band the map shows is ours while `emitted`: withdraw it when its bar stops meaning that range
+  // (a new domain under a still pointer) and when the chart goes away.
+  const emitted = useRef(false);
+  const latestHover = useRef(onHoverBar);
+  useEffect(() => {
+    latestHover.current = onHoverBar;
+  });
+  const emit = (bar: HoveredBar | null) => {
+    emitted.current = bar !== null;
+    latestHover.current?.(bar);
+  };
+  useEffect(() => {
+    if (hovered && hovered.domain !== domain && emitted.current) {
+      emitted.current = false;
+      latestHover.current?.(null);
+    }
+  }, [hovered, domain]);
+  useEffect(
+    () => () => {
+      if (emitted.current) latestHover.current?.(null);
+    },
+    [],
+  );
   /** Row `r`'s counts summed into the drawn bars. */
   const barCounts = (r: number) => {
     const out = new Float64Array(bars);
@@ -80,11 +103,11 @@ export function HistogramChart({ h, fills, markers = [], width = 220, height = 5
               if (b === hoverBar) return;
               if (b < 0 || b >= bars) {
                 setHovered(undefined);
-                onHoverBar(null);
+                emit(null);
                 return;
               }
               setHovered({ bar: b, domain });
-              onHoverBar({ lo: lo + (b / bars) * (hi - lo), hi: lo + ((b + 1) / bars) * (hi - lo), closed: b === bars - 1 && hi === h.hi });
+              emit({ lo: lo + (b / bars) * (hi - lo), hi: lo + ((b + 1) / bars) * (hi - lo), closed: b === bars - 1 && hi === h.hi });
             }
           : undefined
       }
@@ -92,7 +115,7 @@ export function HistogramChart({ h, fills, markers = [], width = 220, height = 5
         onHoverBar
           ? () => {
               setHovered(undefined);
-              onHoverBar(null);
+              emit(null);
             }
           : undefined
       }

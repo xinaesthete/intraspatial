@@ -110,8 +110,9 @@ step where a region already ≥ 0.5 % of the raster grows by ≥ 50 % of itself.
 keeps out the seed's first pixels and rings of tied values around it.
 
 **Inside/outside d.** `histogramCpu(d, { mask })` is R1's two-row form. Row 0 is the selection:
-the patch in connected mode, else d ≤ t. Medians come from `histogramSummary`, within one bin
-of the 512-bin auto range. Both charts draw 0–5, the slider's domain, and clicking either one sets
+the patch in connected mode, else d ≤ t. Medians come from `histogramSummary`. Each is within one bin of
+the 512-bin auto range when the two values around its rank share a bin, and off by up to a gap
+more when they don't (see "Quantiles" above). Both charts draw 0–5, the slider's domain, and clicking either one sets
 the tolerance.
 
 **Hover links** (transcript-modes page). A histogram bar under the pointer becomes a `band` on
@@ -119,17 +120,32 @@ the tolerance.
 rest are dimmed. The band reads the shader's interpolated field, so its edge falls between pixel
 centres. Going the other way, the place under the pointer marks its values on the histograms. Its
 mode values come from one `probeChannels` readback of K floats, projected on the host. Its d comes
-from the wand's field, which is on the host already. Its tolerance for joining the patch
-(`FloodAreaCurve.nearestCosts`) is marked on the area curve. `probeChannels` now serialises its own
+from the wand's field, which is on the host already. The least tolerance at which it joins the patch,
+`floodJoinTolerance`, is marked on the area curve. Within each span of tolerances where the fill's
+start pixel is fixed (`FloodAreaCurve.spans`), a pixel is in the patch from max(span start, cost)
+on. The first span where that holds gives the answer, which is exact across start switches. `probeChannels` now serialises its own
 calls, so the hover probe and the wand's probe can't share its output buffer at the same time.
 
 **The graph wand** (`src/gpu/graph/wand.ts`, `wandPatch`). The curve does not apply as is.
 Its d is `mixtureDistance`, not `wandDistance`, and `floodFrom` uses `seedIn: true` (the seed is
 always in). With `rho < 0.5` the same bottleneck treatment does apply, with two changes. Pixels
 that fail the Laplacian test become NaN in d, because that test does not depend on t. The start
-pixel's cost is −∞, which models `seedIn`. With an opening (`rho ≥ 0.5`) it does not apply.
-Opening is monotone in t, but "the opened piece holding the seed" is not a threshold of any
-per-pixel cost, so area(t) would need one evaluation per tolerance. The graph wand is unchanged.
+pixel's cost is −∞, which models `seedIn`.
+
+With an opening (`rho ≥ 0.5`) the patch is still monotone in t, so every pixel has a first
+tolerance. One bottleneck flood doesn't give it, but a flat opening commutes with thresholding.
+With c the cell's bottleneck cost, and the raster's outside at +∞ (the erosion's `border`),
+opened(t) = {closing_B(c) ≤ t}, where closing_B is the grayscale closing by the disc. The patch is
+then a second bottleneck flood, from the seed, over closing_B(c). That is a sketch, neither built
+nor tested. The `ABOVE` margin on the erosion threshold would need the same care. The graph wand is
+unchanged.
+
+**Device ownership.** `modeHistograms`, `modeProjection`, `probeChannels` and `wandDistance` take
+the device the Gram result lives on (`gramMatrixGpu`'s `device`). Each keeps its pipeline, pooled
+buffers and call chain per device (`deviceScoped` / `perDevice`), as `histogramGpu` does, and is
+covered in `explicitDevice.gpu.test.ts`. The playground passes none, because deck adopts the
+library's device. The readbacks that remain are small: K floats per probe, the histograms, and d,
+which the host flood needs.
 
 ## Later steps (not built)
 

@@ -156,10 +156,17 @@ export interface FloodAreaCurve {
   readonly area: Float64Array;
   /** width × height. */
   readonly pixels: number;
-  /** Bottleneck cost of every pixel from the pixel nearest the seed (NaN where unreachable, and
-   *  absent when that pixel is NaN): the tolerance at which each pixel joins the region, for every
-   *  tolerance at or above the nearest pixel's own d, where the fill always starts there. */
-  readonly nearestCosts?: Float64Array;
+  /** The tolerance intervals `[from, to)`, ascending, each with the start pixel the fill uses
+   *  throughout it and that start's bottleneck costs (NaN where unreachable). Below the first
+   *  `from` the region is empty. What `floodJoinTolerance` reads. */
+  readonly spans: readonly FloodSpan[];
+}
+
+export interface FloodSpan {
+  readonly from: number;
+  readonly to: number;
+  readonly start: number;
+  readonly costs: Float64Array;
 }
 
 /** Number of entries of ascending `sorted` that are ≤ t. */
@@ -185,18 +192,17 @@ export function floodAreaByTolerance(d: ArrayLike<number>, width: number, height
   // Where the start can change: each candidate start's own d. Between two consecutive change points
   // the set of in-range candidates, hence the start, is fixed.
   const changes = [...new Set(starts.map((i) => d[i]!).filter((v) => !Number.isNaN(v)))].sort((a, b) => a - b);
-  const sortedCosts = new Map<number, Float64Array>();
-  let nearestCosts: Float64Array | undefined;
-  const costsFrom = (start: number) => {
-    let s = sortedCosts.get(start);
-    if (!s) {
-      const c = bottleneckCosts(d, width, height, start);
-      if (start === nearest) nearestCosts = c;
-      s = c.filter((v) => !Number.isNaN(v)).sort();
-      sortedCosts.set(start, s);
+  const floods = new Map<number, { costs: Float64Array; sorted: Float64Array }>();
+  const floodFrom = (start: number) => {
+    let f = floods.get(start);
+    if (!f) {
+      const costs = bottleneckCosts(d, width, height, start);
+      f = { costs, sorted: costs.filter((v) => !Number.isNaN(v)).sort() };
+      floods.set(start, f);
     }
-    return s;
+    return f;
   };
+  const spans: FloodSpan[] = [];
   const tol: number[] = [];
   const area: number[] = [];
   const push = (t: number, a: number) => {
@@ -208,7 +214,9 @@ export function floodAreaByTolerance(d: ArrayLike<number>, width: number, height
     const a = changes[j]!;
     const b = changes[j + 1] ?? Number.POSITIVE_INFINITY;
     const start = wandSeedPixel(d, width, height, seed, a);
-    const costs = costsFrom(start);
+    const flood = floodFrom(start);
+    const costs = flood.sorted;
+    spans.push({ from: a, to: b, start, costs: flood.costs });
     push(a, countAtMost(costs, a));
     // Every distinct cost strictly inside (a, b) is a step — and in the last interval, +Inf too,
     // which a fill at tolerance +Inf takes in. Equal costs are adjacent in `costs`, so the count
@@ -223,8 +231,25 @@ export function floodAreaByTolerance(d: ArrayLike<number>, width: number, height
     tol: Float64Array.from(tol),
     area: Float64Array.from(area),
     pixels: width * height,
-    ...(nearestCosts ? { nearestCosts } : {}),
+    spans,
   };
+}
+
+/**
+ * The least tolerance at which pixel `i` is in the region — where it joins the patch — or NaN if it
+ * is in it at none. Exact across start switches: within a span the start is fixed, so `i` is in
+ * from `max(from, cost)` on if that is before the span ends, and the first span where that holds
+ * gives the least. (The region need not only grow when the start switches, so this is the FIRST
+ * tolerance, not a threshold above which `i` always stays in.)
+ */
+export function floodJoinTolerance(curve: FloodAreaCurve, i: number): number {
+  for (const { from, to, costs } of curve.spans) {
+    const c = costs[i]!;
+    if (Number.isNaN(c)) continue;
+    const t = Math.max(from, c);
+    if (t < to || (to === Number.POSITIVE_INFINITY && t === to)) return t;
+  }
+  return Number.NaN;
 }
 
 /** The region's pixel count at tolerance `t`, read off the curve. */

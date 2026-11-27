@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 import { connectedRegion } from "#src/gpu/spatial/wandRegion";
-import { bottleneckCosts, floodAreaAt, floodAreaByTolerance, floodLeaks, type RasterSeed } from "./floodArea";
+import { bottleneckCosts, floodAreaAt, floodAreaByTolerance, floodJoinTolerance, floodLeaks, type RasterSeed } from "./floodArea";
 
 /** A deterministic uniform [0, 1) stream (LCG), so fields are reproducible without an RNG dep. */
 function lcg(seed: number) {
@@ -121,8 +121,8 @@ describe("floodAreaByTolerance", () => {
     expect(below).toBe(fillCount(d, w, h, seed, saddle - 1e-6));
     expect(at).toBe(w * h - (h - 1));
     expect(at).toBeGreaterThan(1.9 * below);
-    // The far basin's floor joins at the saddle: its cost from the nearest pixel is the saddle.
-    expect(curve.nearestCosts?.[12 * w + 30]).toBe(saddle);
+    // The far basin's floor joins at the saddle.
+    expect(floodJoinTolerance(curve, 12 * w + 30)).toBe(saddle);
   });
 
   it("is empty below the seed's own value and the whole raster above every value", () => {
@@ -136,5 +136,35 @@ describe("floodAreaByTolerance", () => {
     const d = Float32Array.from([0, Number.POSITIVE_INFINITY, 1]);
     expect(mismatches(d, 3, 1, { col: 0, row: 0 }, [0, 1, 1e30, Number.POSITIVE_INFINITY])).toEqual([]);
     expect(floodAreaAt(floodAreaByTolerance(d, 3, 1, { col: 0, row: 0 }), Number.POSITIVE_INFINITY)).toBe(3);
+  });
+
+  it("gives each pixel the least tolerance at which the fill includes it, across start switches", () => {
+    /** The first probed tolerance at which the fill includes each pixel (NaN if none). */
+    const bruteJoins = (d: ArrayLike<number>, w: number, h: number, seed: RasterSeed) => {
+      const tols = probeTolerances(d).sort((a, b) => a - b);
+      const out = new Float64Array(w * h).fill(Number.NaN);
+      for (const t of tols) {
+        const r = connectedRegion(d, w, h, seed, t);
+        for (let i = 0; i < r.length; i++) if (r[i] && Number.isNaN(out[i]!)) out[i] = t;
+      }
+      return out;
+    };
+    const joins = (d: ArrayLike<number>, w: number, h: number, seed: RasterSeed) => {
+      const curve = floodAreaByTolerance(d, w, h, seed);
+      return Float64Array.from({ length: w * h }, (_, i) => floodJoinTolerance(curve, i));
+    };
+    // The nearest pixel (d 2) is out of range below 2, so the fill starts at pixel 0 first.
+    const small = Float32Array.from([0, 4, 4, 2]);
+    expect(Array.from(joins(small, 2, 2, { col: 0.6, row: 0.6 }))).toEqual(Array.from(bruteJoins(small, 2, 2, { col: 0.6, row: 0.6 })));
+    expect(floodJoinTolerance(floodAreaByTolerance(small, 2, 2, { col: 0.6, row: 0.6 }), 0)).toBe(0);
+    // A NaN nearest pixel: the fill only ever starts from corners.
+    const holed = Float32Array.from([0, 1, 3, Number.NaN]);
+    expect(Array.from(joins(holed, 2, 2, { col: 0.6, row: 0.6 }))).toEqual(Array.from(bruteJoins(holed, 2, 2, { col: 0.6, row: 0.6 })));
+    const rnd = lcg(3);
+    const noise = Float32Array.from({ length: 15 * 15 }, () => rnd() * 2);
+    noise[7 * 15 + 7] = 1.9;
+    noise[6 * 15 + 7] = 0.1;
+    const seed = { col: 7.4, row: 6.6 };
+    expect(Array.from(joins(noise, 15, 15, seed))).toEqual(Array.from(bruteJoins(noise, 15, 15, seed)));
   });
 });

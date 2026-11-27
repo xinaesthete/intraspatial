@@ -19,7 +19,15 @@ export function useModeValuesAt(source: WandSource | undefined, at: RasterPoint 
   const [got, setGot] = useState<{ source: WandSource; values: number[] }>();
   const [probe] = useState(() =>
     coalescing(async ({ src, p }: { src: WandSource; p: RasterPoint }, live) => {
-      const raw = await probeChannels(src.res, p.col, p.row, src.rasters);
+      let raw: Float64Array;
+      try {
+        raw = await probeChannels(src.res, p.col, p.row, src.rasters);
+      } catch (err) {
+        // A failed probe only loses this point's marks; resolving keeps the runner going for the
+        // place now waiting.
+        console.warn("hover probe:", err);
+        return;
+      }
       if (!live()) return;
       const z = standardise(raw, src.mean, src.sd);
       const K = src.res.labels.length;

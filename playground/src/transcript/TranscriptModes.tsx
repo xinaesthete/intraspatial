@@ -210,10 +210,18 @@ export function TranscriptModes() {
   // Each painted mode's values over the window, for the legend and (by default) the colour range.
   const modeHist = useModeHistograms(g, vectors, lockedBasis);
   // Hover links: a histogram bar under the pointer shows its places on the map (`band`), and the map
-  // place under the pointer (`hoverAt`, in raster pixels) marks its values on the histograms: the
-  // modes from one small probe there, d from the wand's field, which is on the host already.
+  // place under the pointer marks its values on the histograms: the modes from one small probe
+  // there, d from the wand's field, which is on the host already. The place is held in the canvas's
+  // world frame and taken to raster pixels for the result now shown, so a new window that lands
+  // under a still pointer is read at the same place, not the old window's pixel.
   const [band, setBand] = useState<MapBand | null>(null);
-  const [hoverAt, setHoverAt] = useState<RasterPoint>();
+  const [hoverWorld, setHoverWorld] = useState<readonly [number, number]>();
+  const hoverAt = useMemo<RasterPoint | undefined>(() => {
+    const m = toElement;
+    if (!hoverWorld || !g || !m) return undefined;
+    const [wx, wy] = hoverWorld;
+    return toRaster(g.res, m.a * wx + m.c * wy + m.tx, m.b * wx + m.d * wy + m.ty);
+  }, [hoverWorld, g, toElement]);
   const hoverModes = useModeValuesAt(wandSource, hoverAt);
   const hoverPixel = useMemo(() => {
     if (!hoverAt || !g) return undefined;
@@ -275,14 +283,9 @@ export function TranscriptModes() {
     (info: { coordinate?: number[] }) => {
       toolsHover(info);
       const [wx, wy] = info.coordinate ?? [];
-      const m = toElement;
-      const at =
-        g && m && wx !== undefined && wy !== undefined
-          ? toRaster(g.res, m.a * wx + m.c * wy + m.tx, m.b * wx + m.d * wy + m.ty)
-          : undefined;
-      setHoverAt(at);
+      setHoverWorld(wx !== undefined && wy !== undefined ? [wx, wy] : undefined);
     },
-    [toolsHover, toElement, g],
+    [toolsHover],
   );
   const deckProps = useMemo(
     () => ({ deviceProps: SHARED_DEVICE_PROPS, onDeviceInitialized: device.onDeviceInitialized, ...tools.deckProps }),
@@ -525,7 +528,14 @@ export function TranscriptModes() {
         </aside>
 
         <main className="views">
-          <ModeMap wand={wand} modes={modes} viewport={viewport} toPlace={toPlace} selection={tools} onLeave={() => setHoverAt(undefined)}>
+          <ModeMap
+            wand={wand}
+            modes={modes}
+            viewport={viewport}
+            toPlace={toPlace}
+            selection={tools}
+            onLeave={() => setHoverWorld(undefined)}
+          >
             {/* Always mounted, never keyed: see SpatialDeckView on why deck must outlive a store. */}
             <SpatialDeckView
               className="deck-canvas"

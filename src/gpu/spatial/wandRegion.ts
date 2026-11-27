@@ -9,7 +9,7 @@
 // tolerance re-fills without another dispatch or readback.
 
 import { wandSeedPixel } from "#src/spatial/floodArea";
-import { compileShader, getDevice } from "../device";
+import { compileShader, deviceScoped, perDevice } from "../device";
 import type { GramMatrixGpuResult } from "./gramMatrix";
 import type { ModeParams } from "./gramModes";
 import { SIMILARITY_WGSL } from "./similarityWgsl";
@@ -41,22 +41,25 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
 }
 `;
 
-let ctx: Promise<{ device: GPUDevice; pipeline: GPUComputePipeline }> | undefined;
-let bufs: { uni: GPUBuffer; chan: GPUBuffer; wand: GPUBuffer; out: GPUBuffer; staging: GPUBuffer } | undefined;
+/** Per device: the Gram result may live on a renderer's device (`gramMatrixGpu`'s `device`). */
+const getCtx = deviceScoped(async (device: GPUDevice) => {
+  const module = await compileShader(device, DISTANCE_SHADER, "wandRegion.distance");
+  const pipeline = device.createComputePipeline({
+    label: "wandRegion:distance",
+    layout: "auto",
+    compute: { module, entryPoint: "main" },
+  });
+  return { device, pipeline };
+});
 
-function getCtx() {
-  ctx ??= (async () => {
-    const device = await getDevice();
-    const module = await compileShader(device, DISTANCE_SHADER, "wandRegion.distance");
-    const pipeline = device.createComputePipeline({
-      label: "wandRegion:distance",
-      layout: "auto",
-      compute: { module, entryPoint: "main" },
-    });
-    return { device, pipeline };
-  })();
-  return ctx;
+interface Bufs {
+  uni?: GPUBuffer;
+  chan?: GPUBuffer;
+  wand?: GPUBuffer;
+  out?: GPUBuffer;
+  staging?: GPUBuffer;
 }
+const bufsFor = perDevice((): Bufs => ({}));
 
 /** A buffer at least `size` bytes, kept from the last call when it is big enough. */
 function fit(device: GPUDevice, old: GPUBuffer | undefined, size: number, usage: number, label: string): GPUBuffer {
@@ -70,30 +73,31 @@ function fit(device: GPUDevice, old: GPUBuffer | undefined, size: number, usage:
  *
  * `params` is the `modeParams` the map is drawn with, so the field is the one the outline is a level
  * set of. `rasters` is a buffer in `res.resident`'s layout to read instead of `res.resident.buffer`.
- * One call at a time: the output buffers are shared, so callers coalesce rather than overlap.
+ * `device` is the one `res` was computed on (`gramMatrixGpu`'s `device`); default: the library's own.
+ * One call per device at a time: the output buffers are shared, so callers coalesce rather than overlap.
  */
 export async function wandDistance(
   res: GramMatrixGpuResult,
   params: Pick<ModeParams, "chan" | "wand" | "m">,
   rasters: GPUBuffer = res.resident.buffer,
+  device?: GPUDevice,
 ): Promise<Float32Array> {
-  const { device, pipeline } = await getCtx();
+  const { device: dev, pipeline } = await getCtx(device);
   const { width, height } = res;
   const n = width * height;
   const STORAGE = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST;
-  bufs = {
-    uni: bufs?.uni ?? device.createBuffer({ label: "wandRegion:uni", size: 32, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST }),
-    chan: fit(device, bufs?.chan, params.chan.byteLength, STORAGE, "wandRegion:chan"),
-    wand: fit(device, bufs?.wand, params.wand.byteLength, STORAGE, "wandRegion:wand"),
-    out: fit(device, bufs?.out, n * 4, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC, "wandRegion:out"),
-    staging: fit(device, bufs?.staging, n * 4, GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST, "wandRegion:staging"),
-  };
+  const bufs = bufsFor(dev);
+  bufs.uni ??= dev.createBuffer({ label: "wandRegion:uni", size: 32, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+  bufs.chan = fit(dev, bufs.chan, params.chan.byteLength, STORAGE, "wandRegion:chan");
+  bufs.wand = fit(dev, bufs.wand, params.wand.byteLength, STORAGE, "wandRegion:wand");
+  bufs.out = fit(dev, bufs.out, n * 4, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC, "wandRegion:out");
+  bufs.staging = fit(dev, bufs.staging, n * 4, GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST, "wandRegion:staging");
   const { uni, chan, wand, out, staging } = bufs;
   const half = res.resident.precision === "f16" ? 1 : 0;
-  device.queue.writeBuffer(uni, 0, new Float32Array([res.labels.length, params.m, width, height, res.resident.rowWords, half, 0, 0]));
-  device.queue.writeBuffer(chan, 0, params.chan);
-  device.queue.writeBuffer(wand, 0, params.wand);
-  const bind = device.createBindGroup({
+  dev.queue.writeBuffer(uni, 0, new Float32Array([res.labels.length, params.m, width, height, res.resident.rowWords, half, 0, 0]));
+  dev.queue.writeBuffer(chan, 0, params.chan);
+  dev.queue.writeBuffer(wand, 0, params.wand);
+  const bind = dev.createBindGroup({
     label: "wandRegion:distance",
     layout: pipeline.getBindGroupLayout(0),
     entries: [
@@ -104,14 +108,14 @@ export async function wandDistance(
       { binding: 4, resource: { buffer: out } },
     ],
   });
-  const enc = device.createCommandEncoder({ label: "wandRegion:distance" });
+  const enc = dev.createCommandEncoder({ label: "wandRegion:distance" });
   const pass = enc.beginComputePass({ label: "wandRegion:distance" });
   pass.setPipeline(pipeline);
   pass.setBindGroup(0, bind);
   pass.dispatchWorkgroups(Math.ceil(width / 8), Math.ceil(height / 8));
   pass.end();
   enc.copyBufferToBuffer(out, 0, staging, 0, n * 4);
-  device.queue.submit([enc.finish()]);
+  dev.queue.submit([enc.finish()]);
   await staging.mapAsync(GPUMapMode.READ, 0, n * 4);
   const got = new Float32Array(staging.getMappedRange(0, n * 4).slice(0));
   staging.unmap();

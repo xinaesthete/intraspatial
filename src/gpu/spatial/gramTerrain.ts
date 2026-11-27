@@ -39,7 +39,7 @@
 
 import type { Oklab } from "#src/color/oklab";
 import { standardise, whiteningMatrix } from "#src/spatial/gram";
-import { compileShader, getDevice } from "../device";
+import { compileShader, deviceScoped, getDevice, perDevice } from "../device";
 import type { GramMatrixGpuResult } from "./gramMatrix";
 import { IMAGE_OVERLAY_WGSL, type ImageOverlay, overlayResources } from "./imageOverlayWgsl";
 import { MARKER_WGSL } from "./markerWgsl";
@@ -377,21 +377,21 @@ const norm = (a: number[]): V3 => {
 // existing callers.
 export { standardise, whiteningMatrix };
 
-// Apart from the surface's context: probing needs no canvas format, so it also runs headless.
-let probeCache: Promise<{ device: GPUDevice; probe: GPUComputePipeline }> | undefined;
+// Apart from the surface's context: probing needs no canvas format, so it also runs headless. Per
+// device, as the Gram result it reads may live on a renderer's device (`gramMatrixGpu`'s `device`).
+const getProbe = deviceScoped(async (device: GPUDevice) => {
+  const module = await compileShader(device, PROBE_SHADER, "gramTerrain.probe");
+  const probe = device.createComputePipeline({ label: "gramTerrain:probe", layout: "auto", compute: { module, entryPoint: "probe" } });
+  return { device, probe };
+});
 
-function getProbe(): Promise<{ device: GPUDevice; probe: GPUComputePipeline }> {
-  probeCache ??= (async () => {
-    const device = await getDevice();
-    const module = await compileShader(device, PROBE_SHADER, "gramTerrain.probe");
-    const probe = device.createComputePipeline({ label: "gramTerrain:probe", layout: "auto", compute: { module, entryPoint: "probe" } });
-    return { device, probe };
-  })();
-  return probeCache;
+/** A device's probe buffers, and the chain its calls run on (they share the buffers). */
+interface ProbeState {
+  uni?: GPUBuffer;
+  out?: { raw: GPUBuffer; staging: GPUBuffer; cap: number };
+  chain: Promise<unknown>;
 }
-
-let probeUni: GPUBuffer | undefined;
-let probeOut: { raw: GPUBuffer; staging: GPUBuffer; cap: number } | undefined;
+const probeState = perDevice((): ProbeState => ({ chain: Promise.resolve() }));
 
 /**
  * Read the K channel densities at one point of the window — a click turned into a wand reference.
@@ -401,37 +401,44 @@ let probeOut: { raw: GPUBuffer; staging: GPUBuffer; cap: number } | undefined;
  * `res.resident`'s layout to read instead of `res.resident.buffer` — a copy the next compute will not
  * overwrite, such as the transcript page's snapshot.
  *
- * Calls are serialised internally (the output buffers are shared), so two callers — the wand and a
- * hover readout, say — may probe at once; each should still coalesce its own stream of points.
+ * `device` is the one `res` was computed on (`gramMatrixGpu`'s `device`); default: the library's own.
+ *
+ * Calls on one device are serialised internally (they share output buffers), so two callers — the
+ * wand and a hover readout, say — may probe at once; each should still coalesce its own stream.
  */
-export function probeChannels(
+export async function probeChannels(
   res: GramMatrixGpuResult,
   col: number,
   row: number,
   rasters: GPUBuffer = res.resident.buffer,
+  device?: GPUDevice,
 ): Promise<Float64Array> {
-  const run = probeChain.then(
-    () => probeOnce(res, col, row, rasters),
-    () => probeOnce(res, col, row, rasters),
-  );
-  probeChain = run.catch(() => undefined);
+  const ctx = await getProbe(device);
+  const state = probeState(ctx.device);
+  const once = () => probeOnce(ctx, state, res, col, row, rasters);
+  const run = state.chain.then(once, once);
+  state.chain = run.catch(() => undefined);
   return run;
 }
 
-let probeChain: Promise<unknown> = Promise.resolve();
-
-async function probeOnce(res: GramMatrixGpuResult, col: number, row: number, rasters: GPUBuffer): Promise<Float64Array> {
-  const { device, probe } = await getProbe();
+async function probeOnce(
+  { device, probe }: { device: GPUDevice; probe: GPUComputePipeline },
+  state: ProbeState,
+  res: GramMatrixGpuResult,
+  col: number,
+  row: number,
+  rasters: GPUBuffer,
+): Promise<Float64Array> {
   const K = res.labels.length;
   const { rowWords, precision } = res.resident;
-  probeUni ??= device.createBuffer({
+  const probeUni = (state.uni ??= device.createBuffer({
     label: "gramTerrain:probeUniforms",
     size: 32,
     usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-  });
-  if (!probeOut || probeOut.cap < K) {
+  }));
+  if (!state.out || state.out.cap < K) {
     const cap = Math.max(K, 64);
-    probeOut = {
+    state.out = {
       raw: device.createBuffer({ label: "gramTerrain:probeOut", size: cap * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC }),
       staging: device.createBuffer({
         label: "gramTerrain:probeStaging",
@@ -441,6 +448,7 @@ async function probeOnce(res: GramMatrixGpuResult, col: number, row: number, ras
       cap,
     };
   }
+  const probeOut = state.out;
   const c = Math.max(0, Math.min(res.width - 1, col));
   const r = Math.max(0, Math.min(res.height - 1, row));
   device.queue.writeBuffer(probeUni, 0, new Float32Array([K, c, r, rowWords, res.height, precision === "f16" ? 1 : 0, res.width, 0]));

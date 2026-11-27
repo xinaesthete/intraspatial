@@ -11,7 +11,7 @@
 // not the slide: a legend reading them should say so.
 
 import { histogramQuantile, histogramRow, type HistogramOptions, type HistogramResult } from "#src/spatial/histogram";
-import { compileShader, getDevice } from "../device";
+import { checkBindingSize, compileShader, deviceScoped, perDevice } from "../device";
 import type { GramMatrixGpuResult } from "./gramMatrix";
 import type { ModeParams } from "./gramModes";
 import { denseRasterPlane, histogramGpu } from "./histogram";
@@ -49,24 +49,29 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
 }
 `;
 
-let ctx: Promise<{ device: GPUDevice; pipeline: GPUComputePipeline }> | undefined;
-let bufs: { uni: GPUBuffer; chan: GPUBuffer; wand: GPUBuffer; out: GPUBuffer } | undefined;
-/** Calls run one at a time: the planes are one pooled buffer, read by the histogram submits. */
-let chain: Promise<unknown> = Promise.resolve();
+/** Per device, like every kernel here: the Gram result may live on a renderer's device rather than
+ *  the library's own (`gramMatrixGpu`'s `device`), and a pipeline or buffer from one device cannot
+ *  be bound on another. */
+const getCtx = deviceScoped(async (device: GPUDevice) => {
+  const module = await compileShader(device, PROJECT_SHADER, "modeHistograms.project");
+  const pipeline = device.createComputePipeline({
+    label: "modeHistograms:project",
+    layout: "auto",
+    compute: { module, entryPoint: "main" },
+  });
+  return { device, pipeline };
+});
 
-function getCtx() {
-  ctx ??= (async () => {
-    const device = await getDevice();
-    const module = await compileShader(device, PROJECT_SHADER, "modeHistograms.project");
-    const pipeline = device.createComputePipeline({
-      label: "modeHistograms:project",
-      layout: "auto",
-      compute: { module, entryPoint: "main" },
-    });
-    return { device, pipeline };
-  })();
-  return ctx;
+interface Bufs {
+  uni?: GPUBuffer;
+  chan?: GPUBuffer;
+  wand?: GPUBuffer;
+  out?: GPUBuffer;
+  /** Calls on this device run one at a time: the planes are one pooled buffer, read by the
+   *  histogram submits that follow the projection. */
+  chain: Promise<unknown>;
 }
+const bufsFor = perDevice((): Bufs => ({ chain: Promise.resolve() }));
 
 function fit(device: GPUDevice, old: GPUBuffer | undefined, size: number, usage: number, label: string): GPUBuffer {
   if (old && old.size >= size) return old;
@@ -77,19 +82,22 @@ function fit(device: GPUDevice, old: GPUBuffer | undefined, size: number, usage:
 /** Words per plane: the pixel count rounded up to 256 bytes, so each plane binds at a legal offset. */
 const planeWordsFor = (n: number) => Math.ceil(n / 64) * 64;
 
-/** Project `res`'s rasters onto the three painted modes, into the pooled planes. Returns their buffer. */
-async function project(res: GramMatrixGpuResult, params: Pick<ModeParams, "chan" | "wand" | "m">, rasters: GPUBuffer) {
-  const { device, pipeline } = await getCtx();
+/** Project `res`'s rasters onto the three painted modes, into `device`'s pooled planes. Returns their buffer. */
+async function project(device: GPUDevice, res: GramMatrixGpuResult, params: Pick<ModeParams, "chan" | "wand" | "m">, rasters: GPUBuffer) {
+  const { pipeline } = await getCtx(device);
   const { width, height } = res;
   const planeWords = planeWordsFor(width * height);
+  // Both bound whole: refuse up front rather than let validation drop the dispatch and return
+  // statistics of whatever the planes last held.
+  const rasterBytes = res.labels.length * height * res.resident.rowWords * 4;
+  checkBindingSize(device, `modeHistograms: ${res.labels.length} channels at ${width}x${height}`, rasterBytes);
+  checkBindingSize(device, `modeHistograms: 3 mode planes at ${width}x${height}`, 3 * planeWords * 4);
   const STORAGE = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST;
-  bufs = {
-    uni:
-      bufs?.uni ?? device.createBuffer({ label: "modeHistograms:uni", size: 32, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST }),
-    chan: fit(device, bufs?.chan, params.chan.byteLength, STORAGE, "modeHistograms:chan"),
-    wand: fit(device, bufs?.wand, params.wand.byteLength, STORAGE, "modeHistograms:wand"),
-    out: fit(device, bufs?.out, 3 * planeWords * 4, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC, "modeHistograms:planes"),
-  };
+  const bufs = bufsFor(device);
+  bufs.uni ??= device.createBuffer({ label: "modeHistograms:uni", size: 32, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+  bufs.chan = fit(device, bufs.chan, params.chan.byteLength, STORAGE, "modeHistograms:chan");
+  bufs.wand = fit(device, bufs.wand, params.wand.byteLength, STORAGE, "modeHistograms:wand");
+  bufs.out = fit(device, bufs.out, 3 * planeWords * 4, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC, "modeHistograms:planes");
   const { uni, chan, wand, out } = bufs;
   const half = res.resident.precision === "f16" ? 1 : 0;
   device.queue.writeBuffer(
@@ -102,7 +110,13 @@ async function project(res: GramMatrixGpuResult, params: Pick<ModeParams, "chan"
   const bind = device.createBindGroup({
     label: "modeHistograms:project",
     layout: pipeline.getBindGroupLayout(0),
-    entries: [uni, rasters, chan, wand, out].map((buffer, binding) => ({ binding, resource: { buffer } })),
+    entries: [
+      { buffer: uni },
+      { buffer: rasters, size: rasterBytes },
+      { buffer: chan },
+      { buffer: wand },
+      { buffer: out, size: 3 * planeWords * 4 },
+    ].map((resource, binding) => ({ binding, resource })),
   });
   const enc = device.createCommandEncoder({ label: "modeHistograms:project" });
   const pass = enc.beginComputePass({ label: "modeHistograms:project" });
@@ -111,12 +125,14 @@ async function project(res: GramMatrixGpuResult, params: Pick<ModeParams, "chan"
   pass.dispatchWorkgroups(Math.ceil(width / 8), Math.ceil(height / 8));
   pass.end();
   device.queue.submit([enc.finish()]);
-  return { device, out, planeWords };
+  return { out, planeWords };
 }
 
-function serial<T>(task: () => Promise<T>): Promise<T> {
-  const run = chain.then(task, task);
-  chain = run.catch(() => undefined);
+/** Run `task` after every earlier call on the same device. */
+function serial<T>(device: GPUDevice, task: () => Promise<T>): Promise<T> {
+  const bufs = bufsFor(device);
+  const run = bufs.chain.then(task, task);
+  bufs.chain = run.catch(() => undefined);
   return run;
 }
 
@@ -137,21 +153,25 @@ export interface ModeHistogramOptions extends Pick<HistogramOptions, "bins"> {
  * Histograms of the three painted modes over the window `res` covers. `params` is the map's
  * `modeParams` (only the loadings and standardisation in `chan` are used, so a wand need not be
  * set); `rasters` is a buffer in `res.resident`'s layout to read instead of `res.resident.buffer`.
- * Calls are serialised internally.
+ * `device` is the one `res` was computed on (`gramMatrixGpu`'s `device`); default: the library's
+ * own. Everything runs and stays there; only the small histograms come back. Calls on one device
+ * are serialised internally.
  */
-export function modeHistograms(
+export async function modeHistograms(
   res: GramMatrixGpuResult,
   params: Pick<ModeParams, "chan" | "wand" | "m">,
   rasters: GPUBuffer = res.resident.buffer,
   opts: ModeHistogramOptions = {},
+  device?: GPUDevice,
 ): Promise<ModeHistograms> {
-  return serial(async () => {
-    const { device, out, planeWords } = await project(res, params, rasters);
+  const dev = device ?? (await getCtx()).device;
+  return serial(dev, async () => {
+    const { out, planeWords } = await project(dev, res, params, rasters);
     const K = res.labels.length;
     const modes = await Promise.all(
       [0, 1, 2]
         .filter((k) => k < K)
-        .map((k) => histogramGpu(denseRasterPlane(out, res.width, res.height, k * planeWords * 4), { bins: opts.bins ?? 64 }, device)),
+        .map((k) => histogramGpu(denseRasterPlane(out, res.width, res.height, k * planeWords * 4), { bins: opts.bins ?? 64 }, dev)),
     );
     const clip = opts.clip ?? 0.01;
     const halfRanges: [number, number, number] = [0, 0, 0];
@@ -164,15 +184,17 @@ export function modeHistograms(
 }
 
 /** The three mode planes, read back (row-major, plane after plane, each `width × height`) — for
- *  tests and for a consumer that wants the values themselves. */
-export function modeProjection(
+ *  tests and for a consumer that wants the values themselves. `device` as for `modeHistograms`. */
+export async function modeProjection(
   res: GramMatrixGpuResult,
   params: Pick<ModeParams, "chan" | "wand" | "m">,
   rasters: GPUBuffer = res.resident.buffer,
+  device?: GPUDevice,
 ): Promise<Float32Array> {
-  return serial(async () => {
-    const { device, out, planeWords } = await project(res, params, rasters);
-    return readPlanes(device, out, planeWords, res.width * res.height);
+  const dev = device ?? (await getCtx()).device;
+  return serial(dev, async () => {
+    const { out, planeWords } = await project(dev, res, params, rasters);
+    return readPlanes(dev, out, planeWords, res.width * res.height);
   });
 }
 

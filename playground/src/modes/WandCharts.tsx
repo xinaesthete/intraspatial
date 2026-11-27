@@ -2,7 +2,7 @@
 // (with the points where it leaks into a neighbouring basin), and how the distance d is spread
 // inside and outside the selection. All of it is over the map's window, at its raster's pixels.
 
-import { floodAreaAt } from "../../../src/spatial/floodArea";
+import { floodAreaAt, floodJoinTolerance } from "../../../src/spatial/floodArea";
 import { histogramRow, histogramSummary } from "../../../src/spatial/histogram";
 import type { MapBand } from "./GramModesLayer";
 import { HistogramChart, type HoveredBar } from "./HistogramChart";
@@ -96,8 +96,8 @@ const fmt = (v: number) => (Number.isFinite(v) ? v.toFixed(2) : "—");
 export function WandCharts({ wand, hoverPixel, onBand }: { wand: Wand } & WandHover) {
   const h = wand.distanceHist;
   const atD = hoverPixel !== undefined ? wand.distance?.[hoverPixel] : undefined;
-  const joinCost = hoverPixel !== undefined ? wand.areaCurve?.curve.nearestCosts?.[hoverPixel] : undefined;
-  const joins = joinCost !== undefined && Number.isFinite(joinCost) ? joinCost : undefined;
+  const joinT = hoverPixel !== undefined && wand.areaCurve ? floodJoinTolerance(wand.areaCurve.curve, hoverPixel) : Number.NaN;
+  const joins = Number.isFinite(joinT) ? joinT : undefined;
   if (!wand.sample || (!h && !wand.areaCurve)) return null;
   const inside = h && h.totals[0]! > 0 ? histogramSummary(histogramRow(h, 0)) : undefined;
   const outside = h && h.totals[4]! > 0 ? histogramSummary(histogramRow(h, 1)) : undefined;
