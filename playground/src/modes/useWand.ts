@@ -46,7 +46,7 @@ export interface WandSample {
 }
 
 /** A place in the raster's frame (row 0 at the bbox's top), or undefined outside it. */
-function toRaster(res: GramMatrixGpuResult, x: number, y: number): { col: number; row: number } | undefined {
+export function toRaster(res: GramMatrixGpuResult, x: number, y: number): { col: number; row: number } | undefined {
   const [minX, minY, maxX, maxY] = res.bbox;
   const col = ((x - minX) / (maxX - minX)) * res.width - 0.5;
   const row = ((maxY - y) / (maxY - minY)) * res.height - 0.5;
@@ -207,6 +207,8 @@ export function useWand(source: WandSource | undefined) {
       connected,
       setConnected,
       region,
+      /** The wand's d at every raster pixel (row-major), for the sample being measured; undefined while it reads. */
+      distance: liveField?.d,
       /** Pixels in the sample's patch at the current tolerance, whether or not only it is outlined. */
       patchArea: patch ? patch.reduce((a, v) => a + v, 0) : undefined,
       /** Histogram of d over the window: row 0 inside the selection, row 1 outside (shared edges). */
@@ -225,7 +227,23 @@ export function useWand(source: WandSource | undefined) {
       pick,
       clear,
     }),
-    [tolerance, connected, region, patch, distanceHist, areaCurve, modesUsed, place, outside, current, measured, error, pick, clear],
+    [
+      tolerance,
+      connected,
+      region,
+      patch,
+      liveField,
+      distanceHist,
+      areaCurve,
+      modesUsed,
+      place,
+      outside,
+      current,
+      measured,
+      error,
+      pick,
+      clear,
+    ],
   );
 }
 

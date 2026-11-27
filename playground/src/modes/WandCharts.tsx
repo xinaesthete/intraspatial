@@ -4,8 +4,17 @@
 
 import { floodAreaAt } from "../../../src/spatial/floodArea";
 import { histogramRow, histogramSummary } from "../../../src/spatial/histogram";
+import type { MapBand } from "./GramModesLayer";
 import { HistogramChart } from "./HistogramChart";
 import type { Wand } from "./useWand";
+
+/** Hover links between the charts and the map, on a page that wires them. */
+export interface WandHover {
+  /** Raster pixel index under the map pointer: its d and the tolerance it joins at are marked. */
+  readonly hoverPixel?: number | undefined;
+  /** Called with the d histogram's bar under the pointer, to show its places on the map. */
+  readonly onBand?: ((band: MapBand | null) => void) | undefined;
+}
 
 /** The slider's domain, which the curve shares so a click lands where the slider would. */
 export const TOL_MIN = 0.05;
@@ -18,7 +27,7 @@ const B = 14;
 const T = 6;
 const R = 6;
 
-function AreaToleranceChart({ wand }: { wand: Wand }) {
+function AreaToleranceChart({ wand, joins }: { wand: Wand; joins?: number | undefined }) {
   const ac = wand.areaCurve;
   if (!ac) return null;
   const { curve, leaks } = ac;
@@ -63,6 +72,11 @@ function AreaToleranceChart({ wand }: { wand: Wand }) {
         </line>
       ))}
       <path d={path} fill="none" stroke="#38bdf8" strokeWidth={1.5} />
+      {joins !== undefined && joins <= TOL_MAX && (
+        <line x1={xOf(joins)} x2={xOf(joins)} y1={T} y2={H - B} stroke="#fbbf24" strokeWidth={1.25}>
+          <title>the place under the pointer joins the patch at {joins.toFixed(2)}</title>
+        </line>
+      )}
       <line x1={xOf(wand.tolerance)} x2={xOf(wand.tolerance)} y1={T} y2={H - B} stroke="#e2e8f0" strokeDasharray="3 2" />
       <line x1={L} x2={W - R} y1={H - B} y2={H - B} stroke="#334155" />
       {[0, 1, 2, 3, 4, 5].map((t) => (
@@ -79,8 +93,11 @@ function AreaToleranceChart({ wand }: { wand: Wand }) {
 
 const fmt = (v: number) => (Number.isFinite(v) ? v.toFixed(2) : "—");
 
-export function WandCharts({ wand }: { wand: Wand }) {
+export function WandCharts({ wand, hoverPixel, onBand }: { wand: Wand } & WandHover) {
   const h = wand.distanceHist;
+  const atD = hoverPixel !== undefined ? wand.distance?.[hoverPixel] : undefined;
+  const joinCost = hoverPixel !== undefined ? wand.areaCurve?.curve.nearestCosts?.[hoverPixel] : undefined;
+  const joins = joinCost !== undefined && Number.isFinite(joinCost) ? joinCost : undefined;
   if (!wand.sample || (!h && !wand.areaCurve)) return null;
   const inside = h && h.totals[0]! > 0 ? histogramSummary(histogramRow(h, 0)) : undefined;
   const outside = h && h.totals[4]! > 0 ? histogramSummary(histogramRow(h, 1)) : undefined;
@@ -98,7 +115,13 @@ export function WandCharts({ wand }: { wand: Wand }) {
           )
         </span>
       </div>
-      <AreaToleranceChart wand={wand} />
+      <AreaToleranceChart wand={wand} joins={joins} />
+      {atD !== undefined && (
+        <p className="hint">
+          <span className="raised">Under the pointer</span>: d {atD.toFixed(2)}
+          {joins !== undefined ? `, joins the patch at tolerance ${joins.toFixed(2)}` : ", not reachable from the sample"}
+        </p>
+      )}
       {leaks.length > 0 && (
         <p className="hint">
           <span className="error">Red</span>: leaks, where the patch grows by half its size or more at a single tolerance (
@@ -124,7 +147,11 @@ export function WandCharts({ wand }: { wand: Wand }) {
             label="histogram of the wand's distance d, inside and outside the selection"
             view={{ lo: 0, hi: TOL_MAX, bars: 70 }}
             fills={[() => "#38bdf8", () => "#64748b"]}
-            markers={[{ at: wand.tolerance, colour: "#e2e8f0", dashed: true, title: `tolerance ${wand.tolerance.toFixed(2)}` }]}
+            markers={[
+              { at: wand.tolerance, colour: "#e2e8f0", dashed: true, title: `tolerance ${wand.tolerance.toFixed(2)}` },
+              ...(atD !== undefined ? [{ at: atD, colour: "#fbbf24", title: `the place under the pointer: d ${atD.toFixed(2)}` }] : []),
+            ]}
+            {...(onBand ? { onHoverBar: (bar: { lo: number; hi: number } | null) => onBand(bar && { value: 3 as const, ...bar }) } : {})}
             onPick={(t) => wand.setTolerance(Math.round(Math.min(TOL_MAX, Math.max(TOL_MIN, t)) * 100) / 100)}
           />
           <p className="hint">

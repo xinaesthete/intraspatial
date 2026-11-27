@@ -2,6 +2,7 @@
 // outside), vertical markers, and an optional click that reports the value under the pointer. The
 // mode legend and the wand panel share it.
 
+import { useState } from "react";
 import type { HistogramResult } from "../../../src/spatial/histogram";
 
 export interface HistogramMarker {
@@ -25,10 +26,13 @@ export interface HistogramChartProps {
   readonly view?: { readonly lo: number; readonly hi: number; readonly bars: number };
   /** Called with the value at the click. */
   readonly onPick?: (value: number) => void;
+  /** Called with the drawn bar under the pointer as a value range [lo, hi), and null on leaving. */
+  readonly onHoverBar?: (bar: { readonly lo: number; readonly hi: number } | null) => void;
 }
 
 /** Each row is scaled to its own peak, so a small inside region's shape is readable beside a large outside. */
-export function HistogramChart({ h, fills, markers = [], width = 220, height = 54, label, view, onPick }: HistogramChartProps) {
+export function HistogramChart({ h, fills, markers = [], width = 220, height = 54, label, view, onPick, onHoverBar }: HistogramChartProps) {
+  const [hoverBar, setHoverBar] = useState<number>();
   const PAD = 2;
   const AXIS = 11;
   const plotH = height - AXIS - PAD;
@@ -56,6 +60,31 @@ export function HistogramChart({ h, fills, markers = [], width = 220, height = 5
       role="img"
       aria-label={label}
       style={onPick ? { cursor: "crosshair" } : undefined}
+      onPointerMove={
+        onHoverBar
+          ? (e) => {
+              const box = e.currentTarget.getBoundingClientRect();
+              const x = ((e.clientX - box.left) / box.width) * width;
+              const b = Math.floor((x - PAD) / bw);
+              if (b === hoverBar) return;
+              if (b < 0 || b >= bars) {
+                setHoverBar(undefined);
+                onHoverBar(null);
+                return;
+              }
+              setHoverBar(b);
+              onHoverBar({ lo: lo + (b / bars) * (hi - lo), hi: lo + ((b + 1) / bars) * (hi - lo) });
+            }
+          : undefined
+      }
+      onPointerLeave={
+        onHoverBar
+          ? () => {
+              setHoverBar(undefined);
+              onHoverBar(null);
+            }
+          : undefined
+      }
       onClick={
         onPick
           ? (e) => {
@@ -82,6 +111,9 @@ export function HistogramChart({ h, fills, markers = [], width = 220, height = 5
           </g>
         );
       })}
+      {hoverBar !== undefined && (
+        <rect x={PAD + hoverBar * bw} y={PAD} width={bw} height={plotH} fill="rgba(251,191,36,0.25)" stroke="#fbbf24" strokeWidth={0.75} />
+      )}
       {markers
         .filter((m) => m.at >= lo && m.at <= hi)
         .map((m, i) => (

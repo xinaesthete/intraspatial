@@ -3,6 +3,7 @@
 // mode's values are spread over the map's window, with the range the colour ramp spans.
 
 import type { CoLocationModes } from "../../../src/spatial/gram";
+import type { MapBand } from "./GramModesLayer";
 import { HistogramChart } from "./HistogramChart";
 import { modeColour as swatch } from "./modeColour";
 import type { ModeHistogramState } from "./useModeHistograms";
@@ -13,6 +14,10 @@ export interface LegendHistograms {
   readonly ramp: readonly [number, number, number];
   /** What the window is, for the caption: "the current view", "this map's window". */
   readonly window: string;
+  /** The three mode values at the map pixel under the pointer, marked on the histograms. */
+  readonly at?: readonly number[] | undefined;
+  /** Called with the bar under the pointer, to show its pixels on the map; null on leaving. */
+  readonly onBand?: ((band: MapBand | null) => void) | undefined;
 }
 
 export function ModeLegend({ modes, histograms }: { modes: CoLocationModes; histograms?: LegendHistograms }) {
@@ -53,6 +58,15 @@ export function ModeLegend({ modes, histograms }: { modes: CoLocationModes; hist
                     fills={[(v) => (v === 0 ? "#64748b" : swatch(k, v > 0 ? 1 : -1))]}
                     markers={[
                       { at: 0, colour: "#475569", title: "0: the window's mean mixture" },
+                      ...(histograms.at?.[k] !== undefined
+                        ? [
+                            {
+                              at: histograms.at[k]!,
+                              colour: "#fbbf24",
+                              title: `the place under the pointer: ${histograms.at[k]!.toFixed(2)}`,
+                            },
+                          ]
+                        : []),
                       ...(r > 0
                         ? [
                             { at: -r, colour: "#e2e8f0", dashed: true, title: `colour saturates below −${r.toFixed(2)}` },
@@ -60,6 +74,12 @@ export function ModeLegend({ modes, histograms }: { modes: CoLocationModes; hist
                           ]
                         : []),
                     ]}
+                    {...(histograms.onBand
+                      ? {
+                          onHoverBar: (bar: { lo: number; hi: number } | null) =>
+                            histograms.onBand?.(bar && { value: k as 0 | 1 | 2, ...bar }),
+                        }
+                      : {})}
                   />
                 )}
               </div>
@@ -71,6 +91,7 @@ export function ModeLegend({ modes, histograms }: { modes: CoLocationModes; hist
           Histograms: each mode's value at every pixel of {histograms.window} ({histograms.hist.width}×{histograms.hist.height} px), not the
           whole slide{histograms.hist.forCurrent ? "" : " — updating for the new window"}. Dashed lines: where the colour ramp saturates;
           tails past 1.6× that are not drawn.
+          {histograms.onBand ? " Hover a bar to see its places on the map; hover the map to mark a place's values (amber)." : ""}
         </p>
       )}
     </>

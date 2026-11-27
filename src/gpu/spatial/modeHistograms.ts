@@ -126,11 +126,15 @@ export interface ModeHistograms {
   /** Per mode, max(|q_lo|, |q_hi|) of its values: the half-range the ramp saturates at when
    *  `modeParams` is given these as `ranges`. 0 for a mode that does not exist (K < 3). */
   readonly halfRanges: [number, number, number];
+  /** With `readback`: the three planes on the host, as `modeProjection` returns them. */
+  readonly planes?: Float32Array;
 }
 
 export interface ModeHistogramOptions extends Pick<HistogramOptions, "bins"> {
   /** The quantile the contrast clips at, each side. Default 0.01 (the 1st and 99th percentiles). */
   readonly clip?: number;
+  /** Also read the planes back (12 bytes a pixel), for a consumer that looks values up by pixel. */
+  readonly readback?: boolean;
 }
 
 /**
@@ -159,7 +163,8 @@ export function modeHistograms(
       const row = histogramRow(h);
       halfRanges[k] = Math.max(Math.abs(histogramQuantile(row, clip)), Math.abs(histogramQuantile(row, 1 - clip)));
     });
-    return { modes, halfRanges };
+    if (!opts.readback) return { modes, halfRanges };
+    return { modes, halfRanges, planes: await readPlanes(device, out, planeWords, res.width * res.height) };
   });
 }
 
@@ -172,24 +177,28 @@ export function modeProjection(
 ): Promise<Float32Array> {
   return serial(async () => {
     const { device, out, planeWords } = await project(res, params, rasters);
-    const n = res.width * res.height;
-    const staging = device.createBuffer({
-      label: "modeHistograms:rb",
-      size: 3 * planeWords * 4,
-      usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
-    });
-    try {
-      const enc = device.createCommandEncoder({ label: "modeHistograms:rb" });
-      enc.copyBufferToBuffer(out, 0, staging, 0, 3 * planeWords * 4);
-      device.queue.submit([enc.finish()]);
-      await staging.mapAsync(GPUMapMode.READ);
-      const all = new Float32Array(staging.getMappedRange());
-      const got = new Float32Array(3 * n);
-      for (let k = 0; k < 3; k++) got.set(all.subarray(k * planeWords, k * planeWords + n), k * n);
-      staging.unmap();
-      return got;
-    } finally {
-      staging.destroy();
-    }
+    return readPlanes(device, out, planeWords, res.width * res.height);
   });
+}
+
+/** The pooled planes, copied to the host and packed (plane after plane, `n` values each). */
+async function readPlanes(device: GPUDevice, out: GPUBuffer, planeWords: number, n: number): Promise<Float32Array> {
+  const staging = device.createBuffer({
+    label: "modeHistograms:rb",
+    size: 3 * planeWords * 4,
+    usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
+  });
+  try {
+    const enc = device.createCommandEncoder({ label: "modeHistograms:rb" });
+    enc.copyBufferToBuffer(out, 0, staging, 0, 3 * planeWords * 4);
+    device.queue.submit([enc.finish()]);
+    await staging.mapAsync(GPUMapMode.READ);
+    const all = new Float32Array(staging.getMappedRange());
+    const got = new Float32Array(3 * n);
+    for (let k = 0; k < 3; k++) got.set(all.subarray(k * planeWords, k * planeWords + n), k * n);
+    staging.unmap();
+    return got;
+  } finally {
+    staging.destroy();
+  }
 }

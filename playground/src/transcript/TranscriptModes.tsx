@@ -21,13 +21,13 @@ import { SpatialDeckView } from "../deck/SpatialDeckView";
 import { SHARED_DEVICE_PROPS, useSharedDevice } from "../deck/useSharedDevice";
 import { useAsync, useSettled } from "../hooks/useAsync";
 import { usePointsSource, usePointsTiles, useSpatialData } from "../hooks/useSpatialData";
-import { GramModesLayer } from "../modes/GramModesLayer";
+import { GramModesLayer, type MapBand } from "../modes/GramModesLayer";
 import { MatrixView } from "../modes/MatrixView";
 import { ModeCharts } from "../modes/ModeCharts";
 import { ModeMap } from "../modes/ModeMap";
 import { ImagePicker, MapStyleControls, StoreInput, useImageChoice, useMapStyle } from "../modes/PageControls";
 import { rampHalfRanges, useModeHistograms } from "../modes/useModeHistograms";
-import { useWand, type WandSource, wandLayerProps } from "../modes/useWand";
+import { toRaster, useWand, type WandSource, wandLayerProps } from "../modes/useWand";
 import { WandPanel } from "../modes/WandPanel";
 import { useBoundarySettings, useMapSelection } from "../selection/useMapSelection";
 import { BoundaryPanel } from "../wand/WandPanel";
@@ -207,7 +207,17 @@ export function TranscriptModes() {
   }, [g, lockedBasis, vectors]);
   const wand = useWand(wandSource);
   // Each painted mode's values over the window, for the legend and (by default) the colour range.
-  const modeHist = useModeHistograms(g, vectors, lockedBasis);
+  const modeHist = useModeHistograms(g, vectors, lockedBasis, true);
+  // Hover links: a histogram bar under the pointer shows its places on the map (`band`), and the map
+  // pixel under the pointer marks its values on the histograms (`hoverPixel`, a raster index).
+  const [band, setBand] = useState<MapBand | null>(null);
+  const [hoverPixel, setHoverPixel] = useState<number>();
+  const planes = modeHist.hist?.forCurrent ? modeHist.hist.value.planes : undefined;
+  const hoverModes = useMemo(() => {
+    if (!planes || !g || hoverPixel === undefined) return undefined;
+    const n = g.res.width * g.res.height;
+    return [planes[hoverPixel]!, planes[n + hoverPixel]!, planes[2 * n + hoverPixel]!];
+  }, [planes, g, hoverPixel]);
   const ranges = style.contrast === "view" ? modeHist.hist?.value.halfRanges : undefined;
   const legendHist = useMemo(
     () =>
@@ -216,9 +226,11 @@ export function TranscriptModes() {
             hist: modeHist.hist,
             ramp: rampHalfRanges(g.res, { vectors, basis: lockedBasis, saturate, chromaWeight, ranges }),
             window: follow ? "the current view" : "the kept window",
+            at: hoverModes,
+            onBand: setBand,
           }
         : undefined,
-    [g, vectors, lockedBasis, saturate, chromaWeight, ranges, modeHist.hist, follow],
+    [g, vectors, lockedBasis, saturate, chromaWeight, ranges, modeHist.hist, follow, hoverModes],
   );
   // The canvas's world frame → the transcripts' frame, which the Gram's bbox is in.
   const toPlace = (wx: number, wy: number): readonly [number, number] | undefined => {
@@ -256,6 +268,25 @@ export function TranscriptModes() {
     onPaint: lockOnPaint,
     modelMatrix,
   });
+  const toolsHover = tools.onHover;
+  const onMapHover = useCallback(
+    (info: { coordinate?: number[] }) => {
+      toolsHover(info);
+      const [wx, wy] = info.coordinate ?? [];
+      const m = toElement;
+      const at =
+        g && m && wx !== undefined && wy !== undefined
+          ? toRaster(g.res, m.a * wx + m.c * wy + m.tx, m.b * wx + m.d * wy + m.ty)
+          : undefined;
+      const { width, height } = g?.res ?? { width: 0, height: 0 };
+      setHoverPixel(
+        at
+          ? Math.min(height - 1, Math.max(0, Math.round(at.row))) * width + Math.min(width - 1, Math.max(0, Math.round(at.col)))
+          : undefined,
+      );
+    },
+    [toolsHover, toElement, g],
+  );
   const deckProps = useMemo(
     () => ({ deviceProps: SHARED_DEVICE_PROPS, onDeviceInitialized: device.onDeviceInitialized, ...tools.deckProps }),
     [device.onDeviceInitialized, tools.deckProps],
@@ -273,6 +304,7 @@ export function TranscriptModes() {
               basis: locked?.basis ?? null,
               saturate,
               ranges: ranges ?? null,
+              band,
               chromaWeight,
               opacity,
               ...wandLayerProps(wand, g.modes.labels.length),
@@ -308,7 +340,7 @@ export function TranscriptModes() {
               : []),
           ]
         : nicheDrawn,
-    [g, locked, modelMatrix, saturate, ranges, chromaWeight, opacity, wand, tools.layers, nicheDrawn],
+    [g, locked, modelMatrix, saturate, ranges, band, chromaWeight, opacity, wand, tools.layers, nicheDrawn],
   );
 
   const error = sd.error ?? source.error ?? tiles.error ?? gram.error ?? modeHist.error;
@@ -440,7 +472,7 @@ export function TranscriptModes() {
             Lock the modes (off: recompute them for each window)
           </label>
           <MapStyleControls style={style} />
-          <WandPanel wand={wand} />
+          <WandPanel wand={wand} hoverPixel={hoverPixel} onBand={setBand} />
           <BoundaryPanel
             {...tools.panel}
             broad={gb}
@@ -496,7 +528,14 @@ export function TranscriptModes() {
         </aside>
 
         <main className="views">
-          <ModeMap wand={wand} modes={modes} viewport={viewport} toPlace={toPlace} selection={tools}>
+          <ModeMap
+            wand={wand}
+            modes={modes}
+            viewport={viewport}
+            toPlace={toPlace}
+            selection={tools}
+            onLeave={() => setHoverPixel(undefined)}
+          >
             {/* Always mounted, never keyed: see SpatialDeckView on why deck must outlive a store. */}
             <SpatialDeckView
               className="deck-canvas"
@@ -507,7 +546,7 @@ export function TranscriptModes() {
               deckProps={deckProps}
               onViewport={setViewport}
               onClick={tools.onClick}
-              onHover={tools.onHover}
+              onHover={onMapHover}
               fallbackBounds={fallbackBounds}
             />
           </ModeMap>

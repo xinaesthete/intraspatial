@@ -114,6 +114,14 @@ the patch in connected mode, else d ≤ t. Medians come from `histogramSummary`,
 of the 512-bin auto range. Both charts draw 0–5, the slider's domain, and clicking either one sets
 the tolerance.
 
+**Hover links** (transcript-modes page). A histogram bar under the pointer becomes a `band` on
+`GramModesLayer`. Places whose mode value, or d, lies in that bar's range keep their colour, and the
+rest are dimmed. The band reads the shader's interpolated field, so its edge falls between pixel
+centres. Going the other way, the map pixel under the pointer marks its mode values and its d on
+the histograms. Its tolerance for joining the patch (`FloodAreaCurve.nearestCosts`) is marked on
+the area curve. For these lookups, `modeHistograms({ readback: true })` keeps the three mode planes
+on the host, at 12 bytes a pixel.
+
 **The graph wand** (`src/gpu/graph/wand.ts`, `wandPatch`). The curve does not apply as is.
 Its d is `mixtureDistance`, not `wandDistance`, and `floodFrom` uses `seedIn: true` (the seed is
 always in). With `rho < 0.5` the same bottleneck treatment does apply, with two changes. Pixels

@@ -4,9 +4,9 @@
 
 import { Explain } from "../transcript/Explain";
 import type { Wand } from "./useWand";
-import { TOL_MAX, TOL_MIN, WandCharts } from "./WandCharts";
+import { TOL_MAX, TOL_MIN, WandCharts, type WandHover } from "./WandCharts";
 
-export function WandPanel({ wand }: { wand: Wand }) {
+export function WandPanel({ wand, hoverPixel, onBand }: { wand: Wand } & WandHover) {
   return (
     <div className="picker">
       <div className="picker-head">
@@ -32,7 +32,7 @@ export function WandPanel({ wand }: { wand: Wand }) {
         <input type="checkbox" checked={wand.connected} onChange={(e) => wand.setConnected(e.target.checked)} />
         Only the patch the sample is in (off: every similar place)
       </label>
-      <WandCharts wand={wand} />
+      <WandCharts wand={wand} hoverPixel={hoverPixel} onBand={onBand} />
       <label>
         Measured over
         <select value={wand.modesUsed} onChange={(e) => wand.setModesUsed(Number(e.target.value))}>

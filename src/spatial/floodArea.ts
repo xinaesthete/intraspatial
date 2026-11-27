@@ -156,6 +156,10 @@ export interface FloodAreaCurve {
   readonly area: Float64Array;
   /** width × height. */
   readonly pixels: number;
+  /** Bottleneck cost of every pixel from the pixel nearest the seed (NaN where unreachable, and
+   *  absent when that pixel is NaN): the tolerance at which each pixel joins the region, for every
+   *  tolerance at or above the nearest pixel's own d, where the fill always starts there. */
+  readonly nearestCosts?: Float64Array;
 }
 
 /** Number of entries of ascending `sorted` that are ≤ t. */
@@ -182,10 +186,12 @@ export function floodAreaByTolerance(d: ArrayLike<number>, width: number, height
   // the set of in-range candidates, hence the start, is fixed.
   const changes = [...new Set(starts.map((i) => d[i]!).filter((v) => !Number.isNaN(v)))].sort((a, b) => a - b);
   const sortedCosts = new Map<number, Float64Array>();
+  let nearestCosts: Float64Array | undefined;
   const costsFrom = (start: number) => {
     let s = sortedCosts.get(start);
     if (!s) {
       const c = bottleneckCosts(d, width, height, start);
+      if (start === nearest) nearestCosts = c;
       s = c.filter((v) => !Number.isNaN(v)).sort();
       sortedCosts.set(start, s);
     }
@@ -212,7 +218,12 @@ export function floodAreaByTolerance(d: ArrayLike<number>, width: number, height
       push(v, k);
     }
   }
-  return { tol: Float64Array.from(tol), area: Float64Array.from(area), pixels: width * height };
+  return {
+    tol: Float64Array.from(tol),
+    area: Float64Array.from(area),
+    pixels: width * height,
+    ...(nearestCosts ? { nearestCosts } : {}),
+  };
 }
 
 /** The region's pixel count at tolerance `t`, read off the curve. */

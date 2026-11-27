@@ -121,6 +121,8 @@ describe("floodAreaByTolerance", () => {
     expect(below).toBe(fillCount(d, w, h, seed, saddle - 1e-6));
     expect(at).toBe(w * h - (h - 1));
     expect(at).toBeGreaterThan(1.9 * below);
+    // The far basin's floor joins at the saddle: its cost from the nearest pixel is the saddle.
+    expect(curve.nearestCosts?.[12 * w + 30]).toBe(saddle);
   });
 
   it("is empty below the seed's own value and the whole raster above every value", () => {
