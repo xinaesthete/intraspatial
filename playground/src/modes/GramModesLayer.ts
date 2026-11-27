@@ -29,7 +29,7 @@ type ModeUniforms = {
   look: [number, number, number, number];
   /** Marker col, row (raster pixels), on, half-width in screen pixels. */
   marker: [number, number, number, number];
-  /** Highlight band: which value (0–2 mode, 3 the wand's d), lo, hi, on. */
+  /** Highlight band: which value (0–2 mode, 3 the wand's d), lo, hi, on (1: [lo, hi), 2: [lo, hi]). */
   band: [number, number, number, number];
   width: number;
   height: number;
@@ -135,7 +135,7 @@ fn bandOver(base: vec3<f32>, raw: vec4<f32>) -> vec3<f32> {
   if (U.band.w < 0.5) { return base; }
   let c = u32(U.band.x);
   let v = select(select(select(raw.x, raw.y, c == 1u), raw.z, c == 2u), raw.w, c == 3u);
-  if (v >= U.band.y && v < U.band.z) { return mix(base, vec3<f32>(1.0, 0.8, 0.25), 0.35); }
+  if (v >= U.band.y && (v < U.band.z || (U.band.w > 1.5 && v == U.band.z))) { return mix(base, vec3<f32>(1.0, 0.8, 0.25), 0.35); }
   return mix(base, vec3<f32>(0.04), 0.7);
 }
 
@@ -221,6 +221,8 @@ export interface MapBand {
   readonly value: 0 | 1 | 2 | 3;
   readonly lo: number;
   readonly hi: number;
+  /** Include `hi` itself: the histogram's last bin is closed. */
+  readonly closed?: boolean;
 }
 
 const defaultProps: DefaultProps<GramModesLayerProps> = {
@@ -357,7 +359,7 @@ export class GramModesLayer extends Layer<GramModesLayerProps> {
       look: [MODE_LOOK.baseL, MODE_LOOK.spanL, MODE_LOOK.chroma, opacity ?? 1],
       marker: [marker?.col ?? 0, marker?.row ?? 0, marker ? 1 : 0, 0.75],
       // The wand's d only exists with a reference; without one the band on it is off.
-      band: [band?.value ?? 0, band?.lo ?? 0, band?.hi ?? 0, band && (band.value < 3 || reference) ? 1 : 0],
+      band: [band?.value ?? 0, band?.lo ?? 0, band?.hi ?? 0, band && (band.value < 3 || reference) ? (band.closed ? 2 : 1) : 0],
       width: res.width,
       height: res.height,
       rowWords: res.resident.rowWords,

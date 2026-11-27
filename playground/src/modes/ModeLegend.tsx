@@ -4,7 +4,7 @@
 
 import type { CoLocationModes } from "../../../src/spatial/gram";
 import type { MapBand } from "./GramModesLayer";
-import { HistogramChart } from "./HistogramChart";
+import { HistogramChart, type HoveredBar } from "./HistogramChart";
 import { modeColour as swatch } from "./modeColour";
 import type { ModeHistogramState } from "./useModeHistograms";
 
@@ -76,8 +76,7 @@ export function ModeLegend({ modes, histograms }: { modes: CoLocationModes; hist
                     ]}
                     {...(histograms.onBand
                       ? {
-                          onHoverBar: (bar: { lo: number; hi: number } | null) =>
-                            histograms.onBand?.(bar && { value: k as 0 | 1 | 2, ...bar }),
+                          onHoverBar: (bar: HoveredBar | null) => histograms.onBand?.(bar && { value: k as 0 | 1 | 2, ...bar }),
                         }
                       : {})}
                   />

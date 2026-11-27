@@ -5,7 +5,7 @@
 import { floodAreaAt } from "../../../src/spatial/floodArea";
 import { histogramRow, histogramSummary } from "../../../src/spatial/histogram";
 import type { MapBand } from "./GramModesLayer";
-import { HistogramChart } from "./HistogramChart";
+import { HistogramChart, type HoveredBar } from "./HistogramChart";
 import type { Wand } from "./useWand";
 
 /** Hover links between the charts and the map, on a page that wires them. */
@@ -151,7 +151,7 @@ export function WandCharts({ wand, hoverPixel, onBand }: { wand: Wand } & WandHo
               { at: wand.tolerance, colour: "#e2e8f0", dashed: true, title: `tolerance ${wand.tolerance.toFixed(2)}` },
               ...(atD !== undefined ? [{ at: atD, colour: "#fbbf24", title: `the place under the pointer: d ${atD.toFixed(2)}` }] : []),
             ]}
-            {...(onBand ? { onHoverBar: (bar: { lo: number; hi: number } | null) => onBand(bar && { value: 3 as const, ...bar }) } : {})}
+            {...(onBand ? { onHoverBar: (bar: HoveredBar | null) => onBand(bar && { value: 3 as const, ...bar }) } : {})}
             onPick={(t) => wand.setTolerance(Math.round(Math.min(TOL_MAX, Math.max(TOL_MIN, t)) * 100) / 100)}
           />
           <p className="hint">

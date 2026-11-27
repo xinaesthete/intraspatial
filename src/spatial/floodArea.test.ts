@@ -131,4 +131,10 @@ describe("floodAreaByTolerance", () => {
     expect([floodAreaAt(curve, 1.9), floodAreaAt(curve, 2), floodAreaAt(curve, 99)]).toEqual([0, 1, 4]);
     expect(Array.from(curve.tol)).toEqual([2, 3, 4, 5]);
   });
+
+  it("takes in +Inf pixels at tolerance +Inf, as the fill does", () => {
+    const d = Float32Array.from([0, Number.POSITIVE_INFINITY, 1]);
+    expect(mismatches(d, 3, 1, { col: 0, row: 0 }, [0, 1, 1e30, Number.POSITIVE_INFINITY])).toEqual([]);
+    expect(floodAreaAt(floodAreaByTolerance(d, 3, 1, { col: 0, row: 0 }), Number.POSITIVE_INFINITY)).toBe(3);
+  });
 });

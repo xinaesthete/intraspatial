@@ -210,9 +210,10 @@ export function floodAreaByTolerance(d: ArrayLike<number>, width: number, height
     const start = wandSeedPixel(d, width, height, seed, a);
     const costs = costsFrom(start);
     push(a, countAtMost(costs, a));
-    // Every distinct cost strictly inside (a, b) is a step. Equal costs are adjacent in `costs`, so
-    // the count after a run of equal values is the index just past it.
-    for (let k = countAtMost(costs, a); k < costs.length && costs[k]! < b;) {
+    // Every distinct cost strictly inside (a, b) is a step — and in the last interval, +Inf too,
+    // which a fill at tolerance +Inf takes in. Equal costs are adjacent in `costs`, so the count
+    // after a run of equal values is the index just past it.
+    for (let k = countAtMost(costs, a); k < costs.length && (costs[k]! < b || b === Number.POSITIVE_INFINITY);) {
       const v = costs[k]!;
       while (k < costs.length && costs[k] === v) k++;
       push(v, k);

@@ -5,6 +5,14 @@
 import { useState } from "react";
 import type { HistogramResult } from "../../../src/spatial/histogram";
 
+/** A drawn bar as a value range: [lo, hi), or [lo, hi] for the histogram's own last bin, whose
+ *  upper edge is closed (R1's binning rule). */
+export interface HoveredBar {
+  readonly lo: number;
+  readonly hi: number;
+  readonly closed: boolean;
+}
+
 export interface HistogramMarker {
   readonly at: number;
   readonly colour: string;
@@ -27,12 +35,13 @@ export interface HistogramChartProps {
   /** Called with the value at the click. */
   readonly onPick?: (value: number) => void;
   /** Called with the drawn bar under the pointer as a value range [lo, hi), and null on leaving. */
-  readonly onHoverBar?: (bar: { readonly lo: number; readonly hi: number } | null) => void;
+  readonly onHoverBar?: (bar: HoveredBar | null) => void;
 }
 
 /** Each row is scaled to its own peak, so a small inside region's shape is readable beside a large outside. */
 export function HistogramChart({ h, fills, markers = [], width = 220, height = 54, label, view, onPick, onHoverBar }: HistogramChartProps) {
-  const [hoverBar, setHoverBar] = useState<number>();
+  /** The hovered bar, with the domain it was a bar of: a new domain makes the same index another range. */
+  const [hovered, setHovered] = useState<{ bar: number; domain: string }>();
   const PAD = 2;
   const AXIS = 11;
   const plotH = height - AXIS - PAD;
@@ -41,6 +50,8 @@ export function HistogramChart({ h, fills, markers = [], width = 220, height = 5
   const bars = view?.bars ?? h.bins;
   const xOf = (v: number) => PAD + ((v - lo) / (hi - lo || 1)) * (width - 2 * PAD);
   const bw = (width - 2 * PAD) / bars;
+  const domain = `${lo},${hi},${bars}`;
+  const hoverBar = hovered && hovered.domain === domain ? hovered.bar : undefined;
   /** Row `r`'s counts summed into the drawn bars. */
   const barCounts = (r: number) => {
     const out = new Float64Array(bars);
@@ -68,19 +79,19 @@ export function HistogramChart({ h, fills, markers = [], width = 220, height = 5
               const b = Math.floor((x - PAD) / bw);
               if (b === hoverBar) return;
               if (b < 0 || b >= bars) {
-                setHoverBar(undefined);
+                setHovered(undefined);
                 onHoverBar(null);
                 return;
               }
-              setHoverBar(b);
-              onHoverBar({ lo: lo + (b / bars) * (hi - lo), hi: lo + ((b + 1) / bars) * (hi - lo) });
+              setHovered({ bar: b, domain });
+              onHoverBar({ lo: lo + (b / bars) * (hi - lo), hi: lo + ((b + 1) / bars) * (hi - lo), closed: b === bars - 1 && hi === h.hi });
             }
           : undefined
       }
       onPointerLeave={
         onHoverBar
           ? () => {
-              setHoverBar(undefined);
+              setHovered(undefined);
               onHoverBar(null);
             }
           : undefined

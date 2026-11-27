@@ -25,18 +25,19 @@ export function useModeHistograms(
   vectors: Float64Array | undefined,
   basis?: ModeBasis,
 ): { readonly hist?: ModeHistogramState; readonly error?: Error } {
-  const [state, setState] = useState<{ key: object; value: ModeHistograms; width: number; height: number }>();
+  /** `for`: the result, modes and basis the histograms were projected with — all three are their identity. */
+  const [state, setState] = useState<{ for: readonly unknown[]; value: ModeHistograms; width: number; height: number }>();
   const [error, setError] = useState<Error>();
   useEffect(() => {
     if (!g || !vectors) return;
     let live = true;
-    const key = g;
+    const key = [g, vectors, basis];
     void onGpu(async () => {
       if (!live) return;
       const params = modeParams(g.res, { vectors, ...(basis ? { basis } : {}) });
       const value = await modeHistograms(g.res, params, g.rasters, { bins: 512 });
       if (!live) return;
-      setState({ key, value, width: g.res.width, height: g.res.height });
+      setState({ for: key, value, width: g.res.width, height: g.res.height });
       setError(undefined);
     }).catch((err: unknown) => {
       if (live) setError(err instanceof Error ? err : new Error(String(err)));
@@ -45,7 +46,12 @@ export function useModeHistograms(
       live = false;
     };
   }, [g, vectors, basis]);
-  const hist = state && { value: state.value, width: state.width, height: state.height, forCurrent: state.key === g };
+  const hist = state && {
+    value: state.value,
+    width: state.width,
+    height: state.height,
+    forCurrent: [g, vectors, basis].every((v, i) => v === state.for[i]),
+  };
   return { ...(hist ? { hist } : {}), ...(error ? { error } : {}) };
 }
 

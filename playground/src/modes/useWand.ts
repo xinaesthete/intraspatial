@@ -173,7 +173,12 @@ export function useWand(source: WandSource | undefined) {
   // While a newer field is on its way, the last one for this map stands in rather than flashing every
   // fragment back for a frame — and the outline is measured from that field's sample, so the
   // reference and the patch it was filled from are always drawn together.
-  const liveField = current && field && field.sample.source === current.source && field.m === m ? field : undefined;
+  // Disconnected, the outline follows the newest sample at once, so the charts wait for its own
+  // field rather than describing the last sample's selection under the new outline.
+  const liveField =
+    current && field && field.sample.source === current.source && field.m === m && (connected || field.sample === current)
+      ? field
+      : undefined;
   const patch = useMemo(() => {
     if (!liveField) return undefined;
     const { width, height } = liveField.sample.source.res;
