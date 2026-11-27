@@ -27,7 +27,9 @@
 // [0, n): π(i) is computed independently per thread in O(1), with no scratch and no sort, so the
 // scatter becomes one thread per (shuffle, cell). Six rounds over the two halves of the index,
 // with cycle-walking to fold the power-of-two domain back onto [0, n) — the walk is what keeps it a
-// bijection rather than merely a hash.
+// bijection rather than merely a hash. The snippet lives in `feistelWgsl.ts`, shared with the anchor
+// screen. It is far from uniform below ~20 elements (see `anchorScreenGpu.ts`); cell counts here are
+// thousands.
 //
 // This is a *pseudo-random* permutation where the CPU draws a uniform one, which is a real
 // difference and is treated as one: `quadratCorrelationGpu.gpu.test.ts` checks that the null's mean
@@ -91,6 +93,7 @@ import {
   SWAP_BURN_IN,
 } from "#src/spatial/quadratCorrelation";
 import { checkBindingSize, dispatchGrid, getDevice, MAX_WORKGROUPS_PER_DIM, sized } from "../device";
+import { FEISTEL_WGSL, feistelDomain } from "./feistelWgsl";
 
 /** Shuffles resident on the device at once. Bounds the count buffer (B·K·Q u32) and every dispatch,
  *  so no single command approaches the ~2 s the OS watchdog kills silently. */
@@ -136,42 +139,12 @@ const UNDEF: f32 = ${UNDEFINED};
 
 // ---- the permutation -----------------------------------------------------------------------------
 
-fn mix32(x: u32) -> u32 {
-  var v = x;
-  v = v ^ (v >> 16u); v = v * 0x7feb352du;
-  v = v ^ (v >> 15u); v = v * 0x846ca68bu;
-  v = v ^ (v >> 16u);
-  return v;
-}
+// The shared Feistel permutation ('feistelWgsl.ts'), bound to this shader's uniforms.
+${FEISTEL_WGSL}
 
-// One pass of a balanced Feistel network on 2*halfBits bits. Invertible for ANY round function,
-// which is what makes the composition a permutation rather than a hash.
-fn feistel(idx: u32, key: u32) -> u32 {
-  var l = idx & U.halfMask;
-  var r = (idx >> U.halfBits) & U.halfMask;
-  for (var round = 0u; round < 6u; round = round + 1u) {
-    let f = mix32(r ^ key ^ (round * 0x9e3779b9u)) & U.halfMask;
-    let nl = r;
-    r = l ^ f;
-    l = nl;
-  }
-  return (r << U.halfBits) | l;
-}
+fn permute(i: u32, key: u32) -> u32 { return feistelPermute(i, key, U.n, U.halfBits, U.halfMask); }
 
-// Cycle-walking: the Feistel is a bijection on [0, 2^(2*halfBits)), which over-covers [0, n).
-// Re-encrypting until the image lands in range maps each out-of-range point along its own cycle,
-// and because cycles are closed the result is a bijection ON [0, n) — not merely a rejection
-// sample. The domain is under 4n, so the expected number of laps is below 4.
-fn permute(i: u32, key: u32) -> u32 {
-  var x = i;
-  for (var guard = 0u; guard < 64u; guard = guard + 1u) {
-    x = feistel(x, key);
-    if (x < U.n) { return x; }
-  }
-  return i;
-}
-
-fn keyFor(s: u32) -> u32 { return mix32(U.seedBase + s * 0x9e3779b9u + 1u); }
+fn keyFor(s: u32) -> u32 { return feistelKey(U.seedBase, s); }
 
 // ---- 1. scatter: one thread per (shuffle, cell) ---------------------------------------------------
 
@@ -611,9 +584,7 @@ export async function quadratCorrelationGpu(cells: LabelledCells, p: QuadratCorr
   const { device, root, layout, ...pipes } = await getCtx();
   // Feistel domain: the smallest balanced power of two that covers n. Cycle-walking folds it back,
   // so the only cost of over-covering is the expected number of laps.
-  const bits = Math.max(2, Math.ceil(Math.log2(Math.max(n, 2))));
-  const halfBits = Math.ceil(bits / 2);
-  const halfMask = (1 << halfBits) - 1;
+  const { halfBits, halfMask } = feistelDomain(n);
 
   const swap = (p.nullModel ?? "label") === "swap";
   const burnIn = p.swapBurnIn ?? SWAP_BURN_IN;

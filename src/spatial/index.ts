@@ -1,5 +1,6 @@
 // CPU-side spatial statistics & layout (PCF, quadrats, KNN-descent, UMAP, persistence, …) — the goldens the GPU ops are checked against.
 // Barrel for the `intraspatial/spatial` subpath export; deep imports (`intraspatial/spatial/<file>`) also resolve.
+export * from "./anchorScreen";
 export * from "./bucketGrid";
 export * from "./channelBins";
 export * from "./cellCsv";

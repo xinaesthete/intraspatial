@@ -153,4 +153,4 @@ which the host flood needs.
 |---|---|
 | R3 | **Built** — [`zonal-stats.md`](zonal-stats.md). Its own labelled kernels (R1's per-row registers do not scale to thousands of rows), sharing R1's bin rule (`HIST_BIN_WGSL`), row layout and quantile helpers. The exact median sketched above is built there. |
 | R4 | **Built** — [`patch-grid.md`](patch-grid.md). |
-| R5 | Anchor screen with a permutation null. |
+| R5 | **Built** — [`anchor-screen.md`](anchor-screen.md). ρ and n_finite identical to SIMBA. |
