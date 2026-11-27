@@ -41,6 +41,8 @@ export { dtypeBytes, fieldBytes, fieldValueBytes, formatBytes, memoryBytes } fro
 export { FieldOnePole, OnePole, type OnePoleOptions } from "./onePole";
 export type { ExecCtx, OpHelp, OpType, ParamSpec, Params, ParamType, PortSpec } from "./op";
 export { allFinite, defaultParams, param } from "./op";
+export type { RasterPlanePayload } from "./ops/histogram";
+export { RASTER_PLANE, rasterPlaneValue } from "./ops/histogram";
 export { registerBuiltinOps, registerElementOps, registerWaveletOps } from "./ops/index";
 export type { PoolStats } from "./pool";
 export { BufferPool, residentUsage } from "./pool";
