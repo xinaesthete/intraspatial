@@ -83,6 +83,12 @@ CPU-golden-validated.
 - → normalization, auto-contrast (a fixed-range histogram + `histogramQuantile` gives the
   percentile window; the pointwise rescale is not built)
 
+**Region tables**
+- ✓ anchor screen: per-sample Spearman ρ of one anchor column against every feature, with a
+  within-sample shuffle null (`anchorScreen` on the CPU; `anchorScreenGpu` runs the null's dot
+  products on the GPU, with the Feistel permutation shared with `quadratCorrelationGpu` via
+  `feistelWgsl.ts`). See [`anchor-screen.md`](anchor-screen.md)
+
 **Resampling / pyramids**
 - → extract LL at level k (free from the forward DWT) → multiresolution overviews
 - → nearest / bilinear resize

@@ -153,4 +153,4 @@ which the host flood needs.
 |---|---|
 | R3 | A polygon/label rasteriser and labelled (zonal) reductions, with rows = labels × channels. `MAX_ROWS` (2) and the `rowOf` mask rule are the seam. |
 | R4 | Patch-grid generator. |
-| R5 | Anchor screen with a permutation null. |
+| R5 | Anchor screen with a permutation null. Built: [`anchor-screen.md`](anchor-screen.md) (ρ and n_finite identical to SIMBA). |

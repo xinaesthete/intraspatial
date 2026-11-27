@@ -1,10 +1,12 @@
 // GPU spatial-statistics catalogue — neighbour distances, KDE splat, Getis-Ord, ANNI, cKNN, fuzzy adjacency, separable convolution, …
 // Barrel for the `intraspatial/gpu/spatial` subpath export; deep imports (`intraspatial/gpu/spatial/<file>`) also resolve.
+export * from "./anchorScreenGpu";
 export * from "./anni";
 export * from "./cknn";
 export * from "./convolveSeparable";
 export * from "./crossPcf";
 export * from "./emptySpace";
+export * from "./feistelWgsl";
 // Both fuzzy-adjacency modules declare a `FuzzyAdjacency` result interface; the fixed-kernel
 // one wins the bare name, the adaptive one is reachable via its deep import.
 export type { FuzzyAdjacency } from "./fuzzyAdjacency";
