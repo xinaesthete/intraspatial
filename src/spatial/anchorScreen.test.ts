@@ -98,8 +98,10 @@ describe("prepareAnchorBlock", () => {
     expect(b.skip[1]).toBe(ANCHOR_SKIP.none);
   });
 
-  it("refuses minFinite below 2", () => {
+  it("refuses minFinite below 2 or not finite", () => {
     expect(() => prepareAnchorBlock([1, 2], [[1, 2]], 1)).toThrow(/minFinite/);
+    expect(() => prepareAnchorBlock([1, 2], [[1, 2]], Number.NaN)).toThrow(/minFinite/);
+    expect(prepareAnchorBlock([1, 2], [[1, 2]], 2).rho[0]).toBeCloseTo(1, 14);
   });
 });
 
@@ -132,12 +134,15 @@ describe("anchorNullExceedances", () => {
       for (let sh = 0; sh < S; sh++) {
         const pa = permutedAnchor(anchor, perms[sh]!);
         cols.forEach((f, j) => {
-          if (!Number.isFinite(block.rho[j]!)) return;
+          // The observed score, recomputed literally rather than taken from the block.
+          const obs = spearmanMasked(anchor, f);
+          expect(Number.isFinite(obs)).toBe(Number.isFinite(block.rho[j]!));
+          if (!Number.isFinite(obs)) return;
           const v = spearmanMasked(pa, f);
           const got = seen.get(`${j}:${sh}`)!;
           if (Number.isNaN(v)) expect(got).toBeNaN();
           else expect(Math.abs(got - v)).toBeLessThan(1e-13);
-          if (Math.abs(v) >= Math.abs(block.rho[j]!) - 1e-12) want[j]!++;
+          if (Math.abs(v) >= Math.abs(obs) - 1e-12) want[j]!++;
         });
       }
       expect(Array.from(exceed)).toEqual(Array.from(want));
@@ -200,6 +205,20 @@ describe("anchorScreen", () => {
     // 300 independent features: binomial sd at 0.1 is ~0.017, at 0.5 ~0.029.
     expect(Math.abs(below(0.1) - 0.1)).toBeLessThan(0.06);
     expect(Math.abs(below(0.5) - 0.5)).toBeLessThan(0.1);
+  });
+
+  it("rejects a non-integer or negative shuffle count, and draws nothing when nothing is scored", () => {
+    const features = new Map([["x", [1, 2, 3, 4]]]);
+    for (const permutations of [1.5, -1, Number.NaN])
+      expect(() => anchorScreen({ anchor: [1, 2, 3, 4], features }, { permutations })).toThrow(/permutations/);
+    expect(anchorScreen({ anchor: [1, 2, 3, 4], features }, { permutations: 0 }).p[0]).toBeNaN();
+    const empty = prepareAnchorBlock([1, 2, 3], [[Number.NaN, 1, 2]]);
+    let drawn = 0;
+    anchorNullExceedances(empty, 99, () => {
+      drawn++;
+      return new Uint32Array(3);
+    });
+    expect(drawn).toBe(0);
   });
 
   it("rejects ragged columns", () => {

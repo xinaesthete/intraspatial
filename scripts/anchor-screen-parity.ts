@@ -144,7 +144,11 @@ async function main() {
     ]) {
       const j = meta.features.findIndex(([, , f]) => f === want);
       if (j < 0) continue;
-      const r = simba.get(meta.features[j]!.join("|"))!;
+      const r = simba.get(meta.features[j]!.join("|"));
+      if (!r) {
+        console.log(`    ${want}: no SIMBA row`);
+        continue;
+      }
       const sr = r.observed_rho === "" ? Number.NaN : Number(r.observed_rho);
       console.log(
         `    ${want}: ρ ${block.rho[j]!.toFixed(4)} (SIMBA ${sr.toFixed(4)}), p ${p[j]!.toFixed(3)} (SIMBA ${Number(r.empirical_p).toFixed(3)}), n ${block.nFinite[j]}`,

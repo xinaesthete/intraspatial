@@ -33,7 +33,11 @@ sample's stream is seeded from `seed|sampleKey`, so its null does not depend on 
 | Constant | Either side's centred ranks all zero → `constant`, ρ NaN. |
 | Shuffle | Each shuffle permutes the finite anchor values among the finite-anchor regions, and missing anchors stay put. A feature with gaps of its own sees the shuffled anchor on its regions only, **re-ranked there**. Its null is therefore a random draw of k anchor values, not a permutation of the k it was observed with. |
 | Null ρ | NaN if the shuffled anchor is constant on the feature's regions. It never counts as extreme, and N stays the configured count. |
-| p | `(1 + #{|ρ_null| ≥ |ρ_obs| − 1e-12}) / (N + 1)`. The 1e-12 is the SIMBA check's tie margin: small n gives exactly tied |ρ| that rounding would otherwise split. p is NaN where ρ is NaN. (The SIMBA check script writes 0.001 there, an artefact of comparing against NaN.) |
+| p | Two-sided empirical p, below the table. |
+
+**p** = (1 + #{|ρ_null| ≥ |ρ_obs| − 1e-12}) / (N + 1). The 1e-12 is the SIMBA check's tie
+margin: small n gives exactly tied |ρ| that rounding would otherwise split. p is NaN where ρ is
+NaN. (The SIMBA check script writes 0.001 there, an artefact of comparing against NaN.)
 
 ## Cost
 
@@ -68,14 +72,26 @@ full-mask null runs on the GPU, in two dispatches per batch:
 2. `tally`, one thread per (feature, shuffle): the dot product, then `atomicAdd` when the shuffle is
    extreme.
 
-The ranks are doubled, so every value and dot product is an integer. "Extreme" is then
-`|dot| ≥ |dot_obs| − ½`, which is the CPU's tie margin restated exactly. f32 is exact while the
-partial sums stay below 2²⁴, i.e. at least k ≲ 370, which covers every ST table, where ties are common.
+The ranks are doubled, so every value and dot product is an integer. `tally` sums them exactly as
+a two-word (64-bit) integer: each product is below 2³¹ for k ≤ 46,340 (`EXACT_MAX_REGIONS`; a block
+with more finite anchors runs on the CPU), and the sum is below 2⁶³.
+
+**The cutoff.** For the full-mask group, the CPU's `|ρ_null| ≥ |ρ_obs| − tol` is, in doubled units,
+`|dot_null| ≥ |dot_obs| − 4·tol·‖a‖‖f‖`. For an integer `dot_null` that is `|dot_null| ≥ T` with
+`T = ceil(|dot_obs| − 4·tol·‖a‖‖f‖)`, which the host computes in f64. The GPU therefore applies the
+CPU's rule at every k, up to the CPU comparison's own f64 rounding. A fixed half-unit cutoff
+(`|dot_obs| − ½`) would agree with it only while `4·tol·‖a‖‖f‖ < 1`; since ‖a‖‖f‖ ≤ k(k²−1)/12, that
+holds for k up to about 14,000 at tol = 1e-12, and the two would pick different integers beyond that.
+The integer sum also keeps an identity shuffle and a single central swap distinguishable at any k,
+where an f32 sum (exact only below 2²⁴, k ≲ 370) would not.
 
 | `shuffle` | π from | p vs CPU |
 |---|---|---|
-| `"fisher-yates"` (default) | the CPU's own `mulberry32` permutations, uploaded per batch. O(N·k) host work, 1/m of the job. | **identical**: 0 differing counts across all 15 TNBC blocks, including k = 9,179 |
-| `"feistel"` | the shared Feistel permutation per thread: no host shuffle and no upload | within Monte Carlo error |
+| `"fisher-yates"` (default) | the CPU's own `mulberry32` permutations, uploaded per batch. O(N·k) host work, 1/m of the job. | identical by construction (same permutations, same cutoff) |
+| `"feistel"` | the shared Feistel permutation per thread: no host shuffle and no upload. Partial-mask groups, and blocks without a full-mask group, use the host twin with the same keys. | within Monte Carlo error; identical to the CPU null run on the Feistel permutations |
+
+Separately from that guarantee, the TNBC check found 0 differing counts across all 15 blocks
+(including k = 9,179) with the default shuffle.
 
 **The Feistel permutation is not uniform for tiny n.** The χ²/dof of (π(0), π(1)) over 200k keys is
 91 at n = 5, 33 at n = 8 and 10 at n = 16, against 1.0–1.2 from n = 20 up: with ≤ 2-bit halves,

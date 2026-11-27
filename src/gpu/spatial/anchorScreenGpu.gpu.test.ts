@@ -67,6 +67,25 @@ describe("anchorNullExceedancesGpu", () => {
     expect(Array.from(fy)).toEqual(Array.from(anchorNullExceedances(block, 999, () => randomPermutation(block.nAnchor, rnd, buf))));
   });
 
+  it("feistel shuffle with partial masks: the whole block is the CPU null on the Feistel twin", async () => {
+    const { anchor, cols } = table(9, 30, 40, { ties: 4, nanRate: 0.1 });
+    const block = prepareAnchorBlock(anchor, cols);
+    expect(block.groups.some((g) => g.full) && block.groups.some((g) => !g.full)).toBe(true);
+    const gpu = await anchorNullExceedancesGpu(block, 499, { seed: 21, shuffle: "feistel" });
+    expect(Array.from(gpu)).toEqual(Array.from(anchorNullExceedances(block, 499, feistelStream(block.nAnchor, 21))));
+  });
+
+  it("counts exactly at large k, where f32 sums would round", async () => {
+    // k = 3,000: dot products reach ~9e9, far past f32's 2^24, yet the tally must equal the CPU's.
+    // One feature is the anchor itself, so identity-like shuffles sit right at its threshold.
+    const { anchor, cols } = table(10, 3000, 6, { ties: 50 });
+    cols.push(Float64Array.from(anchor));
+    const features = new Map(cols.map((c, j) => [`f${j}`, c]));
+    const cpu = anchorScreen({ anchor, features }, { seed: 3, permutations: 199 });
+    const gpu = await anchorScreenGpu({ anchor, features }, { seed: 3, permutations: 199 });
+    expect(Array.from(gpu.p)).toEqual(Array.from(cpu.p));
+  });
+
   it("falls back from feistel below FEISTEL_MIN_REGIONS", async () => {
     const { anchor, cols } = table(6, FEISTEL_MIN_REGIONS - 1, 30);
     const block = prepareAnchorBlock(anchor, cols);
@@ -89,7 +108,12 @@ describe("anchorScreenGpu", () => {
     // Two independent 999-shuffle estimates of the same p: z = Δp / sqrt(2 p(1-p) / 1000).
     let sumZ2 = 0;
     let big = 0;
+    const finiteRho = Array.from(cpu.rho).filter(Number.isFinite).length;
+    const pOk = (p: Float64Array) => Array.from(p).filter((v) => Number.isFinite(v) && v >= 0 && v <= 1).length;
+    expect(pOk(cpu.p)).toBe(finiteRho);
+    expect(pOk(gpu.p)).toBe(finiteRho);
     for (let j = 0; j < cpu.p.length; j++) {
+      if (!Number.isFinite(cpu.rho[j]!)) continue;
       const pm = (cpu.p[j]! + gpu.p[j]!) / 2;
       const sd = Math.sqrt((2 * pm * (1 - pm)) / 1000);
       const z = sd > 0 ? (cpu.p[j]! - gpu.p[j]!) / sd : 0;

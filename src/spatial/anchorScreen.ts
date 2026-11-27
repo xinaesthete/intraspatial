@@ -42,6 +42,17 @@ export const ANCHOR_SCREEN_MIN_FINITE = 3;
 /** The tie margin on `|ρ_null| ≥ |ρ_obs|`. */
 export const ANCHOR_SCREEN_TIE_TOLERANCE = 1e-12;
 
+/** Largest shuffle count: exceedance tallies are 32-bit. */
+export const ANCHOR_SCREEN_MAX_PERMUTATIONS = 2 ** 31 - 2;
+
+/** Throws unless `permutations` is an integer in [0, ANCHOR_SCREEN_MAX_PERMUTATIONS]; 0 is ρ only. */
+export function checkAnchorPermutations(permutations: number): number {
+  if (!Number.isInteger(permutations) || permutations < 0 || permutations > ANCHOR_SCREEN_MAX_PERMUTATIONS) {
+    throw new Error(`anchorScreen: permutations must be an integer in [0, ${ANCHOR_SCREEN_MAX_PERMUTATIONS}], got ${permutations}`);
+  }
+  return permutations;
+}
+
 /** Why a feature has no ρ. */
 export const ANCHOR_SKIP = { none: 0, insufficient: 1, constant: 2 } as const;
 
@@ -166,7 +177,8 @@ export function prepareAnchorBlock(
   features: readonly ArrayLike<number>[],
   minFinite = ANCHOR_SCREEN_MIN_FINITE,
 ): AnchorBlock {
-  if (minFinite < 2) throw new Error("anchorScreen: minFinite must be at least 2");
+  if (!Number.isFinite(minFinite) || minFinite < 2)
+    throw new Error(`anchorScreen: minFinite must be a finite number of at least 2, got ${minFinite}`);
   const n = anchor.length;
   const m = features.length;
   const finite: number[] = [];
@@ -250,7 +262,10 @@ export function anchorNullExceedances(
   tieTolerance = ANCHOR_SCREEN_TIE_TOLERANCE,
   onNull?: (feature: number, shuffle: number, rho: number) => void,
 ): Int32Array {
+  checkAnchorPermutations(permutations);
   const exceed = new Int32Array(block.rho.length);
+  // Nothing scored: draw no permutations at all.
+  if (block.groups.length === 0) return exceed;
   const { anchorRanks, anchorNorm, anchorDense, distinct } = block;
   const thresholds = block.groups.map((g) => Float64Array.from(g.features, (j) => Math.abs(block.rho[j]!) - tieTolerance));
   const maxK = block.groups.reduce((a, g) => Math.max(a, g.slots.length), 0);
@@ -351,7 +366,7 @@ export function sliceSample(input: AnchorScreenInput, regions: readonly number[]
 
 /** Run the screen on the CPU (Fisher–Yates shuffles, f64 throughout). */
 export function anchorScreen(input: AnchorScreenInput, opts: AnchorScreenOptions = {}): AnchorScreenResult {
-  const permutations = opts.permutations ?? ANCHOR_SCREEN_PERMUTATIONS;
+  const permutations = checkAnchorPermutations(opts.permutations ?? ANCHOR_SCREEN_PERMUTATIONS);
   const names = [...input.features.keys()];
   const bySample = anchorSamples(input);
   const out = anchorResultTable(names.length, bySample, permutations);

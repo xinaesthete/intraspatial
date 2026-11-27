@@ -38,12 +38,18 @@ fn feistel(idx: u32, key: u32, halfBits: u32, halfMask: u32) -> u32 {
   return (r << halfBits) | l;
 }
 
-// Cycle-walking onto [0, n). The guard only bounds a loop the domain size already bounds.
+// Cycle-walking onto [0, n). i's cycle is at most the whole domain long and contains i itself,
+// which is in range, so a walk of at most 2^(2*halfBits) steps always lands; the fallback is
+// unreachable and only makes the loop's end explicit.
 fn feistelPermute(i: u32, key: u32, n: u32, halfBits: u32, halfMask: u32) -> u32 {
+  let last = (halfMask << halfBits) | halfMask; // domain size - 1
   var x = i;
-  for (var guard = 0u; guard < 64u; guard = guard + 1u) {
+  var step = 0u;
+  loop {
     x = feistel(x, key, halfBits, halfMask);
     if (x < n) { return x; }
+    if (step == last) { break; }
+    step = step + 1u;
   }
   return i;
 }
@@ -74,7 +80,8 @@ export function feistelKeyCpu(seedBase: number, s: number): number {
 /** Host twin of WGSL `feistelPermute`: the same bits, for tests. */
 export function feistelPermuteCpu(i: number, key: number, n: number, halfBits: number, halfMask: number): number {
   let x = i >>> 0;
-  for (let guard = 0; guard < 64; guard++) {
+  const domain = 2 ** (2 * halfBits);
+  for (let step = 0; step < domain; step++) {
     let l = x & halfMask;
     let r = (x >>> halfBits) & halfMask;
     for (let round = 0; round < 6; round++) {
