@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 import { type PlanInput, planField, planServes } from "./fieldPlan";
+import { fitSide } from "./tcmPlan";
 
 const base: PlanInput = {
   visible: [0, 0, 1000, 1000],
@@ -69,5 +70,22 @@ describe("planServes", () => {
     expect(planServes(plan, { ...view, visible: [250, 250, 750, 750] })).toBe(false);
     // A 1.2× zoom stays within √2.
     expect(planServes(plan, { ...view, visible: [42, 42, 958, 958] })).toBe(true);
+  });
+
+  it("compares a capped plan with a fresh plan capped the same way", () => {
+    // A thin strip whose grid is ~20000 cells long: a 1024-cell side cap coarsens it ~20×.
+    const strip = {
+      ...base,
+      visible: [0, 0, 20000, 200] as PlanInput["visible"],
+      pixels: [20000, 200] as PlanInput["pixels"],
+      data: [0, 0, 20000, 200] as PlanInput["visible"],
+    };
+    const fit = (p: Parameters<typeof fitSide>[0]) => fitSide(p, 1024);
+    const plan = fit(planField(strip)!);
+    expect(plan.width).toBeLessThanOrEqual(1024);
+    // Without the cap applied to the fresh plan, the capped one never serves the same view…
+    expect(planServes(plan, strip)).toBe(false);
+    // …with it, it does.
+    expect(planServes(plan, strip, fit)).toBe(true);
   });
 });

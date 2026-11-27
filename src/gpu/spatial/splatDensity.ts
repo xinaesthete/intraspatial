@@ -519,7 +519,7 @@ export async function splatDensityResident(points: GPUBuffer, n: number, dst: GP
   if (sigma <= 0) throw new Error("splatDensity: sigma must be > 0");
   const dev = opts.device ?? (await getDevice());
   if (opts.accumulate === "atomic" || !dev.features.has("float32-blendable")) {
-    // No float blending on this device (Firefox's WebGPU): the compute path, same output layout.
+    // No float blending on this device (support varies by platform and GPU): the compute path, same output layout.
     await splatDensityAtomic(dev, points, n, dst, {
       width: w,
       height: h,

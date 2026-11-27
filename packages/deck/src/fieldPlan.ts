@@ -91,14 +91,17 @@ export function planField(input: PlanInput): FieldPlan | null {
 
 /** Whether `plan` still serves this view: it covers the visible part of the field, and its cell is
  *  within a factor of √2 of the cell a fresh plan would choose — so panning inside the margin reuses
- *  it, and zooming re-splats about every half-octave. */
-export function planServes(plan: FieldPlan, input: PlanInput): boolean {
+ *  it, and zooming re-splats about every half-octave. `fit` is whatever the caller applied to its
+ *  plan after `planField` (a cap on the grid's sides, say), so the fresh plan is compared like for
+ *  like; without it, a plan the cap coarsened by √2 or more would never serve. */
+export function planServes(plan: FieldPlan, input: PlanInput, fit: (p: FieldPlan) => FieldPlan = (p) => p): boolean {
   const needed = intersect(input.visible, support(input.data, input.sigma, input.radiusSigma));
   if (!needed) return true; // nothing of the field on screen, so nothing to redo
   const [bx0, by0, bx1, by1] = plan.bbox;
   if (needed[0] < bx0 || needed[1] < by0 || needed[2] > bx1 || needed[3] > by1) return false;
-  const fresh = planField(input);
-  if (!fresh) return true;
+  const raw = planField(input);
+  if (!raw) return true;
+  const fresh = fit(raw);
   const ratio = plan.cell / fresh.cell;
   return ratio > Math.SQRT1_2 && ratio < Math.SQRT2;
 }

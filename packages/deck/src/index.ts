@@ -20,6 +20,9 @@ export {
 export { type SharedGpu, sharedDeviceAdapter } from "./sharedDeviceAdapter";
 export { MATERIAL_WGSL, RAMP_WGSL, VIEW_FRAME_WGSL } from "./shadingWgsl";
 export { SurfaceLayer, type SurfaceLayerProps } from "./SurfaceLayer";
+export { TcmLayer, type TcmLayerProps } from "./TcmLayer";
+export { fitSide, type MarkPlanInput, planMarks } from "./tcmPlan";
+export { densityOver, packTcmPoints, type TcmPoints } from "./tcmPoints";
 export { sheetVertexCount, TraceLayer, type TraceLayerProps } from "./TraceLayer";
 export { TubeLayer, type TubeLayerProps, tubeVertexCount } from "./TubeLayer";
 export {

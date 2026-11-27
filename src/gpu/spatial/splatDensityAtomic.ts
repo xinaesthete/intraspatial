@@ -1,5 +1,5 @@
 // The KDE splat without float blending: a compute scatter into an exact 64-bit fixed-point
-// accumulator, for devices that lack `float32-blendable` (Firefox's WebGPU, at the time of writing).
+// accumulator, for devices that lack `float32-blendable` (support varies by platform and GPU).
 //
 // The render path (`splatDensity.ts`) accumulates by additive blending into r32float, which needs
 // that feature. The obvious substitute — blend into r16float, which core WebGPU can — is the one this

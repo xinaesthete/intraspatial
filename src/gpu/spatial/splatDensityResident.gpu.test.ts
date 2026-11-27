@@ -69,7 +69,7 @@ describe("splatDensityResident", () => {
 
 describe("atomic accumulation (no float32-blendable)", () => {
   it("matches the blend path: same cells, same kernel, fixed-point instead of blending", async () => {
-    // Forced here; on a device without float32-blendable (Firefox) it is chosen automatically.
+    // Forced here; on a device without float32-blendable it is chosen automatically.
     const device = await getDevice();
     const pts: number[] = [];
     let s = 7;

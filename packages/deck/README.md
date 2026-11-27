@@ -33,10 +33,11 @@ Cartesian views only.
 
 ### Deck setup
 
-The layer needs deck on WebGPU. Ask for `float32-blendable` where the browser has it: with it the
-splat accumulates by additive blending into r32float, in hardware. Without it (Firefox's WebGPU, at
-the time of writing) the layer falls back to an exact fixed-point compute splat — the same field,
-slower where points are dense:
+The layer needs deck on WebGPU. Ask for `float32-blendable` where the adapter has it: with it the
+splat accumulates by additive blending into r32float, in hardware. Support varies by platform and
+GPU ([web3dsurvey](https://web3dsurvey.com/webgpu/features/float32-blendable); about 58% of Android
+devices reported it in November 2026). Without it the layer falls back to an exact fixed-point
+compute splat — the same field, slower where points are dense:
 
 ```ts
 import { webgpuAdapter } from "@luma.gl/webgpu";
@@ -65,6 +66,45 @@ Points are uploaded once per change of `x`, `y` or `weights`. Each re-splat draw
 weight-0 point costs the same as any other. Filtering by weights is simple but not free at tens of
 millions of rows. The grid is reused while the view pans within a margin and re-made about every
 half-octave of zoom.
+
+## TcmLayer
+
+A topographical correlation map (TCM) between two cell types: Γ_AB(x) is positive where A cells sit
+among more B cells than chance (clustered with B), negative where they sit among fewer (excluded
+from B). It is drawn as a diverging fill, transparent near 0 by default, with iso-lines on both sides
+of 0.
+
+Both types are **weightings of one point set**: a table's x/y, with a weight per point for each type
+(0/1 for membership). A layer per pair shares the coordinates and costs two weight arrays.
+
+```ts
+new TcmLayer({
+  id: "tcm-cd8-tumour",
+  x, y,                 // ArrayLike<number>, the layer's own units
+  weightsA: isCd8,      // 1 for type A, 0 otherwise; Γ is about where these sit
+  weightsB: isTumour,   // 1 for type B
+  radius: 100,          // r: how near a B cell must be to count, in the data's units
+  sigma: 50,            // Γ's Gaussian σ, in the data's units
+  alpha: 5,             // the extreme threshold (the paper's default)
+  region: [0, 0, w, h], // where B's expected density is averaged; default: the points' bounds
+});
+```
+
+**Units are the data's**, as for `DensityLayer`. The statistic is the two-pass render in
+`intraspatial/gpu/spatial/tcmRender` (see `docs/cell-stats.md`), so the same caveat applies: an A
+cell's mark is sampled bilinearly from a raster (`markCellsPerRadius`, default 8 cells per r), and
+that sampling converges fastest for smooth kernels (`kernel`: `TOPHAT`, the paper's disk, is the
+default). Γ is rendered only for the view (plus a margin), with the marks only where A cells reach it.
+Domains (ρ_B·|disk ∩ W| in place of ρ_B·πr²) are not supported yet.
+
+Deck must be on WebGPU **with `float32-blendable`**: both passes blend into r32float, and unlike
+`DensityLayer` there is no compute fallback, so on a device without it (see "Deck setup" above for
+how common that is) the layer reports an error and draws nothing.
+
+Each layer renders on deck's own device with a `TcmRenderer` of its own, so any number of TCM layers
+coexist. A render is synchronous — it writes, encodes and submits before the update returns — so
+nothing is left waiting to be submitted when deck finalizes the layer, and it frees its buffers at
+once.
 
 ## Development
 
