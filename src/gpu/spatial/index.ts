@@ -17,6 +17,7 @@ export * from "./gramModes";
 export * from "./gramTerrain";
 export * from "./gridIndex";
 export * from "./histogram";
+export * from "./modeHistograms";
 export * from "./imageOverlayWgsl";
 export * from "./kernelWgsl";
 export * from "./knn";

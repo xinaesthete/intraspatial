@@ -10,13 +10,16 @@
 // and not to be queued: fifty pending readbacks would land in order, redrawing for positions the
 // pointer left long ago. So the latest place is held and one probe runs at a time; intermediate
 // places are dropped, and the last one is always read because the loop re-checks after each probe.
-// The connected region's distance field is read back the same way.
+// The distance field is read back the same way, once per sample and metric: the connected region,
+// the panel's histogram of d and its area-vs-tolerance curve are all host work on that one field.
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { GramMatrixGpuResult } from "../../../src/gpu/spatial/gramMatrix";
 import { type ModeBasis, modeParams } from "../../../src/gpu/spatial/gramModes";
 import { probeChannels, standardise } from "../../../src/gpu/spatial/gramTerrain";
 import { connectedRegion, wandDistance } from "../../../src/gpu/spatial/wandRegion";
+import { floodAreaByTolerance, floodLeaks } from "../../../src/spatial/floodArea";
+import { histogramCpu } from "../../../src/spatial/histogram";
 
 /** What the wand reads from: a Gram result, a copy of its rasters that stays intact while it is
  *  on screen, and the per-channel mean and sd its map is standardised with (a locked basis's, or
@@ -43,7 +46,7 @@ export interface WandSample {
 }
 
 /** A place in the raster's frame (row 0 at the bbox's top), or undefined outside it. */
-function toRaster(res: GramMatrixGpuResult, x: number, y: number): { col: number; row: number } | undefined {
+export function toRaster(res: GramMatrixGpuResult, x: number, y: number): { col: number; row: number } | undefined {
   const [minX, minY, maxX, maxY] = res.bbox;
   const col = ((x - minX) / (maxX - minX)) * res.width - 0.5;
   const row = ((maxY - y) / (maxY - minY)) * res.height - 0.5;
@@ -57,7 +60,7 @@ function toRaster(res: GramMatrixGpuResult, x: number, y: number): { col: number
  * other waiting job, and the loop re-checks after each run so the last job is never lost. `cancel`
  * drops the waiting job, and `live()` turns false for the running one, so it can land without effect.
  */
-function coalescing<T>(task: (job: T, live: () => boolean) => Promise<void>) {
+export function coalescing<T>(task: (job: T, live: () => boolean) => Promise<void>) {
   let waiting: { job: T } | null = null;
   let busy = false;
   let era = 0;
@@ -162,21 +165,44 @@ export function useWand(source: WandSource | undefined) {
   /** Known at once, not after a probe: a place this window does not cover. */
   const outside = !!place && !!source && !toRaster(source.res, place[0], place[1]);
 
-  // The connected region needs the whole distance field, read back once per sample and metric; the
-  // fill itself is redone on the host whenever the tolerance moves.
+  // The whole distance field, read back once per sample and metric; the fill, the histogram and the
+  // curve are redone on the host from it (the fill and histogram whenever the tolerance moves).
   useEffect(() => {
-    if (connected && current) distance.schedule({ s: current, m });
-  }, [connected, current, m, distance]);
+    if (current) distance.schedule({ s: current, m });
+  }, [current, m, distance]);
   // While a newer field is on its way, the last one for this map stands in rather than flashing every
   // fragment back for a frame — and the outline is measured from that field's sample, so the
   // reference and the patch it was filled from are always drawn together.
-  const shownField = connected && current && field && field.sample.source === current.source && field.m === m ? field : undefined;
-  const region = useMemo(() => {
-    if (!shownField) return undefined;
-    const { width, height } = shownField.sample.source.res;
-    return connectedRegion(shownField.d, width, height, shownField.sample, tolerance);
-  }, [shownField, tolerance]);
+  // Disconnected, the outline follows the newest sample at once, so the charts wait for its own
+  // field rather than describing the last sample's selection under the new outline.
+  const liveField =
+    current && field && field.sample.source === current.source && field.m === m && (connected || field.sample === current)
+      ? field
+      : undefined;
+  const patch = useMemo(() => {
+    if (!liveField) return undefined;
+    const { width, height } = liveField.sample.source.res;
+    return connectedRegion(liveField.d, width, height, liveField.sample, tolerance);
+  }, [liveField, tolerance]);
+  const region = connected ? patch : undefined;
+  const shownField = connected ? liveField : undefined;
   const measured = shownField?.sample ?? current;
+
+  // The panel's readings, all over the window's pixels. The selection is what the map outlines: the
+  // patch when only it is kept, else every pixel within tolerance.
+  const distanceHist = useMemo(() => {
+    if (!liveField || !patch) return undefined;
+    const { d } = liveField;
+    const mask = connected ? patch : Uint8Array.from(d, (v) => (v <= tolerance ? 1 : 0));
+    return histogramCpu(d, { bins: 512, mask });
+  }, [liveField, patch, connected, tolerance]);
+  // Area of the sample's patch at every tolerance: one bottleneck flood per field (floodArea.ts).
+  const areaCurve = useMemo(() => {
+    if (!liveField) return undefined;
+    const { width, height } = liveField.sample.source.res;
+    const curve = floodAreaByTolerance(liveField.d, width, height, liveField.sample);
+    return { curve, leaks: floodLeaks(curve) };
+  }, [liveField]);
 
   // One object per state, not per render, so a page's layers can depend on the wand as a whole.
   return useMemo(
@@ -186,6 +212,14 @@ export function useWand(source: WandSource | undefined) {
       connected,
       setConnected,
       region,
+      /** The wand's d at every raster pixel (row-major), for the sample being measured; undefined while it reads. */
+      distance: liveField?.d,
+      /** Pixels in the sample's patch at the current tolerance, whether or not only it is outlined. */
+      patchArea: patch ? patch.reduce((a, v) => a + v, 0) : undefined,
+      /** Histogram of d over the window: row 0 inside the selection, row 1 outside (shared edges). */
+      distanceHist,
+      /** The patch's area at every tolerance, and the indices of its leaks (`floodLeaks`). */
+      areaCurve,
       modesUsed,
       setModesUsed,
       place,
@@ -198,7 +232,23 @@ export function useWand(source: WandSource | undefined) {
       pick,
       clear,
     }),
-    [tolerance, connected, region, modesUsed, place, outside, current, measured, error, pick, clear],
+    [
+      tolerance,
+      connected,
+      region,
+      patch,
+      liveField,
+      distanceHist,
+      areaCurve,
+      modesUsed,
+      place,
+      outside,
+      current,
+      measured,
+      error,
+      pick,
+      clear,
+    ],
   );
 }
 

@@ -64,17 +64,93 @@ to `[min, max]`, so a constant field is exact. A rank in the fixed-range under/o
 censored: it returns `lo` or `hi` unclamped. The IQR is within two bin widths when both quartiles
 meet the same-bin condition.
 
-**Exact median (sketched, not built).** Pass 1 uses the CDF to find the target bin `b` and the
+**Exact median (built in R3, `zonalExactPlan`; see [`zonal-stats.md`](zonal-stats.md)).** Pass 1 uses the CDF to find the target bin `b` and the
 rank `p − C_b` within it. Pass 2 stream-compacts the values with `bin(v) == b`
 (`streamCompact.ts`) and sorts that small set. It is one extra dispatch plus a readback the size of
 a bin. At 256 bins over a 300 µm patch, the bin-width bound is already finer than the downstream
 correlations need.
 
-## Later steps (not built)
+## R2: gram-mode and wand histograms
+
+**Decision.** The mode legend shows one histogram per painted mode, and by default the map's
+colour range comes from it. The wand panel shows the patch's area at every tolerance, computed from
+one bottleneck flood, plus the histogram of d inside and outside the selection.
+
+| What | Where | Notes |
+|---|---|---|
+| `modeHistograms`, `modeProjection` | `src/gpu/spatial/modeHistograms.ts` | One dispatch writes y₁..y₃ (`sampleWhitened().xyz`) into three dense planes. `histogramGpu` then bins each plane. `halfRanges` = max(\|p1\|, \|p99\|) per mode. |
+| `ModePaintOptions.ranges` | `gramModes.ts` | A per-mode half-range that replaces `saturate·σ_k`. σ still sets the chroma weighting. |
+| `floodAreaByTolerance`, `floodAreaAt`, `floodLeaks`, `bottleneckCosts`, `wandSeedPixel` | `src/spatial/floodArea.ts` | CPU. `connectedRegion` now takes its start pixel from `wandSeedPixel`. |
+| Legend histograms, "Colour range" select | `ModeLegend`, `useModeHistograms`, `PageControls` | Labelled as describing the current view (or the kept window), at its raster size. |
+| Area curve, d histogram, medians | `WandCharts` in `WandPanel`; `useWand` | d is now read back for every sample, not only in connected mode. |
+
+**Area vs tolerance.** Pixel p is in `connectedRegion(t)` exactly when some 4-connected path from
+the start pixel has max d ≤ t. So the least such max, p's *bottleneck cost*, decides p's membership
+at every t, and area(t) = #{cost ≤ t}. One minimax Dijkstra flood (an indexed binary heap with
+decrease-key) gives every cost.
+
+- **Exact at every t.** A cost is always one of the input values (a max never rounds), so the
+  curve is a step function with exact breakpoints. A bucket queue over R1's bins would be exact
+  only at bin edges and would smear leaks to a bin width, so it was not used.
+- **Start pixel.** The fill starts at the nearest pixel if it is in range, else at the closest
+  in-range corner. That splits t into at most five intervals, each with a fixed start, so at most
+  four floods are needed. A corner's flood runs only for tolerances below d(nearest), and only
+  when needed.
+- **Validity.** NaN is never reached. ±Inf compare as numbers, as they do in the fill.
+- **Tests** (`floodArea.test.ts`). The curve equals `connectedRegion`'s pixel count at every
+  distinct d and at the midpoints between them. The fields are noise, ties with NaN holes, a
+  fractional seed whose nearest pixel is out of range, and an edge seed. On a two-basin field
+  the only leak is at the saddle, exactly.
+- **Cost.** The flood is O(n log n) on the main thread, once per field (sample × metric), not
+  once per tolerance.
+
+**Leak rule** (`floodLeaks`). At a saddle, every pixel of the far basin that is lower than the
+saddle gets the saddle as its cost. The whole basin therefore joins at one exact tolerance. A leak is a single
+step where a region already ≥ 0.5 % of the raster grows by ≥ 50 % of itself. The size floor
+keeps out the seed's first pixels and rings of tied values around it.
+
+**Inside/outside d.** `histogramCpu(d, { mask })` is R1's two-row form. Row 0 is the selection:
+the patch in connected mode, else d ≤ t. Medians come from `histogramSummary`. Each is within one bin of
+the 512-bin auto range when the two values around its rank share a bin, and off by up to a gap
+more when they don't (see "Quantiles" above). Both charts draw 0–5, the slider's domain, and clicking either one sets
+the tolerance.
+
+**Hover links** (transcript-modes page). A histogram bar under the pointer becomes a `band` on
+`GramModesLayer`. Places whose mode value, or d, lies in that bar's range keep their colour, and the
+rest are dimmed. The band reads the shader's interpolated field, so its edge falls between pixel
+centres. Going the other way, the place under the pointer marks its values on the histograms. Its
+mode values come from one `probeChannels` readback of K floats, projected on the host. Its d comes
+from the wand's field, which is on the host already. The least tolerance at which it joins the patch,
+`floodJoinTolerance`, is marked on the area curve. Within each span of tolerances where the fill's
+start pixel is fixed (`FloodAreaCurve.spans`), a pixel is in the patch from max(span start, cost)
+on. The first span where that holds gives the answer, which is exact across start switches. `probeChannels` now serialises its own
+calls, so the hover probe and the wand's probe can't share its output buffer at the same time.
+
+**The graph wand** (`src/gpu/graph/wand.ts`, `wandPatch`). The curve does not apply as is.
+Its d is `mixtureDistance`, not `wandDistance`, and `floodFrom` uses `seedIn: true` (the seed is
+always in). With `rho < 0.5` the same bottleneck treatment does apply, with two changes. Pixels
+that fail the Laplacian test become NaN in d, because that test does not depend on t. The start
+pixel's cost is −∞, which models `seedIn`.
+
+With an opening (`rho ≥ 0.5`) the patch is still monotone in t, so every pixel has a first
+tolerance. One bottleneck flood doesn't give it, but a flat opening commutes with thresholding.
+With c the cell's bottleneck cost, and the raster's outside at +∞ (the erosion's `border`),
+opened(t) = {closing_B(c) ≤ t}, where closing_B is the grayscale closing by the disc. The patch is
+then a second bottleneck flood, from the seed, over closing_B(c). That is a sketch, neither built
+nor tested. The `ABOVE` margin on the erosion threshold would need the same care. The graph wand is
+unchanged.
+
+**Device ownership.** `modeHistograms`, `modeProjection`, `probeChannels` and `wandDistance` take
+the device the Gram result lives on (`gramMatrixGpu`'s `device`). Each keeps its pipeline, pooled
+buffers and call chain per device (`deviceScoped` / `perDevice`), as `histogramGpu` does, and is
+covered in `explicitDevice.gpu.test.ts`. The playground passes none, because deck adopts the
+library's device. The readbacks that remain are small: K floats per probe, the histograms, and d,
+which the host flood needs.
+
+## Later steps
 
 | Step | Scope |
 |---|---|
-| R2 | Per-mode histograms in the playground's `GramModesLayer` / `ModeLegend`. A histogram of `wandDistance` in `WandPanel`, plus an area-vs-tolerance curve from one priority flood. |
-| R3 | **Built** — [`zonal-stats.md`](zonal-stats.md). Its own labelled kernels (R1's per-row registers do not scale to thousands of rows), sharing R1's bin rule (`HIST_BIN_WGSL`), row layout and quantile helpers; the exact median below is built there. |
+| R3 | **Built** — [`zonal-stats.md`](zonal-stats.md). Its own labelled kernels (R1's per-row registers do not scale to thousands of rows), sharing R1's bin rule (`HIST_BIN_WGSL`), row layout and quantile helpers. The exact median sketched above is built there. |
 | R4 | Patch-grid generator. |
 | R5 | Anchor screen with a permutation null. |
