@@ -66,7 +66,7 @@ sketched, built.
 selected bins, not just the ranks. That is small when values spread over the bins, as on Leap034
 (150 k values). It approaches the region's sample count when one selected bin holds most of a
 region, as in a near-constant channel. So exact-mode memory can grow with slide size, up to the
-device's storage-binding limit, which `beginCollect` checks before allocating. More bins shrink it.
+device's storage-binding limit, which `beginCollect` checks before allocating. More bins can reduce it, but not when the values are identical (they stay in one bin).
 
 ## Validation: Leap034 against SIMBA
 
