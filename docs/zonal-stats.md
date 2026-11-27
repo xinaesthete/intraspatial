@@ -103,11 +103,18 @@ The **binned** median at 1024 bins is within 0.19 (collagen) and 0.80 (Cu) bin w
 exact one. That is about 0.5 % of the Cu median, enough for screening; use `exact: true` to match
 SIMBA.
 
+## Patch grid (R4)
+
+Built: [`patch-grid.md`](patch-grid.md). `patchGrid` lays SIMBA's grid and applies its support
+rules exactly. `patchPolygons(grid.patches)` is the `regions: { kind: "polygons" }` input, with
+row k = patch k. `pnpm patchgrid:parity` checks grid → this module → SIMBA's per-patch Cu p50,
+collagen median and support columns on Leap034 and Leap035. A big overlapping grid should be
+batched for the exact pass (see "Exact-pass memory" above, and `patch-grid.md`).
+
 ## Not built / next
 
 | Item | Note |
 |---|---|
-| R4 patch grid | It feeds in as polygons, which `polygonLayers` handles at any stride, or as a label raster per layer. Patch support rules (SIMBA's `min_tissue_frac`) are a filter on `supportFraction` / `validFraction`. |
 | R5 anchor screen | It consumes `zonalTable` columns. |
 | Rasteriser culling | Each pixel tests every polygon box in the tile, which is fine for hundreds per tile. A coarse bucket grid would help at thousands. |
 | Device-resident support | Several support rasters are OR'd on the host, so they must be host tiles. A single device-resident support raster is bound directly. |

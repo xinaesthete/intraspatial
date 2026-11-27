@@ -2,9 +2,9 @@
 
 **Decision.** `patchGrid` (`src/spatial/patchGrid.ts`) reproduces SIMBA's patch layout and
 support rules exactly on the host. It works over row runs, so a 1 µm/px canvas costs its runs,
-not its pixels. Kept patches are returned as rectangles. For zonal statistics (R3) the overlap
-is resolved into **label layers**: sets of patches that don't overlap, one u32 label image each.
-Support fractions can also be counted on the GPU, over a resident mask, by the `patchSupport`
+not its pixels. Kept patches are returned as rectangles, and go to zonal statistics (R3) as
+**polygons** (`patchPolygons`), so polygon k is patch k in `zonalStatsTiled`'s table. Grid to
+features reproduces SIMBA's per-patch tables (below). Support fractions can also be counted on the GPU, over a resident mask, by the `patchSupport`
 op (one flat prefix scan, then one subtraction per row per rectangle). Both paths give
 identical integers.
 
@@ -16,9 +16,11 @@ identical integers.
 | `maskRuns`, `maskRunsFromRows`, `unionRuns`, `positiveFinite`, `nonZero` | `intraspatial/spatial` | masks as row runs; rows can be streamed |
 | `componentBoxes`, `axisStarts`, `patchCandidates` | `intraspatial/spatial` | the layout, step by step |
 | `maskCountsInRects`, `pointPixels`, `pointCountsInRects` | `intraspatial/spatial` | support counts |
-| `rectsArray`, `patchLayers`, `patchLabelImage` | `intraspatial/spatial` | the hand-off to R3 |
+| `patchPolygons` | `intraspatial/spatial` | the hand-off to R3: `regions: { kind: "polygons", polygons }` |
+| `rectsArray`, `patchLayers`, `patchLabelImage` | `intraspatial/spatial` | rectangles as `n × 4` u32; label rasters |
 | `patchSupport` op | `intraspatial/graph` (registered built-in) | mask grid + `n × 4` u32 rects → `n × 1` u32 counts |
 | `patchSupportResident`, `patchSupportGpu` | `intraspatial/gpu/spatial` | caller-owned buffers / host readback |
+| `pnpm patchgrid:parity` | `scripts/patch-grid-simba-parity.ts` | rasters → grid → R3 → SIMBA's per-patch tables |
 
 Options: `size` and `stride` in `units` (`"px"`, the default, or `"um"` with `pixelSize` in µm/px,
 rounded to whole pixels), a `footprint` mask, and `rules`. A `fraction` rule takes a mask, a
@@ -53,22 +55,41 @@ SIMBA's tissue test is `!= 0`, so NaN counts as tissue. Pass `nonZero` to match 
 `positiveFinite`, gives the same mask whenever the rasters have no NaN or negatives, which is
 the case on both checked specimens.
 
-## Overlap → label layers
+## Hand-off to zonal statistics (R3)
 
-Patches overlap at stride < size, so one label image cannot hold them all. R3 gets either input:
+Patches overlap at stride < size, so one label image cannot hold them all. Use polygons:
 
-- **Rectangles**: `rectsArray(patches)`, `n × 4` u32 `[x0, y0, x1, y1]`. A zonal reduction can
-  gather per rectangle directly, with no label image. This is the only form that scales to a full
-  1 µm/px canvas: Leap035 is 522 Mpx, so a u32 label image would be 2 GB.
-- **Label layers**: `patchLayers(patches)` greedily splits the patches into sets with no overlap.
-  `patchLabelImage(patches, layer, w, h, scale)` paints one set with value = patch index + 1, and
-  0 elsewhere. `scale` gives a coarser canvas, where each label pixel takes the patch holding its
-  centre. A lattice with `size = k · stride` gives k² layers, so 4 at half overlap. Trailing-edge
-  patches and differently anchored components add a few more. R3 reduces each layer and
-  concatenates the rows, so row = label − 1 = index into `patches`.
+```ts
+const grid = patchGrid({ footprint, size: 300, stride: 150, units: "um", pixelSize: 1, rules });
+const res = await zonalStatsTiled({
+  level: 0,
+  regions: { kind: "polygons", polygons: patchPolygons(grid.patches) },
+  channels: [{ source: cu, support: metals, name: "cu" }],
+  quantiles: [0.25, 0.5, 0.75],
+  exact: true,
+});
+// res.table row k is grid.patches[k].
+```
 
-Shared types (`Box`, `PatchRect`, `Patch`) live in `src/spatial/patchGrid.ts`. Reconcile them
-with R3's region type when both land.
+- **Why polygons.** R3 counts a pixel when its centre (i + ½, j + ½) is inside. So a rectangle
+  with corners at its integer bounds covers exactly `[x0, x1) × [y0, y1)`, the pixels its support
+  was counted over. R3 splits the overlap itself (`polygonLayers`, the same greedy split as
+  `patchLayers`) and bins every layer into the same rows. No label image is built at level 0,
+  where Leap035's would be 2 GB.
+- **Label rasters.** `patchLayers` plus `patchLabelImage(patches, layer, w, h, scale)` give one
+  u32 image per layer in R3's label convention (label L = patch L − 1, 0 = none), for a
+  `regions: { kind: "labels" }` source or another consumer. At every `scale` they equal what R3
+  rasterises from `patchPolygons` (tested at 1, 2 and 3). A lattice with `size = k · stride`
+  needs k² layers (4 at half overlap). Real grids need more (6 to 14 below): kept trailing-edge
+  patches and separately anchored components add them.
+- **Batch a big grid for exact quantiles.** R3's exact pass holds every value in each row's
+  target bins. Overlapping patches multiply that: Leap035's 14,174 patches at 300 µm collect
+  73M values, past the default 128 MiB binding, and `beginCollect` throws. Rows are independent
+  and ids run top to bottom, so call `zonalStatsTiled` on slices of `patches` (3,000 at a time
+  in the parity script). Each slice is a band of the slide and touches mostly its own tiles.
+- **Rectangles.** `rectsArray(patches)`, `n × 4` u32, is the `patchSupport` op's input.
+- **Support.** The grid's rule values (level 0, exact) decide the kept set. R3's
+  `supportFraction` re-measures them at the level it reads, and agrees at level 0 (below).
 
 ## GPU support
 
@@ -84,7 +105,7 @@ resident mask, such as a threshold or morphology output.
 
 ## Validation against SIMBA's patch tables
 
-**Result: identical on all five tables.** That covers the same kept set, the same bounds, the
+**Result: identical on all four region tables.** That covers the same kept set, the same bounds, the
 same patch ids and edge flags, and bit-identical support values. Inputs are the registered
 1 µm/px rasters (`tnbc_registered_res_1.0`). They were exported by SIMBA's own loaders: the
 union-`!= 0` tissue mask, `roi_label_map > 0`, and the centroids of labelled cells keyed by
@@ -112,12 +133,32 @@ Notes:
 - There are more label layers than the 4 a single lattice needs: kept trailing-edge patches
   (26 to 207 per table) and Leap035's 16 separately anchored components add them. This is why
   rectangles are the simpler R3 input.
-- Not rerun here: copper's finite-Cu-p50 filter (a feature rule). It dropped nothing on these
-  specimens, since the kept sets already match.
+- Copper's finite-Cu-p50 filter is a feature rule and isn't applied by the grid. It dropped
+  nothing on these specimens: every kept patch has tissue, so its Cu p50 is finite.
+
+### Grid → R3 → SIMBA's per-patch features
+
+`pnpm patchgrid:parity [--leap L] [--anchor copper|collagen] [--size 300|150]` runs the whole
+chain from the registered OME-TIFFs, with no Python export. The masks are read in row bands, and
+the centroids come from the segmentation by (ROI, local id). It lays the grid, hands the kept
+patches to `zonalStatsTiled` as `patchPolygons` (1024 bins, exact quantiles), and compares with
+SIMBA's `<leap>_copper_patch_features.csv` and `features/<run>/<leap>_imc_patch_features.csv`.
+
+| Specimen, anchor | Size (µm) | Patches | Kept set, ids, edges | Median vs SIMBA | Support vs SIMBA | R3 time |
+|---|---|---|---|---|---|---|
+| Leap034 copper | 300 | 831 | identical | `laicpmsi_cu_p50` identical | `n_tissue_pixels`, `tissue_fraction` identical | 6.0 s |
+| Leap034 collagen | 300 | 387 | identical | `imc_collagen_median` ≤ 5.6·10⁻⁸ rel | `imc_acquired_fraction` identical | 1.8 s |
+| Leap034 collagen | 150 | 1,504 | identical | `imc_collagen_median` ≤ 6.0·10⁻⁸ rel | `imc_acquired_fraction` identical | 1.4 s |
+| Leap035 copper | 300 | 14,174 | identical | `laicpmsi_cu_p50` identical in f32 (5 differ ≤ 5.4·10⁻⁸ rel in f64) | `n_tissue_pixels`, `tissue_fraction` identical | 205 s (5 batches) |
+
+The collagen medians, and 5 Leap035 Cu medians, differ in f64 for the reason in
+[`zonal-stats.md`](zonal-stats.md): `np.median` on float32 averages the two middle values in
+f32, while R3 interpolates in f64. Each of the five Cu values rounds to SIMBA's exactly in f32.
+R3 times include TIFF decoding of the tiles it touches. Leap035's 205 s is 1,759 tile visits
+through a 256 MB cache per raster on a 522 Mpx slide; building its masks and grid took 64 s.
 
 ## Later
 
-- A playground page with a patch-size slider that draws the grid and kept patches, for "what
-  changes at smaller areas". The host layout is fast enough to re-run on every slider step.
+- The playground page with a patch-size slider is in its own PR, stacked on this one.
 - Point counts on the GPU (bin centroids with `gridIndex`). Cell counts are cheap on the host
   today.

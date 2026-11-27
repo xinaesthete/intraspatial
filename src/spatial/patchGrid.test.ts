@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 import {
-  type Box,
+  type PixelBox,
   axisStarts,
   componentBoxes,
   maskCountsInRects,
@@ -10,6 +10,7 @@ import {
   patchGrid,
   patchLabelImage,
   patchLayers,
+  patchPolygons,
   pointCountsInRects,
   pointPixels,
   rectsArray,
@@ -17,6 +18,7 @@ import {
   toPixels,
   unionRuns,
 } from "./patchGrid";
+import { polygonLayers, rasterisePolygonsCpu } from "./zonal";
 
 // Goldens: SIMBA's grid on four small masks (SIMBA_GOLDEN, below, made by running TNBC-MMB's
 // `generate_patch_bounds` + `tabulate_patch_support` on exactly these CASES), and brute-force
@@ -110,9 +112,9 @@ function randomMask(w: number, h: number, seed: number, discs = 12): Uint8Array 
 }
 
 /** Dense 4-connected flood-fill boxes: the reference for `componentBoxes`. */
-function denseBoxes(m: Uint8Array, w: number, h: number): Box[] {
+function denseBoxes(m: Uint8Array, w: number, h: number): PixelBox[] {
   const seen = new Uint8Array(w * h);
-  const out: Box[] = [];
+  const out: PixelBox[] = [];
   for (let i = 0; i < w * h; i++) {
     if (!m[i] || seen[i]) continue;
     const stack = [i];
@@ -149,7 +151,7 @@ function denseBoxes(m: Uint8Array, w: number, h: number): Box[] {
   return out;
 }
 
-const boxKey = (b: Box) => `${b.y0},${b.x0},${b.y1},${b.x1}`;
+const boxKey = (b: PixelBox) => `${b.y0},${b.x0},${b.y1},${b.x1}`;
 
 describe("patchGrid matches SIMBA", () => {
   for (const [name, c] of Object.entries(CASES)) {
@@ -199,7 +201,7 @@ describe("run arithmetic vs dense references", () => {
     const m = randomMask(w, h, 9, 20);
     const runs = maskRuns(m, w, h);
     const rnd = lcg(77);
-    const rects: Box[] = Array.from({ length: 300 }, () => {
+    const rects: PixelBox[] = Array.from({ length: 300 }, () => {
       const x0 = Math.floor(rnd() * w);
       const y0 = Math.floor(rnd() * h);
       return { x0, y0, x1: x0 + 1 + Math.floor(rnd() * (w - x0)), y1: y0 + 1 + Math.floor(rnd() * (h - y0)) };
@@ -219,7 +221,7 @@ describe("run arithmetic vs dense references", () => {
     const xs = Array.from({ length: 500 }, () => rnd() * (w + 2) - 1);
     const ys = Array.from({ length: 500 }, (_, i) => (i % 7 === 0 ? Math.floor(rnd() * h) + 0.5 : rnd() * (h + 2) - 1));
     const pts = pointPixels(xs, ys, w, h);
-    const rects: Box[] = [
+    const rects: PixelBox[] = [
       { x0: 0, y0: 0, x1: w, y1: h },
       { x0: 3, y0: 2, x1: 11, y1: 9 },
       { x0: 29, y0: 19, x1: 30, y1: 20 },
@@ -314,12 +316,35 @@ describe("units, layers and labels", () => {
   });
 
   it("a coarser label image takes the rectangle holding each label pixel's centre", () => {
-    const rects: Box[] = [
+    const rects: PixelBox[] = [
       { x0: 0, y0: 0, x1: 4, y1: 4 },
       { x0: 4, y0: 0, x1: 10, y1: 3 },
     ];
     // 10x4 at scale 2 -> 5x2; centres at 1, 3, 5, 7, 9 (x) and 1, 3 (y).
     expect(Array.from(patchLabelImage(rects, [0, 1], 10, 4, 2))).toEqual([1, 1, 2, 2, 2, 1, 1, 0, 0, 0]);
+  });
+
+  it("R3 hand-off: patchPolygons rasterise to the label layers, and polygonLayers = patchLayers", () => {
+    const c = CASES["two-blobs"]!;
+    const grid = patchGrid({ footprint: maskRuns(rasterOf(c), c.width, c.height), size: c.size, stride: c.stride });
+    const polys = patchPolygons(grid.candidates);
+    const layers = patchLayers(grid.candidates);
+    expect(polygonLayers(polys)).toEqual(layers);
+    for (const scale of [1, 2, 3]) {
+      const w = Math.ceil(c.width / scale);
+      const h = Math.ceil(c.height / scale);
+      const got = layers.map((l) =>
+        Array.from(
+          rasterisePolygonsCpu(
+            l.map((i) => polys[i]!),
+            { width: w, height: h, scaleX: scale, scaleY: scale },
+            l.map((i) => i + 1),
+          ),
+        ),
+      );
+      const want = layers.map((l) => Array.from(patchLabelImage(grid.candidates, l, c.width, c.height, scale)));
+      expect(got, `scale ${scale}`).toEqual(want);
+    }
   });
 
   it("rectsArray packs [x0, y0, x1, y1]", () => {

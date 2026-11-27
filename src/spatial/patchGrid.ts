@@ -1,6 +1,6 @@
 // Patch grid: square patches tiled over a support footprint, kept by minimum-support rules.
-// R4 of the region/raster statistics plan (docs/patch-grid.md); its rectangles and label layers
-// are the region input of zonal statistics (R3).
+// R4 of the region/raster statistics plan (docs/patch-grid.md). Its kept patches go to zonal
+// statistics (R3, `zonalStatsTiled`) as polygons (`patchPolygons`), or as label rasters.
 //
 // The layout is SIMBA's (`src/feature_extraction/patch_grid.py`, TNBC-MMB) bit for bit:
 //   - the footprint is split into 4-connected components and EACH COMPONENT gets its own grid,
@@ -21,6 +21,7 @@
 // runs, not the pixels: components come from merging runs of adjacent rows, rectangle counts
 // from a prefix sum over run lengths. The GPU twin (`src/gpu/spatial/patchSupport.ts`) counts
 // a resident dense mask with a flat prefix scan instead; both give identical integers.
+import { type PolygonDomain, polygonDomain } from "./domain";
 
 /** A pixel test: is this mask value support? */
 export type SupportTest = (v: number) => boolean;
@@ -130,7 +131,7 @@ export function runPixelCount(runs: MaskRuns): number {
 }
 
 /** Bounding box of a pixel set, exclusive ends (skimage's `bbox`). */
-export interface Box {
+export interface PixelBox {
   readonly x0: number;
   readonly y0: number;
   readonly x1: number;
@@ -139,7 +140,7 @@ export interface Box {
 
 /** Bounding boxes of the mask's 4-connected components (runs of adjacent rows that overlap in
  *  x join), in order of each component's first run. */
-export function componentBoxes(runs: MaskRuns): Box[] {
+export function componentBoxes(runs: MaskRuns): PixelBox[] {
   const n = runs.x0.length;
   const parent = new Uint32Array(n);
   for (let i = 0; i < n; i++) parent[i] = i;
@@ -202,7 +203,7 @@ export function axisStarts(lo: number, hi: number, extent: number, size: number,
 }
 
 /** One grid patch: a half-open pixel rectangle `[x0, x1) × [y0, y1)`. */
-export interface PatchRect extends Box {
+export interface PatchRect extends PixelBox {
   /** Index among every candidate in (y0, x0) order: SIMBA's `patch_%05d`. */
   readonly id: number;
   /** Placed only to cover a component's trailing edge (or the patch is larger than the image). */
@@ -210,7 +211,7 @@ export interface PatchRect extends Box {
 }
 
 /** Every candidate patch over the footprint's components, deduplicated, in (y0, x0) order. */
-export function patchCandidates(boxes: readonly Box[], width: number, height: number, size: number, stride: number): PatchRect[] {
+export function patchCandidates(boxes: readonly PixelBox[], width: number, height: number, size: number, stride: number): PatchRect[] {
   if (!(Number.isInteger(size) && size > 0)) throw new Error(`patchGrid: size must be a positive integer of pixels (got ${size})`);
   if (!(Number.isInteger(stride) && stride > 0)) throw new Error(`patchGrid: stride must be a positive integer of pixels (got ${stride})`);
   // end = min(start + size, extent) is fixed by the start, so the start pair is the key.
@@ -251,7 +252,7 @@ function lowerBound(a: ArrayLike<number>, lo: number, hi: number, v: number): nu
 }
 
 /** Support pixels of `runs` inside each rectangle. */
-export function maskCountsInRects(runs: MaskRuns, rects: readonly Box[]): Float64Array {
+export function maskCountsInRects(runs: MaskRuns, rects: readonly PixelBox[]): Float64Array {
   const cum = runPrefix(runs);
   const { rowStart, x0, x1 } = runs;
   // Support pixels of row y left of column X: whole runs that start before X, less the part of
@@ -315,7 +316,7 @@ export function pointPixels(xs: ArrayLike<number>, ys: ArrayLike<number>, width:
 }
 
 /** Points inside each rectangle. */
-export function pointCountsInRects(points: PointPixels, rects: readonly Box[]): Float64Array {
+export function pointCountsInRects(points: PointPixels, rects: readonly PixelBox[]): Float64Array {
   const { rowStart, cols } = points;
   return Float64Array.from(rects, (r) => {
     let s = 0;
@@ -413,14 +414,32 @@ export function patchGrid(opts: PatchGridOptions): PatchGrid {
   };
 }
 
+/**
+ * Patches as R3's region polygons: `zonalStatsTiled({ regions: { kind: "polygons", polygons } })`
+ * then has row k = patch k. R3 counts a pixel in a polygon when its centre (i + ½, j + ½) is
+ * inside, so each rectangle's corners at its integer bounds cover exactly its pixels
+ * `[x0, x1) × [y0, y1)`, the pixels its support was counted over. R3 splits overlapping polygons
+ * into layers itself (`polygonLayers`, the same greedy split as `patchLayers`).
+ */
+export function patchPolygons(rects: readonly PixelBox[]): PolygonDomain[] {
+  return rects.map((r) =>
+    polygonDomain([
+      [r.x0, r.y0],
+      [r.x1, r.y0],
+      [r.x1, r.y1],
+      [r.x0, r.y1],
+    ]),
+  );
+}
+
 /** Rectangles as `n × 4` u32 `[x0, y0, x1, y1]` rows: the GPU support and zonal input. */
-export function rectsArray(rects: readonly Box[]): Uint32Array {
+export function rectsArray(rects: readonly PixelBox[]): Uint32Array {
   const out = new Uint32Array(rects.length * 4);
   rects.forEach((r, i) => out.set([r.x0, r.y0, r.x1, r.y1], i * 4));
   return out;
 }
 
-const overlaps = (a: Box, b: Box): boolean => a.x0 < b.x1 && b.x0 < a.x1 && a.y0 < b.y1 && b.y0 < a.y1;
+const overlaps = (a: PixelBox, b: PixelBox): boolean => a.x0 < b.x1 && b.x0 < a.x1 && a.y0 < b.y1 && b.y0 < a.y1;
 
 /**
  * Split rectangles into layers whose members do not overlap, so each layer is one label image.
@@ -429,13 +448,13 @@ const overlaps = (a: Box, b: Box): boolean => a.x0 < b.x1 && b.x0 < a.x1 && a.y0
  * edge patches and patches of differently anchored components can add a few more. Returns the
  * indices (into `rects`) of each layer, ascending.
  */
-export function patchLayers(rects: readonly Box[]): number[][] {
+export function patchLayers(rects: readonly PixelBox[]): number[][] {
   if (rects.length === 0) return [];
   // A bucket grid of the largest side per layer, so the overlap test looks at neighbours only.
   let cell = 1;
   for (const r of rects) cell = Math.max(cell, r.x1 - r.x0, r.y1 - r.y0);
   const layers: { members: number[]; buckets: Map<number, number[]> }[] = [];
-  const bucketsOf = (r: Box): number[] => {
+  const bucketsOf = (r: PixelBox): number[] => {
     const keys: number[] = [];
     for (let by = Math.floor(r.y0 / cell); by <= Math.floor((r.y1 - 1) / cell); by++)
       for (let bx = Math.floor(r.x0 / cell); bx <= Math.floor((r.x1 - 1) / cell); bx++) keys.push(by * 1048576 + bx);
@@ -459,12 +478,19 @@ export function patchLayers(rects: readonly Box[]): number[][] {
 }
 
 /**
- * A u32 label image of one layer: pixel = (index into `rects`) + 1 of the rectangle holding it,
+ * A u32 label image of one layer, in R3's label convention (label L is region L − 1): pixel =
+ * (index into `rects`) + 1 of the rectangle holding it,
  * 0 outside every one. `scale` > 1 gives a canvas `scale` times coarser (ceil), each label pixel
  * taking the rectangle that holds its centre, for zonal stats on a downsampled raster. The
  * members of `layer` must not overlap (`patchLayers`); an overlapping later one would win.
  */
-export function patchLabelImage(rects: readonly Box[], layer: readonly number[], width: number, height: number, scale = 1): Uint32Array {
+export function patchLabelImage(
+  rects: readonly PixelBox[],
+  layer: readonly number[],
+  width: number,
+  height: number,
+  scale = 1,
+): Uint32Array {
   if (!(Number.isInteger(scale) && scale >= 1)) throw new Error(`patchLabelImage: scale must be an integer >= 1 (got ${scale})`);
   const w = Math.ceil(width / scale);
   const h = Math.ceil(height / scale);
