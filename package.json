@@ -44,6 +44,7 @@
     "mdv:zarr": "tsx scripts/mdv-h5-to-zarr.ts",
     "mdv:parity": "tsx scripts/mdv-pcf-parity.ts",
     "mdv:quadrat": "tsx scripts/mdv-quadrat-parity.ts",
+    "zonal:parity": "tsx scripts/zonal-simba-parity.ts",
     "umap:obsm": "tsx scripts/umap-obsm.ts",
     "umap:bench": "tsx scripts/umap-bench.ts",
     "qcm:bench": "tsx scripts/qcm-bench.ts",

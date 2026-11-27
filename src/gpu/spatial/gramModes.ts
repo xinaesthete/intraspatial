@@ -199,6 +199,10 @@ export interface ModePaintOptions {
   readonly vectors: Float64Array;
   /** How many standard deviations of each mode's own spread saturate the ramp. Larger = flatter. */
   readonly saturate?: number;
+  /** Per-mode half-range at which the ramp saturates, measured from the data — `modeHistograms`'
+   *  `halfRanges` (the 1st/99th percentiles over the window). Each positive entry replaces that
+   *  mode's `saturate·σ_k`; `σ_k` itself still sets the chroma weighting. */
+  readonly ranges?: readonly [number, number, number];
   /** How the two chroma modes (2 and 3) are weighted against mode 1, in `[0, 1]`.
    *
    *  `1` (default) is fully **whitened**: each mode is scaled by its own σ, so the picture equalises
@@ -261,7 +265,7 @@ export function modeBasis(res: ModeSource): ModeBasis {
 
 /** What the map is showing, for a legend that states the mapping rather than leaving it implicit. */
 export interface ModePaintInfo {
-  /** Per-mode scale factor actually applied (1 / (saturate·σ_k)). */
+  /** Per-mode scale factor actually applied: 1 / (saturate·σ_k), or 1 / ranges[k] when given. */
   readonly scales: [number, number, number];
   /** Per-mode standard deviation over pixels — `sqrt(λ_k)`, since a projected mode's variance IS
    *  its eigenvalue (an identity `gram.test.ts` pins). */
@@ -312,7 +316,11 @@ export function modeParams(res: ModeSource, opts: Omit<ModePaintOptions, "marker
     }
     sigmas[k] = Math.sqrt(Math.max(q, 0));
   }
-  const scales = sigmas.map((s) => (s > 0 ? 1 / (saturate * s) : 0)) as [number, number, number];
+  const scales = sigmas.map((s, k) => {
+    const r = opts.ranges?.[k] ?? 0;
+    if (r > 0) return 1 / r;
+    return s > 0 ? 1 / (saturate * s) : 0;
+  }) as [number, number, number];
 
   // Chroma weighting: mute modes 2 and 3 towards their variance share. `w=1` leaves them whitened
   // (factor 1); `w=0` scales them by σ_k/σ₁ so colour reflects importance. Folded into the chroma

@@ -21,12 +21,14 @@ import { SpatialDeckView } from "../deck/SpatialDeckView";
 import { SHARED_DEVICE_PROPS, useSharedDevice } from "../deck/useSharedDevice";
 import { useAsync, useSettled } from "../hooks/useAsync";
 import { usePointsSource, usePointsTiles, useSpatialData } from "../hooks/useSpatialData";
-import { GramModesLayer } from "../modes/GramModesLayer";
+import { GramModesLayer, type MapBand } from "../modes/GramModesLayer";
 import { MatrixView } from "../modes/MatrixView";
 import { ModeCharts } from "../modes/ModeCharts";
 import { ModeMap } from "../modes/ModeMap";
 import { ImagePicker, MapStyleControls, StoreInput, useImageChoice, useMapStyle } from "../modes/PageControls";
-import { useWand, type WandSource, wandLayerProps } from "../modes/useWand";
+import { rampHalfRanges, useModeHistograms } from "../modes/useModeHistograms";
+import { type RasterPoint, useModeValuesAt } from "../modes/useModeValuesAt";
+import { toRaster, useWand, type WandSource, wandLayerProps } from "../modes/useWand";
 import { WandPanel } from "../modes/WandPanel";
 import { useBoundarySettings, useMapSelection } from "../selection/useMapSelection";
 import { BoundaryPanel } from "../wand/WandPanel";
@@ -205,6 +207,41 @@ export function TranscriptModes() {
     return { res: g.res, rasters: g.rasters, mean, sd, vectors, ...(lockedBasis ? { basis: lockedBasis } : {}) };
   }, [g, lockedBasis, vectors]);
   const wand = useWand(wandSource);
+  // Each painted mode's values over the window, for the legend and (by default) the colour range.
+  const modeHist = useModeHistograms(g, vectors, lockedBasis);
+  // Hover links: a histogram bar under the pointer shows its places on the map (`band`), and the map
+  // place under the pointer marks its values on the histograms: the modes from one small probe
+  // there, d from the wand's field, which is on the host already. The place is held in the canvas's
+  // world frame and taken to raster pixels for the result now shown, so a new window that lands
+  // under a still pointer is read at the same place, not the old window's pixel.
+  const [band, setBand] = useState<MapBand | null>(null);
+  const [hoverWorld, setHoverWorld] = useState<readonly [number, number]>();
+  const hoverAt = useMemo<RasterPoint | undefined>(() => {
+    const m = toElement;
+    if (!hoverWorld || !g || !m) return undefined;
+    const [wx, wy] = hoverWorld;
+    return toRaster(g.res, m.a * wx + m.c * wy + m.tx, m.b * wx + m.d * wy + m.ty);
+  }, [hoverWorld, g, toElement]);
+  const hoverModes = useModeValuesAt(wandSource, hoverAt);
+  const hoverPixel = useMemo(() => {
+    if (!hoverAt || !g) return undefined;
+    const { width, height } = g.res;
+    return Math.min(height - 1, Math.max(0, Math.round(hoverAt.row))) * width + Math.min(width - 1, Math.max(0, Math.round(hoverAt.col)));
+  }, [hoverAt, g]);
+  const ranges = style.contrast === "view" ? modeHist.hist?.value.halfRanges : undefined;
+  const legendHist = useMemo(
+    () =>
+      g && vectors && modeHist.hist
+        ? {
+            hist: modeHist.hist,
+            ramp: rampHalfRanges(g.res, { vectors, basis: lockedBasis, saturate, chromaWeight, ranges }),
+            window: follow ? "the current view" : "the kept window",
+            at: hoverModes,
+            onBand: setBand,
+          }
+        : undefined,
+    [g, vectors, lockedBasis, saturate, chromaWeight, ranges, modeHist.hist, follow, hoverModes],
+  );
   // The canvas's world frame → the transcripts' frame, which the Gram's bbox is in.
   const toPlace = (wx: number, wy: number): readonly [number, number] | undefined => {
     const m = toElement;
@@ -241,6 +278,15 @@ export function TranscriptModes() {
     onPaint: lockOnPaint,
     modelMatrix,
   });
+  const toolsHover = tools.onHover;
+  const onMapHover = useCallback(
+    (info: { coordinate?: number[] }) => {
+      toolsHover(info);
+      const [wx, wy] = info.coordinate ?? [];
+      setHoverWorld(wx !== undefined && wy !== undefined ? [wx, wy] : undefined);
+    },
+    [toolsHover],
+  );
   const deckProps = useMemo(
     () => ({ deviceProps: SHARED_DEVICE_PROPS, onDeviceInitialized: device.onDeviceInitialized, ...tools.deckProps }),
     [device.onDeviceInitialized, tools.deckProps],
@@ -257,6 +303,8 @@ export function TranscriptModes() {
               vectors: (locked?.modes ?? g.modes).vectors,
               basis: locked?.basis ?? null,
               saturate,
+              ranges: ranges ?? null,
+              band,
               chromaWeight,
               opacity,
               ...wandLayerProps(wand, g.modes.labels.length),
@@ -292,10 +340,10 @@ export function TranscriptModes() {
               : []),
           ]
         : nicheDrawn,
-    [g, locked, modelMatrix, saturate, chromaWeight, opacity, wand, tools.layers, nicheDrawn],
+    [g, locked, modelMatrix, saturate, ranges, band, chromaWeight, opacity, wand, tools.layers, nicheDrawn],
   );
 
-  const error = sd.error ?? source.error ?? tiles.error ?? gram.error;
+  const error = sd.error ?? source.error ?? tiles.error ?? gram.error ?? modeHist.error;
   const busy = source.loading
     ? "opening the points element…"
     : tiles.progress
@@ -424,7 +472,7 @@ export function TranscriptModes() {
             Lock the modes (off: recompute them for each window)
           </label>
           <MapStyleControls style={style} />
-          <WandPanel wand={wand} />
+          <WandPanel wand={wand} hoverPixel={hoverPixel} onBand={setBand} />
           <BoundaryPanel
             {...tools.panel}
             broad={gb}
@@ -480,7 +528,14 @@ export function TranscriptModes() {
         </aside>
 
         <main className="views">
-          <ModeMap wand={wand} modes={modes} viewport={viewport} toPlace={toPlace} selection={tools}>
+          <ModeMap
+            wand={wand}
+            modes={modes}
+            viewport={viewport}
+            toPlace={toPlace}
+            selection={tools}
+            onLeave={() => setHoverWorld(undefined)}
+          >
             {/* Always mounted, never keyed: see SpatialDeckView on why deck must outlive a store. */}
             <SpatialDeckView
               className="deck-canvas"
@@ -491,7 +546,7 @@ export function TranscriptModes() {
               deckProps={deckProps}
               onViewport={setViewport}
               onClick={tools.onClick}
-              onHover={tools.onHover}
+              onHover={onMapHover}
               fallbackBounds={fallbackBounds}
             />
           </ModeMap>
@@ -536,7 +591,7 @@ export function TranscriptModes() {
                   the percentages are of that window's variation.
                 </p>
               )}
-              {modes && <ModeCharts modes={modes} />}
+              {modes && <ModeCharts modes={modes} histograms={legendHist} />}
               <h3>How often each pair turns up together, compared with chance</h3>
               <MatrixView
                 labels={g.modes.labels}
