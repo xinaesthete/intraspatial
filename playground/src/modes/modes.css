@@ -55,3 +55,5 @@ details.explain summary { cursor: pointer; color: #cbd5e1; font-weight: 600; }
 .charts { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(340px, 100%), 1fr)); gap: 12px 24px; }
 svg.chart { width: 100%; max-width: 560px; height: auto; display: block; background: #0f172a; border-radius: 4px; font-size: 10px; fill: #94a3b8; }
 svg.chart .strong { fill: #cbd5e1; }
+.wand-charts { display: flex; flex-direction: column; gap: 4px; }
+svg.chart.hist { max-width: 280px; }

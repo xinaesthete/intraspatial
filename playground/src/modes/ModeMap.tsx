@@ -22,6 +22,7 @@ export function ModeMap({
   viewport,
   toPlace,
   selection,
+  onLeave: onLeaveMap,
   children,
 }: {
   wand: Wand;
@@ -29,6 +30,8 @@ export function ModeMap({
   viewport: Rect | undefined;
   toPlace?: (x: number, y: number) => readonly [number, number] | undefined;
   selection?: MapSelection;
+  /** The pointer left the map. */
+  onLeave?: () => void;
   children: ReactNode;
 }) {
   const pick = useWorldPick(viewport, (x, y) => {
@@ -38,13 +41,17 @@ export function ModeMap({
   const sampling = !selection || selection.active === "hand";
   const painting = selection?.painting ?? false;
   const cursor = selection?.frame.cursor;
-  const onLeave = selection?.frame.onLeave;
+  const onLeaveTools = selection?.frame.onLeave;
+  const onLeave = () => {
+    onLeaveTools?.();
+    onLeaveMap?.();
+  };
   // Called through, not handed over: a value passed as `ref` marks everything it came from as a ref,
   // and then each read of `selection` above would be a ref read during render.
   const attach = selection?.frame.attachMap;
   const attachMap = useCallback((el: HTMLDivElement | null) => attach?.(el), [attach]);
   const map = (
-    <div className="deck-wrap" {...(sampling ? pick : {})}>
+    <div className="deck-wrap" {...(sampling ? pick : {})} {...(!selection && onLeaveMap ? { onPointerLeave: onLeaveMap } : {})}>
       {children}
       {wand.sample && modes && <WandReadout wand={wand.sample} modes={modes} />}
     </div>

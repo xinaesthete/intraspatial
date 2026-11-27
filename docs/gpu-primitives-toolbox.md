@@ -83,7 +83,11 @@ CPU-golden-validated.
 - ✓ patch support: a mask's support pixels in each of n rectangles, by one flat prefix scan and one
   subtraction per row (`patchSupport` graph op). The patch layout itself (SIMBA's per-component
   grid and support rules) is host-side `patchGrid`. See [`patch-grid.md`](patch-grid.md)
-- → zonal (per-label) statistics over patch rectangles or label layers (R3)
+- ✓ zonal (per-region) statistics: GPU polygon → label rasteriser and a labelled histogram
+  (rows = regions × channels) accumulated tile by tile from a pyramid level, with per-region
+  count / mean / median / IQR / percentiles / support and valid fractions and an exact-quantile
+  second pass — `rasterisePolygons` / `zonalHistogram` ops, `zonalStatsTiled`. See
+  [`zonal-stats.md`](zonal-stats.md)
 - → normalization, auto-contrast (a fixed-range histogram + `histogramQuantile` gives the
   percentile window; the pointwise rescale is not built)
 

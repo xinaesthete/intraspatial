@@ -8,7 +8,7 @@ import { OrthographicView, type OrthographicViewState } from "@deck.gl/core";
 import DeckGL from "@deck.gl/react";
 import { type ChangeEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  type Box,
+  type PixelBox,
   componentBoxes,
   type MaskRuns,
   maskRuns,
@@ -30,7 +30,7 @@ const VIEW = new OrthographicView({ id: "map" });
 const MAX_CANDIDATES = 2_000_000;
 
 /** An upper bound on the candidates a size and stride give, from the pieces' boxes alone. */
-function candidateBound(boxes: readonly Box[], sizePx: number, stridePx: number): number {
+function candidateBound(boxes: readonly PixelBox[], sizePx: number, stridePx: number): number {
   const along = (span: number) => (span <= sizePx ? 1 : Math.floor((span - sizePx) / stridePx) + 2);
   return boxes.reduce((n, b) => n + along(b.x1 - b.x0) * along(b.y1 - b.y0), 0);
 }
@@ -77,7 +77,7 @@ interface SweepPoint {
 /** Kept and candidate counts over a range of sizes, a few per frame so the page stays live. */
 function useSweep(
   runs: MaskRuns | null,
-  boxes: readonly Box[],
+  boxes: readonly PixelBox[],
   sizes: readonly number[],
   strideFor: (size: number) => number,
   pixelSize: number,
@@ -232,7 +232,7 @@ const NO_HITS: readonly Hit[] = [];
 interface Hit {
   readonly index: number;
   readonly id: number;
-  readonly box: Box;
+  readonly box: PixelBox;
   readonly fraction: number;
   readonly kept: boolean;
   readonly edge: boolean;
