@@ -26,8 +26,10 @@ import { histogramMaskedOp, histogramOp } from "./histogram";
 import { kthNeighborDistanceOp } from "./kthNeighborDistance";
 import { membershipToDistanceOp } from "./membershipToDistance";
 import { morphologyOp } from "./morphology";
+import { patchSupportOp } from "./patchSupport";
 import { reactionDiffusionStepOp } from "./reactionDiffusion";
 import { splatDensityOp } from "./splatDensity";
+import { rasterisePolygonsOp, zonalHistogramOp } from "./zonal";
 import { addForcesOp } from "./springs/addForces";
 import { containerOp, mobilityOp, pullForceOp, viscosityOp } from "./springs/bodyForces";
 import {
@@ -79,6 +81,9 @@ export function registerBuiltinOps(): void {
   reg(cellCountsOp);
   reg(histogramOp);
   reg(histogramMaskedOp);
+  reg(patchSupportOp);
+  reg(rasterisePolygonsOp);
+  reg(zonalHistogramOp);
   // spring model (docs/spring-model-as-ops.md)
   reg(springForceOp);
   reg(springIntegrateOp);
@@ -205,8 +210,11 @@ export {
   kthNeighborDistanceOp,
   membershipToDistanceOp,
   morphologyOp,
+  patchSupportOp,
+  rasterisePolygonsOp,
   reactionDiffusionStepOp,
   splatDensityOp,
   thresholdOp,
   vietorisRipsOp,
+  zonalHistogramOp,
 };
