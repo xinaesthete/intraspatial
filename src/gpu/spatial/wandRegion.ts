@@ -8,7 +8,8 @@
 // a breadth-first fill is one pass over the pixels, and keeping it on the host means moving the
 // tolerance re-fills without another dispatch or readback.
 
-import { compileShader, getDevice } from "../device";
+import { wandSeedPixel } from "#src/spatial/floodArea";
+import { compileShader, deviceScoped, perDevice } from "../device";
 import type { GramMatrixGpuResult } from "./gramMatrix";
 import type { ModeParams } from "./gramModes";
 import { SIMILARITY_WGSL } from "./similarityWgsl";
@@ -40,22 +41,25 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
 }
 `;
 
-let ctx: Promise<{ device: GPUDevice; pipeline: GPUComputePipeline }> | undefined;
-let bufs: { uni: GPUBuffer; chan: GPUBuffer; wand: GPUBuffer; out: GPUBuffer; staging: GPUBuffer } | undefined;
+/** Per device: the Gram result may live on a renderer's device (`gramMatrixGpu`'s `device`). */
+const getCtx = deviceScoped(async (device: GPUDevice) => {
+  const module = await compileShader(device, DISTANCE_SHADER, "wandRegion.distance");
+  const pipeline = device.createComputePipeline({
+    label: "wandRegion:distance",
+    layout: "auto",
+    compute: { module, entryPoint: "main" },
+  });
+  return { device, pipeline };
+});
 
-function getCtx() {
-  ctx ??= (async () => {
-    const device = await getDevice();
-    const module = await compileShader(device, DISTANCE_SHADER, "wandRegion.distance");
-    const pipeline = device.createComputePipeline({
-      label: "wandRegion:distance",
-      layout: "auto",
-      compute: { module, entryPoint: "main" },
-    });
-    return { device, pipeline };
-  })();
-  return ctx;
+interface Bufs {
+  uni?: GPUBuffer;
+  chan?: GPUBuffer;
+  wand?: GPUBuffer;
+  out?: GPUBuffer;
+  staging?: GPUBuffer;
 }
+const bufsFor = perDevice((): Bufs => ({}));
 
 /** A buffer at least `size` bytes, kept from the last call when it is big enough. */
 function fit(device: GPUDevice, old: GPUBuffer | undefined, size: number, usage: number, label: string): GPUBuffer {
@@ -69,30 +73,31 @@ function fit(device: GPUDevice, old: GPUBuffer | undefined, size: number, usage:
  *
  * `params` is the `modeParams` the map is drawn with, so the field is the one the outline is a level
  * set of. `rasters` is a buffer in `res.resident`'s layout to read instead of `res.resident.buffer`.
- * One call at a time: the output buffers are shared, so callers coalesce rather than overlap.
+ * `device` is the one `res` was computed on (`gramMatrixGpu`'s `device`); default: the library's own.
+ * One call per device at a time: the output buffers are shared, so callers coalesce rather than overlap.
  */
 export async function wandDistance(
   res: GramMatrixGpuResult,
   params: Pick<ModeParams, "chan" | "wand" | "m">,
   rasters: GPUBuffer = res.resident.buffer,
+  device?: GPUDevice,
 ): Promise<Float32Array> {
-  const { device, pipeline } = await getCtx();
+  const { device: dev, pipeline } = await getCtx(device);
   const { width, height } = res;
   const n = width * height;
   const STORAGE = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST;
-  bufs = {
-    uni: bufs?.uni ?? device.createBuffer({ label: "wandRegion:uni", size: 32, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST }),
-    chan: fit(device, bufs?.chan, params.chan.byteLength, STORAGE, "wandRegion:chan"),
-    wand: fit(device, bufs?.wand, params.wand.byteLength, STORAGE, "wandRegion:wand"),
-    out: fit(device, bufs?.out, n * 4, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC, "wandRegion:out"),
-    staging: fit(device, bufs?.staging, n * 4, GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST, "wandRegion:staging"),
-  };
+  const bufs = bufsFor(dev);
+  bufs.uni ??= dev.createBuffer({ label: "wandRegion:uni", size: 32, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+  bufs.chan = fit(dev, bufs.chan, params.chan.byteLength, STORAGE, "wandRegion:chan");
+  bufs.wand = fit(dev, bufs.wand, params.wand.byteLength, STORAGE, "wandRegion:wand");
+  bufs.out = fit(dev, bufs.out, n * 4, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC, "wandRegion:out");
+  bufs.staging = fit(dev, bufs.staging, n * 4, GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST, "wandRegion:staging");
   const { uni, chan, wand, out, staging } = bufs;
   const half = res.resident.precision === "f16" ? 1 : 0;
-  device.queue.writeBuffer(uni, 0, new Float32Array([res.labels.length, params.m, width, height, res.resident.rowWords, half, 0, 0]));
-  device.queue.writeBuffer(chan, 0, params.chan);
-  device.queue.writeBuffer(wand, 0, params.wand);
-  const bind = device.createBindGroup({
+  dev.queue.writeBuffer(uni, 0, new Float32Array([res.labels.length, params.m, width, height, res.resident.rowWords, half, 0, 0]));
+  dev.queue.writeBuffer(chan, 0, params.chan);
+  dev.queue.writeBuffer(wand, 0, params.wand);
+  const bind = dev.createBindGroup({
     label: "wandRegion:distance",
     layout: pipeline.getBindGroupLayout(0),
     entries: [
@@ -103,14 +108,14 @@ export async function wandDistance(
       { binding: 4, resource: { buffer: out } },
     ],
   });
-  const enc = device.createCommandEncoder({ label: "wandRegion:distance" });
+  const enc = dev.createCommandEncoder({ label: "wandRegion:distance" });
   const pass = enc.beginComputePass({ label: "wandRegion:distance" });
   pass.setPipeline(pipeline);
   pass.setBindGroup(0, bind);
   pass.dispatchWorkgroups(Math.ceil(width / 8), Math.ceil(height / 8));
   pass.end();
   enc.copyBufferToBuffer(out, 0, staging, 0, n * 4);
-  device.queue.submit([enc.finish()]);
+  dev.queue.submit([enc.finish()]);
   await staging.mapAsync(GPUMapMode.READ, 0, n * 4);
   const got = new Float32Array(staging.getMappedRange(0, n * 4).slice(0));
   staging.unmap();
@@ -124,7 +129,8 @@ export async function wandDistance(
  * `seed` is in raster coordinates with pixel centres at whole numbers, as the marker is; the fill
  * starts from the nearest pixel. A fractional seed is interpolated from the four pixels around it, so
  * when the nearest is out of range the fill starts from the closest of those four that is in range.
- * Only when none is does the region come back empty.
+ * Only when none is does the region come back empty. `floodAreaByTolerance` gives this fill's pixel
+ * count at every tolerance at once.
  */
 export function connectedRegion(
   d: ArrayLike<number>,
@@ -134,7 +140,7 @@ export function connectedRegion(
   tol: number,
 ): Uint8Array {
   const region = new Uint8Array(width * height);
-  const start = seedPixel(d, width, height, seed, tol);
+  const start = wandSeedPixel(d, width, height, seed, tol);
   if (start < 0) return region;
   // Each pixel is queued at most once (marked as it is queued), so the queue never exceeds the raster.
   const queue = new Int32Array(width * height);
@@ -157,31 +163,4 @@ export function connectedRegion(
     if (i < width * (height - 1)) visit(i + width);
   }
   return region;
-}
-
-/** The pixel the fill starts from: the nearest to `seed`, else the closest in-range corner of the cell
- *  `seed` sits in, else -1. */
-function seedPixel(
-  d: ArrayLike<number>,
-  width: number,
-  height: number,
-  seed: { readonly col: number; readonly row: number },
-  tol: number,
-): number {
-  const clampCol = (c: number) => Math.max(0, Math.min(width - 1, c));
-  const clampRow = (r: number) => Math.max(0, Math.min(height - 1, r));
-  const nearest = clampRow(Math.round(seed.row)) * width + clampCol(Math.round(seed.col));
-  if (d[nearest]! <= tol) return nearest;
-  let best = -1;
-  let bestDist = Number.POSITIVE_INFINITY;
-  for (const r of [Math.floor(seed.row), Math.ceil(seed.row)])
-    for (const c of [Math.floor(seed.col), Math.ceil(seed.col)]) {
-      const i = clampRow(r) * width + clampCol(c);
-      const dist = Math.hypot(clampCol(c) - seed.col, clampRow(r) - seed.row);
-      if (d[i]! <= tol && dist < bestDist) {
-        best = i;
-        bestDist = dist;
-      }
-    }
-  return best;
 }

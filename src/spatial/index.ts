@@ -9,6 +9,7 @@ export * from "./edgeCorrection";
 export * from "./emeans";
 export * from "./eigenSym";
 export * from "./envelope";
+export * from "./floodArea";
 export * from "./geneModules";
 export * from "./gram";
 export * from "./histogram";

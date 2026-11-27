@@ -29,6 +29,8 @@ type ModeUniforms = {
   look: [number, number, number, number];
   /** Marker col, row (raster pixels), on, half-width in screen pixels. */
   marker: [number, number, number, number];
+  /** Highlight band: which value (0–2 mode, 3 the wand's d), lo, hi, on (1: [lo, hi), 2: [lo, hi]). */
+  band: [number, number, number, number];
   width: number;
   height: number;
   rowWords: number;
@@ -55,6 +57,7 @@ struct ModeUniforms {
   scales: vec4<f32>,
   look: vec4<f32>,
   marker: vec4<f32>,
+  band: vec4<f32>,
   width: f32, height: f32, rowWords: f32, K: f32,
   m: f32, selTol: f32, selOn: f32, half: f32,
   region: f32, pad0: f32, pad1: f32, pad2: f32,
@@ -75,6 +78,7 @@ struct ModeUniforms {
     scales: "vec4<f32>",
     look: "vec4<f32>",
     marker: "vec4<f32>",
+    band: "vec4<f32>",
     width: "f32",
     height: "f32",
     rowWords: "f32",
@@ -105,7 +109,7 @@ ${MARKER_WGSL}
 ${SIMILARITY_WGSL}
 ${OKLAB_TO_SRGB_WGSL}
 
-/** sampleWhitened, with pixels outside the connected region pushed out of range. Applied per pixel,
+/** A raw sampleWhitened at col, row, with the pixel pushed out of range if it is outside the connected region. Applied per pixel,
  *  before the bilinear blend, so the outline runs between a kept pixel and a dropped one even where
  *  both are within tolerance — which is what separates the region from a fragment touching it.
  *
@@ -113,8 +117,8 @@ ${OKLAB_TO_SRGB_WGSL}
  *  between them and a kept pixel still falls where their distances say. Dropped pixels already out
  *  of range keep their own d: raising those too (to a fixed 2·tol, say) would drag every crossing on
  *  the region's edge toward the kept pixel, by a different amount in each cell — a staircase. */
-fn sampleKept(col: u32, row: u32) -> vec4<f32> {
-  var s = sampleWhitened(col, row);
+fn kept(raw: vec4<f32>, col: u32, row: u32) -> vec4<f32> {
+  var s = raw;
   if (U.region != 0.0 && s.w <= U.selTol) {
     let i = row * u32(U.width) + col;
     if (((keep[i >> 2u] >> ((i & 3u) * 8u)) & 0xffu) == 0u) {
@@ -122,6 +126,17 @@ fn sampleKept(col: u32, row: u32) -> vec4<f32> {
     }
   }
   return s;
+}
+
+/** A histogram bar under the pointer, shown on the map: places whose value is in [lo, hi) keep their
+ *  colour with an amber lift, the rest are dimmed. Read from the interpolated field, so the band's
+ *  edge falls between pixel centres where the value crosses the bar's edge. */
+fn bandOver(base: vec3<f32>, raw: vec4<f32>) -> vec3<f32> {
+  if (U.band.w < 0.5) { return base; }
+  let c = u32(U.band.x);
+  let v = select(select(select(raw.x, raw.y, c == 1u), raw.z, c == 2u), raw.w, c == 3u);
+  if (v >= U.band.y && (v < U.band.z || (U.band.w > 1.5 && v == U.band.z))) { return mix(base, vec3<f32>(1.0, 0.8, 0.25), 0.35); }
+  return mix(base, vec3<f32>(0.04), 0.7);
 }
 
 struct Varyings {
@@ -157,15 +172,21 @@ fn fragmentMain(input: Varyings) -> @location(0) vec4<f32> {
   let c0 = vec2<u32>(floor(q));
   let c1 = min(c0 + vec2<u32>(1u), vec2<u32>(size) - vec2<u32>(1u));
   let f = q - vec2<f32>(c0);
+  let r00 = sampleWhitened(c0.x, c0.y);
+  let r10 = sampleWhitened(c1.x, c0.y);
+  let r01 = sampleWhitened(c0.x, c1.y);
+  let r11 = sampleWhitened(c1.x, c1.y);
   let s = mix(
-    mix(sampleKept(c0.x, c0.y), sampleKept(c1.x, c0.y), f.x),
-    mix(sampleKept(c0.x, c1.y), sampleKept(c1.x, c1.y), f.x),
+    mix(kept(r00, c0.x, c0.y), kept(r10, c1.x, c0.y), f.x),
+    mix(kept(r01, c0.x, c1.y), kept(r11, c1.x, c1.y), f.x),
     f.y,
   );
+  // The band reads the unadjusted d: the histogram it was picked from counts every pixel's own d.
+  let raw = mix(mix(r00, r10, f.x), mix(r01, r11, f.x), f.y);
 
   let t = clamp(s.xyz * U.scales.xyz, vec3<f32>(-1.0), vec3<f32>(1.0));
   let lab = vec3<f32>(U.look.x + U.look.y * t.x, U.look.z * t.y, U.look.z * t.z);
-  let rgb = selectionOver(oklabToSrgb(lab), s.w, U.selTol, U.selOn);
+  let rgb = bandOver(selectionOver(oklabToSrgb(lab), s.w, U.selTol, U.selOn), raw);
   let marked = markerOver(rgb, q - U.marker.xy, perPixel * U.marker.w, U.marker.z);
   return deckgl_premultiplied_alpha(vec4<f32>(marked, U.look.w));
 }
@@ -179,6 +200,8 @@ export type GramModesLayerProps = {
   vectors: Float64Array | null;
   /** See `ModePaintOptions`. */
   saturate?: number;
+  /** Per-mode half-ranges the ramp saturates at, replacing `saturate`·σ — see `ModePaintOptions`. */
+  ranges?: readonly [number, number, number] | null;
   chromaWeight?: number;
   reference?: Float64Array | null;
   modesUsed?: number;
@@ -189,13 +212,25 @@ export type GramModesLayerProps = {
   basis?: ModeBasis | null;
   /** Limit the selection to these pixels — `connectedRegion`'s mask, one byte per raster pixel. */
   region?: Uint8Array | null;
+  /** Highlight where a value lies in [lo, hi): `value` 0–2 is a mode's coordinate, 3 the wand's d. */
+  band?: MapBand | null;
 } & LayerProps;
+
+/** A value range to show on the map, from a histogram bar under the pointer. */
+export interface MapBand {
+  readonly value: 0 | 1 | 2 | 3;
+  readonly lo: number;
+  readonly hi: number;
+  /** Include `hi` itself: the histogram's last bin is closed. */
+  readonly closed?: boolean;
+}
 
 const defaultProps: DefaultProps<GramModesLayerProps> = {
   res: { type: "object", value: null, compare: false },
   rasters: { type: "object", value: null, compare: false },
   vectors: { type: "object", value: null, compare: false },
   saturate: { type: "number", value: 2.5 },
+  ranges: { type: "array", value: null, compare: 1 },
   chromaWeight: { type: "number", value: 1 },
   reference: { type: "object", value: null, compare: false },
   modesUsed: { type: "number", value: 3 },
@@ -203,6 +238,7 @@ const defaultProps: DefaultProps<GramModesLayerProps> = {
   marker: { type: "object", value: null, compare: 1 },
   basis: { type: "object", value: null, compare: false },
   region: { type: "object", value: null, compare: false },
+  band: { type: "object", value: null, compare: 1 },
 };
 
 type State = {
@@ -269,6 +305,7 @@ export class GramModesLayer extends Layer<GramModesLayerProps> {
       res !== oldProps.res ||
       vectors !== oldProps.vectors ||
       props.saturate !== oldProps.saturate ||
+      props.ranges !== oldProps.ranges ||
       props.chromaWeight !== oldProps.chromaWeight ||
       props.reference !== oldProps.reference ||
       props.modesUsed !== oldProps.modesUsed ||
@@ -277,6 +314,7 @@ export class GramModesLayer extends Layer<GramModesLayerProps> {
     const params = modeParams(res, {
       vectors,
       saturate: props.saturate,
+      ranges: props.ranges ?? undefined,
       chromaWeight: props.chromaWeight,
       reference: props.reference ?? undefined,
       modesUsed: props.modesUsed,
@@ -300,7 +338,7 @@ export class GramModesLayer extends Layer<GramModesLayerProps> {
 
   override draw(): void {
     const { model, params } = this.state;
-    const { res, rasters, marker, reference, tolerance, opacity, region } = this.props;
+    const { res, rasters, marker, reference, tolerance, opacity, region, band } = this.props;
     if (!model || !res || !rasters || !params) return;
     const handle = rasters;
     if (this.state.handle !== handle) {
@@ -320,6 +358,8 @@ export class GramModesLayer extends Layer<GramModesLayerProps> {
       scales: [sL, sA, sB, 0],
       look: [MODE_LOOK.baseL, MODE_LOOK.spanL, MODE_LOOK.chroma, opacity ?? 1],
       marker: [marker?.col ?? 0, marker?.row ?? 0, marker ? 1 : 0, 0.75],
+      // The wand's d only exists with a reference; without one the band on it is off.
+      band: [band?.value ?? 0, band?.lo ?? 0, band?.hi ?? 0, band && (band.value < 3 || reference) ? (band.closed ? 2 : 1) : 0],
       width: res.width,
       height: res.height,
       rowWords: res.resident.rowWords,

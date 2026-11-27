@@ -7,21 +7,23 @@ import type { SpectrumEnvelopeResult } from "../../../src/gpu/spatial/gramEnvelo
 import type { CoLocationModes } from "../../../src/spatial/gram";
 import { Explain } from "../transcript/Explain";
 import { LoadingsChart } from "./LoadingsChart";
-import { ModeLegend } from "./ModeLegend";
+import { type LegendHistograms, ModeLegend } from "./ModeLegend";
 import { ScreeChart } from "./ScreeChart";
 
 export function ModeCharts({
   modes,
   envelope,
   nullControls,
+  histograms,
 }: {
   modes: CoLocationModes;
+  histograms?: LegendHistograms | undefined;
   envelope?: SpectrumEnvelopeResult;
   nullControls?: ReactNode;
 }) {
   return (
     <>
-      <ModeLegend modes={modes} />
+      <ModeLegend modes={modes} {...(histograms ? { histograms } : {})} />
       <div className="charts">
         <section>
           <h3>How much of the variation each mode carries</h3>

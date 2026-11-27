@@ -4,12 +4,17 @@
 import { useState } from "react";
 import { LocalStorePicker } from "../LocalStorePicker";
 
-/** How the mode map is painted: what `GramModesLayer` takes as `saturate`, `chromaWeight`, `opacity`. */
-export function useMapStyle(initial: { saturate?: number; chromaWeight?: number; opacity?: number } = {}) {
+/** Where each mode's colour ramp saturates: at the 1st/99th percentiles of its values over the
+ *  map's window (from the legend's histograms), or at a fixed ±saturate·σ. */
+export type MapContrast = "view" | "sigma";
+
+/** How the mode map is painted: what `GramModesLayer` takes as `saturate` (or `ranges`), `chromaWeight`, `opacity`. */
+export function useMapStyle(initial: { saturate?: number; chromaWeight?: number; opacity?: number; contrast?: MapContrast } = {}) {
+  const [contrast, setContrast] = useState<MapContrast>(initial.contrast ?? "view");
   const [saturate, setSaturate] = useState(initial.saturate ?? 2.5);
   const [chromaWeight, setChromaWeight] = useState(initial.chromaWeight ?? 1);
   const [opacity, setOpacity] = useState(initial.opacity ?? 0.8);
-  return { saturate, setSaturate, chromaWeight, setChromaWeight, opacity, setOpacity };
+  return { contrast, setContrast, saturate, setSaturate, chromaWeight, setChromaWeight, opacity, setOpacity };
 }
 
 export type MapStyle = ReturnType<typeof useMapStyle>;
@@ -18,16 +23,25 @@ export function MapStyleControls({ style }: { style: MapStyle }) {
   return (
     <>
       <label>
-        Colour strength (saturate at ±{style.saturate.toFixed(1)}σ)
-        <input
-          type="range"
-          min={0.5}
-          max={6}
-          step={0.1}
-          value={style.saturate}
-          onChange={(e) => style.setSaturate(Number(e.target.value))}
-        />
+        Colour range
+        <select value={style.contrast} onChange={(e) => style.setContrast(e.target.value as MapContrast)}>
+          <option value="view">from this window's histograms (1st–99th percentile)</option>
+          <option value="sigma">fixed, in each mode's σ</option>
+        </select>
       </label>
+      {style.contrast === "sigma" && (
+        <label>
+          Colour strength (saturate at ±{style.saturate.toFixed(1)}σ)
+          <input
+            type="range"
+            min={0.5}
+            max={6}
+            step={0.1}
+            value={style.saturate}
+            onChange={(e) => style.setSaturate(Number(e.target.value))}
+          />
+        </label>
+      )}
       <label>
         Hue weight (0 = by importance, 1 = equalised)
         <input

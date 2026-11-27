@@ -11,10 +11,15 @@ import { decimateGpu, decimateResident } from "./spatial/decimate";
 import { fuzzyAdjacencyGpu } from "./spatial/fuzzyAdjacency";
 import { fuzzyAdjacencyAdaptiveFromRhoGpu, fuzzyAdjacencyAdaptiveGpu } from "./spatial/fuzzyAdjacencyAdaptive";
 import { getisOrdGpu } from "./spatial/getisOrd";
+import { coLocationModes } from "../spatial/gram";
 import { gramMatrixGpu } from "./spatial/gramMatrix";
+import { probeChannels, standardise } from "./spatial/gramTerrain";
+import { wandDistance } from "./spatial/wandRegion";
+import { modeParams } from "./spatial/gramModes";
 import { buildGridIndexGpu } from "./spatial/gridIndex";
 import { knnGpu } from "./spatial/knn";
 import { kthNeighborDistanceGpu } from "./spatial/kthNeighborDistance";
+import { modeHistograms, modeProjection } from "./spatial/modeHistograms";
 import { morphologyGpu, morphologyResident } from "./spatial/morphology";
 import { nearestNeighborDistancesGpu } from "./spatial/nnDistance";
 import { splatDensityToTexture } from "./spatial/splatDensity";
@@ -210,6 +215,37 @@ describe("render-path entry points", () => {
     const got = await gramMatrixGpu(channels, { ...params, device });
     expectSame(got.c, want.c);
     expectSame(got.corr, want.corr);
+  });
+
+  it("modeHistograms and modeProjection, over a Gram left on the device they are handed", async () => {
+    const channels = [
+      { label: "a", xs: XS, ys: YS },
+      { label: "b", xs: YS, ys: XS },
+      { label: "c", xs: XS, ys: XS },
+    ];
+    const res = await gramMatrixGpu(channels, { bbox: [0, 0, 14, 14] as const, width: 33, height: 32, radius: 2, device });
+    const params = modeParams(res, { vectors: coLocationModes(res).vectors });
+    const wantPlanes = await modeProjection(res, params);
+    expectSame(await modeProjection(res, params, undefined, device), wantPlanes);
+    const want = await modeHistograms(res, params, undefined, { bins: 16 });
+    const got = await modeHistograms(res, params, undefined, { bins: 16 }, device);
+    expectSame(
+      Float64Array.from(got.modes.flatMap((h) => Array.from(h.counts))),
+      Float64Array.from(want.modes.flatMap((h) => Array.from(h.counts))),
+    );
+    expect(got.halfRanges).toEqual(want.halfRanges);
+  });
+
+  it("probeChannels and wandDistance, over a Gram left on the device they are handed", async () => {
+    const channels = [
+      { label: "a", xs: XS, ys: YS },
+      { label: "b", xs: YS, ys: XS },
+    ];
+    const res = await gramMatrixGpu(channels, { bbox: [0, 0, 14, 14] as const, width: 32, height: 32, radius: 2, device });
+    expectSame(await probeChannels(res, 12.4, 9.6, undefined, device), await probeChannels(res, 12.4, 9.6));
+    const z = standardise(await probeChannels(res, 12, 10, undefined, device), res.resident.mean, res.resident.sd);
+    const params = modeParams(res, { vectors: coLocationModes(res).vectors, reference: z });
+    expectSame(await wandDistance(res, params, undefined, device), await wandDistance(res, params));
   });
 });
 
