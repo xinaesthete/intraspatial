@@ -30,6 +30,7 @@ bit for bit, and the collagen median to within 4·10⁻⁸ relative (see "Valida
 | Support | Per channel, any number of rasters, OR'd as `!= 0`. For example, LA-ICP-MS tissue is "any of the five metals non-zero". |
 | Edges | Per channel, and fixed **before** binning, because tiles add into the same counts. A fixed range takes one pass. Auto range takes an extra min/max pass over every region's values, then R1's edge rule. |
 | Binning | R1's f32 rule, via the shared `HIST_BIN_WGSL`. Counts, CDF, totals and edges match the golden **exactly**. |
+| Limits | Counters are u32. One accumulator bins at most 2³² − 1 pixel visits (tiles × layers); `binTile` throws before exceeding it, and `zonalMerge` refuses sums past 2³² − 1. Every binding (counts, totals, exact-pass table and buffer) is checked against `maxStorageBufferBindingSize` before anything is allocated. |
 | Moments | min and max are exact (ordered-u32 atomics). The sum is f32 within a tile, then compensated across tiles (TwoSum `(hi, lo)`), so its error does not grow with tile count. |
 | Quantiles | Binned: R1's `histogramQuantile`, within one bin width under R1's bracketing condition. Exact: see below. |
 
@@ -42,8 +43,9 @@ bit for bit, and the collagen median to within 4·10⁻⁸ relative (see "Valida
 | bin | `bin` + `fold` | 1 dispatch per channel | Each thread walks runs of 16 pixels and flushes totals, min, max and sum once per label change. Bins go to a workgroup-private histogram when regions × bins ≤ 4088, otherwise to global atomics. |
 | exact | `collect` | 1 dispatch per channel | Appends values in the planned target bins at their offsets. |
 
-Device memory is one chunk per channel, plus labels and support, plus `rows × bins` u32. It does not
-depend on slide size. A 520 Mpx resection at 512² chunks streams about 2000 tiles through the same
+For the binned passes, device memory is one chunk per channel, plus labels and support, plus
+`rows × bins` u32 and 48 B a row. It does not depend on slide size. The exact pass adds a 4-byte
+buffer per collected value, which can grow with slide size (see "Exact quantiles"). A 520 Mpx resection at 512² chunks streams about 2000 tiles through the same
 buffers. Each pass fetches every tile again, so give each source its own `TileCache`, sized to the
 level, or use fixed ranges without the exact pass to read the slide once. Every binding uses at
 most 7 storage buffers.
@@ -54,9 +56,17 @@ most 7 storage buffers.
 and ⌊p⌋+1, where p = q·(N−1). Those bins are de-duplicated, at most 2 per quantile per row.
 `collect` gathers only those values. That was 150 k values for 39 ROIs of about 160 k pixels each on
 Leap034. `zonalExactQuantiles` sorts each small set and interpolates numpy-"linear"; that is
-`np.median` at q = ½. It checks each collected count against its bin count. A rank in a fixed-range
+`np.median` at q = ½. Each table slot carries its bin's planned count, so `collect` never writes past
+its target's segment. `readCollected` and `zonalCollectCpu` throw unless every target received exactly
+that count, which catches a pass over different tiles. A rank in a fixed-range
 under/overflow is censored to `lo` / `hi`, as R1's binned estimate is. This is the second pass R1
 sketched, built.
+
+**Exact-pass memory.** The collect buffer holds `plan.total` 4-byte values: every sample in the
+selected bins, not just the ranks. That is small when values spread over the bins, as on Leap034
+(150 k values). It approaches the region's sample count when one selected bin holds most of a
+region, as in a near-constant channel. So exact-mode memory can grow with slide size, up to the
+device's storage-binding limit, which `beginCollect` checks before allocating. More bins shrink it.
 
 ## Validation: Leap034 against SIMBA
 

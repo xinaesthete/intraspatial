@@ -223,9 +223,16 @@ describe("zonal GPU", () => {
       expect(acc.needsRange).toBe(true);
       for (const t of tiles) acc.rangeTile(t);
       acc.finalizeEdges();
-      for (const t of tiles) acc.binTile(t);
+      for (const t of tiles.slice(0, 3)) acc.binTile(t);
+      // A read is a snapshot at the call: binning the last tile while it is pending is not in it.
+      const partial = acc.read();
+      acc.binTile(tiles[3]!);
+      const part = await partial;
       const gpu = await acc.read();
       expect(diff(gpu, cpu, 1e-6)).toBeUndefined();
+      expect(part.totals.reduce((s, v, i) => s + (i % 8 === 6 ? v : 0), 0)).toBeLessThan(
+        gpu.totals.reduce((s, v, i) => s + (i % 8 === 6 ? v : 0), 0),
+      );
 
       const qs = [0, 0.1, 0.25, 0.5, 0.75, 0.9, 1];
       const plan = zonalExactPlan(gpu, qs);
@@ -234,6 +241,9 @@ describe("zonal GPU", () => {
       const exactGpu = zonalExactQuantiles(gpu, plan, await acc.readCollected());
       const exactCpu = zonalExactQuantiles(cpu, plan, zonalCollectCpu(labels, data, opts, cpu, plan));
       expect(mismatch(exactGpu, exactCpu)).toBeUndefined();
+      // One tile collected twice: the counts no longer match the plan, and the read says so.
+      acc.collectTile(tiles[0]!);
+      await expect(acc.readCollected()).rejects.toThrow(/exact pass found/);
     } finally {
       acc.release();
     }

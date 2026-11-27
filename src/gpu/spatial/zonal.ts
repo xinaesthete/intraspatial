@@ -27,7 +27,9 @@ import { HISTOGRAM_MOMENTS, histogramCdf, histogramFixedRange } from "#src/spati
 import {
   type PolygonRingBuffers,
   POLY_STRIDE,
+  ZONAL_TARGET_STRIDE,
   ZONAL_TOTALS,
+  checkCollected,
   type ZonalExactPlan,
   type ZonalHistogram,
   type ZonalOptions,
@@ -344,7 +346,7 @@ fn finish(@builtin(global_invocation_id) gid: vec3u) {
 
 const COLLECT = /* wgsl */ `${UNI}${READ}${HIST_BIN_WGSL}
 @group(0) @binding(4) var<storage, read> edges: array<f32>;
-@group(0) @binding(5) var<storage, read> table: array<u32>;               // rows x perRow x [bin, offset]
+@group(0) @binding(5) var<storage, read> table: array<u32>;               // rows x perRow x [bin, offset, count]
 @group(0) @binding(6) var<storage, read_write> cursors: array<atomic<u32>>; // rows x perRow
 @group(0) @binding(7) var<storage, read_write> collected: array<f32>;
 
@@ -361,11 +363,14 @@ fn collect(@builtin(global_invocation_id) gid: vec3u) {
     let base = ((g - 1u) * U.channels + U.channel) * U.perRow;
     var done = false;
     for (var t = 0u; t < U.perRow && !done; t = t + 1u) {
-      let tb = table[(base + t) * 2u];
+      let o = (base + t) * ${ZONAL_TARGET_STRIDE}u;
+      let tb = table[o];
       if (tb == 0xffffffffu) { done = true; }
       else if (tb == b) {
+        // The cursor still counts past the planned count, so readCollected can refuse the pass,
+        // but nothing is written past this target's segment.
         let k = atomicAdd(&cursors[base + t], 1u);
-        collected[table[(base + t) * 2u + 1u] + k] = v;
+        if (k < table[o + 2u]) { collected[table[o + 1u] + k] = v; }
         done = true;
       }
     }
@@ -560,7 +565,10 @@ type Phase = "range" | "bin" | "collect";
  *
  * Each `*Tile` call writes its uniforms and submits at once (no await inside), so a caller may
  * reuse or rewrite the tile's buffers right after it returns: queue writes order after the submit.
- * The tiles of the range pass and the bin pass must be the same pixels.
+ * The tiles of the range pass, the bin pass and the exact pass must be the same pixels; the exact
+ * pass checks that its counts match. `read()` snapshots the state at the call, so binning may go
+ * on while it is pending. Counters are u32: one accumulator bins at most 2^32 − 1 pixel visits
+ * (tiles × layers), and `binTile` throws before a tile that would exceed that.
  */
 export class ZonalAccumulator {
   readonly regions: number;
@@ -571,6 +579,8 @@ export class ZonalAccumulator {
   private readonly leases: ResidentBuffer[] = [];
   private readonly b: Record<"counts" | "totals" | "rowAcc" | "sums" | "edges" | "rangeKeys" | "noSupport" | "uni", GPUBuffer>;
   private phase: Phase = "range";
+  /** Pixels binned so far (tiles × layers): the u32-counter bound in `binTile`. */
+  private visits = 0;
   private edgesReady: boolean;
   private collecting?: { plan: ZonalExactPlan; table: ResidentBuffer; cursors: ResidentBuffer; out: ResidentBuffer };
 
@@ -587,7 +597,10 @@ export class ZonalAccumulator {
     this.autoMask = opts.channels.reduce((m, c, i) => (c.range ? m : m | (1 << i)) >>> 0, 0);
     this.edgesReady = this.autoMask === 0;
     const { rows, bins, channels } = this;
+    // Every per-row binding, before any lease: totals (32 B a row) outgrows counts at few bins.
     checkBindingSize(dev, `zonal: ${rows} rows × ${bins} bins`, rows * bins * 4);
+    checkBindingSize(dev, `zonal: ${rows} rows of totals`, rows * ZONAL_TOTALS * 4);
+    checkBindingSize(dev, `zonal: ${rows} rows of moments`, rows * 16);
     const p = pool(dev);
     const lease = (bytes: number, usage?: number) => {
       const l = p.lease(bytes, usage);
@@ -738,6 +751,13 @@ export class ZonalAccumulator {
     if (this.phase === "collect") throw new Error("zonal: binTile after the exact pass began");
     this.phase = "bin";
     this.checkTile(tile);
+    // Every counter is u32 and each binned pixel visit adds at most 1 to any one of them, so
+    // keeping the visits under 2^32 is what guarantees no count wraps to a small number.
+    const n = tile.labels.width * tile.labels.height;
+    if (this.visits + n > 0xffffffff) {
+      throw new Error(`zonal: an accumulator bins at most 2^32 − 1 pixel visits (tiles × layers); this tile would make ${this.visits + n}`);
+    }
+    this.visits += n;
     const dev = this.ctx.device;
     const privatized = this.regions * this.bins <= PRIVATE_CAP ? 1 : 0;
     const enc = dev.createCommandEncoder({ label: "zonal:bin" });
@@ -808,15 +828,14 @@ export class ZonalAccumulator {
 
   /** Read the histogram back. Sums come back as their compensated (hi, lo) pair, added in f64. */
   async read(): Promise<ZonalHistogram> {
-    const dev = this.ctx.device;
     const { rows, bins, channels } = this;
-    const [counts, totals, rowAcc, sums, edges] = await Promise.all([
-      readBackBytes(dev, "zonal:rb:counts", this.b.counts, 0, rows * bins * 4),
-      readBackBytes(dev, "zonal:rb:totals", this.b.totals, 0, rows * ZONAL_TOTALS * 4),
-      readBackBytes(dev, "zonal:rb:rowAcc", this.b.rowAcc, 0, rows * 16),
-      readBackBytes(dev, "zonal:rb:sums", this.b.sums, 0, rows * 8),
-      readBackBytes(dev, "zonal:rb:edges", this.b.edges, 0, channels * 8),
-    ]);
+    const [counts, totals, rowAcc, sums, edges] = (await this.snapshot([
+      [this.b.counts, rows * bins * 4],
+      [this.b.totals, rows * ZONAL_TOTALS * 4],
+      [this.b.rowAcc, rows * 16],
+      [this.b.sums, rows * 8],
+      [this.b.edges, channels * 8],
+    ])) as [ArrayBuffer, ArrayBuffer, ArrayBuffer, ArrayBuffer, ArrayBuffer];
     const c = new Uint32Array(counts);
     const t = new Uint32Array(totals);
     const acc = new Uint32Array(rowAcc);
@@ -843,21 +862,49 @@ export class ZonalAccumulator {
     };
   }
 
+  /** Copy `parts` into one scratch buffer in ONE submit, before any await, and read that back: the
+   *  result is the state at the call, even if more tiles are submitted while the read is pending. */
+  private async snapshot(parts: readonly (readonly [GPUBuffer, number])[]): Promise<ArrayBuffer[]> {
+    const dev = this.ctx.device;
+    const p = pool(dev);
+    const total = parts.reduce((s, [, bytes]) => s + bytes, 0);
+    const scratch = p.lease(total);
+    try {
+      const enc = dev.createCommandEncoder({ label: "zonal:snapshot" });
+      let o = 0;
+      for (const [buf, bytes] of parts) {
+        enc.copyBufferToBuffer(buf, 0, scratch.buffer, o, bytes);
+        o += bytes;
+      }
+      dev.queue.submit([enc.finish()]);
+      const all = await readBackBytes(dev, "zonal:rb:snapshot", scratch.buffer, 0, total);
+      o = 0;
+      return parts.map(([, bytes]) => all.slice(o, (o += bytes)));
+    } finally {
+      p.release(scratch);
+    }
+  }
+
   /** Start the exact pass with `zonalExactPlan(await acc.read(), quantiles)`. */
   beginCollect(plan: ZonalExactPlan): void {
     if (!this.edgesReady) throw new Error("zonal: beginCollect before the edges were fixed");
     if (this.collecting) throw new Error("zonal: the exact pass already began");
-    if (plan.table.length !== this.rows * plan.perRow * 2) throw new Error("zonal: the plan is for a different histogram");
+    if (plan.table.length !== this.rows * plan.perRow * ZONAL_TARGET_STRIDE)
+      throw new Error("zonal: the plan is for a different histogram");
     const dev = this.ctx.device;
     const p = pool(dev);
+    const cursorBytes = plan.table.byteLength / ZONAL_TARGET_STRIDE;
+    // Every binding of `collect`, before any lease or phase change.
     checkBindingSize(dev, `zonal: exact pass collecting ${plan.total} values`, plan.total * 4);
+    checkBindingSize(dev, `zonal: exact-pass table of ${this.rows} rows × ${plan.perRow} targets`, plan.table.byteLength);
+    checkBindingSize(dev, `zonal: exact-pass cursors`, cursorBytes);
     const table = p.lease(plan.table.byteLength);
-    const cursors = p.lease(plan.table.byteLength / 2);
+    const cursors = p.lease(cursorBytes);
     const out = p.lease(Math.max(4, plan.total * 4));
     this.leases.push(table, cursors, out);
     writeView(dev.queue, table.buffer, plan.table);
     const enc = dev.createCommandEncoder({ label: "zonal:collect:init" });
-    enc.clearBuffer(cursors.buffer, 0, plan.table.byteLength / 2);
+    enc.clearBuffer(cursors.buffer, 0, cursorBytes);
     dev.queue.submit([enc.finish()]);
     this.collecting = { plan, table, cursors, out };
     this.phase = "collect";
@@ -882,7 +929,7 @@ export class ZonalAccumulator {
           ...this.tileBindings(tile, c),
           sized(this.b.edges, this.channels * 8),
           sized(k.table.buffer, k.plan.table.byteLength),
-          sized(k.cursors.buffer, k.plan.table.byteLength / 2),
+          sized(k.cursors.buffer, k.plan.table.byteLength / ZONAL_TARGET_STRIDE),
           sized(k.out.buffer, Math.max(4, k.plan.total * 4)),
         ]),
       );
@@ -892,12 +939,17 @@ export class ZonalAccumulator {
     dev.queue.submit([enc.finish()]);
   }
 
-  /** The collected values, for `zonalExactQuantiles`. */
+  /** The collected values, for `zonalExactQuantiles`. Throws (`checkCollected`) unless every
+   *  target got exactly its planned count, i.e. the collect pass saw the bin pass's pixels. */
   async readCollected(): Promise<Float32Array> {
     const k = this.collecting;
     if (!k) throw new Error("zonal: readCollected before beginCollect");
-    if (k.plan.total === 0) return new Float32Array(1);
-    return new Float32Array(await readBackBytes(this.ctx.device, "zonal:rb:collected", k.out.buffer, 0, k.plan.total * 4));
+    const [values, cursors] = await this.snapshot([
+      [k.out.buffer, Math.max(4, k.plan.total * 4)],
+      [k.cursors.buffer, k.plan.table.byteLength / ZONAL_TARGET_STRIDE],
+    ]);
+    checkCollected(k.plan, new Uint32Array(cursors!));
+    return new Float32Array(values!);
   }
 
   /** Return every buffer to the pool. Safe right after the last submit or read. */

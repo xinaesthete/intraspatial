@@ -14,9 +14,26 @@ import { ZonalAccumulator, rasterisePolygonBuffers, zonalByteSizes } from "#src/
 import { HISTOGRAM_MOMENTS, histogramBins, histogramFixedRange } from "#src/spatial/histogram";
 import { POLY_STRIDE, type PolygonRingBuffers, ZONAL_TOTALS, type ZonalOptions, zonalHistogramCpu } from "#src/spatial/zonal";
 import type { Graph } from "../graph";
-import type { FieldValue, GpuField, ResidentBuffer, Shape } from "../handle";
+import { type ElementType, type FieldValue, type GpuField, type ResidentBuffer, SCALAR, type Shape, type TensorAxis } from "../handle";
 import type { OpType, Params, PortSpec } from "../op";
 import { RASTER_PLANE, type RasterPlanePayload } from "./histogram";
+
+/** One plane per input: a channel axis or a multi-lane element would be read as its first
+ *  `width × height` words on the GPU while the golden read every one. */
+function singlePlane(who: string) {
+  return {
+    inferAxes(inAxes: (readonly TensorAxis[] | undefined)[]) {
+      const planes = (axes: readonly TensorAxis[] | undefined) => (axes ?? []).reduce((n, ax) => n * ax.length, 1);
+      if (inAxes.some((axes) => planes(axes) !== 1)) throw new Error(`${who}: inputs must be single-channel (open axes of total length 1)`);
+      return undefined;
+    },
+    inferElements(inEls: ElementType[]) {
+      if (inEls.some((e) => e.kind !== "scalar"))
+        throw new Error(`${who}: inputs must be scalar (got ${inEls.map((e) => e.kind).join(", ")})`);
+      return SCALAR;
+    },
+  };
+}
 
 function gridOf(s: Shape, who: string): { width: number; height: number } {
   if (s.kind !== "grid") throw new Error(`${who}: input must be a grid`);
@@ -65,6 +82,8 @@ export const rasterisePolygonsOp: OpType = {
     return [{ kind: "grid", width: params.width as number, height: params.height as number }];
   },
   inferPlacement: () => [undefined],
+  inferAxes: (inAxes) => [singlePlane("rasterisePolygons").inferAxes(inAxes)],
+  inferElements: (inEls) => [singlePlane("rasterisePolygons").inferElements(inEls)],
   resident: true,
   async execute(ctx, ins, params) {
     const [e, p] = ins as [FieldValue, FieldValue];
@@ -183,12 +202,8 @@ export const zonalHistogramOp: OpType = {
     return outShapes(o.regions, o.bins!);
   },
   inferPlacement: () => OUTPUTS.map(() => undefined),
-  inferAxes(inAxes) {
-    const planes = (axes: (typeof inAxes)[number]) => (axes ?? []).reduce((n, ax) => n * ax.length, 1);
-    if (inAxes.some((axes) => planes(axes) !== 1))
-      throw new Error("zonalHistogram: inputs must be single-channel (open axes of total length 1)");
-    return OUTPUTS.map(() => undefined);
-  },
+  inferAxes: (inAxes) => OUTPUTS.map(() => singlePlane("zonalHistogram").inferAxes(inAxes)),
+  inferElements: (inEls) => OUTPUTS.map(() => singlePlane("zonalHistogram").inferElements(inEls)),
   inferRole: () => OUTPUTS.map(() => undefined),
   resident: true,
   slices: true,

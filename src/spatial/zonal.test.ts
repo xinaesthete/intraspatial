@@ -225,23 +225,33 @@ describe("exact quantiles", () => {
           if (c === 0 && (sup[i] === 0 || !(v > 0))) return;
           if (Number.isFinite(v)) vals.push(v);
         });
-        const sorted = Float32Array.from(vals);
+        // Channel 1 is fixed-range [0, 4]: a rank outside it is censored to the edge, which is
+        // numpy-linear over the values clamped to [0, 4] (clamping keeps the order).
+        const sorted = Float32Array.from(vals, (v) => (c === 1 ? Math.min(4, Math.max(0, v)) : v));
+        expect(c === 0 || vals.some((v) => v < 0 || v > 4)).toBe(true); // censoring is exercised
         qs.forEach((q, j) => {
           const got = exact[(g * 2 + c) * qs.length + j]!;
           if (vals.length === 0) return expect(got).toBeNaN();
-          const want = zonalReferenceQuantile(sorted, q);
-          // Channel 1 is fixed-range [0, 4]: ranks outside it are censored to the edge.
-          const p = q * (vals.length - 1);
-          const lo = Math.floor(p);
-          const sortedV = [...sorted].sort((x, y) => x - y);
-          const censored =
-            c === 1 && (sortedV[lo]! < 0 || sortedV[lo]! > 4 || (lo + 1 < vals.length && (sortedV[lo + 1]! < 0 || sortedV[lo + 1]! > 4)));
-          if (!censored) expect(got).toBeCloseTo(want, 12);
+          expect(got).toBeCloseTo(zonalReferenceQuantile(sorted, q), 12);
         });
       }
     }
     // The plan only collects target bins: far fewer values than the region holds.
     expect(plan.total).toBeLessThan(W * H);
+    // A collect pass over different pixels is refused rather than resolved from a short set.
+    const fewer = Float32Array.from(a, (v, i) => (i % 7 === 0 ? Number.NaN : v));
+    expect(() => zonalCollectCpu(labels, [{ values: fewer, support: sup }, { values: b }], opts, h, plan)).toThrow(/exact pass found/);
+  });
+
+  it("refuses merges past 2^32 − 1 and table columns that would collide", () => {
+    const { labels, a } = scene(5);
+    const opts = { regions: 3, bins: 8, channels: [{ range: [0, 20] as [number, number] }, {}] };
+    const h = zonalHistogramCpu(labels, [{ values: a }, { values: a }], opts);
+    const big = { ...h, counts: h.counts.map((v) => (v ? 0xffffffff : 0)) };
+    expect(() => zonalMerge(big, h)).toThrow(/exceed 2\^32/);
+    expect(() => zonalTable(h, { names: ["c1"] })).toThrow(/both named 'c1'/);
+    expect(() => zonalTable(h, { quantiles: [0.5, 0.500000001, 0.25, 0.75] })).toThrow(/both map to column 'p50'/);
+    expect(zonalTable(h, { names: ["x", "y"] }).columns.has("y_median")).toBe(true);
   });
 
   it("builds a regions × features table, binned within a bin width and exact on request", () => {

@@ -91,11 +91,15 @@ function sameGrid(a: Multiscale, b: Multiscale, level: number): boolean {
 
 async function fetch(src: TiledRaster, id: ChunkId): Promise<Tile> {
   const key = chunkKey(id);
+  const check = (tile: Tile): Tile => {
+    if (elementLanes(tile.element) !== 1 || tile.dims[2] !== 1) throw new Error(`zonal: tile ${key} must be a scalar plane`);
+    return tile;
+  };
+  // A hit is checked too: the cache may be shared with code that put other tiles in it.
   const hit = src.cache?.get(key);
-  if (hit) return hit;
-  const tile = await src.loader.getChunk(id);
+  if (hit) return check(hit);
+  const tile = check(await src.loader.getChunk(id));
   src.cache?.set(key, tile, tile.data?.byteLength ?? tile.buffer?.byteLength ?? 0);
-  if (elementLanes(tile.element) !== 1 || tile.dims[2] !== 1) throw new Error(`zonal: tile ${key} must be a scalar plane`);
   return tile;
 }
 
@@ -139,10 +143,14 @@ export async function zonalStatsTiled(opts: ZonalTiledOptions, device?: GPUDevic
     const src = opts.regions.source;
     let max = 0;
     const keep: ChunkId[] = [];
+    const given = opts.regions.regions;
     for (const id of all) {
       const d = (await fetch(src, id)).data;
       if (!d) {
-        keep.push(id); // device-resident labels: cannot pre-scan, so visit
+        // A device-resident label tile cannot be scanned: its labels would be missing from an
+        // inferred count, so the count must be given.
+        if (given === undefined) throw new Error(`zonal: label tile ${chunkKey(id)} is device-resident; pass regions.regions`);
+        keep.push(id);
         continue;
       }
       let m = 0;
@@ -150,7 +158,7 @@ export async function zonalStatsTiled(opts: ZonalTiledOptions, device?: GPUDevic
       if (m >= 1) keep.push(id);
       max = Math.max(max, Math.floor(m));
     }
-    regions = opts.regions.regions ?? max;
+    regions = given ?? max;
     if (!(regions >= 1)) throw new Error("zonal: the label raster has no labels ≥ 1");
     chunks = keep;
   }

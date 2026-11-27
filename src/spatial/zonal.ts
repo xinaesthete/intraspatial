@@ -238,8 +238,18 @@ export function zonalMerge(a: ZonalHistogram, b: ZonalHistogram): ZonalHistogram
   if (a.regions !== b.regions || a.channels !== b.channels || a.bins !== b.bins || a.edges.some((e, i) => e !== b.edges[i])) {
     throw new Error("zonalMerge: histograms differ in shape or edges");
   }
-  const counts = a.counts.map((v, i) => v + b.counts[i]!);
-  const totals = a.totals.map((v, i) => v + b.totals[i]!);
+  // Uint32Array.map would wrap a sum past 2^32 − 1 to a small count: refuse it instead.
+  const add = (x: Uint32Array, y: Uint32Array, what: string) => {
+    const out = new Uint32Array(x.length);
+    for (let i = 0; i < x.length; i++) {
+      const v = x[i]! + y[i]!;
+      if (v > 0xffffffff) throw new Error(`zonalMerge: ${what} ${i} would exceed 2^32 − 1`);
+      out[i] = v;
+    }
+    return out;
+  };
+  const counts = add(a.counts, b.counts, "count");
+  const totals = add(a.totals, b.totals, "total");
   const moments = new Float64Array(a.moments.length);
   for (let r = 0; r * 4 < moments.length; r++) {
     const k = zonalCount(totals, r);
@@ -385,12 +395,16 @@ export function polygonLayers(polygons: readonly Pick<Domain, "bbox">[]): number
 
 /** Unused target slot. */
 export const ZONAL_NO_TARGET = 0xffffffff;
+/** Words per target slot in `ZonalExactPlan.table`: `[bin, offset, count]`. */
+export const ZONAL_TARGET_STRIDE = 3;
 
 export interface ZonalExactPlan {
   readonly quantiles: readonly number[];
   /** Target slots per row. */
   readonly perRow: number;
-  /** `rows × perRow × 2`: `[bin, offset]`; bin = `ZONAL_NO_TARGET` when the slot is unused. */
+  /** `rows × perRow × 3`: `[bin, offset, count]`; bin = `ZONAL_NO_TARGET` when the slot is unused.
+   *  `count` is the bin's count from the histogram: what the collect pass must find, and the most
+   *  it may write (a pass over different data cannot overrun the next target's segment). */
   readonly table: Uint32Array;
   /** Values the second pass collects (Σ counts of target bins). */
   readonly total: number;
@@ -419,7 +433,7 @@ export function zonalExactPlan(h: ZonalHistogram, quantiles: readonly number[]):
   if (quantiles.length === 0 || quantiles.some((q) => !(q >= 0 && q <= 1))) throw new Error("zonal: quantiles must be in [0, 1]");
   const rows = h.regions * h.channels;
   const perRow = 2 * quantiles.length;
-  const table = new Uint32Array(rows * perRow * 2).fill(ZONAL_NO_TARGET);
+  const table = new Uint32Array(rows * perRow * ZONAL_TARGET_STRIDE).fill(ZONAL_NO_TARGET);
   let total = 0;
   for (let r = 0; r < rows; r++) {
     const n = zonalCount(h.totals, r);
@@ -434,10 +448,12 @@ export function zonalExactPlan(h: ZonalHistogram, quantiles: readonly number[]):
     }
     let t = 0;
     for (const b of [...want].sort((x, y) => x - y)) {
-      const o = (r * perRow + t++) * 2;
+      const o = (r * perRow + t++) * ZONAL_TARGET_STRIDE;
+      const count = h.counts[r * h.bins + b]!;
       table[o] = b;
       table[o + 1] = total;
-      total += h.counts[r * h.bins + b]!;
+      table[o + 2] = count;
+      total += count;
     }
   }
   if (total > 2 ** 32 - 1) throw new Error(`zonal: the exact pass would collect ${total} values`);
@@ -455,7 +471,7 @@ export function zonalCollectCpu(
   out = new Float32Array(Math.max(1, plan.total)),
 ): Float32Array {
   const C = h.channels;
-  const cursor = new Uint32Array(plan.table.length / 2);
+  const cursor = new Uint32Array(plan.table.length / ZONAL_TARGET_STRIDE);
   for (let c = 0; c < C; c++) {
     const positive = opts.channels[c]!.valid === "positive";
     const lo = h.edges[c * 2]!;
@@ -470,14 +486,32 @@ export function zonalCollectCpu(
       const row = g * C + c;
       for (let t = 0; t < plan.perRow; t++) {
         const s = row * plan.perRow + t;
-        if (plan.table[s * 2] === b) {
-          out[plan.table[s * 2 + 1]! + cursor[s]!++] = v;
+        const o = s * ZONAL_TARGET_STRIDE;
+        if (plan.table[o] === b) {
+          const k = cursor[s]!++;
+          if (k < plan.table[o + 2]!) out[plan.table[o + 1]! + k] = v;
           break;
         }
       }
     }
   }
+  checkCollected(plan, cursor);
   return out;
+}
+
+/** Throws unless every target received exactly its planned count: the collect pass must see the
+ *  same pixels, labels and edges as the bin pass, or the ranks it resolves are wrong. */
+export function checkCollected(plan: ZonalExactPlan, cursors: ArrayLike<number>): void {
+  for (let s = 0; s * ZONAL_TARGET_STRIDE < plan.table.length; s++) {
+    const o = s * ZONAL_TARGET_STRIDE;
+    if (plan.table[o] === ZONAL_NO_TARGET) continue;
+    const want = plan.table[o + 2]!;
+    if (cursors[s] !== want) {
+      throw new Error(
+        `zonal: the exact pass found ${cursors[s]} values for row ${Math.floor(s / plan.perRow)} bin ${plan.table[o]}, the histogram ${want} (did the passes see different tiles?)`,
+      );
+    }
+  }
 }
 
 /**
@@ -498,11 +532,10 @@ export function zonalExactQuantiles(h: ZonalHistogram, plan: ZonalExactPlan, col
     const hi = h.edges[c * 2 + 1]!;
     const sorted = new Map<number, Float32Array>();
     for (let t = 0; t < plan.perRow; t++) {
-      const s = (r * plan.perRow + t) * 2;
+      const s = (r * plan.perRow + t) * ZONAL_TARGET_STRIDE;
       const b = plan.table[s]!;
       if (b === ZONAL_NO_TARGET) break;
-      const len = h.counts[r * h.bins + b]!;
-      sorted.set(b, collected.slice(plan.table[s + 1]!, plan.table[s + 1]! + len).sort());
+      sorted.set(b, collected.slice(plan.table[s + 1]!, plan.table[s + 1]! + plan.table[s + 2]!).sort());
     }
     const under = h.totals[r * ZONAL_TOTALS + 1]!;
     const valueAt = (k: number): number => {
@@ -563,6 +596,13 @@ export function zonalTable(h: ZonalHistogram, opts: ZonalTableOptions = {}): Zon
   if (opts.exact && opts.exact.length !== h.regions * h.channels * quantiles.length)
     throw new Error("zonalTable: exact has the wrong length");
   if (opts.exact && extra.length) throw new Error("zonalTable: exact quantiles must include 0.25, 0.5 and 0.75");
+  // Two channels or two quantiles mapping to one name would silently overwrite each other's columns.
+  const names = Array.from({ length: h.channels }, (_, c) => opts.names?.[c] ?? `c${c}`);
+  const dup = (keys: string[]) => keys.find((k, i) => keys.indexOf(k) !== i);
+  const dupName = dup(names);
+  if (dupName !== undefined) throw new Error(`zonalTable: two channels are both named '${dupName}'`);
+  const dupQ = dup(quantiles.map(pct));
+  if (dupQ !== undefined) throw new Error(`zonalTable: two quantiles both map to column '${dupQ}' (4 decimal places of a percent)`);
   const R = h.regions;
   const columns = new Map<string, Float64Array>();
   const col = (name: string) => {
@@ -571,7 +611,7 @@ export function zonalTable(h: ZonalHistogram, opts: ZonalTableOptions = {}): Zon
     return a;
   };
   for (let c = 0; c < h.channels; c++) {
-    const name = opts.names?.[c] ?? `c${c}`;
+    const name = names[c]!;
     for (let g = 0; g < R; g++) {
       const r = g * h.channels + c;
       const t = r * ZONAL_TOTALS;
