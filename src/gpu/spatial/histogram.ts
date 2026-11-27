@@ -268,7 +268,24 @@ fn finalize(@builtin(local_invocation_index) li: u32) {
 }
 `;
 
-const BIN = /* wgsl */ `${UNI}${READ}
+/** The bin of a finite `v` in `[lo, hi]`: `histogramBinOf()` in src/spatial/histogram.ts, bit for
+ *  bit. The division only seeds `b`; the two correctly-rounded multiplies decide it. The 2⁻³²
+ *  prescale (`histogramScale()`) keeps range and t finite near f32 max. Shared by the zonal
+ *  kernels (`zonal.ts`), so every histogram in the repo bins alike. */
+export const HIST_BIN_WGSL = /* wgsl */ `
+fn histBin(v: f32, lo: f32, hi: f32, nb: u32) -> u32 {
+  let s = select(1.0, 2.3283064365386963e-10, max(abs(lo), abs(hi)) >= 7.922816251426434e28);
+  let los = lo * s;
+  let range = hi * s - los;
+  let t = (v * s - los) * f32(nb);
+  var b = min(nb - 1u, u32(max(0.0, floor(t / range))));
+  if (b > 0u && f32(b) * range > t) { b = b - 1u; }
+  if (b + 1u < nb && f32(b + 1u) * range <= t) { b = b + 1u; }
+  return b;
+}
+`;
+
+const BIN = /* wgsl */ `${UNI}${READ}${HIST_BIN_WGSL}
 @group(0) @binding(3) var<storage, read> edges: array<f32>;
 @group(0) @binding(4) var<storage, read_write> counts: array<atomic<u32>>;   // rows x bins
 @group(0) @binding(5) var<storage, read_write> totals: array<atomic<u32>>;   // rows x 4
@@ -280,12 +297,7 @@ var<workgroup> localTot: array<atomic<u32>, ${MAX_ROWS * 4}>;
 fn bin(@builtin(global_invocation_id) gid: vec3u, @builtin(local_invocation_index) li: u32) {
   let lo = edges[0];
   let hi = edges[1];
-  // histogramScale(): an exact 2^-32 prescale near f32 max, so range and t cannot overflow.
-  let s = select(1.0, 2.3283064365386963e-10, max(abs(lo), abs(hi)) >= 7.922816251426434e28);
-  let los = lo * s;
-  let range = hi * s - los;
   let nb = U.bins;
-  let fb = f32(nb);
   let cells = U.rows * nb;
   let usePrivate = U.privatized != 0u;
   if (usePrivate) {
@@ -303,12 +315,7 @@ fn bin(@builtin(global_invocation_id) gid: vec3u, @builtin(local_invocation_inde
       else if (v > hi) { slot = 2u; }    // over (fixed range only)
       else {
         slot = 0u;
-        // histogramBinOf() in src/spatial/histogram.ts: the division only seeds b; the two
-        // correctly-rounded multiplies decide it, so the host golden agrees bit for bit.
-        let t = (v * s - los) * fb;
-        var b = min(nb - 1u, u32(max(0.0, floor(t / range))));
-        if (b > 0u && f32(b) * range > t) { b = b - 1u; }
-        if (b + 1u < nb && f32(b + 1u) * range <= t) { b = b + 1u; }
+        let b = histBin(v, lo, hi, nb);
         if (usePrivate) { atomicAdd(&local[r * nb + b], 1u); }
         else { atomicAdd(&counts[r * nb + b], 1u); }
       }

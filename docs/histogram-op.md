@@ -64,7 +64,7 @@ to `[min, max]`, so a constant field is exact. A rank in the fixed-range under/o
 censored: it returns `lo` or `hi` unclamped. The IQR is within two bin widths when both quartiles
 meet the same-bin condition.
 
-**Exact median (sketched, not built).** Pass 1 uses the CDF to find the target bin `b` and the
+**Exact median (built in R3, `zonalExactPlan`; see [`zonal-stats.md`](zonal-stats.md)).** Pass 1 uses the CDF to find the target bin `b` and the
 rank `p − C_b` within it. Pass 2 stream-compacts the values with `bin(v) == b`
 (`streamCompact.ts`) and sorts that small set. It is one extra dispatch plus a readback the size of
 a bin. At 256 bins over a 300 µm patch, the bin-width bound is already finer than the downstream
@@ -147,10 +147,10 @@ covered in `explicitDevice.gpu.test.ts`. The playground passes none, because dec
 library's device. The readbacks that remain are small: K floats per probe, the histograms, and d,
 which the host flood needs.
 
-## Later steps (not built)
+## Later steps
 
 | Step | Scope |
 |---|---|
-| R3 | A polygon/label rasteriser and labelled (zonal) reductions, with rows = labels × channels. `MAX_ROWS` (2) and the `rowOf` mask rule are the seam. |
+| R3 | **Built** — [`zonal-stats.md`](zonal-stats.md). Its own labelled kernels (R1's per-row registers do not scale to thousands of rows), sharing R1's bin rule (`HIST_BIN_WGSL`), row layout and quantile helpers. The exact median sketched above is built there. |
 | R4 | Patch-grid generator. |
 | R5 | Anchor screen with a permutation null. |

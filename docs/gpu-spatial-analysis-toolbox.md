@@ -328,6 +328,7 @@ ring/crypt scale, short-range exclusion). That makes it an ideal golden.
 | networks | Delaunay / Voronoi | (use proximity network instead) | cpu |
 | region based | hexgrid / quadrat lattice | bin transform + scatter (prefer windowed) | → |
 | region based | windowed local stats (overlapping taper) | splat → separable window → resample | → |
+| region based | zonal stats of image channels per polygon / label (median, IQR, percentiles, fractions) | polygon rasteriser + labelled histogram, tiled | ✓ built (`zonal.ts`, [`zonal-stats.md`](zonal-stats.md)) |
 | networks | fuzzy / kernel-weighted adjacency | `μ_ij=exp(-d²/2σ²)` dense matrix | ✓ |
 | networks | k-th neighbour distance (local density `ρ`) | WGSL-template k-smallest select | ✓ |
 | topology | CkNN rescaled distance `d̃=d/√(ρ_iρ_j)` | k-th-NN + `"use gpu"` rescale | ✓ |

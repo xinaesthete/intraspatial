@@ -35,3 +35,5 @@ export * from "./splatVolume";
 export * from "./tcm";
 export * from "./tcmRender";
 export * from "./umapLayoutGpu";
+export * from "./zonal";
+export * from "./zonalTiled";
