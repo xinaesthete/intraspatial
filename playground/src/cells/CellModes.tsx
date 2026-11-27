@@ -31,6 +31,7 @@ import { MatrixView } from "../modes/MatrixView";
 import { ColoursExplain, ModeCharts } from "../modes/ModeCharts";
 import { ModeMap } from "../modes/ModeMap";
 import { ImagePicker, MapStyleControls, StoreInput, useImageChoice, useMapStyle } from "../modes/PageControls";
+import { rampHalfRanges, useModeHistograms } from "../modes/useModeHistograms";
 import { useWand, type WandSource, wandLayerProps } from "../modes/useWand";
 import { WandExplain, WandPanel } from "../modes/WandPanel";
 import { MaskStats } from "../selection/MaskStats";
@@ -132,6 +133,20 @@ export function CellModes() {
     [g],
   );
   const wand = useWand(wandSource);
+  // Each painted mode's values over the window, for the legend and (by default) the colour range.
+  const modeHist = useModeHistograms(g, g?.modes.vectors);
+  const ranges = style.contrast === "view" ? modeHist.hist?.value.halfRanges : undefined;
+  const legendHist = useMemo(
+    () =>
+      g && modeHist.hist
+        ? {
+            hist: modeHist.hist,
+            ramp: rampHalfRanges(g.res, { vectors: g.modes.vectors, saturate, chromaWeight, ranges }),
+            window: "this map's window",
+          }
+        : undefined,
+    [g, saturate, chromaWeight, ranges, modeHist.hist],
+  );
   const env = envelope && g && envelope.generation === g.generation ? envelope.result : undefined;
 
   const K = g?.modes.labels.length ?? 0;
@@ -171,6 +186,7 @@ export function CellModes() {
               rasters: g.rasters,
               vectors: g.modes.vectors,
               saturate,
+              ranges: ranges ?? null,
               chromaWeight,
               opacity,
               ...wandLayerProps(wand, K),
@@ -188,7 +204,7 @@ export function CellModes() {
             }),
           ]
         : [],
-    [g, wand, saturate, chromaWeight, opacity, K, tools.layers],
+    [g, wand, saturate, ranges, chromaWeight, opacity, K, tools.layers],
   );
 
   /** Simulate the null spectrum. Re-splats this result's own channels and window, so the band is
@@ -248,7 +264,7 @@ export function CellModes() {
     dropSelection();
   };
 
-  const error = sd.error ?? tables.error ?? base.error ?? built.error ?? gram.error;
+  const error = sd.error ?? tables.error ?? base.error ?? built.error ?? gram.error ?? modeHist.error;
   const busy = tables.loading
     ? "inspecting the store…"
     : base.loading
@@ -436,6 +452,7 @@ export function CellModes() {
             <>
               <ModeCharts
                 modes={g.modes}
+                histograms={legendHist}
                 {...(env ? { envelope: env } : {})}
                 nullControls={
                   <>

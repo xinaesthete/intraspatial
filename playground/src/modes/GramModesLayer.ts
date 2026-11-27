@@ -179,6 +179,8 @@ export type GramModesLayerProps = {
   vectors: Float64Array | null;
   /** See `ModePaintOptions`. */
   saturate?: number;
+  /** Per-mode half-ranges the ramp saturates at, replacing `saturate`·σ — see `ModePaintOptions`. */
+  ranges?: readonly [number, number, number] | null;
   chromaWeight?: number;
   reference?: Float64Array | null;
   modesUsed?: number;
@@ -196,6 +198,7 @@ const defaultProps: DefaultProps<GramModesLayerProps> = {
   rasters: { type: "object", value: null, compare: false },
   vectors: { type: "object", value: null, compare: false },
   saturate: { type: "number", value: 2.5 },
+  ranges: { type: "array", value: null, compare: 1 },
   chromaWeight: { type: "number", value: 1 },
   reference: { type: "object", value: null, compare: false },
   modesUsed: { type: "number", value: 3 },
@@ -269,6 +272,7 @@ export class GramModesLayer extends Layer<GramModesLayerProps> {
       res !== oldProps.res ||
       vectors !== oldProps.vectors ||
       props.saturate !== oldProps.saturate ||
+      props.ranges !== oldProps.ranges ||
       props.chromaWeight !== oldProps.chromaWeight ||
       props.reference !== oldProps.reference ||
       props.modesUsed !== oldProps.modesUsed ||
@@ -277,6 +281,7 @@ export class GramModesLayer extends Layer<GramModesLayerProps> {
     const params = modeParams(res, {
       vectors,
       saturate: props.saturate,
+      ranges: props.ranges ?? undefined,
       chromaWeight: props.chromaWeight,
       reference: props.reference ?? undefined,
       modesUsed: props.modesUsed,

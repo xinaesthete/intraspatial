@@ -26,6 +26,7 @@ import { MatrixView } from "../modes/MatrixView";
 import { ModeCharts } from "../modes/ModeCharts";
 import { ModeMap } from "../modes/ModeMap";
 import { ImagePicker, MapStyleControls, StoreInput, useImageChoice, useMapStyle } from "../modes/PageControls";
+import { rampHalfRanges, useModeHistograms } from "../modes/useModeHistograms";
 import { useWand, type WandSource, wandLayerProps } from "../modes/useWand";
 import { WandPanel } from "../modes/WandPanel";
 import { useBoundarySettings, useMapSelection } from "../selection/useMapSelection";
@@ -205,6 +206,20 @@ export function TranscriptModes() {
     return { res: g.res, rasters: g.rasters, mean, sd, vectors, ...(lockedBasis ? { basis: lockedBasis } : {}) };
   }, [g, lockedBasis, vectors]);
   const wand = useWand(wandSource);
+  // Each painted mode's values over the window, for the legend and (by default) the colour range.
+  const modeHist = useModeHistograms(g, vectors, lockedBasis);
+  const ranges = style.contrast === "view" ? modeHist.hist?.value.halfRanges : undefined;
+  const legendHist = useMemo(
+    () =>
+      g && vectors && modeHist.hist
+        ? {
+            hist: modeHist.hist,
+            ramp: rampHalfRanges(g.res, { vectors, basis: lockedBasis, saturate, chromaWeight, ranges }),
+            window: follow ? "the current view" : "the kept window",
+          }
+        : undefined,
+    [g, vectors, lockedBasis, saturate, chromaWeight, ranges, modeHist.hist, follow],
+  );
   // The canvas's world frame → the transcripts' frame, which the Gram's bbox is in.
   const toPlace = (wx: number, wy: number): readonly [number, number] | undefined => {
     const m = toElement;
@@ -257,6 +272,7 @@ export function TranscriptModes() {
               vectors: (locked?.modes ?? g.modes).vectors,
               basis: locked?.basis ?? null,
               saturate,
+              ranges: ranges ?? null,
               chromaWeight,
               opacity,
               ...wandLayerProps(wand, g.modes.labels.length),
@@ -292,10 +308,10 @@ export function TranscriptModes() {
               : []),
           ]
         : nicheDrawn,
-    [g, locked, modelMatrix, saturate, chromaWeight, opacity, wand, tools.layers, nicheDrawn],
+    [g, locked, modelMatrix, saturate, ranges, chromaWeight, opacity, wand, tools.layers, nicheDrawn],
   );
 
-  const error = sd.error ?? source.error ?? tiles.error ?? gram.error;
+  const error = sd.error ?? source.error ?? tiles.error ?? gram.error ?? modeHist.error;
   const busy = source.loading
     ? "opening the points element…"
     : tiles.progress
@@ -536,7 +552,7 @@ export function TranscriptModes() {
                   the percentages are of that window's variation.
                 </p>
               )}
-              {modes && <ModeCharts modes={modes} />}
+              {modes && <ModeCharts modes={modes} histograms={legendHist} />}
               <h3>How often each pair turns up together, compared with chance</h3>
               <MatrixView
                 labels={g.modes.labels}
