@@ -121,7 +121,10 @@ function makeOp(masked: boolean): OpType {
     // width×height values of the planar layout) while the golden binned every channel. Extract the
     // channel first; per-channel rows are R3's labels × channels layout.
     inferAxes(inAxes) {
-      if (inAxes.some((a) => a !== undefined && a.length > 0)) throw new Error(`${name}: inputs must be single-channel (no open axes)`);
+      // Singleton axes (a length-1 channel axis) hold one width×height plane, so they are fine.
+      const planes = (axes: (typeof inAxes)[number]) => (axes ?? []).reduce((n, ax) => n * ax.length, 1);
+      if (inAxes.some((axes) => planes(axes) !== 1))
+        throw new Error(`${name}: inputs must be single-channel (open axes of total length 1)`);
       return OUTPUTS.map(() => undefined);
     },
     inferRole: () => OUTPUTS.map(() => undefined),

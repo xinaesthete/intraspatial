@@ -14,6 +14,23 @@ describe("histogram op build", () => {
     expect(() => g.op("histogram", { field })).toThrow(/single-channel/);
   });
 
+  it("accepts a singleton channel axis on both ops", () => {
+    const g = new Graph();
+    const one = (data: Float32Array) =>
+      g.source({ shape: { kind: "grid", width: 2, height: 2 }, dtype: "f32", data, axes: [{ name: "c", type: "channel", length: 1 }] });
+    const field = one(new Float32Array([1, 2, 3, 4]));
+    const mask = one(new Float32Array([1, 0, 1, 0]));
+    expect(g.op("histogram", { field })).toHaveLength(5);
+    expect(g.op("histogramMasked", { field, mask })).toHaveLength(5);
+    const wide = g.source({
+      shape: { kind: "grid", width: 2, height: 2 },
+      dtype: "f32",
+      data: new Float32Array(8),
+      axes: [{ name: "c", type: "channel", length: 2 }],
+    });
+    expect(() => g.op("histogramMasked", { field, mask: wide })).toThrow(/single-channel/);
+  });
+
   it("refuses a fixed range that collapses in f32", () => {
     const g = new Graph();
     const field = g.grid([1, 2, 3, 4], 2, 2);
