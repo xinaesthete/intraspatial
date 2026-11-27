@@ -36,10 +36,10 @@
 //
 // `histogramQuantile` finds the bin holding fractional rank p = q·(N−1) (numpy's "linear"
 // definition) and interpolates linearly inside it. The order statistic x₍⌊p⌋₎ is in that bin, so
-// whenever the two order statistics bracketing p share a bin — always, for data dense enough to
-// histogram — the estimate is within **one bin width** of the exact quantile. That bound is
-// conditional: where the bracketing order statistics are in different bins (data with gaps wider
-// than a bin, or very few values) the error is at most one bin width plus the gap. A binned
+// whenever the two order statistics bracketing p share a bin, the estimate is within **one bin
+// width** of the exact quantile. That bound is conditional: the bracketing order statistics can
+// land in different bins even when they are close together (on either side of an edge), and with
+// gaps wider than a bin or very few values; then the error is at most one bin width plus the gap. A binned
 // estimate is clamped to the row's [min, max], which makes a constant field exact; a rank in the
 // fixed-range under/overflow is censored and returns `lo`/`hi` as is.
 //
@@ -274,7 +274,7 @@ export interface HistogramSummary {
   /** q3 − q1; within two bin widths when both quartiles meet the one-bin condition. */
   readonly iqr: number;
   /** One bin width: the quantiles' error bound when each rank's bracketing order statistics
-   *  share a bin (dense data); see the header. */
+   *  share a bin; see the header. */
   readonly binWidth: number;
 }
 

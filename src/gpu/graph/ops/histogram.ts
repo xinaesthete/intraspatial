@@ -100,7 +100,7 @@ function makeOp(masked: boolean): OpType {
         "with values outside counted as under/over). NaN and ±Inf are skipped and counted. `totals` is " +
         "[inRange, under, over, nonFinite] per row; `moments` is [min, max, sum, mean]. Quantiles read " +
         "off the CDF (`histogramSummary`) are within one bin width of exact when the order statistics " +
-        "bracketing the rank share a bin (dense data); sparse data or a censored (under/over) rank can be further off.",
+        "bracketing the rank share a bin; otherwise (values either side of an edge, gaps, sparse data) or for a censored (under/over) rank it can be further off.",
       math: "b(v) = \\left\\lfloor \\frac{(v-\\mathrm{lo})\\,B}{\\mathrm{hi}-\\mathrm{lo}} \\right\\rfloor",
     },
     inputs,

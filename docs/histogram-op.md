@@ -4,7 +4,7 @@
 graph ops, backed by `histogramResident` (`src/gpu/spatial/histogram.ts`), with the f64 golden and
 the host quantile helper in `src/spatial/histogram.ts`. Counts match the golden **exactly**.
 Quantiles come off the CDF and are within **one bin width** of exact when the order statistics
-bracketing each rank share a bin, which dense data always satisfies.
+bracketing each rank share a bin.
 
 ## Surface
 

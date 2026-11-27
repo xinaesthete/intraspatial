@@ -148,18 +148,21 @@ describe("histogram graph op", () => {
     }
   });
 
-  it("extreme values: a constant 2^24 field and ranges near f32 max still bin, and match", async () => {
+  it("extreme values: constant fields where v +/- 0.5 collapses, and ranges near f32 max, still bin and match", async () => {
     const big = new Float32Array(W * H);
     for (let i = 0; i < big.length; i++) big[i] = (i % 3) * 1e38 - (i % 5 === 0 ? 2e38 : 0);
     for (const [label, field] of [
       ["constant 2^24", new Float32Array(W * H).fill(2 ** 24)],
+      ["constant -2^25", new Float32Array(W * H).fill(-(2 ** 25))],
+      ["constant 3e38", new Float32Array(W * H).fill(3e38)],
       ["near f32 max", big],
     ] as const) {
       const g = new Graph();
       const { gpu, cpu } = await runOp(g, "histogram", { field: g.grid(field, W, H) }, { bins: 16 });
       // Near f32 max the GPU's f32 SUM overflows to Inf (documented on histogramResident), so the
-      // moments are compared for the constant case only; counts, CDF, totals and edges always.
-      const moments = label === "near f32 max" ? cpu.moments : gpu.moments;
+      // moments are compared only where the sum fits in f32; counts, CDF, totals and edges always.
+      const sumOverflows = label === "near f32 max" || label === "constant 3e38";
+      const moments = sumOverflows ? cpu.moments : gpu.moments;
       expect(diff({ ...gpu, moments }, { ...cpu, bins: 16, rows: 1 }), label).toBeUndefined();
       expect(gpu.cdf[15], label).toBe(W * H);
     }
