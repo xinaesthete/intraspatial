@@ -35,3 +35,4 @@ export * from "./transcriptChannels";
 export * from "./umap";
 export * from "./umapGraph";
 export * from "./umapLayout";
+export * from "./zonal";

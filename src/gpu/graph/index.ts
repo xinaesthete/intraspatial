@@ -43,6 +43,7 @@ export type { ExecCtx, OpHelp, OpType, ParamSpec, Params, ParamType, PortSpec } 
 export { allFinite, defaultParams, param } from "./op";
 export type { RasterPlanePayload } from "./ops/histogram";
 export { RASTER_PLANE, rasterPlaneValue } from "./ops/histogram";
+export { polygonRingSources } from "./ops/zonal";
 export { registerBuiltinOps, registerElementOps, registerWaveletOps } from "./ops/index";
 export type { PoolStats } from "./pool";
 export { BufferPool, residentUsage } from "./pool";

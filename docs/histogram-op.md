@@ -75,6 +75,6 @@ correlations need.
 | Step | Scope |
 |---|---|
 | R2 | Per-mode histograms in the playground's `GramModesLayer` / `ModeLegend`. A histogram of `wandDistance` in `WandPanel`, plus an area-vs-tolerance curve from one priority flood. |
-| R3 | A polygon/label rasteriser and labelled (zonal) reductions, with rows = labels × channels. `MAX_ROWS` (2) and the `rowOf` mask rule are the seam. |
+| R3 | **Built** — [`zonal-stats.md`](zonal-stats.md). Its own labelled kernels (R1's per-row registers do not scale to thousands of rows), sharing R1's bin rule (`HIST_BIN_WGSL`), row layout and quantile helpers; the exact median below is built there. |
 | R4 | Patch-grid generator. |
 | R5 | Anchor screen with a permutation null. |
