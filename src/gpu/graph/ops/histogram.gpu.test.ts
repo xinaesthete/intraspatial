@@ -26,7 +26,7 @@ function mismatch(a: ArrayLike<number>, b: ArrayLike<number>, tol = 0): string |
   for (let i = 0; i < a.length; i++) {
     const x = a[i]!;
     const y = b[i]!;
-    if (Number.isNaN(x) && Number.isNaN(y)) continue;
+    if (x === y || (Number.isNaN(x) && Number.isNaN(y))) continue;
     if (!(Math.abs(x - y) <= tol * Math.max(1, Math.abs(y)))) return `index ${i}: got ${x}, want ${y}`;
   }
   return undefined;
@@ -145,6 +145,23 @@ describe("histogram graph op", () => {
       const inside = gpu.cdf[47]!;
       expect(inside).toBeGreaterThan(100);
       expect(inside + gpu.cdf[95]! + gpu.totals[3]! + gpu.totals[7]!).toBe(W * H);
+    }
+  });
+
+  it("extreme values: a constant 2^24 field and ranges near f32 max still bin, and match", async () => {
+    const big = new Float32Array(W * H);
+    for (let i = 0; i < big.length; i++) big[i] = (i % 3) * 1e38 - (i % 5 === 0 ? 2e38 : 0);
+    for (const [label, field] of [
+      ["constant 2^24", new Float32Array(W * H).fill(2 ** 24)],
+      ["near f32 max", big],
+    ] as const) {
+      const g = new Graph();
+      const { gpu, cpu } = await runOp(g, "histogram", { field: g.grid(field, W, H) }, { bins: 16 });
+      // Near f32 max the GPU's f32 SUM overflows to Inf (documented on histogramResident), so the
+      // moments are compared for the constant case only; counts, CDF, totals and edges always.
+      const moments = label === "near f32 max" ? cpu.moments : gpu.moments;
+      expect(diff({ ...gpu, moments }, { ...cpu, bins: 16, rows: 1 }), label).toBeUndefined();
+      expect(gpu.cdf[15], label).toBe(W * H);
     }
   });
 

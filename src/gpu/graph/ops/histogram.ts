@@ -16,8 +16,8 @@
 // untouched). A raster plane has no host data, so its `cpuGolden` refuses it: test such a plane
 // against `histogramCpu` over its decoded texels instead.
 import { type RasterPlane, denseRasterPlane, histogramByteSizes, histogramResident } from "#src/gpu/spatial/histogram";
-import { HISTOGRAM_MOMENTS, HISTOGRAM_TOTALS, histogramBins, histogramCpu } from "#src/spatial/histogram";
-import type { FieldValue, Shape } from "../handle";
+import { HISTOGRAM_MOMENTS, HISTOGRAM_TOTALS, histogramBins, histogramCpu, histogramFixedRange } from "#src/spatial/histogram";
+import type { FieldValue, ResidentBuffer, Shape } from "../handle";
 import type { OpType, ParamSpec, Params, PortSpec } from "../op";
 
 /** The payload tag a raster-plane source carries. */
@@ -54,10 +54,8 @@ const OUTPUTS: PortSpec[] = [
 function optsOf(params: Params): { bins: number; range?: [number, number] } {
   const bins = histogramBins({ bins: params.bins as number });
   if (params.range !== "fixed") return { bins };
-  const lo = params.lo as number;
-  const hi = params.hi as number;
-  if (!(hi > lo)) throw new Error(`histogram: fixed range needs hi > lo (got [${lo}, ${hi}])`);
-  return { bins, range: [lo, hi] };
+  // Validated in f32, as the GPU will see it, at graph build (inferShapes calls this).
+  return { bins, range: histogramFixedRange([params.lo as number, params.hi as number]) };
 }
 
 function gridOf(s: Shape, who: string): { width: number; height: number } {
@@ -101,7 +99,8 @@ function makeOp(masked: boolean): OpType {
         "Bins finite values into `bins` equal-width bins over the finite min..max (or a fixed lo..hi, " +
         "with values outside counted as under/over). NaN and ±Inf are skipped and counted. `totals` is " +
         "[inRange, under, over, nonFinite] per row; `moments` is [min, max, sum, mean]. Quantiles read " +
-        "off the CDF (`histogramSummary`) are within one bin width of exact.",
+        "off the CDF (`histogramSummary`) are within one bin width of exact when the order statistics " +
+        "bracketing the rank share a bin (dense data); sparse data or a censored (under/over) rank can be further off.",
       math: "b(v) = \\left\\lfloor \\frac{(v-\\mathrm{lo})\\,B}{\\mathrm{hi}-\\mathrm{lo}} \\right\\rfloor",
     },
     inputs,
@@ -118,7 +117,13 @@ function makeOp(masked: boolean): OpType {
     },
     // Not spatial: a histogram has no placement, axes or label role.
     inferPlacement: () => OUTPUTS.map(() => undefined),
-    inferAxes: () => OUTPUTS.map(() => undefined),
+    // A channel-bearing grid is refused at build: the GPU path would bin only channel 0 (the first
+    // width×height values of the planar layout) while the golden binned every channel. Extract the
+    // channel first; per-channel rows are R3's labels × channels layout.
+    inferAxes(inAxes) {
+      if (inAxes.some((a) => a !== undefined && a.length > 0)) throw new Error(`${name}: inputs must be single-channel (no open axes)`);
+      return OUTPUTS.map(() => undefined);
+    },
     inferRole: () => OUTPUTS.map(() => undefined),
     resident: true,
     slices: true,
@@ -132,25 +137,32 @@ function makeOp(masked: boolean): OpType {
         mask = { buffer: m.buffer.buffer, byteOffset: m.buffer.offset ?? 0, dtype: m.dtype === "f32" ? "f32" : "u32" };
       }
       const sizes = histogramByteSizes(opts.bins, rows);
-      const counts = await ctx.backend.lease(sizes.counts);
-      const cdf = await ctx.backend.lease(sizes.cdf);
-      const edges = await ctx.backend.lease(sizes.edges);
-      const totals = await ctx.backend.lease(sizes.totals);
-      const moments = await ctx.backend.lease(sizes.moments);
-      await histogramResident(
-        plane,
-        { counts: counts.buffer, cdf: cdf.buffer, edges: edges.buffer, totals: totals.buffer, moments: moments.buffer },
-        { ...opts, mask },
-        await ctx.backend.getDevice(),
-      );
+      // Returned to the pool if anything below throws: the executor only owns leases it is handed.
+      const leased: ResidentBuffer[] = [];
+      try {
+        for (const key of ["counts", "cdf", "edges", "totals", "moments"] as const) leased.push(await ctx.backend.lease(sizes[key]));
+        const [counts, cdf, edges, totals, moments] = leased.map((b) => b.buffer) as [
+          GPUBuffer,
+          GPUBuffer,
+          GPUBuffer,
+          GPUBuffer,
+          GPUBuffer,
+        ];
+        await histogramResident(plane, { counts, cdf, edges, totals, moments }, { ...opts, mask }, await ctx.backend.getDevice());
+      } catch (err) {
+        for (const b of leased) ctx.backend.release(b);
+        throw err;
+      }
       const shapes = outShapes(opts.bins, rows);
-      return [counts, cdf, edges, totals, moments].map((buffer, i) => ({ shape: shapes[i]!, dtype: OUTPUTS[i]!.dtype!, buffer }));
+      return leased.map((buffer, i) => ({ shape: shapes[i]!, dtype: OUTPUTS[i]!.dtype!, buffer }));
     },
     cpuGolden(ins, params) {
       const opts = optsOf(params);
       const data = ins[0]!.data;
       if (!data) throw new Error(`${name}: cpuGolden needs host data (a raster-plane source has none)`);
-      const h = histogramCpu(data, masked ? { ...opts, mask: ins[1]!.data! } : opts);
+      const maskData = masked ? ins[1]!.data : undefined;
+      if (masked && !maskData) throw new Error(`${name}: cpuGolden needs host data for the mask`);
+      const h = histogramCpu(data, maskData ? { ...opts, mask: maskData } : opts);
       const shapes = outShapes(opts.bins, rows);
       const outs = [h.counts, h.cdf, new Float32Array([h.lo, h.hi]), h.totals, Float32Array.from(h.moments)];
       return outs.map((d, i) => ({ shape: shapes[i]!, dtype: OUTPUTS[i]!.dtype!, data: d }));

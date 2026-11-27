@@ -31,8 +31,8 @@
 // mask is a dense `width × height` u32 or f32 grid; non-zero is inside (row 0), zero is outside
 // (row 1). For an f32 mask the sign bit is ignored, so −0 is outside, like `=== 0` on the host.
 import type { HistogramOptions, HistogramResult } from "#src/spatial/histogram";
-import { HISTOGRAM_MOMENTS, HISTOGRAM_TOTALS, histogramBins } from "#src/spatial/histogram";
-import { checkBindingSize, compileShader, deviceScoped, readBackBytes, sized } from "../device";
+import { HISTOGRAM_MOMENTS, HISTOGRAM_TOTALS, histogramBins, histogramFixedRange } from "#src/spatial/histogram";
+import { checkBindingSize, compileShader, deviceScoped, perDevice, readBackBytes, sized } from "../device";
 import { encodeScan, ensureBuf, getScanCtx } from "../scan/prefixSum";
 import type { RasterPrecision, ResidentRasters } from "./gramMatrix";
 
@@ -249,7 +249,15 @@ fn finalize(@builtin(local_invocation_index) li: u32) {
       }
       // histogramEdges() in src/spatial/histogram.ts, exactly.
       if (mn > mx) { lo = 0.0; hi = 1.0; }
-      else if (mn == mx) { lo = mn - 0.5; hi = mn + 0.5; }
+      else if (mn == mx) {
+        lo = mn - 0.5;
+        hi = mn + 0.5;
+        // |v| >= 2^24: both round to v. Step the edge nearer zero one ulp toward zero instead.
+        if (!(lo < hi)) {
+          let tz = bitcast<f32>(bitcast<u32>(mn) - 1u);
+          if (mn > 0.0) { lo = tz; hi = mn; } else { lo = mn; hi = tz; }
+        }
+      }
       else { lo = mn; hi = mx; }
     }
     edges[0] = lo;
@@ -270,7 +278,10 @@ var<workgroup> localTot: array<atomic<u32>, ${MAX_ROWS * 4}>;
 fn bin(@builtin(global_invocation_id) gid: vec3u, @builtin(local_invocation_index) li: u32) {
   let lo = edges[0];
   let hi = edges[1];
-  let range = hi - lo;
+  // histogramScale(): an exact 2^-32 prescale near f32 max, so range and t cannot overflow.
+  let s = select(1.0, 2.3283064365386963e-10, max(abs(lo), abs(hi)) >= 7.922816251426434e28);
+  let los = lo * s;
+  let range = hi * s - los;
   let nb = U.bins;
   let fb = f32(nb);
   let cells = U.rows * nb;
@@ -292,7 +303,7 @@ fn bin(@builtin(global_invocation_id) gid: vec3u, @builtin(local_invocation_inde
         slot = 0u;
         // histogramBinOf() in src/spatial/histogram.ts: the division only seeds b; the two
         // correctly-rounded multiplies decide it, so the host golden agrees bit for bit.
-        let t = (v - lo) * fb;
+        let t = (v * s - los) * fb;
         var b = min(nb - 1u, u32(max(0.0, floor(t / range))));
         if (b > 0u && f32(b) * range > t) { b = b - 1u; }
         if (b + 1u < nb && f32(b + 1u) * range <= t) { b = b + 1u; }
@@ -377,7 +388,10 @@ export interface HistogramGpuOptions extends HistogramOptions {
 /**
  * Histogram `plane` into `out` (see `HistogramTargets`), all on the device, in one submit. `rows`
  * is 2 with a mask, else 1; size `out` with `histogramByteSizes(bins, rows)`. Same result as
- * `histogramCpu` over the plane's texels: counts and totals exactly, moments to f32 rounding.
+ * `histogramCpu` over the plane's texels: counts, CDF, totals and edges exactly. min/max are exact;
+ * `sum` and `mean` are ACCUMULATED in f32 (a tree reduce), so they differ from the f64 golden by
+ * f32 accumulation error, and by more for cancelling inputs (`[2²⁴, −2²⁴, 1]` can sum to 0) or
+ * overflow to ±Inf for values near f32 max.
  * `device` is the one the buffers live on; default: the library's own.
  */
 export async function histogramResident(
@@ -392,14 +406,9 @@ export async function histogramResident(
   const n = width * height;
   const half = plane.precision === "f16";
   if (rowWords < (half ? Math.ceil(width / 2) : width)) throw new Error(`histogram: rowWords ${rowWords} is too short for width ${width}`);
-  let fixedRange = 0;
-  let lo = 0;
-  let hi = 0;
-  if (opts.range) {
-    [lo, hi] = opts.range;
-    if (!(hi > lo)) throw new Error(`histogram: fixed range needs hi > lo (got [${lo}, ${hi}])`);
-    fixedRange = 1;
-  }
+  const fixedRange = opts.range ? 1 : 0;
+  // Validated after f32 rounding, as the uniform will hold them.
+  const [lo, hi] = opts.range ? histogramFixedRange(opts.range) : [0, 0];
 
   const ctx = await getCtx(device);
   const scanCtx = await getScanCtx(ctx.device);
@@ -409,6 +418,7 @@ export async function histogramResident(
   const planeBytes = Math.max(4, height * rowWords * 4);
   checkBindingSize(dev, `histogram: ${width}x${height} plane`, planeBytes);
   const srcBind = binding(plane.buffer, plane.byteOffset ?? 0, planeBytes, "plane");
+  if (opts.mask) checkBindingSize(dev, `histogram: ${width}x${height} mask`, n * 4);
   const maskBind = opts.mask
     ? binding(opts.mask.buffer, opts.mask.byteOffset ?? 0, Math.max(4, n * 4), "mask")
     : sized(ensureBuf(dev, "histogram:noMask", 4, GPUBufferUsage.STORAGE), 4);
@@ -480,9 +490,21 @@ export async function histogramResident(
  * shape `histogramCpu` returns, so `histogramRow`/`histogramSummary` read either. For a consumer
  * that wants the numbers (a legend, a panel); a GPU consumer uses `histogramResident` or the graph
  * op and never reads back. Moments come back as f32 values.
+ *
+ * Calls on one device run one at a time: the targets are pooled, so a second call's submit must
+ * not land between the first call's compute and its readback copies.
  */
 export async function histogramGpu(plane: RasterPlane, opts: HistogramGpuOptions = {}, device?: GPUDevice): Promise<HistogramResult> {
   const dev = device ?? (await getCtx()).device;
+  const q = gpuQueue(dev);
+  const run = q.tail.then(() => histogramGpuNow(dev, plane, opts));
+  q.tail = run.catch(() => undefined); // the next call waits for this one, success or failure
+  return run;
+}
+
+const gpuQueue = perDevice((): { tail: Promise<unknown> } => ({ tail: Promise.resolve() }));
+
+async function histogramGpuNow(dev: GPUDevice, plane: RasterPlane, opts: HistogramGpuOptions): Promise<HistogramResult> {
   const bins = histogramBins(opts);
   const rows = opts.mask ? 2 : 1;
   const sizes = histogramByteSizes(bins, rows);
